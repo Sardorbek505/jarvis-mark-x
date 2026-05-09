@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Exec(git init)",
+      "Exec(git remote)",
+      "Exec(git add)"
+    ]
+  }
+}

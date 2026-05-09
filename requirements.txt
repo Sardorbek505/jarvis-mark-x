@@ -1,0 +1,16 @@
+# ДЖАРВИС — Зависимости
+# pip install -r requirements.txt
+# После: playwright install chromium
+
+# Ядро Gemini Live
+google-genai>=1.0.0
+
+# UI
+PyQt6>=6.6.0
+Pillow>=10.0.0
+
+# Аудио
+sounddevice>=0.4.6
+
+# Системный мониторинг
+psutil>=5.9.0
