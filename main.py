@@ -27,6 +27,7 @@ from actions.file_controller import file_controller
 from actions.vision_review import vision_review
 from actions.modes import set_mode, get_current_mode
 from actions.movie_player import movie_player
+from actions.music_player import music_player
 
 
 # ─── Пути и константы ─────────────────────────────────────────────────────────
@@ -278,6 +279,43 @@ TOOLS = [
         }
     },
     {
+        "name": "music_player",
+        "description": (
+            "Управляет Spotify: запуск треков/исполнителей, пауза, переключение треков, громкость. "
+            "Использует Spotify URI scheme для надёжного запуска десктопного приложения "
+            "и media keys для глобального управления. "
+            "Вызывай когда пользователь говорит: включи музыку, включи <исполнителя/трек>, "
+            "поставь песню, пауза, продолжай, следующий трек, предыдущий трек, "
+            "стоп музыку, громче, тише."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": (
+                        "play (запуск с поиском) | pause | resume | "
+                        "next (следующий трек) | prev (предыдущий) | stop | "
+                        "volume_up | volume_down"
+                    )
+                },
+                "query": {
+                    "type": "STRING",
+                    "description": (
+                        "Что играть (для action=play): название трека, исполнителя, "
+                        "альбома или жанра. Например: 'Imagine Dragons', 'lofi hip hop', "
+                        "'Любэ', 'jazz'."
+                    )
+                },
+                "playlist_url": {
+                    "type": "STRING",
+                    "description": "Прямой URL Spotify-плейлиста (опционально, имеет приоритет над query)"
+                }
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "vision_review",
         "description": (
             "Анализирует текущий экран и даёт экспертную обратную связь по дизайну, UX, "
@@ -519,6 +557,13 @@ class Jarvis:
             elif name == "movie_player":
                 r = await loop.run_in_executor(
                     None, lambda: movie_player(parameters=args, player=self.ui)
+                )
+                result = r or "Готово."
+
+            # ── Инструмент: Spotify music-плеер ──────────────────────
+            elif name == "music_player":
+                r = await loop.run_in_executor(
+                    None, lambda: music_player(parameters=args, player=self.ui)
                 )
                 result = r or "Готово."
 
