@@ -17,3 +17,6 @@ psutil>=5.9.0
 # Vision Mode — захват экрана и определение активного окна
 mss>=9.0.0
 pygetwindow>=0.0.9
+
+# Movie Player — отправка клавиш в плеер (опционально, есть PowerShell fallback на Windows)
+pyautogui>=0.9.54
