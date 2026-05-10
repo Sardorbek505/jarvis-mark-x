@@ -1,6 +1,5 @@
 # ДЖАРВИС — Зависимости
 # pip install -r requirements.txt
-# После: playwright install chromium
 
 # Ядро Gemini Live
 google-genai>=1.0.0
@@ -14,3 +13,7 @@ sounddevice>=0.4.6
 
 # Системный мониторинг
 psutil>=5.9.0
+
+# Vision Mode — захват экрана и определение активного окна
+mss>=9.0.0
+pygetwindow>=0.0.9

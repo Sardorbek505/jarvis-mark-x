@@ -24,6 +24,7 @@ from actions.web_search import web_search
 from actions.computer_settings import computer_settings
 from actions.browser_control import browser_control
 from actions.file_controller import file_controller
+from actions.vision_review import vision_review
 
 
 # ─── Пути и константы ─────────────────────────────────────────────────────────
@@ -214,6 +215,35 @@ TOOLS = [
         }
     },
     {
+        "name": "vision_review",
+        "description": (
+            "Анализирует текущий экран и даёт экспертную обратную связь по дизайну, UX, "
+            "типографике, цветам, премиальности или конверсии. "
+            "Использует Gemini Vision для реального анализа изображения. "
+            "Вызывай когда пользователь говорит: посмотри на экран, оцени, что думаешь о дизайне, "
+            "проверь, как тебе, что улучшить, какой UX, премиально ли, ревью, обзор."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "focus": {
+                    "type": "STRING",
+                    "description": (
+                        "Что оценивать: design — общий дизайн | ux — юзабилити | "
+                        "premium — премиальность | conversion — конверсия | "
+                        "spacing — отступы | typography — шрифты | colors — цвета | "
+                        "accessibility — доступность | general — общая оценка (по умолчанию)"
+                    )
+                },
+                "mode": {
+                    "type": "STRING",
+                    "description": "active_window (по умолчанию, только активное окно) или full_screen (весь экран)"
+                }
+            },
+            "required": []
+        }
+    },
+    {
         "name": "shutdown_jarvis",
         "description": (
             "Полностью завершает работу ДЖАРВИС. "
@@ -392,6 +422,13 @@ class Jarvis:
             elif name == "files":
                 r = await loop.run_in_executor(
                     None, lambda: file_controller(parameters=args, player=self.ui)
+                )
+                result = r or "Готово."
+
+            # ── Инструмент: Vision (анализ экрана) ───────────────────
+            elif name == "vision_review":
+                r = await loop.run_in_executor(
+                    None, lambda: vision_review(parameters=args, player=self.ui)
                 )
                 result = r or "Готово."
 
