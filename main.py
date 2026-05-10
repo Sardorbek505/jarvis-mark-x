@@ -26,6 +26,7 @@ from actions.browser_control import browser_control
 from actions.file_controller import file_controller
 from actions.vision_review import vision_review
 from actions.modes import set_mode, get_current_mode
+from actions.movie_player import movie_player
 
 
 # ─── Пути и константы ─────────────────────────────────────────────────────────
@@ -245,6 +246,35 @@ TOOLS = [
                 }
             },
             "required": ["mode"]
+        }
+    },
+    {
+        "name": "movie_player",
+        "description": (
+            "Управляет видеоплеером в браузере (VK Video, YouTube и др): запуск фильма, "
+            "пауза, перемотка, полный экран, выход. "
+            "Вызывай когда пользователь говорит: включи фильм X, поставь X, фильм X, "
+            "пауза, продолжай, перемотай, полный экран, вперёд, назад, выйти из фильма."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": (
+                        "play (запустить с поиском) | pause (Space, переключатель) | "
+                        "resume (Space) | fullscreen (F) | "
+                        "seek_forward (→ 10 сек) | seek_back (← 10 сек) | "
+                        "volume_up (системная громкость +10%) | volume_down (-10%) | "
+                        "exit (выход + закрыть вкладку)"
+                    )
+                },
+                "title": {
+                    "type": "STRING",
+                    "description": "Название фильма (для action=play)"
+                }
+            },
+            "required": ["action"]
         }
     },
     {
@@ -482,6 +512,13 @@ class Jarvis:
             elif name == "set_mode":
                 r = await loop.run_in_executor(
                     None, lambda: set_mode(parameters=args, player=self.ui)
+                )
+                result = r or "Готово."
+
+            # ── Инструмент: продвинутый кино-плеер ───────────────────
+            elif name == "movie_player":
+                r = await loop.run_in_executor(
+                    None, lambda: movie_player(parameters=args, player=self.ui)
                 )
                 result = r or "Готово."
 

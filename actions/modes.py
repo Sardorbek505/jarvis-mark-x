@@ -227,30 +227,20 @@ def _activate_work(cfg: dict, preference: str, player=None) -> str:
 
 
 def _activate_movie(cfg: dict, preference: str, player=None) -> str:
-    """preference: название фильма (или пусто = спросить)"""
+    """
+    Movie mode делегирует к movie_player для согласованности.
+    movie_player умеет всё: запуск, паузу, перемотку, выход.
+    """
     title = (preference or "").strip()
-
     if not title:
         return "Что будем смотреть, сэр? Назовите фильм."
 
-    m = cfg.get("movie", {})
-    search_template = m.get("video_search_url", "https://vkvideo.ru/search?q={query}")
-
-    encoded = urllib.parse.quote(title)
-    url = search_template.replace("{query}", encoded)
-
-    if player:
-        player.write_log(f"SYS: 🎬 Кино — поиск «{title}»...")
-
-    success = _open_url(url, player)
-    if not success:
-        # Fallback на YouTube
-        fallback = m.get("fallback_search_url", "")
-        if fallback:
-            _open_url(fallback.replace("{query}", encoded), player)
+    # Делегируем продвинутому плееру (он также сохраняет VK Video URL)
+    from actions.movie_player import movie_player
+    result = movie_player({"action": "play", "title": title}, player=player)
 
     _save_state("movie", title)
-    return f"Кинотеатр готов. Ищу «{title}», сэр."
+    return result
 
 
 def _activate_music(cfg: dict, preference: str, player=None) -> str:

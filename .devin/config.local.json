@@ -7,7 +7,8 @@
       "Exec(git commit)",
       "Exec(git push)",
       "Exec(git rm)",
-      "Exec(cat)"
+      "Exec(cat)",
+      "Exec(git diff)"
     ]
   }
 }
