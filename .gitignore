@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.log
+
+# Конфиги с секретами
+config/api_keys.json
+
+# Память пользователя
+memory/data.json
+
+# IDE
+.vscode/
+.idea/
+
+# Виртуальные окружения
+venv/
+env/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
