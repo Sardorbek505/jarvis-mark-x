@@ -106,6 +106,30 @@ python main.py
 
 Если `pyautogui` не установлен и не Windows — Джарвис скажет "Не могу управлять плеером, сэр" вместо краха.
 
+### 🎵 Spotify Music-плеер
+
+```
+"Включи музыку"             → Открывает Spotify, запускает воспроизведение
+"Включи Imagine Dragons"    → Поиск + автозапуск
+"Поставь Любэ"              → То же
+"Включи jazz"               → Поиск по жанру
+"Пауза"                     → Media play/pause key (глобально)
+"Продолжай"                 → Media play/pause key
+"Следующий трек"            → Media next
+"Предыдущий"                → Media previous
+"Стоп музыку"               → Stop / pause
+"Громче" / "Тише"           → Системная громкость ±10%
+"Режим музыки, фон"         → Spotify + плейлист lofi/concentration
+```
+
+**Принцип работы:**
+1. **Открытие через `spotify:` URI** — Windows автоматически запускает десктопный Spotify (например `spotify:search:Imagine%20Dragons` или `spotify:playlist:ID`)
+2. **Web fallback** — если десктопный Spotify не установлен, открывает `open.spotify.com`
+3. **Media keys через Win32 API** (`VK_MEDIA_PLAY_PAUSE`) — работают глобально, без необходимости фокусировать окно
+4. **Auto-focus окна Spotify** через `pygetwindow` для надёжности
+
+Все команды (пауза/трек/громкость) работают **глобально** — окно Spotify не должно быть в фокусе.
+
 ---
 
 ## ⌨️ Горячие клавиши

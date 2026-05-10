@@ -244,7 +244,13 @@ def _activate_movie(cfg: dict, preference: str, player=None) -> str:
 
 
 def _activate_music(cfg: dict, preference: str, player=None) -> str:
-    """preference: energy | calm | focus | power (или пусто = спросить)"""
+    """
+    Активация музыкального режима по настроению.
+    Делегирует к music_player для надёжного запуска Spotify через URI scheme
+    и автоматического воспроизведения через media keys.
+
+    preference: energy | calm | focus | power (или русский эквивалент)
+    """
     mood = (preference or "").strip().lower()
 
     # Нормализация русских вариантов
@@ -260,28 +266,38 @@ def _activate_music(cfg: dict, preference: str, player=None) -> str:
         return "Какое настроение, сэр? Энергия, спокойствие, фон или мощно?"
 
     mu = cfg.get("music", {})
-
-    if player:
-        player.write_log(f"SYS: 🎵 Музыка — {mood}...")
-
-    # Сначала пытаемся открыть приложение Spotify
-    service = mu.get("service_app", "Spotify")
-    opened = _try_open_apps([service], player)
-
-    # Открываем плейлист по настроению
     playlists = mu.get("playlists", {})
     playlist_url = playlists.get(mood, "")
 
+    # Делегируем к music_player (надёжный запуск через spotify: URI + media keys)
+    from actions.music_player import music_player
     if playlist_url:
-        _open_url(playlist_url, player)
-    elif not opened:
-        _open_url(mu.get("fallback_url", ""), player)
+        result = music_player(
+            {"action": "play", "playlist_url": playlist_url},
+            player=player,
+        )
+    else:
+        # Если нет URL плейлиста — запускаем по жанру через поиск
+        genre_query = {
+            "energy": "energetic music",
+            "calm":   "chill music",
+            "focus":  "lofi focus",
+            "power":  "rock workout",
+        }.get(mood, "")
+        result = music_player(
+            {"action": "play", "query": genre_query},
+            player=player,
+        )
 
     _save_state("music", mood)
 
     mood_ru = {"energy": "энергичная", "calm": "спокойная",
                "focus": "фоновая", "power": "мощная"}.get(mood, mood)
-    return f"Включаю {mood_ru} музыку, сэр."
+
+    # Если music_player вернул успех — добавляем mood-info к ответу
+    if "не удалось" not in result.lower():
+        return f"Включаю {mood_ru} музыку, сэр."
+    return result
 
 
 def _deactivate(player=None) -> str:
