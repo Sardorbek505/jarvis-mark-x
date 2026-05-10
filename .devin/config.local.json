@@ -6,7 +6,8 @@
       "Exec(git add)",
       "Exec(git commit)",
       "Exec(git push)",
-      "Exec(git rm)"
+      "Exec(git rm)",
+      "Exec(cat)"
     ]
   }
 }

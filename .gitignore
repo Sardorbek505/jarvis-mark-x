@@ -10,6 +10,7 @@ config/api_keys.json
 
 # Память пользователя
 memory/data.json
+memory/current_mode.json
 
 # IDE
 .vscode/

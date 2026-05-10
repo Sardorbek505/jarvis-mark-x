@@ -25,6 +25,7 @@ from actions.computer_settings import computer_settings
 from actions.browser_control import browser_control
 from actions.file_controller import file_controller
 from actions.vision_review import vision_review
+from actions.modes import set_mode, get_current_mode
 
 
 # ─── Пути и константы ─────────────────────────────────────────────────────────
@@ -215,6 +216,38 @@ TOOLS = [
         }
     },
     {
+        "name": "set_mode",
+        "description": (
+            "Активирует один из lifestyle-режимов ДЖАРВИС или сбрасывает в обычный. "
+            "Каждый режим открывает релевантные приложения и сайты. "
+            "Вызывай когда пользователь говорит: режим учебы, режим работы, режим кино, "
+            "режим музыки, обычный режим, пора учиться, пора работать, хочу фильм, включи музыку."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "mode": {
+                    "type": "STRING",
+                    "description": (
+                        "study (учеба) | work (работа) | movie (кино) | "
+                        "music (музыка) | normal (обычный, сброс)"
+                    )
+                },
+                "preference": {
+                    "type": "STRING",
+                    "description": (
+                        "Опциональная под-опция. "
+                        "Для work: design | code | client. "
+                        "Для music: energy | calm | focus | power. "
+                        "Для movie: название фильма. "
+                        "Если не указано — Джарвис задаст уточняющий вопрос."
+                    )
+                }
+            },
+            "required": ["mode"]
+        }
+    },
+    {
         "name": "vision_review",
         "description": (
             "Анализирует текущий экран и даёт экспертную обратную связь по дизайну, UX, "
@@ -321,7 +354,20 @@ class Jarvis:
             f"Используй для точного расчёта напоминаний.\n\n"
         )
 
+        # Текущий режим (если активен) — для контекста при перезапуске
+        mode_state = get_current_mode()
+        mode_ctx = ""
+        if mode_state.get("mode") and mode_state["mode"] != "normal":
+            pref = mode_state.get("preference", "")
+            pref_str = f" / {pref}" if pref else ""
+            mode_ctx = (
+                f"[ТЕКУЩИЙ РЕЖИМ]\n"
+                f"Активен режим: {mode_state['mode']}{pref_str}\n\n"
+            )
+
         parts = [time_ctx]
+        if mode_ctx:
+            parts.append(mode_ctx)
         if mem_str:
             parts.append(mem_str)
         parts.append(sys_prompt)
@@ -429,6 +475,13 @@ class Jarvis:
             elif name == "vision_review":
                 r = await loop.run_in_executor(
                     None, lambda: vision_review(parameters=args, player=self.ui)
+                )
+                result = r or "Готово."
+
+            # ── Инструмент: режимы (study/work/movie/music) ──────────
+            elif name == "set_mode":
+                r = await loop.run_in_executor(
+                    None, lambda: set_mode(parameters=args, player=self.ui)
                 )
                 result = r or "Готово."
 

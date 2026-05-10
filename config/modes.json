@@ -1,0 +1,35 @@
+{
+  "_comment": "Конфигурация режимов ДЖАРВИС. Все поля опциональны — если пусто, используются разумные дефолты.",
+
+  "study": {
+    "apps": ["Microsoft Teams"],
+    "urls": ["https://chat.openai.com"],
+    "university_url": "",
+    "study_folder": ""
+  },
+
+  "work": {
+    "design_apps": ["Figma"],
+    "design_fallback_url": "https://www.figma.com",
+    "code_apps": ["Visual Studio Code"],
+    "code_fallback_url": "https://github.com",
+    "client_apps": ["Telegram"],
+    "client_urls": ["https://web.telegram.org", "https://mail.google.com"]
+  },
+
+  "movie": {
+    "video_search_url": "https://vkvideo.ru/search?q={query}",
+    "fallback_search_url": "https://www.youtube.com/results?search_query={query}"
+  },
+
+  "music": {
+    "service_app": "Spotify",
+    "fallback_url": "https://open.spotify.com",
+    "playlists": {
+      "energy": "https://open.spotify.com/playlist/37i9dQZF1DX76Wlfdnj7AP",
+      "calm":   "https://open.spotify.com/playlist/37i9dQZF1DX4WYpdgoIcn6",
+      "focus":  "https://open.spotify.com/playlist/37i9dQZF1DWZeKCadgRdKQ",
+      "power":  "https://open.spotify.com/playlist/37i9dQZF1DX76Wlfdnj7AP"
+    }
+  }
+}
