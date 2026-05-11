@@ -10,7 +10,9 @@ import threading
 import json
 import sys
 import traceback
+import random
 from pathlib import Path
+from datetime import datetime
 
 import sounddevice as sd
 from google import genai
@@ -18,6 +20,11 @@ from google.genai import types
 
 from ui import JarvisUI
 from memory.memory_manager import load_memory, update_memory, format_memory_for_prompt
+from core.emotion_analyzer import EmotionAnalyzer
+from core.user_profile import UserProfile
+from core.initiative_engine import InitiativeEngine
+from core.proactive_engine import ProactiveEngine
+from core.team_collaboration import TeamCollaborationEngine
 from actions.open_app import open_app
 from actions.weather import weather_action
 from actions.web_search import web_search
@@ -27,7 +34,15 @@ from actions.file_controller import file_controller
 from actions.vision_review import vision_review
 from actions.modes import set_mode, get_current_mode
 from actions.movie_player import movie_player
-from actions.music_player import music_player
+from actions.spotify_controller import spotify_player
+from actions.window_control import window_control
+from actions.calendar import calendar
+
+from core import (
+    translate_text,
+    get_translation_history,
+    search_translations
+)
 
 
 # ─── Пути и константы ─────────────────────────────────────────────────────────
@@ -252,7 +267,7 @@ TOOLS = [
     {
         "name": "movie_player",
         "description": (
-            "Управляет видеоплеером в браузере (VK Video, YouTube и др): запуск фильма, "
+            "Управляет видеоплеером в браузере (kinogo.mu): запуск фильма, "
             "пауза, перемотка, полный экран, выход. "
             "Вызывай когда пользователь говорит: включи фильм X, поставь X, фильм X, "
             "пауза, продолжай, перемотай, полный экран, вперёд, назад, выйти из фильма."
@@ -279,14 +294,55 @@ TOOLS = [
         }
     },
     {
+        "name": "window_control",
+        "description": (
+            "Управляет окнами и системой Windows: закрыть/свернуть/развернуть окно, "
+            "переключение окон, рабочий стол, проводник, диспетчер задач, параметры. "
+            "Вызывай когда пользователь говорит: закрой окно, сверни окно, разверни, "
+            "переключи окно, покажи рабочий стол, сверни все окна, открой проводник, "
+            "открой диспетчер задач, открой параметры, переключись на Chrome/Spotify/etc."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": (
+                        "close (Alt+F4 закрыть окно) | "
+                        "minimize (свернуть) | maximize (развернуть) | "
+                        "minimize_all (свернуть все окна Win+M) | "
+                        "snap_left (прижать влево Win+←) | snap_right (Win+→) | "
+                        "switch (переключиться Alt+Tab) | "
+                        "show_desktop (Win+D рабочий стол) | "
+                        "open_explorer (Win+E проводник) | "
+                        "task_manager (диспетчер задач) | "
+                        "settings (параметры Windows) | "
+                        "run (Win+R выполнить) | "
+                        "activate (переключиться на окно по имени, нужен target)"
+                    )
+                },
+                "target": {
+                    "type": "STRING",
+                    "description": (
+                        "Для action=activate — название приложения "
+                        "(например 'Chrome', 'Spotify', 'Telegram')"
+                    )
+                }
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "music_player",
         "description": (
-            "Управляет Spotify: запуск треков/исполнителей, пауза, переключение треков, громкость. "
-            "Использует Spotify URI scheme для надёжного запуска десктопного приложения "
-            "и media keys для глобального управления. "
+            "Управляет Spotify через официальный Web API: точный поиск треков, пауза, "
+            "переключение, громкость, перемешивание, повтор, информация о текущем треке, "
+            "mood mode (спокойное/мотивационное/ночной вайб). "
+            "Гарантирует воспроизведение запрошенного трека, не последнего проигранного. "
             "Вызывай когда пользователь говорит: включи музыку, включи <исполнителя/трек>, "
-            "поставь песню, пауза, продолжай, следующий трек, предыдущий трек, "
-            "стоп музыку, громче, тише."
+            "поставь песню, пауза, продолжи, следующий трек, предыдущий трек, "
+            "стоп музыку, громче, тише, громкость X, перемешай, повтор, что играет, "
+            "кто поет, включи спокойное/мотивационное/ночной вайб."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -296,15 +352,22 @@ TOOLS = [
                     "description": (
                         "play (запуск с поиском) | pause | resume | "
                         "next (следующий трек) | prev (предыдущий) | stop | "
-                        "volume_up | volume_down"
+                        "volume_up | volume_down | volume | shuffle | repeat | "
+                        "now_playing | mood"
                     )
                 },
                 "query": {
                     "type": "STRING",
                     "description": (
-                        "Что играть (для action=play): название трека, исполнителя, "
-                        "альбома или жанра. Например: 'Imagine Dragons', 'lofi hip hop', "
-                        "'Любэ', 'jazz'."
+                        "Что играть (для action=play/mood): название трека, исполнителя, "
+                        "альбома, жанра или настроение. Например: 'Imagine Dragons', 'lofi hip hop', "
+                        "'Любэ', 'jazz', 'спокойное', 'мотивационное', 'ночной вайб'."
+                    )
+                },
+                "value": {
+                    "type": "STRING",
+                    "description": (
+                        "Значение для action=volume (0-100) или action=repeat (track/context/off)"
                     )
                 },
                 "playlist_url": {
@@ -345,12 +408,178 @@ TOOLS = [
         }
     },
     {
+        "name": "team_collaboration",
+        "description": (
+            "Управление командной работой и проектами: добавление членов команды, "
+            "создание проектов, управление задачами, анализ коммуникаций, "
+            "генерация отчётов по командной работе. "
+            "Вызывай когда пользователь говорит: добавь в команду, создай проект, "
+            "добавь задачу, статус проекта, отчёт по команде, анализ коммуникаций."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": (
+                        "add_member — добавить члена команды (нужны name, role) | "
+                        "add_project — создать проект (нужен name) | "
+                        "add_task — добавить задачу (нужен project_name, task) | "
+                        "project_status — статус проекта (нужен project_name) | "
+                        "team_report — отчёт по команде | "
+                        "team_suggestions — предложения по командной работе"
+                    )
+                },
+                "name": {
+                    "type": "STRING",
+                    "description": "Имя (для add_member, add_project, add_task)"
+                },
+                "role": {
+                    "type": "STRING",
+                    "description": "Роль (для add_member)"
+                },
+                "project_name": {
+                    "type": "STRING",
+                    "description": "Название проекта (для add_task, project_status)"
+                },
+                "task": {
+                    "type": "STRING",
+                    "description": "Задача (для add_task)"
+                },
+                "priority": {
+                    "type": "STRING",
+                    "description": "Приоритет: high | medium | low (для add_task)"
+                }
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "shutdown_jarvis",
         "description": (
             "Полностью завершает работу ДЖАРВИС. "
             "Вызывай когда пользователь говорит: выключи, закрой, до свидания, пока, стоп, хватит."
         ),
         "parameters": {"type": "OBJECT", "properties": {}}
+    },
+    {
+        "name": "calendar",
+        "description": (
+            "Управление календарём и напоминаниями: добавление событий, просмотр расписания, "
+            "удаление событий, обновление времени, добавление напоминаний. "
+            "Поддерживает локальный календарь и Google Calendar (опционально). "
+            "Вызывай когда пользователь говорит: добавь встречу, создай событие, какие дела на сегодня, "
+            "покажи календарь, напомни мне, перенеси встречу, отмени событие, расписание на завтра."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": (
+                        "add_event — добавить событие (нужны title, datetime) | "
+                        "get_events — показать события (date_range: today/tomorrow/week/all) | "
+                        "delete_event — удалить событие (нужен title_or_id) | "
+                        "update_event — обновить событие (нужен title_or_id, опционально new_datetime, new_duration) | "
+                        "add_reminder — добавить напоминание (нужны text, datetime) | "
+                        "todays_schedule — расписание на сегодня | "
+                        "sync_google — синхронизация с Google Calendar"
+                    )
+                },
+                "title": {
+                    "type": "STRING",
+                    "description": "Название события (для add_event)"
+                },
+                "datetime": {
+                    "type": "STRING",
+                    "description": "Дата и время (русский текст: 'завтра в 14:00', 'через 30 минут')"
+                },
+                "duration": {
+                    "type": "STRING",
+                    "description": "Длительность (например: '1 час', '30 минут')"
+                },
+                "description": {
+                    "type": "STRING",
+                    "description": "Описание события (для add_event)"
+                },
+                "location": {
+                    "type": "STRING",
+                    "description": "Место (для add_event)"
+                },
+                "date_range": {
+                    "type": "STRING",
+                    "description": "Период для get_events: today/tomorrow/week/all"
+                },
+                "title_or_id": {
+                    "type": "STRING",
+                    "description": "Название или ID события (для delete_event, update_event)"
+                },
+                "new_datetime": {
+                    "type": "STRING",
+                    "description": "Новое дата/время (для update_event)"
+                },
+                "new_duration": {
+                    "type": "STRING",
+                    "description": "Новая длительность (для update_event)"
+                },
+                "text": {
+                    "type": "STRING",
+                    "description": "Текст напоминания (для add_reminder)"
+                }
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "translation",
+        "description": (
+            "Перевод текста и речи на разные языки в реальном времени. "
+            "Поддерживает множества языков, контекстную память и режим изучения языков. "
+            "Вызывай когда пользователь говорит: переведи на английский, переведи на французский, "
+            "как сказать по-испански, включи режим изучения английского, найди перевод слова."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": (
+                        "translate — перевести текст (нужны text, target_language) | "
+                        "history — показать историю переводов (date_range: today/all) | "
+                        "search — найти перевод (нужен query) | "
+                        "enable_learning — включить режим изучения (нужен language) | "
+                        "disable_learning — отключить режим изучения | "
+                        "set_default_language — установить язык по умолчанию (нужен language) | "
+                        "enable_language — включить язык (нужен language) | "
+                        "disable_language — отключить язык (нужен language)"
+                    )
+                },
+                "text": {
+                    "type": "STRING",
+                    "description": "Текст для перевода (для action=translate)"
+                },
+                "target_language": {
+                    "type": "STRING",
+                    "description": (
+                        "Целевой язык: english, french, german, spanish, chinese, japanese, "
+                        "italian, portuguese (для action=translate, enable_learning, set_default_language)"
+                    )
+                },
+                "query": {
+                    "type": "STRING",
+                    "description": "Поисковый запрос (для action=search)"
+                },
+                "date_range": {
+                    "type": "STRING",
+                    "description": "Период для истории: today/all (для action=history)"
+                },
+                "language": {
+                    "type": "STRING",
+                    "description": "Язык (для action=enable_learning, disable_learning, set_default_language)"
+                }
+            },
+            "required": ["action"]
+        }
     },
 ]
 
@@ -366,6 +595,13 @@ class Jarvis:
         self._is_speaking    = False
         self._speaking_lock  = threading.Lock()
         self._turn_done_event: asyncio.Event | None = None
+
+        # Новый мозг ДЖАРВИС
+        self.user_profile = UserProfile(BASE_DIR)
+        self.initiative_engine = InitiativeEngine()
+        self.proactive_engine = ProactiveEngine(BASE_DIR)
+        self.team_engine = TeamCollaborationEngine(BASE_DIR)
+        self.last_user_text = ""
 
         self.ui.on_text_command = self._on_text_command
 
@@ -433,9 +669,14 @@ class Jarvis:
                 f"Активен режим: {mode_state['mode']}{pref_str}\n\n"
             )
 
+        # Профиль пользователя (новый мозг)
+        profile_str = self.user_profile.format_for_prompt()
+
         parts = [time_ctx]
         if mode_ctx:
             parts.append(mode_ctx)
+        if profile_str:
+            parts.append(profile_str)
         if mem_str:
             parts.append(mem_str)
         parts.append(sys_prompt)
@@ -443,7 +684,7 @@ class Jarvis:
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             output_audio_transcription={},
-            input_audio_transcription={},
+            input_audio_transcription={},  # Без language_code (Pydantic не принимает)
             system_instruction="\n".join(parts),
             tools=[{"function_declarations": TOOLS}],
             session_resumption=types.SessionResumptionConfig(),
@@ -563,9 +804,183 @@ class Jarvis:
             # ── Инструмент: Spotify music-плеер ──────────────────────
             elif name == "music_player":
                 r = await loop.run_in_executor(
-                    None, lambda: music_player(parameters=args, player=self.ui)
+                    None, lambda: spotify_player(parameters=args, player=self.ui)
                 )
                 result = r or "Готово."
+
+            # ── Инструмент: управление окнами Windows ────────────────
+            elif name == "window_control":
+                r = await loop.run_in_executor(
+                    None, lambda: window_control(parameters=args, player=self.ui)
+                )
+                result = r or "Готово."
+
+            # ── Инструмент: командная работа ─────────────────────────
+            elif name == "team_collaboration":
+                action = args.get("action", "")
+                team_action = args.get("name", "")
+                role = args.get("role", "")
+                project_name = args.get("project_name", "")
+                task = args.get("task", "")
+                priority = args.get("priority", "medium")
+
+                if action == "add_member":
+                    if team_action and role:
+                        success = self.team_engine.add_team_member(team_action, role)
+                        result = f"Добавил {team_action} в команду." if success else "Ошибка добавления."
+                    else:
+                        result = "Укажите имя и роль члена команды."
+
+                elif action == "add_project":
+                    if team_action:
+                        success = self.team_engine.add_project(team_action, args.get("description", ""))
+                        result = f"Создал проект '{team_action}'." if success else "Ошибка создания."
+                    else:
+                        result = "Укажите название проекта."
+
+                elif action == "add_task":
+                    if project_name and task:
+                        success = self.team_engine.add_task(project_name, task, priority, args.get("assignee", ""))
+                        result = f"Добавил задачу в '{project_name}'." if success else "Ошибка добавления."
+                    else:
+                        result = "Укажите проект и задачу."
+
+                elif action == "project_status":
+                    if project_name:
+                        status = self.team_engine.get_project_status(project_name)
+                        if status:
+                            result = f"Проект '{status['name']}': {status['completed']}/{status['total_tasks']} задач, прогресс {status['progress']:.0f}%."
+                        else:
+                            result = f"Проект '{project_name}' не найден."
+                    else:
+                        result = "Укажите название проекта."
+
+                elif action == "team_report":
+                    result = self.team_engine.generate_team_report()
+
+                elif action == "team_suggestions":
+                    result = self.team_engine.generate_suggestions()
+                else:
+                    result = "Не понял команду командной работы."
+
+            # ── Инструмент: календарь ──────────────────────────────────
+            elif name == "calendar":
+                r = await loop.run_in_executor(
+                    None, lambda: calendar(parameters=args, player=self.ui)
+                )
+                result = r or "Готово."
+
+            # ── Инструмент: перевод ─────────────────────────────────
+            elif name == "translation":
+                action = args.get("action", "")
+                
+                if action == "translate":
+                    text = args.get("text", "")
+                    target_lang = args.get("target_language", "english")
+                    if text:
+                        translated = translate_text(text, target_lang)
+                        result = f"Перевод на {target_lang}: {translated}"
+                    else:
+                        result = "Укажите текст для перевода."
+                
+                elif action == "history":
+                    date_range = args.get("date_range", "all")
+                    history = get_translation_history(date_range)
+                    if history:
+                        result = f"История переводов ({date_range}): {len(history)} записей. Последний: {history[0].get('translation', 'N/A')}"
+                    else:
+                        result = f"История переводов ({date_range}) пуста."
+                
+                elif action == "search":
+                    query = args.get("query", "")
+                    if query:
+                        results = search_translations(query)
+                        if results:
+                            result = f"Найдено переводов: {len(results)}. Первый: {results[0].get('translation', 'N/A')}"
+                        else:
+                            result = f"Переводы по запросу '{query}' не найдены."
+                    else:
+                        result = "Укажите поисковый запрос."
+                
+                elif action == "enable_learning":
+                    lang = args.get("language", "english")
+                    # Загрузка настроек
+                    import json
+                    from pathlib import Path
+                    pref_path = BASE_DIR / "config" / "translation_preferences.json"
+                    try:
+                        with open(pref_path, "r", encoding="utf-8") as f:
+                            prefs = json.load(f)
+                        prefs["learning_mode"]["enabled"] = True
+                        prefs["learning_mode"]["target_language"] = lang
+                        with open(pref_path, "w", encoding="utf-8") as f:
+                            json.dump(prefs, f, ensure_ascii=False, indent=2)
+                        result = f"Включил режим изучения {lang}."
+                    except Exception as e:
+                        result = f"Ошибка включения режима изучения: {e}"
+                
+                elif action == "disable_learning":
+                    import json
+                    from pathlib import Path
+                    pref_path = BASE_DIR / "config" / "translation_preferences.json"
+                    try:
+                        with open(pref_path, "r", encoding="utf-8") as f:
+                            prefs = json.load(f)
+                        prefs["learning_mode"]["enabled"] = False
+                        with open(pref_path, "w", encoding="utf-8") as f:
+                            json.dump(prefs, f, ensure_ascii=False, indent=2)
+                        result = "Отключил режим изучения языков."
+                    except Exception as e:
+                        result = f"Ошибка отключения режима изучения: {e}"
+                
+                elif action == "set_default_language":
+                    lang = args.get("language", "english")
+                    import json
+                    from pathlib import Path
+                    pref_path = BASE_DIR / "config" / "translation_preferences.json"
+                    try:
+                        with open(pref_path, "r", encoding="utf-8") as f:
+                            prefs = json.load(f)
+                        prefs["default_language"] = lang
+                        with open(pref_path, "w", encoding="utf-8") as f:
+                            json.dump(prefs, f, ensure_ascii=False, indent=2)
+                        result = f"Установил язык по умолчанию: {lang}."
+                    except Exception as e:
+                        result = f"Ошибка установки языка по умолчанию: {e}"
+                
+                elif action == "enable_language":
+                    lang = args.get("language", "english")
+                    import json
+                    from pathlib import Path
+                    pref_path = BASE_DIR / "config" / "translation_preferences.json"
+                    try:
+                        with open(pref_path, "r", encoding="utf-8") as f:
+                            prefs = json.load(f)
+                        if lang not in prefs["enabled_languages"]:
+                            prefs["enabled_languages"].append(lang)
+                        with open(pref_path, "w", encoding="utf-8") as f:
+                            json.dump(prefs, f, ensure_ascii=False, indent=2)
+                        result = f"Включил язык: {lang}."
+                    except Exception as e:
+                        result = f"Ошибка включения языка: {e}"
+                
+                elif action == "disable_language":
+                    lang = args.get("language", "english")
+                    import json
+                    from pathlib import Path
+                    pref_path = BASE_DIR / "config" / "translation_preferences.json"
+                    try:
+                        with open(pref_path, "r", encoding="utf-8") as f:
+                            prefs = json.load(f)
+                        if lang in prefs["enabled_languages"]:
+                            prefs["enabled_languages"].remove(lang)
+                        with open(pref_path, "w", encoding="utf-8") as f:
+                            json.dump(prefs, f, ensure_ascii=False, indent=2)
+                        result = f"Отключил язык: {lang}."
+                    except Exception as e:
+                        result = f"Ошибка отключения языка: {e}"
+                else:
+                    result = "Не понял команду перевода."
 
             # ── Инструмент: выключить ────────────────────────────────
             elif name == "shutdown_jarvis":
@@ -585,6 +1000,37 @@ class Jarvis:
             traceback.print_exc()
             self.speak_error(name, e)
 
+        # Обновление контекста (новый мозг)
+        if name in ["movie_player", "music_player", "set_mode"]:
+            activity = name
+            if name == "movie_player":
+                action = args.get("action", "")
+                if action == "play":
+                    title = args.get("title", "")
+                    if title:
+                        self.user_profile.add_to_history("recent_movies", title)
+                        activity = f"watching_movie: {title}"
+            elif name == "music_player":
+                action = args.get("action", "")
+                if action == "play":
+                    query = args.get("query", "")
+                    if query:
+                        self.user_profile.add_to_history("recent_music", query)
+                        activity = f"listening_music: {query}"
+            elif name == "set_mode":
+                mode = args.get("mode", "")
+                activity = f"mode_{mode}"
+
+            self.user_profile.update_context(activity=activity)
+
+            # Запись действия для прогнозирования (новый мозг)
+            context = {
+                "time": datetime.now().strftime("%H:%M"),
+                "emotion": self.user_profile.get_context().get("last_emotion", "neutral"),
+                "mode": get_current_mode().get("mode", "normal")
+            }
+            self.proactive_engine.record_action(name, context)
+
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
@@ -602,12 +1048,18 @@ class Jarvis:
         print("[ДЖАРВИС] 🎤 Микрофон запущен")
         loop = asyncio.get_event_loop()
 
+        def _put_nowait_safe(item):
+            try:
+                self.out_queue.put_nowait(item)
+            except asyncio.QueueFull:
+                pass  # Drop audio frame silently to avoid flooding event loop
+
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
             if not jarvis_speaking and not self.ui.muted:
                 loop.call_soon_threadsafe(
-                    self.out_queue.put_nowait,
+                    _put_nowait_safe,
                     {"data": indata.tobytes(), "mime_type": "audio/pcm"},
                 )
 
@@ -637,7 +1089,16 @@ class Jarvis:
                     if response.data:
                         if self._turn_done_event and self._turn_done_event.is_set():
                             self._turn_done_event.clear()
-                        self.audio_in_queue.put_nowait(response.data)
+                        try:
+                            self.audio_in_queue.put_nowait(response.data)
+                        except asyncio.QueueFull:
+                            # _play_audio не успевает — дропаем старейший
+                            # фрейм, чтобы освободить место под новый.
+                            try:
+                                self.audio_in_queue.get_nowait()
+                                self.audio_in_queue.put_nowait(response.data)
+                            except (asyncio.QueueEmpty, asyncio.QueueFull):
+                                pass
 
                     if response.server_content:
                         sc = response.server_content
@@ -659,6 +1120,58 @@ class Jarvis:
                             full_in = " ".join(in_buf).strip()
                             if full_in:
                                 self.ui.write_log(f"Вы: {full_in}")
+                                self.last_user_text = full_in
+
+                                # Анализ эмоций (новый мозг)
+                                emotion_result = EmotionAnalyzer.analyze(full_in)
+                                if emotion_result["emotion"] != "neutral":
+                                    print(f"[Эмоции] {emotion_result['emotion']} (confidence: {emotion_result['confidence']:.2f})")
+                                    self.user_profile.update_context(emotion=emotion_result["emotion"])
+
+                                    # Проверяем инициативу
+                                    mode_state = get_current_mode()
+                                    current_mode = mode_state.get("mode", "normal")
+                                    initiative = self.initiative_engine.should_show_initiative(
+                                        emotion_result,
+                                        self.user_profile.get_full_profile(),
+                                        current_mode
+                                    )
+                                    if initiative:
+                                        print(f"[Инициатива] {initiative}")
+                                        # Отправляем инициативное предложение
+                                        asyncio.run_coroutine_threadsafe(
+                                            self.session.send_client_content(
+                                                turns={"parts": [{"text": initiative}]},
+                                                turn_complete=True,
+                                            ),
+                                            self._loop,
+                                        )
+
+                                # Обучение из контекста
+                                preference = self.initiative_engine.should_learn_preference(full_in, "")
+                                if preference:
+                                    self.user_profile.update_preference(preference["type"], preference["value"])
+                                    print(f"[Обучение] Выучил предпочтение: {preference['type']} = {preference['value']}")
+
+                                # Прогнозирование потребностей (новый мозг)
+                                context = {
+                                    "current_activity": self.user_profile.get_context().get("current_activity"),
+                                    "mode": get_current_mode().get("mode", "normal"),
+                                    "last_emotion": emotion_result.get("emotion") if emotion_result else "neutral"
+                                }
+                                proactive_suggestions = self.proactive_engine.get_proactive_suggestions(context)
+                                if proactive_suggestions:
+                                    print(f"[Прогноз] Предложения: {proactive_suggestions}")
+                                    # Отправляем первое предложение (не навязчиво)
+                                    if proactive_suggestions and random.random() < 0.3:  # 30% шанс
+                                        asyncio.run_coroutine_threadsafe(
+                                            self.session.send_client_content(
+                                                turns={"parts": [{"text": proactive_suggestions[0]}]},
+                                                turn_complete=True,
+                                            ),
+                                            self._loop,
+                                        )
+
                             in_buf = []
 
                             full_out = " ".join(out_buf).strip()
@@ -732,8 +1245,11 @@ class Jarvis:
                 ):
                     self.session            = session
                     self._loop              = asyncio.get_event_loop()
-                    self.audio_in_queue     = asyncio.Queue()
-                    self.out_queue          = asyncio.Queue(maxsize=10)
+                    # maxsize защищает от unbounded роста памяти
+                    # если _play_audio тормозит. При переполнении старые
+                    # фреймы дропаются в _receive_audio.
+                    self.audio_in_queue     = asyncio.Queue(maxsize=200)
+                    self.out_queue          = asyncio.Queue(maxsize=50)
                     self._turn_done_event   = asyncio.Event()
 
                     print("[ДЖАРВИС] ✅ Подключён.")

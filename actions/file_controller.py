@@ -117,7 +117,10 @@ def file_controller(parameters: dict, player=None) -> str:
             return "Найдено: " + ", ".join(found[:5]) + ("..." if len(results) > 5 else ".")
 
         elif action == "disk_usage":
-            total, used, free = shutil.disk_usage("/")
+            # Используем домашнюю директорию — корректно на всех OS,
+            # включая Windows (где "/" даёт неправильные данные).
+            target = path if path and Path(path).exists() else os.path.expanduser("~")
+            total, used, free = shutil.disk_usage(target)
             gb = 1024**3
             return (f"Диск: всего {total/gb:.1f} ГБ, "
                     f"использовано {used/gb:.1f} ГБ, "
