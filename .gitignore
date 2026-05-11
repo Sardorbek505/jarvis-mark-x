@@ -5,12 +5,21 @@ __pycache__/
 .Python
 *.log
 
-# Конфиги с секретами
+# Конфиги с секретами и личными данными
 config/api_keys.json
+config/spotify_tokens.json
+config/user_profile.json
+config/calendar.json
+config/translation_history.json
+config/activity_tracking.json
 
 # Память пользователя
 memory/data.json
 memory/current_mode.json
+
+# Резервные копии (backup ротация)
+*.bak
+*.json.broken-*
 
 # IDE
 .vscode/
