@@ -26,17 +26,53 @@ _SEARCH_ENGINES = {
 }
 
 
+def _is_safe_url(url: str) -> bool:
+    """
+    Разрешает только http(s) URL. Блокирует file://, javascript:,
+    локальные .exe пути — защита от хака через подмену URL.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    low = url.strip().lower()
+    if low.startswith(("http://", "https://")):
+        return True
+    return False
+
+
 def _open_url(url: str, browser: str | None = None):
-    """Открывает URL в браузере."""
+    """Открывает URL в браузере (только http/https)."""
+    if not _is_safe_url(url):
+        print(f"[browser] ⛔ Отклонён небезопасный URL: {url[:80]}")
+        return
+
     if browser:
         candidates = _BROWSERS.get(browser.lower(), [browser])
         for cmd in candidates:
             if shutil.which(cmd):
                 subprocess.Popen([cmd, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return
+
     # Дефолтный браузер
     if sys.platform == "win32":
-        os.startfile(url)
+        # Метод 1: os.startfile (прямой запуск через системную ассоциацию)
+        try:
+            os.startfile(url)
+            return
+        except Exception:
+            pass
+        # Метод 2: cmd.exe через список аргументов (shell=False) —
+        # безопасно, поскольку URL передаётся как отдельный аргумент,
+        # а не интерполируется в shell-строку.
+        try:
+            subprocess.Popen(
+                ["cmd.exe", "/c", "start", "", url],
+                shell=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        except Exception:
+            pass
     elif sys.platform == "darwin":
         subprocess.Popen(["open", url])
     else:
