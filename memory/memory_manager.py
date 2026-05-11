@@ -2,21 +2,21 @@
 ДЖАРВИС — Менеджер долгосрочной памяти
 """
 
-import json
+import sys
 from pathlib import Path
 
 _BASE = Path(__file__).resolve().parent.parent
 _MEMORY_FILE = _BASE / "memory" / "data.json"
 
+# Гарантируем что core/ доступен (memory/ соседний с core/)
+if str(_BASE) not in sys.path:
+    sys.path.insert(0, str(_BASE))
+
+from core.storage import atomic_write_json, safe_read_json
+
 
 def load_memory() -> dict:
-    try:
-        if _MEMORY_FILE.exists():
-            with open(_MEMORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
+    return safe_read_json(_MEMORY_FILE, default={})
 
 
 def update_memory(patch: dict):
@@ -26,9 +26,7 @@ def update_memory(patch: dict):
             mem[category] = {}
         for key, val in items.items():
             mem[category][key] = val
-    _MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(_MEMORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(mem, f, ensure_ascii=False, indent=2)
+    atomic_write_json(_MEMORY_FILE, mem)
 
 
 def format_memory_for_prompt(memory: dict) -> str:
