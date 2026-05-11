@@ -3,6 +3,7 @@
 """
 
 import urllib.request
+import urllib.parse
 import json
 
 
@@ -74,7 +75,3 @@ def weather_action(parameters: dict, player=None) -> str:
 
     except Exception as e:
         return f"Не удалось получить погоду для {city}. Проверьте подключение к интернету."
-
-
-# Нужен для URL-кодирования города
-import urllib.parse
