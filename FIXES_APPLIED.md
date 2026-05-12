@@ -208,6 +208,22 @@ if sys.platform == "win32":
 
 **Результат:** Spotify API теперь автоматически обновляет токен при 401 ошибках и повторяет запрос.
 
+### 20. Улучшение: Понятное сообщение при блокировке API ключа
+**Проблема:** При ошибке 1008 (policy violation) выводилось только "Policy violation - не перезапускаем", без инструкций что делать.
+
+**Исправление:**
+- `main.py`: Расширено сообщение об ошибке при 1008:
+  - Добавлено объяснение что API ключ был помечен как утёкший
+  - Добавлена пошаговая инструкция что нужно сделать:
+    1. Перейти на https://aistudio.google.com/app/apikey
+    2. Удалить старый ключ и создать новый
+    3. Обновить config/api_keys.json новым ключом
+    4. Перезапустить JARVIS
+  - Добавлено предупреждение о безопасности: никогда не коммитить API ключи в Git
+  - Сообщение в UI также обновлено с ссылкой на Google AI Studio
+
+**Результат:** Теперь при блокировке API ключа пользователь получает чёткую инструкцию как получить новый ключ.
+
 ## 🧪 Тестирование
 
 ### Тест Spotify API:
@@ -227,7 +243,7 @@ python main.py
 1. `actions/spotify_controller.py` - Исправлен путь к конфигу, убраны Unicode символы
 2. `tools/spotify/auth.py` - Исправлен путь к token файлам
 3. `ui.py` - Добавлено DPI awareness для Windows, исправлена инициализация (удалена валидация API)
-4. `main.py` - Добавлено UTF-8 кодирование, изменена модель Gemini на `models/gemini-2.5-flash-native-audio-latest`, исправлен loop reference, удалена wake word система, добавлен `import traceback`, исправлен morning briefing loop, добавлены проверки `loop.is_running()`, добавлена различная обработка WebSocket ошибок, добавлен exponential backoff, добавлен max_retries limit, миграция на `asyncio.get_running_loop()`, добавлен speech buffer с debounce (800ms)
+4. `main.py` - Добавлено UTF-8 кодирование, изменена модель Gemini на `models/gemini-2.5-flash-native-audio-latest`, исправлен loop reference, удалена wake word система, добавлен `import traceback`, исправлен morning briefing loop, добавлены проверки `loop.is_running()`, добавлена различная обработка WebSocket ошибок, добавлен exponential backoff, добавлен max_retries limit, миграция на `asyncio.get_running_loop()`, добавлен speech buffer с debounce (800ms), улучшено сообщение об ошибке при блокировке API ключа с пошаговой инструкцией
 5. `core/user_profile.py` - Исправлен KeyError: изменены обращения к словарям на `.get()`
 6. `actions/modes.py` - Добавлена логика естественных сообщений при восстановлении режима
 7. `tools/spotify/search.py` - Добавлены методы `search_playlists()` и `get_user_playlists()`, расширена обработка опечаток (18 вариантов замены), добавлен автоматический refresh токена на 401, добавлен параметр `max_retries`
@@ -252,6 +268,7 @@ python main.py
 - **Миграция с deprecated asyncio.get_event_loop() на asyncio.get_running_loop()**
 - **Добавлен speech buffer с 800ms debounce для объединения фрагментов распознавания речи**
 - **Добавлен автоматический refresh токена Spotify при 401 ошибках**
+- **Улучшено сообщение об ошибке при блокировке API ключа с пошаговой инструкцией что делать**
 - Все исправления сохраняют обратную совместимость
 - Spotify API теперь корректно загружается и готов к использованию
 
@@ -283,3 +300,4 @@ python main.py
 - ✅ Используется asyncio.get_running_loop() вместо deprecated get_event_loop()
 - ✅ Распознавание речи буферизируется с 800ms debounce
 - ✅ Spotify автоматически обновляет токен при 401 ошибках
+- ✅ При блокировке API ключа выводится понятная инструкция что делать
