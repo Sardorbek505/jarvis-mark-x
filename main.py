@@ -12,6 +12,7 @@ if sys.platform == "win32":
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 import asyncio
+import traceback
 import re
 import threading
 import json
@@ -640,7 +641,7 @@ class Jarvis:
 
     # ── Текстовый ввод ────────────────────────────────────────────────────────
     def _on_text_command(self, text: str):
-        if not self._loop or not self.session:
+        if not self._loop or not self.session or not self._loop.is_running():
             return
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
@@ -661,7 +662,7 @@ class Jarvis:
 
     def speak(self, text: str):
         """Отправляет текст в сессию для озвучки."""
-        if not self._loop or not self.session:
+        if not self._loop or not self.session or not self._loop.is_running():
             return
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
@@ -1180,13 +1181,14 @@ class Jarvis:
                                     if initiative:
                                         print(f"[Инициатива] {initiative}")
                                         # Отправляем инициативное предложение
-                                        asyncio.run_coroutine_threadsafe(
-                                            self.session.send_client_content(
-                                                turns={"parts": [{"text": initiative}]},
-                                                turn_complete=True,
-                                            ),
-                                            self._loop,
-                                        )
+                                        if self._loop and self._loop.is_running():
+                                            asyncio.run_coroutine_threadsafe(
+                                                self.session.send_client_content(
+                                                    turns={"parts": [{"text": initiative}]},
+                                                    turn_complete=True,
+                                                ),
+                                                self._loop,
+                                            )
 
                                 # Обучение из контекста
                                 preference = self.initiative_engine.should_learn_preference(full_in, "")
@@ -1205,13 +1207,14 @@ class Jarvis:
                                     print(f"[Прогноз] Предложения: {proactive_suggestions}")
                                     # Отправляем первое предложение (не навязчиво)
                                     if proactive_suggestions and random.random() < 0.3:  # 30% шанс
-                                        asyncio.run_coroutine_threadsafe(
-                                            self.session.send_client_content(
-                                                turns={"parts": [{"text": proactive_suggestions[0]}]},
-                                                turn_complete=True,
-                                            ),
-                                            self._loop,
-                                        )
+                                        if self._loop and self._loop.is_running():
+                                            asyncio.run_coroutine_threadsafe(
+                                                self.session.send_client_content(
+                                                    turns={"parts": [{"text": proactive_suggestions[0]}]},
+                                                    turn_complete=True,
+                                                ),
+                                                self._loop,
+                                            )
 
                             in_buf = []
 
@@ -1274,6 +1277,9 @@ class Jarvis:
             http_options={"api_version": "v1beta"},
         )
 
+        retry_count = 0
+        max_retry_delay = 60  # Maximum delay between retries (seconds)
+
         while True:
             try:
                 print("[ДЖАРВИС] 🔌 Подключение к Gemini...")
@@ -1296,6 +1302,9 @@ class Jarvis:
 
                         print("[ДЖАРВИС] ✅ Подключён.")
                         self.ui.set_state("IDLE")
+                        
+                        # Reset retry count on successful connection
+                        retry_count = 0
 
                         # Авто-триггер утреннего брифинга (6-10 утра)
                         from datetime import datetime
@@ -1305,7 +1314,8 @@ class Jarvis:
                             self.ui.write_log("SYS: Утренний брифинг...")
                             try:
                                 from actions.morning_briefing import morning_briefing
-                                briefing = await asyncio.get_event_loop().run_in_executor(
+                                loop = asyncio.get_event_loop()
+                                briefing = await loop.run_in_executor(
                                     None, lambda: morning_briefing({}, player=self.ui)
                                 )
                                 self.speak(briefing)
@@ -1322,8 +1332,25 @@ class Jarvis:
                     print(f"[ДЖАРВИС] 📝 Тип ошибки: {type(e).__name__}")
                     print(f"[ДЖАРВИС] 📋 Полный traceback:")
                     traceback.print_exc()
-                    print(f"[ДЖАРВИС] ⏸️ Ожидаю 10 секунд перед повторной попыткой...")
-                    await asyncio.sleep(10)
+                    
+                    # Различаем ошибки WebSocket: 1008 (policy violation) vs 1011 (server shutdown)
+                    error_msg = str(e)
+                    if "1008" in error_msg:
+                        print("[ДЖАРВИС] ⚠️ Policy violation (1008) - не перезапускаем")
+                        self.ui.write_log("SYS: Policy violation - manual restart required")
+                        break
+                    elif "1011" in error_msg:
+                        print("[ДЖАРВИС] ⚠️ Server shutdown (1011) - нормальный перезапуск")
+                        retry_count += 1
+                        delay = min(2 ** retry_count, max_retry_delay)
+                        print(f"[ДЖАРВИС] ⏸️ Ожидаю {delay} сек перед попыткой {retry_count}...")
+                        await asyncio.sleep(delay)
+                        continue
+                    
+                    retry_count += 1
+                    delay = min(2 ** retry_count, max_retry_delay)
+                    print(f"[ДЖАРВИС] ⏸️ Ожидаю {delay} сек перед попыткой {retry_count}...")
+                    await asyncio.sleep(delay)
                     continue
 
             except Exception as e:
@@ -1343,8 +1370,10 @@ class Jarvis:
                 
                 self.set_speaking(False)
                 self.ui.set_state("THINKING")
-                print("[ДЖАРВИС] 🔄 Переподключение через 3 сек...")
-                await asyncio.sleep(3)
+                retry_count += 1
+                delay = min(2 ** retry_count, max_retry_delay)
+                print(f"[ДЖАРВИС] 🔄 Переподключение через {delay} сек (попытка {retry_count})...")
+                await asyncio.sleep(delay)
 
 
 # ─── Точка входа ──────────────────────────────────────────────────────────────
