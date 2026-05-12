@@ -152,6 +152,11 @@ def _open_folder(path: str, player=None) -> bool:
 def _activate_study(cfg: dict, player=None) -> str:
     s = cfg.get("study", {})
 
+    # Проверяем текущий режим - если уже активен, возвращаем приветствие
+    current = get_current_mode()
+    if current.get("mode") == "study":
+        return "Продолжим учёбу, сэр. Чем могу помочь?"
+
     if player:
         player.write_log("SYS: 🎓 Активация учебного режима...")
 
@@ -197,6 +202,12 @@ def _activate_work(cfg: dict, preference: str, player=None) -> str:
     pref_map = {"дизайн": "design", "код": "code", "клиент": "client"}
     pref = pref_map.get(pref, pref)
 
+    # Проверяем текущий режим - если уже активен, возвращаем приветствие
+    current = get_current_mode()
+    if current.get("mode") == "work" and current.get("preference") == pref:
+        pref_ru = {"design": "дизайн", "code": "код", "client": "клиент"}.get(pref, pref)
+        return f"Продолжим работу в режиме {pref_ru}, сэр. Чем могу помочь?"
+
     w = cfg.get("work", {})
 
     if player:
@@ -235,7 +246,12 @@ def _activate_movie(cfg: dict, preference: str, player=None) -> str:
     if not title:
         return "Что будем смотреть, сэр? Назовите фильм."
 
-    # Делегируем продвинутому плееру (он также сохраняет VK Video URL)
+    # Проверяем текущий режим - если уже активен с тем же фильмом, возвращаем приветствие
+    current = get_current_mode()
+    if current.get("mode") == "movie" and current.get("preference") == title:
+        return f"Продолжаем смотреть '{title}', сэр. Чем могу помочь?"
+
+    # Делегируем продвинутому плееру (он также сохраняет kinogo.mu URL)
     from actions.movie_player import movie_player
     result = movie_player({"action": "play", "title": title}, player=player)
 
@@ -261,6 +277,13 @@ def _activate_music(cfg: dict, preference: str, player=None) -> str:
         "мощно": "power", "мощная": "power", "тяжёлая": "power", "тяжелая": "power",
     }
     mood = mood_map.get(mood, mood)
+
+    # Проверяем текущий режим - если уже активен с тем же настроением, возвращаем приветствие
+    current = get_current_mode()
+    if current.get("mode") == "music" and current.get("preference") == mood:
+        mood_ru = {"energy": "энергичная", "calm": "спокойная",
+                   "focus": "фоновая", "power": "мощная"}.get(mood, mood)
+        return f"Продолжаем слушать {mood_ru} музыку, сэр. Чем могу помочь?"
 
     if not mood or mood not in ("energy", "calm", "focus", "power"):
         return "Какое настроение, сэр? Энергия, спокойствие, фон или мощно?"

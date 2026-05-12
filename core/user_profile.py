@@ -29,6 +29,7 @@ class UserProfile:
         return {
             "identity": {
                 "name": None,
+                "creator": "Sardarbek",  # Создатель Джарвиса
                 "city": None,
                 "timezone": None
             },
@@ -134,31 +135,33 @@ class UserProfile:
         parts = []
 
         identity = self.profile["identity"]
-        if identity["name"]:
+        if identity.get("creator"):
+            parts.append(f"Создатель: {identity['creator']}")
+        if identity.get("name"):
             parts.append(f"Имя пользователя: {identity['name']}")
-        if identity["city"]:
+        if identity.get("city"):
             parts.append(f"Город: {identity['city']}")
 
         preferences = self.profile["preferences"]
         prefs = []
-        if preferences["favorite_comedy"]:
+        if preferences.get("favorite_comedy"):
             prefs.append(f"Любимая комедия: {preferences['favorite_comedy']}")
-        if preferences["favorite_music"]:
+        if preferences.get("favorite_music"):
             prefs.append(f"Любимая музыка: {preferences['favorite_music']}")
-        if preferences["favorite_movie"]:
+        if preferences.get("favorite_movie"):
             prefs.append(f"Любимый фильм: {preferences['favorite_movie']}")
-        if preferences["music_genres"]:
+        if preferences.get("music_genres"):
             prefs.append(f"Жанры музыки: {', '.join(preferences['music_genres'])}")
-        if preferences["movie_genres"]:
+        if preferences.get("movie_genres"):
             prefs.append(f"Жанры фильмов: {', '.join(preferences['movie_genres'])}")
 
         if prefs:
             parts.append("Предпочтения:\n" + "\n".join(f"  - {p}" for p in prefs))
 
         context = self.profile["context"]
-        if context["current_activity"]:
+        if context.get("current_activity"):
             parts.append(f"Текущая активность: {context['current_activity']}")
-        if context["last_emotion"]:
+        if context.get("last_emotion"):
             parts.append(f"Последняя эмоция: {context['last_emotion']}")
 
         if parts:

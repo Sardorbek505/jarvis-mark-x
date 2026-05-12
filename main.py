@@ -4,13 +4,19 @@
 Язык: Русский
 """
 
+# Force UTF-8 encoding for Windows console
+import sys
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 import asyncio
 import re
 import threading
 import json
-import sys
-import traceback
 import random
+import numpy as np
 from pathlib import Path
 from datetime import datetime
 
@@ -57,7 +63,7 @@ API_CONFIG    = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH   = BASE_DIR / "core" / "prompt.txt"
 
 # Модель Gemini Live с нативным аудио
-LIVE_MODEL        = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+LIVE_MODEL        = "models/gemini-2.5-flash-native-audio-latest"
 CHANNELS          = 1
 SEND_SAMPLE_RATE  = 16000
 RECV_SAMPLE_RATE  = 24000
@@ -96,7 +102,20 @@ def _load_system_prompt() -> str:
 
 def _clean(text: str) -> str:
     text = _CTRL_RE.sub("", text)
-    return re.sub(r"[\x00-\x08\x0b-\x1f]", "", text).strip()
+    text = re.sub(r"[\x00-\x08\x0b-\x1f]", "", text).strip()
+
+    # Умная очистка пробелов внутри слов
+    words = text.split()
+    cleaned_words = []
+    for word in words:
+        # Если слово содержит только буквы и пробелы внутри (без цифр/знаков) - склеиваем
+        # Например: "по став ь" → "поставь"
+        if re.search(r"[а-яА-Яa-zA-ZёЁӣҒғҚқӨөҺһ]", word) and " " in word:
+            # Склеиваем части слова
+            word = re.sub(r"\s+", "", word)
+        cleaned_words.append(word)
+
+    return " ".join(cleaned_words)
 
 
 # ─── Описания инструментов (на русском) ───────────────────────────────────────
@@ -581,6 +600,20 @@ TOOLS = [
             "required": ["action"]
         }
     },
+    {
+        "name": "morning_briefing",
+        "description": (
+            "Утренний брифинг — погода, события на сегодня, главные новости. "
+            "Вызывай когда пользователь говорит 'брифинг', 'что сегодня', "
+            "'доброе утро', 'введи в курс дня'. "
+            "Также вызывай автоматически при старте сессии если сейчас утро (6-10)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {},
+            "required": []
+        }
+    },
 ]
 
 
@@ -982,6 +1015,13 @@ class Jarvis:
                 else:
                     result = "Не понял команду перевода."
 
+            # ── Инструмент: утренний брифинг ─────────────────────────────
+            elif name == "morning_briefing":
+                from actions.morning_briefing import morning_briefing
+                result = await loop.run_in_executor(
+                    None, lambda: morning_briefing(args, player=self.ui)
+                )
+
             # ── Инструмент: выключить ────────────────────────────────
             elif name == "shutdown_jarvis":
                 self.ui.write_log("SYS: Завершение работы...")
@@ -1112,6 +1152,7 @@ class Jarvis:
                             txt = _clean(sc.input_transcription.text)
                             if txt:
                                 in_buf.append(txt)
+                                print(f"[ДЖАРВИС] 🎤 Распознано: '{txt}'")
 
                         if sc.turn_complete:
                             if self._turn_done_event:
@@ -1239,27 +1280,51 @@ class Jarvis:
                 self.ui.set_state("THINKING")
                 config = self._build_config()
 
-                async with (
-                    client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
-                    asyncio.TaskGroup() as tg,
-                ):
-                    self.session            = session
-                    self._loop              = asyncio.get_event_loop()
-                    # maxsize защищает от unbounded роста памяти
-                    # если _play_audio тормозит. При переполнении старые
-                    # фреймы дропаются в _receive_audio.
-                    self.audio_in_queue     = asyncio.Queue(maxsize=200)
-                    self.out_queue          = asyncio.Queue(maxsize=50)
-                    self._turn_done_event   = asyncio.Event()
+                try:
+                    async with (
+                        client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
+                        asyncio.TaskGroup() as tg,
+                    ):
+                        self.session            = session
+                        self._loop              = asyncio.get_event_loop()
+                        # maxsize защищает от unbounded роста памяти
+                        # если _play_audio тормозит. При переполнении старые
+                        # фреймы дропаются в _receive_audio.
+                        self.audio_in_queue     = asyncio.Queue(maxsize=200)
+                        self.out_queue          = asyncio.Queue(maxsize=50)
+                        self._turn_done_event   = asyncio.Event()
 
-                    print("[ДЖАРВИС] ✅ Подключён.")
-                    self.ui.set_state("LISTENING")
-                    self.ui.write_log("SYS: ДЖАРВИС в сети. Готов к работе, сэр.")
+                        print("[ДЖАРВИС] ✅ Подключён.")
+                        self.ui.set_state("IDLE")
 
-                    tg.create_task(self._send_realtime())
-                    tg.create_task(self._listen_audio())
-                    tg.create_task(self._receive_audio())
-                    tg.create_task(self._play_audio())
+                        # Авто-триггер утреннего брифинга (6-10 утра)
+                        from datetime import datetime
+                        current_hour = datetime.now().hour
+                        if 6 <= current_hour < 11:
+                            print("[ДЖАРВИС] 🌅 Утро: авто-брифинг")
+                            self.ui.write_log("SYS: Утренний брифинг...")
+                            try:
+                                from actions.morning_briefing import morning_briefing
+                                briefing = await asyncio.get_event_loop().run_in_executor(
+                                    None, lambda: morning_briefing({}, player=self.ui)
+                                )
+                                self.speak(briefing)
+                            except Exception as e:
+                                print(f"[ДЖАРВИС] ⚠️ Брифинг не удался: {e}")
+
+                        tg.create_task(self._send_realtime())
+                        tg.create_task(self._listen_audio())
+                        tg.create_task(self._receive_audio())
+                        tg.create_task(self._play_audio())
+                except Exception as e:
+                    import traceback
+                    print(f"[ДЖAIRVIS] ❌ Ошибка подключения к live API: {e}")
+                    print(f"[ДЖАРВИС] 📝 Тип ошибки: {type(e).__name__}")
+                    print(f"[ДЖАРВИС] 📋 Полный traceback:")
+                    traceback.print_exc()
+                    print(f"[ДЖАРВИС] ⏸️ Ожидаю 10 секунд перед повторной попыткой...")
+                    await asyncio.sleep(10)
+                    continue
 
             except Exception as e:
                 error_msg = str(e)

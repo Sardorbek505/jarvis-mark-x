@@ -1,0 +1,52 @@
+{
+  "topics": [
+    "технологии",
+    "искусственный интеллект",
+    "программирование",
+    "бизнес",
+    "наука",
+    "business"
+  ],
+  "sources": [
+    {
+      "name": "Habr",
+      "url": "https://habr.com/ru/rss/articles/?fl=ru",
+      "type": "rss",
+      "enabled": true
+    },
+    {
+      "name": "TechCrunch",
+      "url": "https://techcrunch.com/feed/",
+      "type": "rss",
+      "enabled": false
+    },
+    {
+      "name": "3DNews",
+      "url": "https://3dnews.ru/news/rss/",
+      "type": "rss",
+      "enabled": false
+    }
+  ],
+  "keywords": [
+    "AI",
+    "машинное обучение",
+    "нейросети",
+    "Python",
+    "JavaScript",
+    "стартап",
+    "бизнес",
+    "инвестиции",
+    "startup"
+  ],
+  "exclude_keywords": [
+    "политика",
+    "скандал",
+    "криминал"
+  ],
+  "digest_schedule": {
+    "morning": "08:00",
+    "evening": "20:00"
+  },
+  "max_articles_per_digest": 5,
+  "language": "ru"
+}

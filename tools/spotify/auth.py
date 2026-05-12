@@ -1,0 +1,206 @@
+"""
+Spotify Authentication Module
+
+Handles OAuth 2.0 Authorization Code flow with refresh token support.
+Never requires login every launch - uses stored refresh token.
+"""
+
+import requests
+import time
+from typing import Optional, Dict, Any
+import json
+import os
+
+
+class SpotifyAuth:
+    """
+    Spotify OAuth 2.0 authentication with automatic token refresh.
+    """
+    
+    TOKEN_URL = "https://accounts.spotify.com/api/token"
+    
+    def __init__(self, client_id: str, client_secret: str, redirect_uri: str):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.redirect_uri = redirect_uri
+        
+        self.access_token: Optional[str] = None
+        self.refresh_token: Optional[str] = None
+        self.token_expiry: Optional[float] = None
+        
+        # Load stored tokens if available
+        self._load_tokens()
+    
+    def _load_tokens(self) -> None:
+        """Load tokens from storage."""
+        # Get absolute path to token file
+        script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        token_file = os.path.join(script_dir, "config", "spotify_tokens.json")
+        
+        if os.path.exists(token_file):
+            try:
+                with open(token_file, 'r') as f:
+                    data = json.load(f)
+                    self.access_token = data.get('access_token')
+                    self.refresh_token = data.get('refresh_token')
+                    self.token_expiry = data.get('expiry')
+            except Exception as e:
+                print(f"[SpotifyAuth] Failed to load tokens: {e}")
+    
+    def _save_tokens(self) -> None:
+        """Save tokens to storage."""
+        # Get absolute path to token file
+        script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        token_file = os.path.join(script_dir, "config", "spotify_tokens.json")
+        
+        try:
+            os.makedirs(os.path.dirname(token_file), exist_ok=True)
+            with open(token_file, 'w') as f:
+                json.dump({
+                    'access_token': self.access_token,
+                    'refresh_token': self.refresh_token,
+                    'expiry': self.token_expiry
+                }, f)
+        except Exception as e:
+            print(f"[SpotifyAuth] Failed to save tokens: {e}")
+    
+    def authenticate(self, auth_code: str) -> bool:
+        """
+        Exchange authorization code for access and refresh tokens.
+        
+        Args:
+            auth_code: Authorization code from OAuth callback
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        data = {
+            'grant_type': 'authorization_code',
+            'code': auth_code,
+            'redirect_uri': self.redirect_uri,
+            'client_id': self.client_id,
+            'client_secret': self.client_secret
+        }
+        
+        try:
+            response = requests.post(self.TOKEN_URL, data=data)
+            response.raise_for_status()
+            
+            token_data = response.json()
+            self.access_token = token_data['access_token']
+            self.refresh_token = token_data['refresh_token']
+            expires_in = token_data.get('expires_in', 3600)
+            self.token_expiry = time.time() + expires_in
+            
+            self._save_tokens()
+            return True
+            
+        except Exception as e:
+            print(f"[SpotifyAuth] Authentication failed: {e}")
+            return False
+    
+    def set_refresh_token(self, refresh_token: str) -> None:
+        """
+        Set refresh token directly (for initial setup).
+        """
+        self.refresh_token = refresh_token
+        self._save_tokens()
+    
+    def refresh_access_token(self) -> bool:
+        """
+        Refresh access token using refresh token.
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.refresh_token:
+            print("[SpotifyAuth] No refresh token available")
+            return False
+        
+        data = {
+            'grant_type': 'refresh_token',
+            'refresh_token': self.refresh_token,
+            'client_id': self.client_id,
+            'client_secret': self.client_secret
+        }
+        
+        try:
+            response = requests.post(self.TOKEN_URL, data=data)
+            response.raise_for_status()
+            
+            token_data = response.json()
+            self.access_token = token_data['access_token']
+            
+            # Update refresh token if new one provided (Spotify sometimes rotates)
+            if 'refresh_token' in token_data:
+                self.refresh_token = token_data['refresh_token']
+            
+            expires_in = token_data.get('expires_in', 3600)
+            self.token_expiry = time.time() + expires_in
+            
+            self._save_tokens()
+            print("[SpotifyAuth] Token refreshed successfully")
+            return True
+            
+        except Exception as e:
+            print(f"[SpotifyAuth] Token refresh failed: {e}")
+            return False
+    
+    def get_access_token(self) -> Optional[str]:
+        """
+        Get valid access token, refreshing if necessary.
+        
+        Returns:
+            Access token or None if unavailable
+        """
+        # If we have refresh token but no access token, refresh it
+        if self.refresh_token and not self.access_token:
+            if not self.refresh_access_token():
+                return None
+        
+        # Check if token needs refresh
+        if self.access_token and self.token_expiry:
+            # Refresh 30 seconds before expiry
+            if time.time() >= self.token_expiry - 30:
+                if not self.refresh_access_token():
+                    return None
+        
+        return self.access_token
+    
+    def is_authenticated(self) -> bool:
+        """Check if authentication is ready."""
+        return self.get_access_token() is not None
+    
+    def get_auth_url(self) -> str:
+        """
+        Generate authorization URL for user to visit.
+        
+        Returns:
+            Authorization URL
+        """
+        scopes = [
+            'user-read-playback-state',
+            'user-modify-playback-state',
+            'user-read-currently-playing',
+            'user-read-email',
+            'user-read-private',
+            'user-library-read',
+            'user-library-modify',
+            'user-top-read',
+            'user-read-recently-played',
+            'playlist-read-private',
+            'playlist-read-collaborative',
+            'playlist-modify-public',
+            'playlist-modify-private',
+            'ugc-image-upload',
+        ]
+        
+        scope_str = ' '.join(scopes)
+        
+        return (
+            f"https://accounts.spotify.com/authorize"
+            f"?client_id={self.client_id}"
+            f"&response_type=code"
+            f"&redirect_uri={self.redirect_uri}"
+            f"&scope={scope_str}"
+        )

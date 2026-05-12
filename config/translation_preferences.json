@@ -1,0 +1,75 @@
+{
+  "target_languages": [
+    {
+      "code": "ru",
+      "name": "Russian",
+      "native_name": "Русский",
+      "enabled": true
+    },
+    {
+      "code": "fr",
+      "name": "French",
+      "native_name": "Français",
+      "enabled": false
+    },
+    {
+      "code": "de",
+      "name": "German",
+      "native_name": "Deutsch",
+      "enabled": false
+    },
+    {
+      "code": "es",
+      "name": "Spanish",
+      "native_name": "Español",
+      "enabled": false
+    },
+    {
+      "code": "zh",
+      "name": "Chinese",
+      "native_name": "中文",
+      "enabled": false
+    },
+    {
+      "code": "ja",
+      "name": "Japanese",
+      "native_name": "日本語",
+      "enabled": false
+    },
+    {
+      "code": "it",
+      "name": "Italian",
+      "native_name": "Italiano",
+      "enabled": false
+    },
+    {
+      "code": "pt",
+      "name": "Portuguese",
+      "native_name": "Português",
+      "enabled": false
+    },
+    {
+      "code": "uz",
+      "name": "Uzbek",
+      "native_name": "Oʻzbek tili",
+      "enabled": true
+    }
+  ],
+  "default_target_language": "ru",
+  "source_language": "ru",
+  "learning_mode": {
+    "enabled": false,
+    "target_language": "en",
+    "difficulty": "intermediate",
+    "daily_practice": true
+  },
+  "translation_history": {
+    "enabled": true,
+    "max_entries": 100
+  },
+  "context_memory": {
+    "enabled": true,
+    "max_context_entries": 10
+  },
+  "auto_detect_language": false
+}
