@@ -193,6 +193,21 @@ if sys.platform == "win32":
 
 **Результат:** Retry логика теперь использует exponential backoff для предотвращения перегрузки сервера.
 
+### 19. Критическая ошибка: Spotify 401 errors не обрабатываются с token refresh
+**Проблема:** При 401 Unauthorized от Spotify API был бесконечный цикл попыток без обновления токена.
+
+**Исправление:**
+- `tools/spotify/controller.py`:
+  - Добавлен метод `_request_with_refresh()` для автоматического refresh токена на 401
+  - `_refresh_components()` теперь передаёт `self.auth` в SpotifySearch
+- `tools/spotify/search.py`:
+  - `__init__` теперь принимает optional `auth` параметр
+  - `_api_request()` переписан для автоматического refresh токена на 401 с retry логикой
+  - Добавлен параметр `max_retries` для ограничения попыток (default 1)
+  - При 401 вызывается `auth.refresh_access_token()` и запрос повторяется с новым токеном
+
+**Результат:** Spotify API теперь автоматически обновляет токен при 401 ошибках и повторяет запрос.
+
 ## 🧪 Тестирование
 
 ### Тест Spotify API:
@@ -212,11 +227,11 @@ python main.py
 1. `actions/spotify_controller.py` - Исправлен путь к конфигу, убраны Unicode символы
 2. `tools/spotify/auth.py` - Исправлен путь к token файлам
 3. `ui.py` - Добавлено DPI awareness для Windows, исправлена инициализация (удалена валидация API)
-4. `main.py` - Добавлено UTF-8 кодирование, изменена модель Gemini на `models/gemini-2.5-flash-native-audio-latest`, исправлен loop reference, удалена wake word система, добавлен `import traceback`, исправлен morning briefing loop, добавлены проверки `loop.is_running()`, добавлена различная обработка WebSocket ошибок, добавлен exponential backoff
+4. `main.py` - Добавлено UTF-8 кодирование, изменена модель Gemini на `models/gemini-2.5-flash-native-audio-latest`, исправлен loop reference, удалена wake word система, добавлен `import traceback`, исправлен morning briefing loop, добавлены проверки `loop.is_running()`, добавлена различная обработка WebSocket ошибок, добавлен exponential backoff, добавлен max_retries limit, миграция на `asyncio.get_running_loop()`, добавлен speech buffer с debounce (800ms)
 5. `core/user_profile.py` - Исправлен KeyError: изменены обращения к словарям на `.get()`
 6. `actions/modes.py` - Добавлена логика естественных сообщений при восстановлении режима
-7. `tools/spotify/search.py` - Добавлены методы `search_playlists()` и `get_user_playlists()`, расширена обработка опечаток (18 вариантов замены)
-8. `tools/spotify/controller.py` - Интегрирован поиск в личных плейлистах, добавлена задержка 0.5 сек перед проверкой статуса, улучшен `now_playing()`
+7. `tools/spotify/search.py` - Добавлены методы `search_playlists()` и `get_user_playlists()`, расширена обработка опечаток (18 вариантов замены), добавлен автоматический refresh токена на 401, добавлен параметр `max_retries`
+8. `tools/spotify/controller.py` - Интегрирован поиск в личных плейлистах, добавлена задержка 0.5 сек перед проверкой статуса, улучшен `now_playing()`, добавлен метод `_request_with_refresh()` для автоматического refresh токена
 
 ## ⚠️ Примечания
 
@@ -233,6 +248,10 @@ python main.py
 - **Добавлены проверки `loop.is_running()` для предотвращения краша при закрытии asyncio loop**
 - **Добавлена различная обработка WebSocket ошибок: 1008 (policy violation) не перезапускается, 1011 (server shutdown) перезапускается**
 - **Добавлен exponential backoff для retry логики с максимальной задержкой 60 секунд**
+- **Добавлен лимит попыток max_retries = 5 для WebSocket подключения**
+- **Миграция с deprecated asyncio.get_event_loop() на asyncio.get_running_loop()**
+- **Добавлен speech buffer с 800ms debounce для объединения фрагментов распознавания речи**
+- **Добавлен автоматический refresh токена Spotify при 401 ошибках**
 - Все исправления сохраняют обратную совместимость
 - Spotify API теперь корректно загружается и готов к использованию
 
@@ -260,3 +279,7 @@ python main.py
 - ✅ WebSocket 1008 ошибки не перезапускаются
 - ✅ WebSocket 1011 ошибки перезапускаются нормально
 - ✅ Retry логика использует exponential backoff
+- ✅ WebSocket подключения ограничены 5 попытками (max_retries)
+- ✅ Используется asyncio.get_running_loop() вместо deprecated get_event_loop()
+- ✅ Распознавание речи буферизируется с 800ms debounce
+- ✅ Spotify автоматически обновляет токен при 401 ошибках

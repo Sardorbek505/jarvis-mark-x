@@ -636,8 +636,21 @@ class Jarvis:
         self.proactive_engine = ProactiveEngine(BASE_DIR)
         self.team_engine = TeamCollaborationEngine(BASE_DIR)
         self.last_user_text = ""
+        
+        # Speech recognition buffer with debounce
+        self._speech_buffer = []
+        self._speech_timer = None
+        self._speech_debounce_ms = 800
 
         self.ui.on_text_command = self._on_text_command
+
+    def _flush_speech(self):
+        """Flush speech buffer and return accumulated text."""
+        if self._speech_buffer:
+            full_text = " ".join(self._speech_buffer)
+            self._speech_buffer = []
+            return full_text
+        return None
 
     # ── Текстовый ввод ────────────────────────────────────────────────────────
     def _on_text_command(self, text: str):
@@ -1019,6 +1032,7 @@ class Jarvis:
             # ── Инструмент: утренний брифинг ─────────────────────────────
             elif name == "morning_briefing":
                 from actions.morning_briefing import morning_briefing
+                loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(
                     None, lambda: morning_briefing(args, player=self.ui)
                 )
@@ -1152,12 +1166,37 @@ class Jarvis:
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = _clean(sc.input_transcription.text)
                             if txt:
-                                in_buf.append(txt)
-                                print(f"[ДЖАРВИС] 🎤 Распознано: '{txt}'")
+                                # Add to speech buffer instead of in_buf
+                                self._speech_buffer.append(txt)
+                                print(f"[ДЖАРВИС] 🎤 Фрагмент: '{txt}'")
+                                
+                                # Reset debounce timer
+                                if self._speech_timer:
+                                    self._speech_timer.cancel()
+                                
+                                # Schedule flush after debounce delay
+                                async def _schedule_flush():
+                                    await asyncio.sleep(self._speech_debounce_ms / 1000)
+                                    flushed = self._flush_speech()
+                                    if flushed:
+                                        print(f"[ДЖАРВИС] 🎤 Полный текст: '{flushed}'")
+                                        # Add to in_buf for processing
+                                        in_buf.append(flushed)
+                                
+                                self._speech_timer = asyncio.create_task(_schedule_flush())
 
                         if sc.turn_complete:
                             if self._turn_done_event:
                                 self._turn_done_event.set()
+                            
+                            # Flush any remaining speech buffer
+                            if self._speech_timer:
+                                self._speech_timer.cancel()
+                                self._speech_timer = None
+                            flushed = self._flush_speech()
+                            if flushed:
+                                in_buf.append(flushed)
+                                print(f"[ДЖАРВИС] 🎤 Финальный текст: '{flushed}'")
 
                             full_in = " ".join(in_buf).strip()
                             if full_in:
@@ -1279,6 +1318,7 @@ class Jarvis:
 
         retry_count = 0
         max_retry_delay = 60  # Maximum delay between retries (seconds)
+        max_retries = 5  # Maximum number of retry attempts
 
         while True:
             try:
@@ -1314,7 +1354,7 @@ class Jarvis:
                             self.ui.write_log("SYS: Утренний брифинг...")
                             try:
                                 from actions.morning_briefing import morning_briefing
-                                loop = asyncio.get_event_loop()
+                                loop = asyncio.get_running_loop()
                                 briefing = await loop.run_in_executor(
                                     None, lambda: morning_briefing({}, player=self.ui)
                                 )
@@ -1327,7 +1367,6 @@ class Jarvis:
                         tg.create_task(self._receive_audio())
                         tg.create_task(self._play_audio())
                 except Exception as e:
-                    import traceback
                     print(f"[ДЖAIRVIS] ❌ Ошибка подключения к live API: {e}")
                     print(f"[ДЖАРВИС] 📝 Тип ошибки: {type(e).__name__}")
                     print(f"[ДЖАРВИС] 📋 Полный traceback:")
@@ -1342,14 +1381,22 @@ class Jarvis:
                     elif "1011" in error_msg:
                         print("[ДЖАРВИС] ⚠️ Server shutdown (1011) - нормальный перезапуск")
                         retry_count += 1
+                        if retry_count > max_retries:
+                            print(f"[ДЖАРВИС] ❌ Превышен лимит попыток ({max_retries})")
+                            self.ui.write_log(f"SYS: Превышен лимит попыток подключения")
+                            break
                         delay = min(2 ** retry_count, max_retry_delay)
-                        print(f"[ДЖАРВИС] ⏸️ Ожидаю {delay} сек перед попыткой {retry_count}...")
+                        print(f"[ДЖАРВИС] ⏸️ Ожидаю {delay} сек перед попыткой {retry_count}/{max_retries}...")
                         await asyncio.sleep(delay)
                         continue
                     
                     retry_count += 1
+                    if retry_count > max_retries:
+                        print(f"[ДЖАРВИС] ❌ Превышен лимит попыток ({max_retries})")
+                        self.ui.write_log(f"SYS: Превышен лимит попыток подключения")
+                        break
                     delay = min(2 ** retry_count, max_retry_delay)
-                    print(f"[ДЖАРВИС] ⏸️ Ожидаю {delay} сек перед попыткой {retry_count}...")
+                    print(f"[ДЖАРВИС] ⏸️ Ожидаю {delay} сек перед попыткой {retry_count}/{max_retries}...")
                     await asyncio.sleep(delay)
                     continue
 
@@ -1371,8 +1418,12 @@ class Jarvis:
                 self.set_speaking(False)
                 self.ui.set_state("THINKING")
                 retry_count += 1
+                if retry_count > max_retries:
+                    print(f"[ДЖАРВИС] ❌ Превышен лимит попыток ({max_retries})")
+                    self.ui.write_log(f"SYS: Превышен лимит попыток подключения")
+                    break
                 delay = min(2 ** retry_count, max_retry_delay)
-                print(f"[ДЖАРВИС] 🔄 Переподключение через {delay} сек (попытка {retry_count})...")
+                print(f"[ДЖАРВИС] 🔄 Переподключение через {delay} сек (попытка {retry_count}/{max_retries})...")
                 await asyncio.sleep(delay)
 
 

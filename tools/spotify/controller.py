@@ -44,10 +44,45 @@ class SpotifyController:
         if not access_token:
             return False
         
-        self.search = SpotifySearch(access_token)
+        self.search = SpotifySearch(access_token, self.auth)
         self.devices = SpotifyDevices(access_token)
         self.moods = SpotifyMoods(access_token)
         return True
+    
+    def _request_with_refresh(self, method: str, url: str, **kwargs) -> Optional[requests.Response]:
+        """
+        Make API request with automatic token refresh on 401.
+        
+        Args:
+            method: HTTP method (GET, POST, PUT, DELETE)
+            url: API endpoint URL
+            **kwargs: Additional arguments for requests
+            
+        Returns:
+            Response object or None if failed
+        """
+        headers = kwargs.get('headers', {})
+        headers['Authorization'] = f'Bearer {self.auth.get_access_token()}'
+        kwargs['headers'] = headers
+        
+        try:
+            response = requests.request(method, url, **kwargs)
+            
+            # If 401 Unauthorized, refresh token and retry
+            if response.status_code == 401:
+                print("[SpotifyController] 401 Unauthorized - refreshing token...")
+                if self.auth.refresh_access_token():
+                    # Retry with new token
+                    headers['Authorization'] = f'Bearer {self.auth.get_access_token()}'
+                    kwargs['headers'] = headers
+                    response = requests.request(method, url, **kwargs)
+                    print("[SpotifyController] Token refreshed, request retried")
+            
+            return response
+            
+        except Exception as e:
+            print(f"[SpotifyController] Request failed: {e}")
+            return None
     
     def _api_request(
         self,
