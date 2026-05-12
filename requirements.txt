@@ -20,3 +20,19 @@ pygetwindow>=0.0.9
 
 # Movie Player — отправка клавиш в плеер (опционально, есть PowerShell fallback на Windows)
 pyautogui>=0.9.54
+
+# Selenium для автоматического выбора фильмов (надёжнее чем pyautogui keyboard navigation)
+selenium>=4.15.0
+webdriver-manager>=4.0.0
+
+# Google Calendar API (опционально для синхронизации календаря)
+google-api-python-client>=2.100.0
+google-auth-oauthlib>=1.0.0
+google-auth-httplib2>=0.1.0
+
+# News Aggregator - RSS фиды для новостей
+feedparser>=6.0.0
+
+# Spotify API - requests и fuzzy matching
+requests>=2.31.0
+rapidfuzz>=3.0.0

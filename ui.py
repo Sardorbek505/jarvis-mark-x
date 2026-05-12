@@ -33,6 +33,14 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+# Fix Windows DPI awareness issue
+if platform.system() == "Windows":
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwarenessContext(1)  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+    except (AttributeError, OSError):
+        pass  # Fail silently on older Windows versions
+
 
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -671,7 +679,7 @@ class FileDropZone(QWidget):
 class SetupOverlay(QWidget):
     done = pyqtSignal(str, str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, reason="init"):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"""
@@ -697,8 +705,12 @@ class SetupOverlay(QWidget):
             w.setStyleSheet(f"color: {color}; background: transparent;")
             return w
 
-        layout.addWidget(lbl("◈ ТРЕБУЕТСЯ ИНИЦИАЛИЗАЦИЯ", 13, True))
-        layout.addWidget(lbl("Настройте ДЖАРВИС перед первым запуском.", 9, color=C.PRI_DIM))
+        if reason == "invalid":
+            layout.addWidget(lbl("◈ НЕДЕЙСТВИТЕЛЬНЫЙ API КЛЮЧ", 13, True))
+            layout.addWidget(lbl("Ваш ключ недействителен. Введите новый ключ.", 9, color=C.PRI_DIM))
+        else:
+            layout.addWidget(lbl("◈ ТРЕБУЕТСЯ ИНИЦИАЛИЗАЦИЯ", 13, True))
+            layout.addWidget(lbl("Настройте ДЖАРВИС перед первым запуском.", 9, color=C.PRI_DIM))
         layout.addSpacing(6)
 
         sep = QFrame()
@@ -985,16 +997,36 @@ class MainWindow(QMainWindow):
         self._state_sig.emit(state)
 
     def wait_for_api_key(self):
-        """Блокирует поток до получения API-ключа."""
+        """Блокирует поток до получения API-ключа. Пропускает если ключ уже есть."""
         import threading
-        self._key_ready = threading.Event()
-        # Показываем оверлей через основной поток
-        QTimer.singleShot(0, self._show_overlay)
-        self._key_ready.wait()
+        import json
+        from pathlib import Path
 
-    # ── Внутренние методы ──────────────────────────────────────────────────────
-    def _show_overlay(self):
-        self._overlay = SetupOverlay(self.centralWidget())
+        # Проверяем, существует ли файл с ключом
+        config_path = Path(__file__).parent / "config" / "api_keys.json"
+        reason = "init"
+        try:
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    api_key = data.get("gemini_api_key")
+                    if api_key:
+                        # Ключ есть - пропускаем без проверки API для быстрого запуска
+                        print("[UI] API ключ найден, пропускаем инициализацию...")
+                        return None
+        except Exception as e:
+            print(f"[UI] Ошибка чтения ключа: {e}")
+            pass
+
+        # Ключа нет или файл повреждён — показываем оверлей
+        self._key_ready = threading.Event()
+        self._setup_reason = reason
+        QTimer.singleShot(0, lambda: self._show_overlay(reason))
+        self._key_ready.wait()
+        return reason
+
+    def _show_overlay(self, reason="init"):
+        self._overlay = SetupOverlay(self.centralWidget(), reason=reason)
         self._overlay.done.connect(self._on_setup_done)
         self._resize_overlay()
         self._overlay.show()
@@ -1033,6 +1065,7 @@ class MainWindow(QMainWindow):
 
     def _apply_state(self, state: str):
         state_map = {
+            "IDLE":       "ОЖИДАЕТ",
             "LISTENING":  "СЛУШАЕТ",
             "THINKING":   "ДУМАЕТ",
             "SPEAKING":   "ГОВОРИТ",
@@ -1045,6 +1078,7 @@ class MainWindow(QMainWindow):
         self._status_lbl.setText(ru)
 
         color = {
+            "ОЖИДАЕТ":     C.TEXT_DIM,
             "СЛУШАЕТ":      C.GREEN,
             "ДУМАЕТ":       C.ACC2,
             "ГОВОРИТ":      C.ACC,
