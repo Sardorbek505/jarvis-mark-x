@@ -1375,8 +1375,15 @@ class Jarvis:
                     # Различаем ошибки WebSocket: 1008 (policy violation) vs 1011 (server shutdown)
                     error_msg = str(e)
                     if "1008" in error_msg:
-                        print("[ДЖАРВИС] ⚠️ Policy violation (1008) - не перезапускаем")
-                        self.ui.write_log("SYS: Policy violation - manual restart required")
+                        print("[ДЖАРВИС] ⚠️ Policy violation (1008) - API ключ заблокирован")
+                        print("[ДЖАРВИС] 📋 Ваш API ключ был помечен как утёкший (leaked).")
+                        print("[ДЖАРВИС] 🔧 Что нужно сделать:")
+                        print("[ДЖАРВИС]    1. Перейдите на https://aistudio.google.com/app/apikey")
+                        print("[ДЖАРВИС]    2. Удалите старый ключ и создайте новый")
+                        print("[ДЖАРВИС]    3. Обновите config/api_keys.json новым ключом")
+                        print("[ДЖАРВИС]    4. Перезапустите JARVIS")
+                        print("[ДЖАРВИС] ⚠️ Важно: никогда не коммитите API ключи в Git!")
+                        self.ui.write_log("SYS: ❌ API ключ заблокирован. Получите новый на https://aistudio.google.com/app/apikey")
                         break
                     elif "1011" in error_msg:
                         print("[ДЖАРВИС] ⚠️ Server shutdown (1011) - нормальный перезапуск")
