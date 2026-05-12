@@ -20,6 +20,15 @@ import random
 import numpy as np
 from pathlib import Path
 from datetime import datetime
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger('JARVIS')
 
 import sounddevice as sd
 from google import genai
@@ -604,9 +613,11 @@ TOOLS = [
     {
         "name": "morning_briefing",
         "description": (
-            "Утренний брифинг — погода, события на сегодня, главные новости. "
+            "Дневной брифинг — погода, события на сегодня, главные новости. "
+            "Приветствие зависит от времени суток: доброе утро (6-12), добрый день (12-18), "
+            "добрый вечер (18-22), доброй ночи (22-6). "
             "Вызывай когда пользователь говорит 'брифинг', 'что сегодня', "
-            "'доброе утро', 'введи в курс дня'. "
+            "'доброе утро', 'добрый день', 'введи в курс дня'. "
             "Также вызывай автоматически при старте сессии если сейчас утро (6-10)."
         ),
         "parameters": {
@@ -640,22 +651,50 @@ class Jarvis:
         # Speech recognition buffer with debounce
         self._speech_buffer = []
         self._speech_timer = None
-        self._speech_debounce_ms = 800
+        self._speech_debounce_ms = 2000  # Increased from 800ms to allow full phrases
 
         self.ui.on_text_command = self._on_text_command
 
     def _flush_speech(self):
-        """Flush speech buffer and return accumulated text."""
+        """Flush speech buffer and return accumulated text with normalization."""
         if self._speech_buffer:
+            # Join and normalize text
             full_text = " ".join(self._speech_buffer)
+            
+            # Normalize: remove extra spaces, clean up common speech artifacts
+            full_text = " ".join(full_text.split())  # Remove extra spaces
+            full_text = full_text.strip()
+            
+            # Remove common speech artifacts (partial words, fillers)
+            artifacts = ["э-э", "м-м", "а-а", "э-м-м", "м-э-м", "э-э-э", "м-м-м"]
+            for artifact in artifacts:
+                full_text = full_text.replace(artifact, "")
+            
+            # Clean with existing _clean function
+            full_text = _clean(full_text)
+            
+            # Anti-debounce: reject if too short (less than 2 chars) or same as last
+            if len(full_text) < 2:
+                self._speech_buffer = []
+                return None
+            
+            if full_text == self.last_user_text:
+                self._speech_buffer = []
+                return None
+            
+            self.last_user_text = full_text
             self._speech_buffer = []
-            return full_text
+            return full_text if full_text else None
         return None
 
     # ── Текстовый ввод ────────────────────────────────────────────────────────
     def _on_text_command(self, text: str):
         if not self._loop or not self.session or not self._loop.is_running():
             return
+        
+        # Normalize text before sending
+        text = self._normalize_input_text(text)
+        
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
                 turns={"parts": [{"text": text}]},
@@ -663,6 +702,24 @@ class Jarvis:
             ),
             self._loop,
         )
+    
+    def _normalize_input_text(self, text: str) -> str:
+        """Normalize user input text for better intent parsing."""
+        if not text:
+            return text
+        
+        # Remove extra spaces and normalize
+        text = " ".join(text.split()).strip()
+        
+        # Remove speech artifacts
+        artifacts = ["э-э", "м-м", "а-а", "э-м-м", "м-э-м", "э-э-э", "м-м-м"]
+        for artifact in artifacts:
+            text = text.replace(artifact, "")
+        
+        # Clean with existing _clean function
+        text = _clean(text)
+        
+        return text
 
     # ── Управление состоянием ─────────────────────────────────────────────────
     def set_speaking(self, value: bool):
@@ -748,8 +805,20 @@ class Jarvis:
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
         args = dict(fc.args or {})
-        print(f"[ДЖАРВИС] 🔧 {name} {args}")
+        logger.info(f"🔧 Tool: {name} {args}")
         self.ui.set_state("THINKING")
+
+        # Critical actions that may require confirmation
+        critical_actions = {
+            "computer_control": ["shutdown", "restart", "lock"],
+            "files": ["delete", "remove"],
+        }
+        
+        # Log warning for critical actions
+        if name in critical_actions:
+            action = args.get("action", "")
+            if action in critical_actions[name]:
+                logger.warning(f"⚠️ Critical action: {name}/{action} - executing automatically")
 
         # Сохранение в память (без задержки)
         if name == "save_to_memory":
@@ -1032,7 +1101,7 @@ class Jarvis:
             # ── Инструмент: утренний брифинг ─────────────────────────────
             elif name == "morning_briefing":
                 from actions.morning_briefing import morning_briefing
-                loop = asyncio.get_running_loop()
+                loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
                     None, lambda: morning_briefing(args, player=self.ui)
                 )
@@ -1130,8 +1199,11 @@ class Jarvis:
                 while True:
                     await asyncio.sleep(0.1)
         except Exception as e:
-            print(f"[ДЖАРВИС] ❌ Микрофон: {e}")
-            raise
+            logger.error(f"Microphone error: {e}")
+            traceback.print_exc()
+            # Don't raise - let the task be recreated
+            # Brief pause before attempting to continue
+            await asyncio.sleep(1)
 
     # ── Получение ответа от Gemini ────────────────────────────────────────────
     async def _receive_audio(self):
@@ -1271,9 +1343,11 @@ class Jarvis:
                         await self.session.send_tool_response(function_responses=responses)
 
         except Exception as e:
-            print(f"[ДЖАРВИС] ❌ Приём: {e}")
+            logger.error(f"Receive audio error: {e}")
             traceback.print_exc()
-            raise
+            # Don't raise - let the connection be re-established in the outer loop
+            # Brief pause before attempting to continue
+            await asyncio.sleep(1)
 
     # ── Воспроизведение аудио ─────────────────────────────────────────────────
     async def _play_audio(self):
@@ -1302,8 +1376,11 @@ class Jarvis:
                 await asyncio.to_thread(stream.write, chunk)
 
         except Exception as e:
-            print(f"[ДЖАРВИС] ❌ Воспроизведение: {e}")
-            raise
+            logger.error(f"Playback error: {e}")
+            traceback.print_exc()
+            # Don't raise - let the task be recreated
+            # Brief pause before attempting to continue
+            await asyncio.sleep(1)
         finally:
             self.set_speaking(False)
             stream.stop()
@@ -1323,7 +1400,7 @@ class Jarvis:
         while True:
             try:
                 print("[ДЖАРВИС] 🔌 Подключение к Gemini...")
-                self.ui.set_state("THINKING")
+                self.ui.set_state("RECONNECTING")
                 config = self._build_config()
 
                 try:
@@ -1354,7 +1431,7 @@ class Jarvis:
                             self.ui.write_log("SYS: Утренний брифинг...")
                             try:
                                 from actions.morning_briefing import morning_briefing
-                                loop = asyncio.get_running_loop()
+                                loop = asyncio.get_event_loop()
                                 briefing = await loop.run_in_executor(
                                     None, lambda: morning_briefing({}, player=self.ui)
                                 )
@@ -1367,22 +1444,22 @@ class Jarvis:
                         tg.create_task(self._receive_audio())
                         tg.create_task(self._play_audio())
                 except Exception as e:
-                    print(f"[ДЖAIRVIS] ❌ Ошибка подключения к live API: {e}")
-                    print(f"[ДЖАРВИС] 📝 Тип ошибки: {type(e).__name__}")
-                    print(f"[ДЖАРВИС] 📋 Полный traceback:")
+                    logger.error(f"Live API connection error: {e}")
+                    logger.error(f"Error type: {type(e).__name__}")
+                    logger.error("Full traceback:")
                     traceback.print_exc()
                     
                     # Различаем ошибки WebSocket: 1008 (policy violation) vs 1011 (server shutdown)
                     error_msg = str(e)
                     if "1008" in error_msg:
-                        print("[ДЖАРВИС] ⚠️ Policy violation (1008) - API ключ заблокирован")
-                        print("[ДЖАРВИС] 📋 Ваш API ключ был помечен как утёкший (leaked).")
-                        print("[ДЖАРВИС] 🔧 Что нужно сделать:")
-                        print("[ДЖАРВИС]    1. Перейдите на https://aistudio.google.com/app/apikey")
-                        print("[ДЖАРВИС]    2. Удалите старый ключ и создайте новый")
-                        print("[ДЖАРВИС]    3. Обновите config/api_keys.json новым ключом")
-                        print("[ДЖАРВИС]    4. Перезапустите JARVIS")
-                        print("[ДЖАРВИС] ⚠️ Важно: никогда не коммитите API ключи в Git!")
+                        logger.error("Policy violation (1008) - API key blocked")
+                        logger.error("Your API key was marked as leaked.")
+                        logger.error("What to do:")
+                        logger.error("  1. Go to https://aistudio.google.com/app/apikey")
+                        logger.error("  2. Delete old key and create new one")
+                        logger.error("  3. Update config/api_keys.json with new key")
+                        logger.error("  4. Restart JARVIS")
+                        logger.error("Important: never commit API keys to Git!")
                         self.ui.write_log("SYS: ❌ API ключ заблокирован. Получите новый на https://aistudio.google.com/app/apikey")
                         break
                     elif "1011" in error_msg:
@@ -1393,7 +1470,8 @@ class Jarvis:
                             self.ui.write_log(f"SYS: Превышен лимит попыток подключения")
                             break
                         delay = min(2 ** retry_count, max_retry_delay)
-                        print(f"[ДЖАРВИС] ⏸️ Ожидаю {delay} сек перед попыткой {retry_count}/{max_retries}...")
+                        logger.info(f"Waiting {delay}s before retry {retry_count}/{max_retries}...")
+                        self.ui.set_state("RECONNECTING")
                         await asyncio.sleep(delay)
                         continue
                     
@@ -1430,7 +1508,8 @@ class Jarvis:
                     self.ui.write_log(f"SYS: Превышен лимит попыток подключения")
                     break
                 delay = min(2 ** retry_count, max_retry_delay)
-                print(f"[ДЖАРВИС] 🔄 Переподключение через {delay} сек (попытка {retry_count}/{max_retries})...")
+                logger.info(f"Reconnecting in {delay}s (attempt {retry_count}/{max_retries})...")
+                self.ui.set_state("RECONNECTING")
                 await asyncio.sleep(delay)
 
 

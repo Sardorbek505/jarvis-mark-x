@@ -1,5 +1,6 @@
 """
-Утренний брифинг — собирает погоду, календарь и новости в один монолог.
+Дневной брифинг — собирает погоду, календарь и новости в один монолог.
+Приветствие зависит от времени суток.
 """
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +12,8 @@ _BASE = Path(__file__).parent.parent
 
 def morning_briefing(parameters: Dict[str, Any], player=None) -> str:
     """
-    Утренний брифинг — погода + календарь + новости в стиле ДЖАРВИС.
+    Дневной брифинг — погода + календарь + новости в стиле ДЖАРВИС.
+    Приветствие зависит от времени суток.
     
     Args:
         parameters: параметры (не используются, но нужны для интерфейса)
@@ -114,8 +116,19 @@ def _get_news() -> str:
 def _assemble_briefing(user_name: str, weather: str, calendar: str, news: str) -> str:
     """Собирает финальный монолог в стиле ДЖАРВИС."""
     
+    # Определяем приветствие по времени суток
+    current_hour = datetime.now().hour
+    if 6 <= current_hour < 12:
+        greeting = "Доброе утро"
+    elif 12 <= current_hour < 18:
+        greeting = "Добрый день"
+    elif 18 <= current_hour < 22:
+        greeting = "Добрый вечер"
+    else:  # 22-6
+        greeting = "Доброй ночи"
+    
     # Начало
-    briefing = f"Доброе утро, {user_name}. "
+    briefing = f"{greeting}, {user_name}. "
     
     # Погода
     if weather and "недоступен" not in weather.lower():

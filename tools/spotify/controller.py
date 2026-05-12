@@ -37,6 +37,25 @@ class SpotifyController:
         self.last_uri = ""
         self.last_device = ""
         self.last_volume = 50
+        
+        # Spotify availability flag
+        self._available = True
+        self._unavailable_message_shown = False
+    
+    def is_available(self) -> bool:
+        """Check if Spotify API is available (not disabled due to errors)."""
+        return self._available
+    
+    def _disable_spotify(self, reason: str) -> None:
+        """Disable Spotify and show message once."""
+        self._available = False
+        if not self._unavailable_message_shown:
+            print(f"[SpotifyController] ⚠️ Spotify отключен: {reason}")
+            print("[SpotifyController] 📋 Для восстановления:")
+            print("    1. Проверьте credentials в config/api_keys.json")
+            print("    2. Получите новый refresh token если нужно")
+            print("    3. Перезапустите JARVIS")
+            self._unavailable_message_shown = True
     
     def _refresh_components(self) -> bool:
         """Refresh API components with new access token."""
@@ -61,6 +80,9 @@ class SpotifyController:
         Returns:
             Response object or None if failed
         """
+        if not self._available:
+            return None
+            
         headers = kwargs.get('headers', {})
         headers['Authorization'] = f'Bearer {self.auth.get_access_token()}'
         kwargs['headers'] = headers
@@ -68,15 +90,24 @@ class SpotifyController:
         try:
             response = requests.request(method, url, **kwargs)
             
-            # If 401 Unauthorized, refresh token and retry
+            # If 401 Unauthorized, try refresh once then disable if still failing
             if response.status_code == 401:
-                print("[SpotifyController] 401 Unauthorized - refreshing token...")
+                print("[SpotifyController] 401 Unauthorized - attempting token refresh...")
                 if self.auth.refresh_access_token():
                     # Retry with new token
                     headers['Authorization'] = f'Bearer {self.auth.get_access_token()}'
                     kwargs['headers'] = headers
                     response = requests.request(method, url, **kwargs)
-                    print("[SpotifyController] Token refreshed, request retried")
+                    
+                    # If still 401 after refresh, disable Spotify
+                    if response.status_code == 401:
+                        self._disable_spotify("Токен невалидный даже после refresh")
+                        return None
+                    else:
+                        print("[SpotifyController] Token refreshed successfully")
+                else:
+                    self._disable_spotify("Не удалось обновить токен")
+                    return None
             
             return response
             
@@ -132,7 +163,7 @@ class SpotifyController:
     
     def is_ready(self) -> bool:
         """Check if controller is ready to use."""
-        return self.auth.is_authenticated()
+        return self._available and self.auth.is_authenticated()
     
     def ensure_device(self) -> Optional[Dict[str, Any]]:
         """Ensure there's an active device."""
