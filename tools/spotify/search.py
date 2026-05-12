@@ -16,26 +16,50 @@ class SpotifySearch:
     
     API_BASE = "https://api.spotify.com/v1"
     
-    def __init__(self, access_token: str):
+    def __init__(self, access_token: str, auth=None):
         self.access_token = access_token
+        self.auth = auth  # SpotifyAuth instance for token refresh
         self.headers = {
             'Authorization': f'Bearer {access_token}',
             'Content-Type': 'application/json'
         }
     
-    def _api_request(self, endpoint: str, params: Dict[str, Any]) -> Optional[Dict]:
-        """Make authenticated API request."""
-        try:
-            response = requests.get(
-                f"{self.API_BASE}{endpoint}",
-                headers=self.headers,
-                params=params
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            print(f"[SpotifySearch] API request failed: {e}")
-            return None
+    def _api_request(self, endpoint: str, params: Dict[str, Any], max_retries: int = 1) -> Optional[Dict]:
+        """Make authenticated API request with automatic token refresh on 401."""
+        retry_count = 0
+        
+        while retry_count <= max_retries:
+            try:
+                response = requests.get(
+                    f"{self.API_BASE}{endpoint}",
+                    headers=self.headers,
+                    params=params
+                )
+                
+                # If 401 Unauthorized, refresh token and retry
+                if response.status_code == 401 and self.auth:
+                    print(f"[SpotifySearch] 401 Unauthorized - refreshing token (attempt {retry_count + 1}/{max_retries})...")
+                    if self.auth.refresh_access_token():
+                        # Update headers with new token
+                        self.access_token = self.auth.get_access_token()
+                        self.headers['Authorization'] = f'Bearer {self.access_token}'
+                        retry_count += 1
+                        continue  # Retry with new token
+                    else:
+                        print("[SpotifySearch] Token refresh failed")
+                        return None
+                
+                response.raise_for_status()
+                return response.json()
+                
+            except Exception as e:
+                print(f"[SpotifySearch] API request failed: {e}")
+                if retry_count < max_retries:
+                    retry_count += 1
+                    continue
+                return None
+        
+        return None
     
     def _fuzzy_match_score(self, query: str, track: Dict[str, Any]) -> float:
         """

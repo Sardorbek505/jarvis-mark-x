@@ -43,7 +43,9 @@
       "Exec(powershell)",
       "Exec(chcp)",
       "Exec(timeout)",
-      "Exec(dir)"
+      "Exec(dir)",
+      "Exec(chmod)",
+      "Exec(gh repo)"
     ]
   }
 }
