@@ -1,8 +1,0 @@
-{
-  "gemini_api_key": "AIzaSyA322-AV5kROHhZPx2Ib-imLCAtshvcs1o",
-  "os": "windows",
-  "spotify_client_id": "0b0e82a6a9614ed7b4f7c8297ba6f0bb",
-  "spotify_client_secret": "6e97a6c397d64445873f4b4c2d83f3d0",
-  "spotify_redirect_uri": "http://127.0.0.1:8888/callback",
-  "spotify_refresh_token": "AQD7CXhnVS1-zGYmtzaX45uONEjXkAxEaJnR_TxWqRtStQ3DWWlf5G4tZtADbsjWxnMPOhtjwi9-HrVPSpCa_q3gOEw0PFcf0R-17vr9JXXpmue1TeEw1OOHHzKaQD8cnHU"
-}
