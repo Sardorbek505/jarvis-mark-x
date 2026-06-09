@@ -4,13 +4,42 @@
 Этот скрипт автоматически получает refresh token через OAuth flow.
 """
 
-import requests
+import json
+import os
+import sys
+from pathlib import Path
 from urllib.parse import urlencode
 
-# Credentials из config/api_keys.json
-CLIENT_ID = "0b0e82a6a9614ed7b4f7c8297ba6f0bb"
-CLIENT_SECRET = "6e97a6c397d64445873f4b4c2d83f3d0"
-REDIRECT_URI = "http://127.0.0.1:8888/callback"
+import requests
+
+CONFIG_FILE = Path(__file__).resolve().parent / "config" / "api_keys.json"
+
+
+def _load_credentials():
+    """Загрузить креды Spotify из config/api_keys.json или переменных окружения."""
+    config = {}
+    if CONFIG_FILE.exists():
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            config = json.load(f)
+
+    client_id = os.getenv("SPOTIFY_CLIENT_ID") or config.get("spotify_client_id")
+    client_secret = os.getenv("SPOTIFY_CLIENT_SECRET") or config.get("spotify_client_secret")
+    redirect_uri = (
+        os.getenv("SPOTIFY_REDIRECT_URI")
+        or config.get("spotify_redirect_uri")
+        or "http://127.0.0.1:8888/callback"
+    )
+
+    if not client_id or not client_secret:
+        print("❌ Не найдены spotify_client_id / spotify_client_secret.")
+        print("   Заполните config/api_keys.json или задайте переменные окружения")
+        print("   SPOTIFY_CLIENT_ID и SPOTIFY_CLIENT_SECRET.")
+        sys.exit(1)
+
+    return client_id, client_secret, redirect_uri
+
+
+CLIENT_ID, CLIENT_SECRET, REDIRECT_URI = _load_credentials()
 
 # Scopes для JARVIS
 SCOPES = [
