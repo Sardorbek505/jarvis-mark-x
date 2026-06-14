@@ -41,8 +41,6 @@ class VoiceSession:
             system_instruction=types.Content(
                 parts=[types.Part(text=system)], role="user"
             ),
-            input_audio_transcription=types.AudioTranscriptionConfig(),
-            output_audio_transcription=types.AudioTranscriptionConfig(),
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Charon")
@@ -57,16 +55,24 @@ class VoiceSession:
             http_options={"api_version": "v1beta"},
         )
 
-        async with client.aio.live.connect(model=LIVE_MODEL, config=self._live_config(context)) as session:
-            self._session = session
+        try:
+            async with client.aio.live.connect(
+                model=LIVE_MODEL, config=self._live_config(context)
+            ) as session:
+                self._session = session
+                await self._push("status", state="idle")
+
+                async with asyncio.TaskGroup() as tg:
+                    tg.create_task(self._from_client())
+                    tg.create_task(self._from_gemini())
+
+        except* Exception as eg:
+            for exc in eg.exceptions:
+                logger.error(f"Session error: {exc}")
             await self._push("status", state="idle")
 
-            async with asyncio.TaskGroup() as tg:
-                tg.create_task(self._from_client())
-                tg.create_task(self._from_gemini())
-
     async def _from_client(self):
-        """Read browser WebSocket → forward to Gemini Live."""
+        """Browser WebSocket → Gemini Live."""
         async for raw in self._ws.iter_text():
             try:
                 msg = json.loads(raw)
@@ -77,9 +83,12 @@ class VoiceSession:
 
             if t == "audio" and self._voice_active:
                 pcm = base64.b64decode(msg["data"])
-                await self._session.send_realtime_input(
-                    media={"data": pcm, "mime_type": "audio/pcm"}
-                )
+                try:
+                    await self._session.send_realtime_input(
+                        media={"data": pcm, "mime_type": "audio/pcm"}
+                    )
+                except Exception as e:
+                    logger.debug(f"send_realtime_input: {e}")
 
             elif t == "start_voice":
                 self._voice_active = True
@@ -88,7 +97,10 @@ class VoiceSession:
             elif t == "stop_voice":
                 self._voice_active = False
                 await self._push("status", state="processing")
-                await self._session.send(end_of_turn=True)
+                try:
+                    await self._session.send(end_of_turn=True)
+                except Exception:
+                    pass
 
             elif t == "text":
                 text = msg.get("text", "").strip()
@@ -96,39 +108,48 @@ class VoiceSession:
                     await self._mem.add_message("user", text)
                     await self._push("status", state="processing")
                     await self._push("thinking")
-                    await self._session.send(input=text, end_of_turn=True)
+                    try:
+                        await self._session.send(input=text, end_of_turn=True)
+                    except Exception as e:
+                        logger.error(f"send text: {e}")
+                        await self._push("status", state="idle")
 
     async def _from_gemini(self):
-        """Read Gemini Live → forward to browser WebSocket."""
+        """Gemini Live → browser WebSocket."""
         out_text: list[str] = []
 
-        async for response in self._session.receive():
-            # Raw audio chunk
-            if response.data:
-                b64 = base64.b64encode(response.data).decode()
-                await self._push("audio", data=b64)
-                await self._push("status", state="speaking")
+        try:
+            async for response in self._session.receive():
+                # Raw audio chunk → forward immediately
+                if response.data:
+                    b64 = base64.b64encode(response.data).decode()
+                    await self._push("audio", data=b64)
+                    await self._push("status", state="speaking")
 
-            sc = response.server_content
-            if sc:
-                # Input (user) transcription
-                if sc.input_transcription and sc.input_transcription.text:
-                    t = sc.input_transcription.text.strip()
-                    if t:
-                        await self._push("transcript_user", text=t)
-                        await self._mem.add_message("user", t)
+                sc = response.server_content
+                if sc:
+                    # User speech transcription
+                    if sc.input_transcription and sc.input_transcription.text:
+                        t = sc.input_transcription.text.strip()
+                        if t:
+                            await self._push("transcript_user", text=t)
+                            await self._mem.add_message("user", t)
 
-                # Output (model) transcription — accumulate
-                if sc.output_transcription and sc.output_transcription.text:
-                    out_text.append(sc.output_transcription.text)
+                    # Model response transcription — accumulate until turn_complete
+                    if sc.output_transcription and sc.output_transcription.text:
+                        out_text.append(sc.output_transcription.text)
 
-                if sc.turn_complete:
-                    full = "".join(out_text).strip()
-                    if full:
-                        await self._push("transcript_bot", text=full)
-                        await self._mem.add_message("assistant", full)
-                    out_text.clear()
-                    await self._push("status", state="idle")
+                    if sc.turn_complete:
+                        full = "".join(out_text).strip()
+                        if full:
+                            await self._push("transcript_bot", text=full)
+                            await self._mem.add_message("assistant", full)
+                        out_text.clear()
+                        await self._push("status", state="idle")
+
+        except Exception as e:
+            logger.error(f"Gemini receive error: {e}")
+            await self._push("status", state="idle")
 
     async def _push(self, msg_type: str, **kwargs):
         try:

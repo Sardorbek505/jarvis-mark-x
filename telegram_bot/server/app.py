@@ -3,8 +3,8 @@ import logging
 import sys
 from pathlib import Path
 
-import aiofiles
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -20,14 +20,23 @@ cfg = load_config()
 MINIAPP_DIR = Path(__file__).resolve().parent.parent / "miniapp"
 
 app = FastAPI(title="JARVIS Mini App", docs_url=None, redoc_url=None)
-app.mount("/static", StaticFiles(directory=str(MINIAPP_DIR)), name="static")
+
+# CORS — required for Telegram Mini App WebSocket
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")
 async def root():
     return FileResponse(MINIAPP_DIR / "index.html")
 
-@app.get("/{filename}")
+
+@app.get("/{filename:path}")
 async def static_file(filename: str):
     path = MINIAPP_DIR / filename
     if path.exists() and path.is_file():
@@ -38,6 +47,7 @@ async def static_file(filename: str):
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket, user_id: int = 0):
     await websocket.accept()
+    logger.info(f"Mini App connected: user_id={user_id}")
 
     memory = Memory(user_id)
     await memory.init()
@@ -52,7 +62,7 @@ async def ws_endpoint(websocket: WebSocket, user_id: int = 0):
     try:
         await session.run()
     except WebSocketDisconnect:
-        pass
+        logger.info(f"Mini App disconnected: user_id={user_id}")
     except Exception as e:
         logger.error(f"Session error (user={user_id}): {e}")
     finally:
@@ -64,7 +74,7 @@ def start():
     uvicorn.run(
         "telegram_bot.server.app:app",
         host="0.0.0.0",
-        port=int(cfg.miniapp_port),
+        port=cfg.miniapp_port,
         log_level="info",
     )
 

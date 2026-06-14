@@ -5,8 +5,9 @@ import logging
 import sys
 from pathlib import Path
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
@@ -31,7 +32,15 @@ cfg = load_config()
 gemini = GeminiClient(cfg.gemini_api_key)
 bridge = PCBridge(cfg.pc_ws_host, cfg.pc_ws_port)
 
-# Keywords that look like PC control commands
+_BOT_COMMANDS = [
+    BotCommand("start",  "Запустить JARVIS"),
+    BotCommand("app",    "Открыть с голосом (Mini App)"),
+    BotCommand("status", "Статус подключения к ПК"),
+    BotCommand("pc",     "Отправить команду на ПК"),
+    BotCommand("clear",  "Очистить историю диалога"),
+    BotCommand("help",   "Список команд"),
+]
+
 _PC_KEYWORDS = [
     "play", "stop", "pause", "next", "prev", "volume",
     "включи", "выключи", "стоп", "пауза", "следующий",
@@ -73,13 +82,14 @@ def _app_keyboard() -> InlineKeyboardMarkup | None:
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
+    name = update.effective_user.first_name or "сэр"
     pc = "онлайн ✅" if bridge.connected else "офлайн ❌"
     await update.message.reply_text(
-        f"Привет! Я JARVIS — твой ИИ-ассистент.\n\n"
+        f"Привет, {name}! Я JARVIS — твой ИИ-ассистент.\n\n"
         f"🖥 ПК: {pc}\n"
         f"🤖 Gemini: готов ✅\n\n"
-        f"Напиши текст, голосовое или фото.\n"
-        f"/app — открыть полный интерфейс с голосом\n"
+        f"Напиши текст, голосовое или пришли фото.\n"
+        f"/app — полный интерфейс с голосом\n"
         f"/help — все команды",
         reply_markup=_app_keyboard(),
     )
@@ -94,7 +104,7 @@ async def cmd_app(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(
             "Mini App не настроен.\n"
-            "Добавь `miniapp_url` в config/api_keys.json.",
+            "Добавь `miniapp_url` в config/api_keys.json и перезапусти бота.",
             parse_mode="Markdown",
         )
 
@@ -103,12 +113,14 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     await update.message.reply_text(
-        "📋 *Команды*\n"
-        "/app — полный JARVIS с голосом (Mini App)\n"
+        "📋 *Команды JARVIS*\n\n"
+        "/app — полный интерфейс с голосом реального времени\n"
         "/status — статус подключения к ПК\n"
         "/pc `команда` — напрямую на ПК\n"
         "/clear — очистить историю диалога\n\n"
-        "Пиши, говори голосовыми или отправляй фото — я всё понимаю.",
+        "💬 Просто пиши — я понимаю текст\n"
+        "🎙 Голосовые сообщения — тоже принимаю\n"
+        "📷 Фото — отправь с подписью или без",
         parse_mode="Markdown",
     )
 
@@ -132,10 +144,15 @@ async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     command = " ".join(ctx.args).strip()
     if not command:
-        await update.message.reply_text("Использование: /pc <команда>")
+        await update.message.reply_text("Использование: /pc <команда>\nПример: /pc включи музыку")
         return
     if not bridge.connected:
-        await update.message.reply_text("❌ ПК офлайн. Запусти `python -m telegram_bot.pc_server` на компьютере.")
+        await update.message.reply_text(
+            "❌ ПК офлайн.\n"
+            "Запусти на своём компьютере:\n"
+            "`python -m telegram_bot.pc_server`",
+            parse_mode="Markdown",
+        )
         return
     await update.message.chat.send_action("typing")
     result = await bridge.send_command(command, update.effective_user.id)
@@ -151,42 +168,53 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     await update.message.chat.send_action("typing")
 
-    pc_result = await _try_pc(text, user_id)
-    if pc_result:
-        await update.message.reply_text(f"🖥 {pc_result}")
-        return
+    try:
+        pc_result = await _try_pc(text, user_id)
+        if pc_result:
+            await update.message.reply_text(f"🖥 {pc_result}")
+            return
 
-    pc_status = "онлайн" if bridge.connected else "офлайн"
-    reply = await gemini.chat(user_id, text, pc_status=pc_status)
-    await update.message.reply_text(reply)
+        pc_status = "онлайн" if bridge.connected else "офлайн"
+        reply = await gemini.chat(user_id, text, pc_status=pc_status)
+        await update.message.reply_text(reply)
+    except Exception as e:
+        logger.error(f"handle_text error: {e}")
+        await update.message.reply_text("❌ Что-то пошло не так. Попробуй ещё раз.")
 
 
 async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     await update.message.chat.send_action("typing")
-    file = await ctx.bot.get_file(update.message.voice.file_id)
-    audio = bytes(await file.download_as_bytearray())
-    reply = await gemini.chat_with_audio(update.effective_user.id, audio)
-    await update.message.reply_text(reply)
+    try:
+        file = await ctx.bot.get_file(update.message.voice.file_id)
+        audio = bytes(await file.download_as_bytearray())
+        reply = await gemini.chat_with_audio(update.effective_user.id, audio)
+        await update.message.reply_text(reply)
+    except Exception as e:
+        logger.error(f"handle_voice error: {e}")
+        await update.message.reply_text("❌ Не смог обработать голосовое. Попробуй ещё раз.")
 
 
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     await update.message.chat.send_action("typing")
-    photo = update.message.photo[-1]
-    file = await ctx.bot.get_file(photo.file_id)
-    image = bytes(await file.download_as_bytearray())
-    caption = update.message.caption or ""
-    reply = await gemini.chat_with_image(update.effective_user.id, image, caption)
-    await update.message.reply_text(reply)
+    try:
+        photo = update.message.photo[-1]
+        file = await ctx.bot.get_file(photo.file_id)
+        image = bytes(await file.download_as_bytearray())
+        caption = update.message.caption or ""
+        reply = await gemini.chat_with_image(update.effective_user.id, image, caption)
+        await update.message.reply_text(reply)
+    except Exception as e:
+        logger.error(f"handle_photo error: {e}")
+        await update.message.reply_text("❌ Не смог обработать фото. Попробуй ещё раз.")
 
 
-# ── Запуск ─────────────────────────────────────────────────────────────────────
+# ── Уведомления от ПК ──────────────────────────────────────────────────────────
 
 async def _on_notification(text: str, user_id: int = None, bot=None):
-    """PC → Telegram push notification."""
     if bot is None:
         return
     targets = [user_id] if user_id else cfg.allowed_user_ids
@@ -197,27 +225,38 @@ async def _on_notification(text: str, user_id: int = None, bot=None):
             logger.error(f"Notify {uid}: {e}")
 
 
-def main():
-    app = ApplicationBuilder().token(cfg.telegram_token).build()
+# ── Запуск ─────────────────────────────────────────────────────────────────────
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("app", cmd_app))
+def main():
+    async def post_init(application: Application) -> None:
+        # Register bot commands in Telegram menu
+        await application.bot.set_my_commands(_BOT_COMMANDS)
+        # Start PC bridge reconnect loop
+        application.create_task(bridge.connect_loop())
+        # Wire up PC → Telegram notifications
+        bridge.on_notification(
+            lambda t, uid: _on_notification(t, uid, application.bot)
+        )
+        logger.info("JARVIS Bot initialized ✅")
+
+    app = (
+        ApplicationBuilder()
+        .token(cfg.telegram_token)
+        .post_init(post_init)
+        .build()
+    )
+
+    app.add_handler(CommandHandler("start",  cmd_start))
+    app.add_handler(CommandHandler("help",   cmd_help))
+    app.add_handler(CommandHandler("app",    cmd_app))
     app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("clear", cmd_clear))
-    app.add_handler(CommandHandler("pc", cmd_pc))
+    app.add_handler(CommandHandler("clear",  cmd_clear))
+    app.add_handler(CommandHandler("pc",     cmd_pc))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    bridge.on_notification(lambda t, uid: _on_notification(t, uid, app.bot))
-
-    async def post_init(application):
-        asyncio.create_task(bridge.connect_loop())
-
-    app.post_init = post_init
-
-    logger.info("JARVIS Telegram Bot started")
+    logger.info("Starting JARVIS Telegram Bot...")
     app.run_polling(drop_pending_updates=True)
 
 
