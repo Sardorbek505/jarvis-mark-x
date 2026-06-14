@@ -82,7 +82,7 @@ class PCBridge:
         elif msg.get("type") == "notification" and self._notify_cb:
             await self._notify_cb(msg.get("text", ""), msg.get("user_id"))
 
-    async def send_command(self, text: str, user_id: int, timeout: float = 10.0) -> Optional[str]:
+    async def send_command(self, text: str, user_id: int, timeout: float = 25.0) -> Optional[str]:
         if not self._connected or not self._ws:
             return None
 

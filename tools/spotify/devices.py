@@ -111,23 +111,33 @@ class SpotifyDevices:
     def launch_spotify_desktop(self) -> bool:
         """
         Launch Spotify desktop application.
-        
+
         Returns:
             True if successful, False otherwise
         """
         try:
             system = platform.system()
-            
+
             if system == 'Windows':
-                subprocess.Popen(['spotify'], shell=True)
+                import os
+                # 1. Standard installer location: %APPDATA%\Spotify\Spotify.exe
+                appdata = os.environ.get('APPDATA', '')
+                exe = os.path.join(appdata, 'Spotify', 'Spotify.exe')
+                if appdata and os.path.exists(exe):
+                    subprocess.Popen([exe])
+                    return True
+                # 2. Fall back to the spotify: URI protocol handler.
+                #    Works for the Microsoft Store version too.
+                os.startfile('spotify:')  # type: ignore[attr-defined]
+                return True
             elif system == 'Darwin':  # macOS
                 subprocess.Popen(['open', '-a', 'Spotify'])
+                return True
             elif system == 'Linux':
                 subprocess.Popen(['spotify'])
+                return True
             else:
                 return False
-            
-            return True
         except Exception as e:
             print(f"[SpotifyDevices] Failed to launch Spotify: {e}")
             return False
