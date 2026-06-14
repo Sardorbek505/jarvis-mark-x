@@ -1,0 +1,68 @@
+version: "3.9"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# JARVIS VPS Stack
+#
+# Requires:
+#   • config/api_keys.json  — Gemini key, Telegram token, Spotify creds
+#   • DOMAIN env var        — your domain, e.g. jarvis.yourdomain.com
+#
+# Quick start:
+#   export DOMAIN=jarvis.yourdomain.com
+#   docker compose up -d
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Telegram bot (polling) ──────────────────────────────────────────────────
+  bot:
+    build: .
+    image: jarvis-bot
+    restart: unless-stopped
+    command: python -m telegram_bot.bot
+    volumes:
+      - ./config:/app/config
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - jarvis
+
+  # ── Mini App WebSocket server ───────────────────────────────────────────────
+  miniapp:
+    build: .
+    image: jarvis-bot
+    restart: unless-stopped
+    command: python -m telegram_bot.miniapp_server
+    volumes:
+      - ./config:/app/config
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MINIAPP_PORT=8000
+    expose:
+      - "8000"
+    networks:
+      - jarvis
+
+  # ── Caddy reverse proxy — automatic HTTPS via Let's Encrypt ────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - jarvis
+    depends_on:
+      - miniapp
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  jarvis:
+    driver: bridge

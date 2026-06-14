@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """JARVIS Telegram Bot — mobile interface, runs on VPS."""
 import asyncio
+import base64
 import logging
 import sys
 from datetime import datetime
@@ -35,22 +36,28 @@ gemini = GeminiClient(cfg.gemini_api_key, cfg.gemini_model)
 bridge = PCBridge(cfg.pc_ws_host, cfg.pc_ws_port)
 
 _BOT_COMMANDS = [
-    BotCommand("start",    "Запустить JARVIS"),
-    BotCommand("app",      "Открыть с голосом (Mini App)"),
-    BotCommand("status",   "Статус подключения к ПК"),
-    BotCommand("pc",       "Отправить команду на ПК"),
-    BotCommand("remind",   "Добавить напоминание"),
-    BotCommand("reminders","Мои напоминания"),
-    BotCommand("clear",    "Очистить историю диалога"),
-    BotCommand("help",     "Список команд"),
+    BotCommand("start",      "Запустить JARVIS"),
+    BotCommand("help",       "Список команд"),
+    BotCommand("app",        "Открыть Mini App"),
+    BotCommand("status",     "Статус ПК"),
+    BotCommand("pc",         "Команда на ПК"),
+    BotCommand("screenshot", "Скриншот рабочего стола"),
+    BotCommand("vol",        "Громкость ПК: /vol 70"),
+    BotCommand("lock",       "Заблокировать экран"),
+    BotCommand("sysinfo",    "Состояние системы"),
+    BotCommand("briefing",   "Утренний брифинг"),
+    BotCommand("remind",     "Добавить напоминание"),
+    BotCommand("reminders",  "Мои напоминания"),
+    BotCommand("clear",      "Очистить историю диалога"),
 ]
 
 _PC_KEYWORDS = [
     # Music
-    "play", "stop", "pause", "next", "prev", "volume",
+    "play", "stop", "pause", "next", "prev",
     "включи", "выключи", "стоп", "пауза", "следующий",
     "поставь", "запусти", "воспроизведи", "играй",
-    # Apps
+    "переключи", "отключи", "громче", "тише", "дальше",
+    # Apps & browser
     "open", "открой",
     # Weather
     "weather", "погода",
@@ -59,8 +66,11 @@ _PC_KEYWORDS = [
     # Window control
     "сверни", "свернуть", "minimize", "рабочий стол", "разверни",
     "закрой окно", "переключи окно", "проводник", "диспетчер",
-    # Screenshot
+    # System
     "screenshot", "скриншот",
+    "заблокируй", "заблокировать",
+    "выключи компьютер", "выключи пк",
+    "перезагрузи компьютер",
 ]
 
 _REMINDER_TRIGGERS = ["напомни", "remind me", "поставь напоминание", "таймер на"]
@@ -88,8 +98,6 @@ async def _try_pc(text: str, user_id: int) -> str | None:
     return None
 
 
-# ── Команды ────────────────────────────────────────────────────────────────────
-
 def _app_keyboard() -> InlineKeyboardMarkup | None:
     if not cfg.miniapp_url:
         return None
@@ -97,6 +105,8 @@ def _app_keyboard() -> InlineKeyboardMarkup | None:
         InlineKeyboardButton("⬡ Открыть JARVIS", web_app=WebAppInfo(url=cfg.miniapp_url))
     ]])
 
+
+# ── Basic commands ─────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
@@ -108,10 +118,42 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🖥 ПК: {pc}\n"
         f"🤖 Gemini: готов ✅\n\n"
         f"Напиши что угодно — поговорим, помогу, отвечу.\n"
-        f"/pc <команда> — управление компьютером\n"
-        f"/remind <текст> — напоминание\n"
         f"/help — все команды",
         reply_markup=_app_keyboard(),
+    )
+
+
+async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    pc = "онлайн ✅" if bridge.connected else "офлайн ❌"
+    await update.effective_message.reply_text(
+        f"📋 *Команды JARVIS*\n\n"
+        f"*ПК* ({pc})\n"
+        f"`/pc <команда>` — любая команда\n"
+        f"`/screenshot` — скриншот рабочего стола\n"
+        f"`/vol 70` — установить громкость 70%\n"
+        f"`/lock` — заблокировать экран\n"
+        f"`/sysinfo` — CPU, RAM, батарея\n"
+        f"`/briefing` — утренний брифинг\n\n"
+        f"*Примеры команд:*\n"
+        f"`/pc поставь believer`\n"
+        f"`/pc переключи музыку`\n"
+        f"`/pc стоп`\n"
+        f"`/pc погода в Ташкенте`\n"
+        f"`/pc сверни все окна`\n"
+        f"`/pc открой chrome`\n"
+        f"`/pc найди новости AI`\n\n"
+        f"*Напоминания*\n"
+        f"`/remind через 30 минут позвонить`\n"
+        f"`/remind завтра в 9:00 встреча`\n"
+        f"`/reminders` — список\n\n"
+        f"*Прочее*\n"
+        f"`/status` — статус ПК\n"
+        f"`/clear` — очистить историю\n"
+        f"`/app` — голосовой интерфейс\n\n"
+        f"💬 Или просто пиши — я твой ассистент!",
+        parse_mode="Markdown",
     )
 
 
@@ -128,31 +170,6 @@ async def cmd_app(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not _is_authorized(update):
-        return
-    pc_status = "онлайн ✅" if bridge.connected else "офлайн ❌"
-    await update.effective_message.reply_text(
-        f"📋 *Команды JARVIS*\n\n"
-        f"*Компьютер* (ПК: {pc_status})\n"
-        f"/pc сверни все окна\n"
-        f"/pc включи музыку\n"
-        f"/pc поставь believer\n"
-        f"/pc погода в Ташкенте\n"
-        f"/pc найди новости о AI\n\n"
-        f"*Напоминания*\n"
-        f"/remind через 30 минут позвонить маме\n"
-        f"/remind завтра в 10:00 встреча\n"
-        f"/reminders — список активных\n\n"
-        f"*Прочее*\n"
-        f"/status — статус ПК\n"
-        f"/clear — очистить историю\n"
-        f"/app — голосовой интерфейс\n\n"
-        f"💬 Или просто пиши — я твой ассистент!",
-        parse_mode="Markdown",
-    )
-
-
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
@@ -167,18 +184,23 @@ async def cmd_clear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text("История диалога очищена ✅")
 
 
+# ── PC commands ────────────────────────────────────────────────────────────────
+
 async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     command = " ".join(ctx.args).strip()
     if not command:
-        await update.effective_message.reply_text("Использование: /pc <команда>\nПример: /pc сверни все окна")
+        await update.effective_message.reply_text(
+            "Использование: /pc <команда>\nПример: /pc поставь believer"
+        )
         return
     if not bridge.connected:
         await update.effective_message.reply_text(
             "❌ ПК офлайн.\n"
             "Запусти на своём компьютере:\n"
-            "`python -m telegram_bot.pc_server`",
+            "`python -m telegram_bot.pc_server`\n"
+            "или дважды кликни `scripts\\start_pc.bat`",
             parse_mode="Markdown",
         )
         return
@@ -186,6 +208,80 @@ async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     result = await bridge.send_command(command, update.effective_user.id)
     await update.effective_message.reply_text(result or "❌ ПК не ответил вовремя.")
 
+
+async def cmd_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    if not bridge.connected:
+        await update.effective_message.reply_text("❌ ПК офлайн.")
+        return
+    await update.effective_message.chat.send_action("upload_photo")
+    result = await bridge.send_command_full("скриншот", update.effective_user.id)
+    if not result:
+        await update.effective_message.reply_text("❌ ПК не ответил вовремя.")
+        return
+    if result.get("image_b64"):
+        photo = base64.b64decode(result["image_b64"])
+        await update.effective_message.reply_photo(
+            photo, caption=f"📸 {result.get('text', 'Скриншот')}"
+        )
+    else:
+        await update.effective_message.reply_text(result.get("text") or "❌ Не удалось сделать скриншот")
+
+
+async def cmd_vol(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    val = " ".join(ctx.args).strip()
+    if not val.isdigit() or not (0 <= int(val) <= 100):
+        await update.effective_message.reply_text(
+            "Использование: /vol [0–100]\nПример: /vol 70"
+        )
+        return
+    if not bridge.connected:
+        await update.effective_message.reply_text("❌ ПК офлайн.")
+        return
+    result = await bridge.send_command(f"системная громкость {val}", update.effective_user.id)
+    await update.effective_message.reply_text(result or "❌ ПК не ответил.")
+
+
+async def cmd_lock(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    if not bridge.connected:
+        await update.effective_message.reply_text("❌ ПК офлайн.")
+        return
+    result = await bridge.send_command("заблокируй экран", update.effective_user.id)
+    await update.effective_message.reply_text(result or "❌ ПК не ответил.")
+
+
+async def cmd_sysinfo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    if not bridge.connected:
+        await update.effective_message.reply_text("❌ ПК офлайн.")
+        return
+    await update.effective_message.chat.send_action("typing")
+    result = await bridge.send_command("системная информация", update.effective_user.id)
+    await update.effective_message.reply_text(
+        result or "❌ ПК не ответил.", parse_mode="Markdown"
+    )
+
+
+async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    if not bridge.connected:
+        await update.effective_message.reply_text(
+            "❌ ПК офлайн. Запусти pc_server на компьютере."
+        )
+        return
+    await update.effective_message.chat.send_action("typing")
+    result = await bridge.send_command("брифинг", update.effective_user.id)
+    await update.effective_message.reply_text(result or "❌ ПК не ответил.")
+
+
+# ── Reminders ──────────────────────────────────────────────────────────────────
 
 async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
@@ -210,8 +306,7 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     when, what = parsed
-    reply = add_reminder(update.effective_user.id, what, when)
-    await update.effective_message.reply_text(reply)
+    await update.effective_message.reply_text(add_reminder(update.effective_user.id, what, when))
 
 
 async def cmd_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -220,7 +315,7 @@ async def cmd_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(list_reminders(update.effective_user.id))
 
 
-# ── Сообщения ──────────────────────────────────────────────────────────────────
+# ── Message handlers ───────────────────────────────────────────────────────────
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
@@ -230,22 +325,21 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.chat.send_action("typing")
 
     try:
-        # 1. Check for reminder request (handle before PC/Gemini routing)
+        # 1. Reminder?
         if _looks_like_reminder(text):
             parsed = parse_reminder(text)
             if parsed:
                 when, what = parsed
-                reply = add_reminder(user_id, what, when)
-                await update.effective_message.reply_text(reply)
+                await update.effective_message.reply_text(add_reminder(user_id, what, when))
                 return
 
-        # 2. Try PC bridge for hardware commands
+        # 2. PC command?
         pc_result = await _try_pc(text, user_id)
         if pc_result:
             await update.effective_message.reply_text(f"🖥 {pc_result}")
             return
 
-        # 3. Fall through to Gemini for conversation
+        # 3. Gemini conversation
         reply = await gemini.chat(user_id, text)
         await update.effective_message.reply_text(reply)
     except Exception as e:
@@ -264,7 +358,7 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(reply)
     except Exception as e:
         logger.error(f"handle_voice error: {e}")
-        await update.effective_message.reply_text("❌ Не смог обработать голосовое. Попробуй ещё раз.")
+        await update.effective_message.reply_text("❌ Не смог обработать голосовое.")
 
 
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -280,10 +374,10 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(reply)
     except Exception as e:
         logger.error(f"handle_photo error: {e}")
-        await update.effective_message.reply_text("❌ Не смог обработать фото. Попробуй ещё раз.")
+        await update.effective_message.reply_text("❌ Не смог обработать фото.")
 
 
-# ── Уведомления от ПК ──────────────────────────────────────────────────────────
+# ── PC notifications ───────────────────────────────────────────────────────────
 
 async def _on_notification(text: str, user_id: int = None, bot=None):
     if bot is None:
@@ -296,10 +390,9 @@ async def _on_notification(text: str, user_id: int = None, bot=None):
             logger.error(f"Notify {uid}: {e}")
 
 
-# ── Планировщик напоминаний ────────────────────────────────────────────────────
+# ── Reminder loop ──────────────────────────────────────────────────────────────
 
 async def _reminder_loop(bot):
-    """Check and send due reminders every 30 seconds."""
     while True:
         try:
             await asyncio.sleep(30)
@@ -312,33 +405,46 @@ async def _reminder_loop(bot):
                     )
                     mark_sent(r["id"])
                 except Exception as e:
-                    logger.error(f"Reminder send error: {e}")
+                    logger.error(f"Reminder send: {e}")
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Reminder loop error: {e}")
+            logger.error(f"Reminder loop: {e}")
 
 
-# ── Запуск ─────────────────────────────────────────────────────────────────────
+# ── Startup ────────────────────────────────────────────────────────────────────
 
 _bridge_task: asyncio.Task | None = None
 _reminder_task: asyncio.Task | None = None
+_miniapp_task: asyncio.Task | None = None
 
 
 def main():
     async def post_init(application: Application) -> None:
-        global _bridge_task, _reminder_task
+        global _bridge_task, _reminder_task, _miniapp_task
         await application.bot.set_my_commands(_BOT_COMMANDS)
         bridge.on_notification(
             lambda t, uid: _on_notification(t, uid, application.bot)
         )
         loop = asyncio.get_event_loop()
-        _bridge_task = loop.create_task(bridge.connect_loop())
+        _bridge_task   = loop.create_task(bridge.connect_loop())
         _reminder_task = loop.create_task(_reminder_loop(application.bot))
+
+        # Start Mini App server if port is configured
+        if cfg.miniapp_port:
+            try:
+                from telegram_bot.miniapp_server import run as run_miniapp
+                _miniapp_task = loop.create_task(
+                    run_miniapp(port=cfg.miniapp_port, gemini=gemini, bridge=bridge)
+                )
+                logger.info(f"Mini App server started on port {cfg.miniapp_port}")
+            except Exception as e:
+                logger.warning(f"Mini App server not started: {e}")
+
         logger.info("JARVIS Bot initialized ✅")
 
     async def post_shutdown(application: Application) -> None:
-        for task in (_bridge_task, _reminder_task):
+        for task in (_bridge_task, _reminder_task, _miniapp_task):
             if task and not task.done():
                 task.cancel()
                 try:
@@ -354,14 +460,19 @@ def main():
         .build()
     )
 
-    app.add_handler(CommandHandler("start",     cmd_start))
-    app.add_handler(CommandHandler("help",      cmd_help))
-    app.add_handler(CommandHandler("app",       cmd_app))
-    app.add_handler(CommandHandler("status",    cmd_status))
-    app.add_handler(CommandHandler("clear",     cmd_clear))
-    app.add_handler(CommandHandler("pc",        cmd_pc))
-    app.add_handler(CommandHandler("remind",    cmd_remind))
-    app.add_handler(CommandHandler("reminders", cmd_reminders))
+    app.add_handler(CommandHandler("start",      cmd_start))
+    app.add_handler(CommandHandler("help",       cmd_help))
+    app.add_handler(CommandHandler("app",        cmd_app))
+    app.add_handler(CommandHandler("status",     cmd_status))
+    app.add_handler(CommandHandler("clear",      cmd_clear))
+    app.add_handler(CommandHandler("pc",         cmd_pc))
+    app.add_handler(CommandHandler("screenshot", cmd_screenshot))
+    app.add_handler(CommandHandler("vol",        cmd_vol))
+    app.add_handler(CommandHandler("lock",       cmd_lock))
+    app.add_handler(CommandHandler("sysinfo",    cmd_sysinfo))
+    app.add_handler(CommandHandler("briefing",   cmd_briefing))
+    app.add_handler(CommandHandler("remind",     cmd_remind))
+    app.add_handler(CommandHandler("reminders",  cmd_reminders))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))

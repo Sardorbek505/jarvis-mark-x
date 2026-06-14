@@ -36,7 +36,7 @@ class PCBridge:
         """Reconnect loop — runs as background task."""
         if not self._host or not _WS_AVAILABLE:
             if not _WS_AVAILABLE:
-                logger.warning("websockets package not installed — PC bridge disabled")
+                logger.warning("websockets not installed — PC bridge disabled")
             return
 
         uri = f"ws://{self._host}:{self._port}"
@@ -58,7 +58,6 @@ class PCBridge:
                 finally:
                     self._ws = None
                     self._connected = False
-                    # Fail all pending futures
                     for fut in self._pending.values():
                         if not fut.done():
                             fut.set_result(None)
@@ -77,12 +76,16 @@ class PCBridge:
         if msg.get("type") == "response":
             fut = self._pending.pop(msg.get("req_id", ""), None)
             if fut and not fut.done():
-                fut.set_result(msg.get("text", ""))
+                fut.set_result({
+                    "text": msg.get("text", ""),
+                    "image_b64": msg.get("image_b64"),
+                })
 
         elif msg.get("type") == "notification" and self._notify_cb:
             await self._notify_cb(msg.get("text", ""), msg.get("user_id"))
 
-    async def send_command(self, text: str, user_id: int, timeout: float = 25.0) -> Optional[str]:
+    async def _send_raw(self, text: str, user_id: int, timeout: float = 25.0) -> Optional[dict]:
+        """Send a command and return the full response dict or None."""
         if not self._connected or not self._ws:
             return None
 
@@ -103,3 +106,14 @@ class PCBridge:
             logger.debug(f"Bridge send: {e}")
             self._pending.pop(req_id, None)
             return None
+
+    async def send_command(self, text: str, user_id: int, timeout: float = 25.0) -> Optional[str]:
+        """Send command; return text reply or None (backward-compatible)."""
+        result = await self._send_raw(text, user_id, timeout)
+        if result is None:
+            return None
+        return result.get("text", "")
+
+    async def send_command_full(self, text: str, user_id: int, timeout: float = 25.0) -> Optional[dict]:
+        """Send command; return full dict with 'text' and optional 'image_b64'."""
+        return await self._send_raw(text, user_id, timeout)

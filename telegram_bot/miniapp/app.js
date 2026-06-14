@@ -8,20 +8,20 @@ const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
 const WS_URL  = `${wsProto}//${location.host}/ws?user_id=${USER_ID}`;
 
 // DOM refs
-const orb      = document.getElementById('orb');
-const orbLabel = document.getElementById('orb-label');
-const msgs     = document.getElementById('messages');
-const textIn   = document.getElementById('text-in');
-const sendBtn  = document.getElementById('send-btn');
-const pcBadge  = document.getElementById('pc-badge');
-const connBadge= document.getElementById('conn-badge');
+const orb       = document.getElementById('orb');
+const orbLabel  = document.getElementById('orb-label');
+const msgs      = document.getElementById('messages');
+const textIn    = document.getElementById('text-in');
+const sendBtn   = document.getElementById('send-btn');
+const pcBadge   = document.getElementById('pc-badge');
+const connBadge = document.getElementById('conn-badge');
 
-// ── State ─────────────────────────────────────────────────────────────────────
+// ── State machine ─────────────────────────────────────────────────────────────
 const S = {
-  idle:       { label: 'Нажми чтобы говорить',    cls: 'idle' },
-  listening:  { label: 'Слушаю...',               cls: 'listening' },
-  processing: { label: 'Думаю...',                cls: 'processing' },
-  speaking:   { label: 'Говорю...',               cls: 'speaking' },
+  idle:       { label: 'Нажми чтобы говорить', cls: 'idle' },
+  listening:  { label: 'Слушаю...',             cls: 'listening' },
+  processing: { label: 'Думаю...',              cls: 'processing' },
+  speaking:   { label: 'Говорю...',             cls: 'speaking' },
 };
 
 function setState(name) {
@@ -30,13 +30,35 @@ function setState(name) {
   orb.className = s.cls;
 }
 
-// ── Messages ──────────────────────────────────────────────────────────────────
+// ── Message rendering ─────────────────────────────────────────────────────────
 function addMsg(role, text) {
   document.querySelector('.typing')?.remove();
   const d = document.createElement('div');
   d.className = `msg ${role}`;
   d.textContent = text;
   msgs.appendChild(d);
+  msgs.parentElement.scrollTop = msgs.parentElement.scrollHeight;
+}
+
+function addImage(b64, caption) {
+  document.querySelector('.typing')?.remove();
+  const wrap = document.createElement('div');
+  wrap.className = 'msg bot';
+  wrap.style.padding = '6px';
+
+  const img = document.createElement('img');
+  img.src = `data:image/jpeg;base64,${b64}`;
+  img.style.cssText = 'width:100%;border-radius:12px;display:block;';
+  img.loading = 'lazy';
+  wrap.appendChild(img);
+
+  if (caption) {
+    const cap = document.createElement('div');
+    cap.textContent = caption;
+    cap.style.cssText = 'font-size:12px;color:#9aa0b0;margin-top:5px;padding:0 4px;';
+    wrap.appendChild(cap);
+  }
+  msgs.appendChild(wrap);
   msgs.parentElement.scrollTop = msgs.parentElement.scrollHeight;
 }
 
@@ -82,6 +104,11 @@ function connect() {
         setState('idle');
         break;
 
+      case 'image':
+        addImage(msg.data, msg.caption);
+        setState('idle');
+        break;
+
       case 'transcript_user':
         if (msg.text) addMsg('user', msg.text);
         break;
@@ -111,7 +138,7 @@ function connect() {
   };
 }
 
-// ── Text send ─────────────────────────────────────────────────────────────────
+// ── Text input ────────────────────────────────────────────────────────────────
 sendBtn.addEventListener('click', sendText);
 textIn.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); }
@@ -127,10 +154,19 @@ function sendText() {
   showTyping();
 }
 
-// ── Voice ─────────────────────────────────────────────────────────────────────
-// Two separate AudioContexts to avoid sample rate conflict:
-// recCtx  — any rate (browser default), worklet downsamples to 16 kHz
-// playCtx — 24 000 Hz for Gemini audio playback
+// ── Quick PC actions ──────────────────────────────────────────────────────────
+function pcCmd(text) {
+  if (ws?.readyState !== WebSocket.OPEN) { addMsg('sys', '⚠ Нет соединения'); return; }
+  addMsg('user', text);
+  ws.send(JSON.stringify({ type: 'text', text }));
+  setState('processing');
+  showTyping();
+}
+
+// Expose for inline onclick
+window.pcCmd = pcCmd;
+
+// ── Voice control ─────────────────────────────────────────────────────────────
 let recCtx    = null;
 let playCtx   = null;
 let workletNode = null;
@@ -149,7 +185,6 @@ async function toggleVoice() {
 
 async function startVoice() {
   try {
-    // Recording context at browser's native rate (worklet downsamples internally)
     recCtx = new AudioContext();
     if (recCtx.state === 'suspended') await recCtx.resume();
 
@@ -157,7 +192,6 @@ async function startVoice() {
       audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 }
     });
 
-    // Load worklet — use absolute URL derived from page location
     const workletURL = new URL('./worklet.js', location.href).href;
     await recCtx.audioWorklet.addModule(workletURL);
 
@@ -166,7 +200,6 @@ async function startVoice() {
 
     workletNode.port.onmessage = ({ data }) => {
       if (ws?.readyState !== WebSocket.OPEN) return;
-      // Convert ArrayBuffer to base64
       const bytes = new Uint8Array(data.pcm);
       let b64 = '';
       for (let i = 0; i < bytes.length; i++) b64 += String.fromCharCode(bytes[i]);
@@ -197,23 +230,20 @@ function stopVoice() {
   }
 }
 
-// ── Audio playback — 24 kHz int16 PCM from Gemini ────────────────────────────
+// ── PCM audio playback (Gemini 24 kHz) ───────────────────────────────────────
 let playChain = Promise.resolve();
 
 async function playPCM(b64) {
   setState('speaking');
   playChain = playChain.then(async () => {
     try {
-      // Decode base64 → Int16 samples → Float32
       const binary = atob(b64);
       const bytes  = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-
       const samples = new Int16Array(bytes.buffer);
       const f32     = new Float32Array(samples.length);
       for (let i = 0; i < samples.length; i++) f32[i] = samples[i] / 32768;
 
-      // Playback context at 24 kHz — matches Gemini output
       if (!playCtx || playCtx.state === 'closed') {
         playCtx = new AudioContext({ sampleRate: 24000 });
       }
@@ -221,7 +251,6 @@ async function playPCM(b64) {
 
       const buf = playCtx.createBuffer(1, f32.length, 24000);
       buf.copyToChannel(f32, 0);
-
       await new Promise(res => {
         const src = playCtx.createBufferSource();
         src.buffer = buf;
@@ -229,9 +258,7 @@ async function playPCM(b64) {
         src.onended = res;
         src.start();
       });
-    } catch (e) {
-      console.debug(`playPCM: ${e.message}`);
-    }
+    } catch (e) { console.debug(`playPCM: ${e.message}`); }
   });
   await playChain;
 }

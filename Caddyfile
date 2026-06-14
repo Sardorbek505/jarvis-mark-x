@@ -1,0 +1,29 @@
+# Caddyfile — automatic HTTPS for JARVIS Mini App
+# Replace "jarvis.yourdomain.com" with your actual domain.
+# Caddy fetches a Let's Encrypt cert automatically.
+
+{$DOMAIN:jarvis.yourdomain.com} {
+    # Proxy all traffic to the Mini App server
+    reverse_proxy miniapp:8000
+
+    # Enable WebSocket upgrades
+    @websockets {
+        header Connection *Upgrade*
+        header Upgrade    websocket
+    }
+    handle @websockets {
+        reverse_proxy miniapp:8000
+    }
+
+    # Security headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options    "nosniff"
+        X-Frame-Options           "SAMEORIGIN"
+    }
+
+    log {
+        output stderr
+        level  INFO
+    }
+}
