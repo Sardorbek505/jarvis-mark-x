@@ -63,9 +63,9 @@ class GeminiClient:
             logger.error(f"Gemini generate error: {e}")
             return "Извини, произошла ошибка. Попробуй ещё раз."
 
-    async def chat(self, user_id: int, text: str, pc_status: str = "офлайн") -> str:
+    async def chat(self, user_id: int, text: str) -> str:
         history = self._history_for(user_id)
-        user_msg = {"role": "user", "parts": [{"text": f"[ПК: {pc_status}] {text}"}]}
+        user_msg = {"role": "user", "parts": [{"text": text}]}
         contents = history + [user_msg]
 
         reply = await self._generate(contents)
