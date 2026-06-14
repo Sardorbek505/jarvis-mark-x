@@ -24,8 +24,12 @@ _PC_COMMAND_KEYWORDS = {
                "включи", "выключи", "стоп", "пауза", "следующий", "громкость", "музык",
                "поставь", "запусти", "воспроизведи", "играй", "трек", "песн"],
     "weather": ["weather", "погод", "температур"],
-    "app": ["open", "close", "открой", "закрой", "запусти приложение"],
+    "app": ["open", "открой", "запусти приложение"],
     "search": ["search", "find", "найди", "поищи", "поиск"],
+    "window": ["сверни", "свернуть", "minimize", "закрой окно", "закрыть окно",
+               "рабочий стол", "show desktop", "разверни", "maximize",
+               "snap left", "snap right", "alt tab", "переключи окно",
+               "проводник", "диспетчер задач", "task manager"],
 }
 
 
@@ -114,7 +118,14 @@ async def _execute(text: str) -> str:
             result = await asyncio.to_thread(web_search, {"query": query})
             return result or "Поиск запущен"
 
-        return f"Команда «{text}» получена. JARVIS выполняет..."
+        # Window control — window_control expects {action, target}
+        if any(k in text_lower for k in _PC_COMMAND_KEYWORDS["window"]):
+            from actions.window_control import window_control
+            params = _parse_window(text_lower)
+            result = await asyncio.to_thread(window_control, params)
+            return result or "Выполнено"
+
+        return f"Не понял команду: «{text}». Попробуй /help чтобы увидеть что я умею."
 
     except Exception as e:
         logger.error(f"PC execute error: {e}")
@@ -149,6 +160,31 @@ def _extract_after(text_lower: str, markers: list) -> str:
         if idx != -1:
             return text_lower[idx + len(marker):].strip()
     return ""
+
+
+def _parse_window(text_lower: str) -> dict:
+    """Map natural-language window command to window_control parameters."""
+    if any(k in text_lower for k in ["сверни все", "свернуть все", "minimize all", "win+m"]):
+        return {"action": "minimize_all"}
+    if any(k in text_lower for k in ["рабочий стол", "show desktop", "win+d"]):
+        return {"action": "show_desktop"}
+    if any(k in text_lower for k in ["сверни", "свернуть", "minimize"]):
+        # Check if there's a target app
+        target = _extract_after(text_lower, ["сверни ", "свернуть "])
+        if target and target not in ("окно", "window"):
+            return {"action": "activate", "target": target}
+        return {"action": "minimize"}
+    if any(k in text_lower for k in ["разверни", "maximize"]):
+        return {"action": "maximize"}
+    if any(k in text_lower for k in ["закрой окно", "закрыть окно", "close window"]):
+        return {"action": "close"}
+    if any(k in text_lower for k in ["alt tab", "переключи окно", "switch"]):
+        return {"action": "switch"}
+    if any(k in text_lower for k in ["проводник", "explorer"]):
+        return {"action": "open_explorer"}
+    if any(k in text_lower for k in ["диспетчер задач", "task manager"]):
+        return {"action": "task_manager"}
+    return {"action": "minimize_all"}
 
 
 # Singleton for import into main.py
