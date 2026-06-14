@@ -11,6 +11,7 @@ _CONFIG_FILE = BASE_DIR / "config" / "api_keys.json"
 
 class Config(NamedTuple):
     gemini_api_key: str
+    gemini_model: str
     telegram_token: str
     allowed_user_ids: list
     pc_ws_host: str
@@ -26,6 +27,7 @@ def load() -> Config:
             raw = json.load(f)
 
     gemini_key = os.getenv("GEMINI_API_KEY") or raw.get("gemini_api_key", "")
+    gemini_model = os.getenv("GEMINI_MODEL") or raw.get("gemini_model", "gemini-1.5-flash")
     token = os.getenv("TELEGRAM_BOT_TOKEN") or raw.get("telegram_bot_token", "")
 
     allowed_raw = os.getenv("TELEGRAM_ALLOWED_USERS") or raw.get("telegram_allowed_users", "")
@@ -48,6 +50,7 @@ def load() -> Config:
 
     return Config(
         gemini_api_key=gemini_key,
+        gemini_model=gemini_model,
         telegram_token=token,
         allowed_user_ids=allowed,
         pc_ws_host=pc_host,
