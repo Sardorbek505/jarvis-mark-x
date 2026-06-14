@@ -5,7 +5,7 @@ import logging
 import sys
 from pathlib import Path
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -62,17 +62,41 @@ async def _try_pc(text: str, user_id: int) -> str | None:
 
 # ── Команды ────────────────────────────────────────────────────────────────────
 
+def _app_keyboard() -> InlineKeyboardMarkup | None:
+    if not cfg.miniapp_url:
+        return None
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("⬡ Открыть JARVIS", web_app=WebAppInfo(url=cfg.miniapp_url))
+    ]])
+
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     pc = "онлайн ✅" if bridge.connected else "офлайн ❌"
     await update.message.reply_text(
-        f"Привет! Я JARVIS — твой ИИ-ассистент в Telegram.\n\n"
+        f"Привет! Я JARVIS — твой ИИ-ассистент.\n\n"
         f"🖥 ПК: {pc}\n"
         f"🤖 Gemini: готов ✅\n\n"
-        f"Напиши текст, отправь голосовое или фото.\n"
-        f"/help — все команды"
+        f"Напиши текст, голосовое или фото.\n"
+        f"/app — открыть полный интерфейс с голосом\n"
+        f"/help — все команды",
+        reply_markup=_app_keyboard(),
     )
+
+
+async def cmd_app(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    kb = _app_keyboard()
+    if kb:
+        await update.message.reply_text("Открываю JARVIS ↓", reply_markup=kb)
+    else:
+        await update.message.reply_text(
+            "Mini App не настроен.\n"
+            "Добавь `miniapp_url` в config/api_keys.json.",
+            parse_mode="Markdown",
+        )
 
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -80,10 +104,11 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "📋 *Команды*\n"
+        "/app — полный JARVIS с голосом (Mini App)\n"
         "/status — статус подключения к ПК\n"
-        "/pc `команда` — отправить команду напрямую на ПК\n"
+        "/pc `команда` — напрямую на ПК\n"
         "/clear — очистить историю диалога\n\n"
-        "Просто пиши — я понимаю текст, голос и фото.",
+        "Пиши, говори голосовыми или отправляй фото — я всё понимаю.",
         parse_mode="Markdown",
     )
 
@@ -177,6 +202,7 @@ def main():
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("app", cmd_app))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("pc", cmd_pc))

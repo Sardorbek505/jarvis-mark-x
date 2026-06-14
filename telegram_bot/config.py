@@ -15,6 +15,8 @@ class Config(NamedTuple):
     allowed_user_ids: list
     pc_ws_host: str
     pc_ws_port: int
+    miniapp_url: str
+    miniapp_port: int
 
 
 def load() -> Config:
@@ -34,6 +36,8 @@ def load() -> Config:
 
     pc_host = os.getenv("PC_WS_HOST") or raw.get("pc_ws_host", "")
     pc_port = int(os.getenv("PC_WS_PORT") or raw.get("pc_ws_port", 8765))
+    miniapp_url = os.getenv("MINIAPP_URL") or raw.get("miniapp_url", "")
+    miniapp_port = int(os.getenv("MINIAPP_PORT") or raw.get("miniapp_port", 8000))
 
     if not gemini_key:
         print("ERROR: gemini_api_key not found. Set it in config/api_keys.json or GEMINI_API_KEY env.")
@@ -48,4 +52,6 @@ def load() -> Config:
         allowed_user_ids=allowed,
         pc_ws_host=pc_host,
         pc_ws_port=pc_port,
+        miniapp_url=miniapp_url,
+        miniapp_port=miniapp_port,
     )
