@@ -103,7 +103,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     name = update.effective_user.first_name or "сэр"
     pc = "онлайн ✅" if bridge.connected else "офлайн ❌"
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         f"Привет, {name}! Я JARVIS — твой личный ИИ-ассистент.\n\n"
         f"🖥 ПК: {pc}\n"
         f"🤖 Gemini: готов ✅\n\n"
@@ -120,9 +120,9 @@ async def cmd_app(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     kb = _app_keyboard()
     if kb:
-        await update.message.reply_text("Открываю JARVIS ↓", reply_markup=kb)
+        await update.effective_message.reply_text("Открываю JARVIS ↓", reply_markup=kb)
     else:
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "Mini App не настроен.\n"
             "Добавь miniapp_url в config/api_keys.json и перезапусти бота."
         )
@@ -132,7 +132,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     pc_status = "онлайн ✅" if bridge.connected else "офлайн ❌"
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         f"📋 *Команды JARVIS*\n\n"
         f"*Компьютер* (ПК: {pc_status})\n"
         f"/pc сверни все окна\n"
@@ -157,14 +157,14 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     pc = "онлайн ✅" if bridge.connected else "офлайн ❌"
-    await update.message.reply_text(f"🖥 ПК: {pc}\n🤖 Gemini: готов ✅")
+    await update.effective_message.reply_text(f"🖥 ПК: {pc}\n🤖 Gemini: готов ✅")
 
 
 async def cmd_clear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     gemini.clear_history(update.effective_user.id)
-    await update.message.reply_text("История диалога очищена ✅")
+    await update.effective_message.reply_text("История диалога очищена ✅")
 
 
 async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -172,19 +172,19 @@ async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     command = " ".join(ctx.args).strip()
     if not command:
-        await update.message.reply_text("Использование: /pc <команда>\nПример: /pc сверни все окна")
+        await update.effective_message.reply_text("Использование: /pc <команда>\nПример: /pc сверни все окна")
         return
     if not bridge.connected:
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "❌ ПК офлайн.\n"
             "Запусти на своём компьютере:\n"
             "`python -m telegram_bot.pc_server`",
             parse_mode="Markdown",
         )
         return
-    await update.message.chat.send_action("typing")
+    await update.effective_message.chat.send_action("typing")
     result = await bridge.send_command(command, update.effective_user.id)
-    await update.message.reply_text(result or "❌ ПК не ответил вовремя.")
+    await update.effective_message.reply_text(result or "❌ ПК не ответил вовремя.")
 
 
 async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -192,7 +192,7 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     text = " ".join(ctx.args).strip()
     if not text:
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "Использование: /remind <когда> <что>\n\n"
             "Примеры:\n"
             "• /remind через 30 минут позвонить маме\n"
@@ -202,7 +202,7 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     parsed = parse_reminder(text)
     if not parsed:
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "Не понял когда напомнить. Попробуй:\n"
             "• через 30 минут\n"
             "• в 15:00\n"
@@ -211,13 +211,13 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     when, what = parsed
     reply = add_reminder(update.effective_user.id, what, when)
-    await update.message.reply_text(reply)
+    await update.effective_message.reply_text(reply)
 
 
 async def cmd_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    await update.message.reply_text(list_reminders(update.effective_user.id))
+    await update.effective_message.reply_text(list_reminders(update.effective_user.id))
 
 
 # ── Сообщения ──────────────────────────────────────────────────────────────────
@@ -225,9 +225,9 @@ async def cmd_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    text = update.message.text
+    text = update.effective_message.text
     user_id = update.effective_user.id
-    await update.message.chat.send_action("typing")
+    await update.effective_message.chat.send_action("typing")
 
     try:
         # 1. Check for reminder request (handle before PC/Gemini routing)
@@ -236,51 +236,51 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if parsed:
                 when, what = parsed
                 reply = add_reminder(user_id, what, when)
-                await update.message.reply_text(reply)
+                await update.effective_message.reply_text(reply)
                 return
 
         # 2. Try PC bridge for hardware commands
         pc_result = await _try_pc(text, user_id)
         if pc_result:
-            await update.message.reply_text(f"🖥 {pc_result}")
+            await update.effective_message.reply_text(f"🖥 {pc_result}")
             return
 
         # 3. Fall through to Gemini for conversation
         reply = await gemini.chat(user_id, text)
-        await update.message.reply_text(reply)
+        await update.effective_message.reply_text(reply)
     except Exception as e:
         logger.error(f"handle_text error: {e}")
-        await update.message.reply_text("❌ Что-то пошло не так. Попробуй ещё раз.")
+        await update.effective_message.reply_text("❌ Что-то пошло не так. Попробуй ещё раз.")
 
 
 async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    await update.message.chat.send_action("typing")
+    await update.effective_message.chat.send_action("typing")
     try:
-        file = await ctx.bot.get_file(update.message.voice.file_id)
+        file = await ctx.bot.get_file(update.effective_message.voice.file_id)
         audio = bytes(await file.download_as_bytearray())
         reply = await gemini.chat_with_audio(update.effective_user.id, audio)
-        await update.message.reply_text(reply)
+        await update.effective_message.reply_text(reply)
     except Exception as e:
         logger.error(f"handle_voice error: {e}")
-        await update.message.reply_text("❌ Не смог обработать голосовое. Попробуй ещё раз.")
+        await update.effective_message.reply_text("❌ Не смог обработать голосовое. Попробуй ещё раз.")
 
 
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    await update.message.chat.send_action("typing")
+    await update.effective_message.chat.send_action("typing")
     try:
-        photo = update.message.photo[-1]
+        photo = update.effective_message.photo[-1]
         file = await ctx.bot.get_file(photo.file_id)
         image = bytes(await file.download_as_bytearray())
-        caption = update.message.caption or ""
+        caption = update.effective_message.caption or ""
         reply = await gemini.chat_with_image(update.effective_user.id, image, caption)
-        await update.message.reply_text(reply)
+        await update.effective_message.reply_text(reply)
     except Exception as e:
         logger.error(f"handle_photo error: {e}")
-        await update.message.reply_text("❌ Не смог обработать фото. Попробуй ещё раз.")
+        await update.effective_message.reply_text("❌ Не смог обработать фото. Попробуй ещё раз.")
 
 
 # ── Уведомления от ПК ──────────────────────────────────────────────────────────
