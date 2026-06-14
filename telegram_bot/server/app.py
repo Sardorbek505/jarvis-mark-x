@@ -38,7 +38,13 @@ async def root():
 
 @app.get("/{filename:path}")
 async def static_file(filename: str):
-    path = MINIAPP_DIR / filename
+    # Resolve and ensure the path stays inside MINIAPP_DIR (no path traversal)
+    base = MINIAPP_DIR.resolve()
+    try:
+        path = (base / filename).resolve()
+        path.relative_to(base)
+    except (ValueError, OSError):
+        return HTMLResponse("Forbidden", status_code=403)
     if path.exists() and path.is_file():
         return FileResponse(path)
     return HTMLResponse("Not found", status_code=404)

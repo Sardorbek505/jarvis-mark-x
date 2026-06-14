@@ -1,0 +1,17 @@
+# JARVIS Telegram Bot — зависимости для VPS-деплоя (24/7)
+# Лёгкий набор без десктопных зависимостей (PyQt6, sounddevice, selenium и т.д.)
+# pip install -r telegram_bot/requirements.txt
+
+# Gemini
+google-genai>=1.0.0
+
+# Telegram
+python-telegram-bot>=20.0
+
+# Mini App сервер
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+aiosqlite>=0.19.0
+
+# WebSocket (мост бот ↔ ПК)
+websockets>=12.0
