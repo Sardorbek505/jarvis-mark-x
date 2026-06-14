@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: jarvis-bot
+    runtime: python
+    region: frankfurt  # ближе к СНГ
+    plan: free
+
+    buildCommand: pip install -r telegram_bot/requirements.txt
+
+    # Render автоматически передаёт $PORT — uvicorn его подхватывает
+    startCommand: >
+      python -m uvicorn telegram_bot.render_app:app
+      --host 0.0.0.0
+      --port $PORT
+      --log-level info
+
+    healthCheckPath: /health
+
+    # Переменные окружения — заполни в Render Dashboard → Environment
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false          # вводишь вручную в Render
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_ALLOWED_USERS
+        sync: false          # твой Telegram user_id
+      - key: PC_WS_HOST
+        sync: false          # IP/DDNS твоего ПК (если нужно управление ПК)
+      - key: PC_WS_PORT
+        value: "8765"
+      - key: MINIAPP_URL
+        sync: false          # https://<имя>.onrender.com  (узнаешь после деплоя)
+      - key: MINIAPP_PORT
+        value: "8000"
