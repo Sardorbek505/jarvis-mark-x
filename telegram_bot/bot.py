@@ -104,8 +104,7 @@ async def cmd_app(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(
             "Mini App не настроен.\n"
-            "Добавь `miniapp_url` в config/api_keys.json и перезапусти бота.",
-            parse_mode="Markdown",
+            "Добавь miniapp_url в config/api_keys.json и перезапусти бота."
         )
 
 
@@ -231,12 +230,12 @@ def main():
     async def post_init(application: Application) -> None:
         # Register bot commands in Telegram menu
         await application.bot.set_my_commands(_BOT_COMMANDS)
-        # Start PC bridge reconnect loop
-        application.create_task(bridge.connect_loop())
         # Wire up PC → Telegram notifications
         bridge.on_notification(
             lambda t, uid: _on_notification(t, uid, application.bot)
         )
+        # Start PC bridge reconnect loop (fire-and-forget background task)
+        asyncio.get_event_loop().create_task(bridge.connect_loop())
         logger.info("JARVIS Bot initialized ✅")
 
     app = (
