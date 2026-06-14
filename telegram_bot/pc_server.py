@@ -36,7 +36,10 @@ class PCServer:
     async def start(self):
         async with websockets.serve(self._handler, "0.0.0.0", self._port):
             logger.info(f"PC Server started on port {self._port}")
-            await asyncio.Future()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                pass
 
     async def notify_all(self, text: str, user_id: int = None):
         """Push a notification to all connected Telegram bots."""
@@ -137,4 +140,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     from telegram_bot.config import load as load_config
     cfg = load_config()
-    asyncio.run(get_server(cfg.pc_ws_port).start())
+    try:
+        asyncio.run(get_server(cfg.pc_ws_port).start())
+    except KeyboardInterrupt:
+        logger.info("PC Server stopped.")
