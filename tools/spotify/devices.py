@@ -144,39 +144,35 @@ class SpotifyDevices:
     
     def ensure_active_device(self, max_wait: int = 8) -> Optional[Dict[str, Any]]:
         """
-        Ensure there's an active device, launching desktop app if needed.
-        
-        Args:
-            max_wait: Maximum seconds to wait for device
-            
-        Returns:
-            Active device or None
+        Ensure there's an active device.  If none is found, launch the desktop
+        app and wait briefly (2 s), then return whatever is available.
+
+        Spotify takes ~20 s to register as a device after first launch, so we
+        do NOT block for the full max_wait on the first attempt — callers should
+        show a "launching, retry in 20 s" message when we return None.
         """
         # Check for existing active device
         active = self.get_active_device()
         if active:
             return active
-        
+
         # Check for desktop device (not active but available)
         desktop = self.get_desktop_device()
         if desktop:
-            # Transfer playback to desktop
             return self.transfer_playback(desktop['id'])
-        
-        # No device available - launch desktop app
+
+        # No device available — launch desktop app then wait up to 5 s
         print("[SpotifyDevices] No device found, launching desktop app...")
-        if not self.launch_spotify_desktop():
-            return None
-        
-        # Wait for device to appear
-        for i in range(max_wait):
+        self.launch_spotify_desktop()
+
+        for _ in range(5):
             time.sleep(1)
             devices = self.list_devices(force_refresh=True)
             if devices:
                 desktop = self.get_desktop_device()
                 if desktop:
                     return desktop
-        
+
         return None
     
     def transfer_playback(self, device_id: str) -> Optional[Dict[str, Any]]:
