@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
@@ -20,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from telegram_bot.config import load as load_config
 from telegram_bot.gemini_client import GeminiClient
 from telegram_bot.pc_bridge import PCBridge
+from telegram_bot.reminders import add_reminder, get_due, mark_sent, list_reminders, parse_reminder
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -33,23 +35,35 @@ gemini = GeminiClient(cfg.gemini_api_key, cfg.gemini_model)
 bridge = PCBridge(cfg.pc_ws_host, cfg.pc_ws_port)
 
 _BOT_COMMANDS = [
-    BotCommand("start",  "Запустить JARVIS"),
-    BotCommand("app",    "Открыть с голосом (Mini App)"),
-    BotCommand("status", "Статус подключения к ПК"),
-    BotCommand("pc",     "Отправить команду на ПК"),
-    BotCommand("clear",  "Очистить историю диалога"),
-    BotCommand("help",   "Список команд"),
+    BotCommand("start",    "Запустить JARVIS"),
+    BotCommand("app",      "Открыть с голосом (Mini App)"),
+    BotCommand("status",   "Статус подключения к ПК"),
+    BotCommand("pc",       "Отправить команду на ПК"),
+    BotCommand("remind",   "Добавить напоминание"),
+    BotCommand("reminders","Мои напоминания"),
+    BotCommand("clear",    "Очистить историю диалога"),
+    BotCommand("help",     "Список команд"),
 ]
 
 _PC_KEYWORDS = [
+    # Music
     "play", "stop", "pause", "next", "prev", "volume",
     "включи", "выключи", "стоп", "пауза", "следующий",
     "поставь", "запусти", "воспроизведи", "играй",
-    "open", "close", "открой", "закрой",
+    # Apps
+    "open", "открой",
+    # Weather
     "weather", "погода",
+    # Search
     "search", "найди", "поищи",
+    # Window control
+    "сверни", "свернуть", "minimize", "рабочий стол", "разверни",
+    "закрой окно", "переключи окно", "проводник", "диспетчер",
+    # Screenshot
     "screenshot", "скриншот",
 ]
+
+_REMINDER_TRIGGERS = ["напомни", "remind me", "поставь напоминание", "таймер на"]
 
 
 def _is_authorized(update: Update) -> bool:
@@ -61,6 +75,11 @@ def _is_authorized(update: Update) -> bool:
 def _looks_like_pc_command(text: str) -> bool:
     low = text.lower()
     return any(k in low for k in _PC_KEYWORDS)
+
+
+def _looks_like_reminder(text: str) -> bool:
+    low = text.lower()
+    return any(k in low for k in _REMINDER_TRIGGERS)
 
 
 async def _try_pc(text: str, user_id: int) -> str | None:
@@ -85,11 +104,12 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "сэр"
     pc = "онлайн ✅" if bridge.connected else "офлайн ❌"
     await update.message.reply_text(
-        f"Привет, {name}! Я JARVIS — твой ИИ-ассистент.\n\n"
+        f"Привет, {name}! Я JARVIS — твой личный ИИ-ассистент.\n\n"
         f"🖥 ПК: {pc}\n"
         f"🤖 Gemini: готов ✅\n\n"
-        f"Напиши текст, голосовое или пришли фото.\n"
-        f"/app — полный интерфейс с голосом\n"
+        f"Напиши что угодно — поговорим, помогу, отвечу.\n"
+        f"/pc <команда> — управление компьютером\n"
+        f"/remind <текст> — напоминание\n"
         f"/help — все команды",
         reply_markup=_app_keyboard(),
     )
@@ -111,15 +131,24 @@ async def cmd_app(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
+    pc_status = "онлайн ✅" if bridge.connected else "офлайн ❌"
     await update.message.reply_text(
-        "📋 *Команды JARVIS*\n\n"
-        "/app — полный интерфейс с голосом реального времени\n"
-        "/status — статус подключения к ПК\n"
-        "/pc `команда` — напрямую на ПК\n"
-        "/clear — очистить историю диалога\n\n"
-        "💬 Просто пиши — я понимаю текст\n"
-        "🎙 Голосовые сообщения — тоже принимаю\n"
-        "📷 Фото — отправь с подписью или без",
+        f"📋 *Команды JARVIS*\n\n"
+        f"*Компьютер* (ПК: {pc_status})\n"
+        f"/pc сверни все окна\n"
+        f"/pc включи музыку\n"
+        f"/pc поставь believer\n"
+        f"/pc погода в Ташкенте\n"
+        f"/pc найди новости о AI\n\n"
+        f"*Напоминания*\n"
+        f"/remind через 30 минут позвонить маме\n"
+        f"/remind завтра в 10:00 встреча\n"
+        f"/reminders — список активных\n\n"
+        f"*Прочее*\n"
+        f"/status — статус ПК\n"
+        f"/clear — очистить историю\n"
+        f"/app — голосовой интерфейс\n\n"
+        f"💬 Или просто пиши — я твой ассистент!",
         parse_mode="Markdown",
     )
 
@@ -143,7 +172,7 @@ async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     command = " ".join(ctx.args).strip()
     if not command:
-        await update.message.reply_text("Использование: /pc <команда>\nПример: /pc включи музыку")
+        await update.message.reply_text("Использование: /pc <команда>\nПример: /pc сверни все окна")
         return
     if not bridge.connected:
         await update.message.reply_text(
@@ -158,6 +187,39 @@ async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(result or "❌ ПК не ответил вовремя.")
 
 
+async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    text = " ".join(ctx.args).strip()
+    if not text:
+        await update.message.reply_text(
+            "Использование: /remind <когда> <что>\n\n"
+            "Примеры:\n"
+            "• /remind через 30 минут позвонить маме\n"
+            "• /remind завтра в 9:00 встреча\n"
+            "• /remind в 15:00 купить продукты"
+        )
+        return
+    parsed = parse_reminder(text)
+    if not parsed:
+        await update.message.reply_text(
+            "Не понял когда напомнить. Попробуй:\n"
+            "• через 30 минут\n"
+            "• в 15:00\n"
+            "• завтра в 9:00"
+        )
+        return
+    when, what = parsed
+    reply = add_reminder(update.effective_user.id, what, when)
+    await update.message.reply_text(reply)
+
+
+async def cmd_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    await update.message.reply_text(list_reminders(update.effective_user.id))
+
+
 # ── Сообщения ──────────────────────────────────────────────────────────────────
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -168,13 +230,23 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.chat.send_action("typing")
 
     try:
+        # 1. Check for reminder request (handle before PC/Gemini routing)
+        if _looks_like_reminder(text):
+            parsed = parse_reminder(text)
+            if parsed:
+                when, what = parsed
+                reply = add_reminder(user_id, what, when)
+                await update.message.reply_text(reply)
+                return
+
+        # 2. Try PC bridge for hardware commands
         pc_result = await _try_pc(text, user_id)
         if pc_result:
             await update.message.reply_text(f"🖥 {pc_result}")
             return
 
-        pc_status = "онлайн" if bridge.connected else "офлайн"
-        reply = await gemini.chat(user_id, text, pc_status=pc_status)
+        # 3. Fall through to Gemini for conversation
+        reply = await gemini.chat(user_id, text)
         await update.message.reply_text(reply)
     except Exception as e:
         logger.error(f"handle_text error: {e}")
@@ -224,32 +296,55 @@ async def _on_notification(text: str, user_id: int = None, bot=None):
             logger.error(f"Notify {uid}: {e}")
 
 
+# ── Планировщик напоминаний ────────────────────────────────────────────────────
+
+async def _reminder_loop(bot):
+    """Check and send due reminders every 30 seconds."""
+    while True:
+        try:
+            await asyncio.sleep(30)
+            due = get_due(datetime.now())
+            for r in due:
+                try:
+                    await bot.send_message(
+                        chat_id=r["user_id"],
+                        text=f"🔔 Напоминание: {r['text']}"
+                    )
+                    mark_sent(r["id"])
+                except Exception as e:
+                    logger.error(f"Reminder send error: {e}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Reminder loop error: {e}")
+
+
 # ── Запуск ─────────────────────────────────────────────────────────────────────
 
 _bridge_task: asyncio.Task | None = None
+_reminder_task: asyncio.Task | None = None
 
 
 def main():
     async def post_init(application: Application) -> None:
-        global _bridge_task
-        # Register bot commands in Telegram menu
+        global _bridge_task, _reminder_task
         await application.bot.set_my_commands(_BOT_COMMANDS)
-        # Wire up PC → Telegram notifications
         bridge.on_notification(
             lambda t, uid: _on_notification(t, uid, application.bot)
         )
-        # Start PC bridge reconnect loop (background task)
-        _bridge_task = asyncio.get_event_loop().create_task(bridge.connect_loop())
+        loop = asyncio.get_event_loop()
+        _bridge_task = loop.create_task(bridge.connect_loop())
+        _reminder_task = loop.create_task(_reminder_loop(application.bot))
         logger.info("JARVIS Bot initialized ✅")
 
     async def post_shutdown(application: Application) -> None:
-        # Cancel the bridge task cleanly so the loop can close without warnings
-        if _bridge_task and not _bridge_task.done():
-            _bridge_task.cancel()
-            try:
-                await _bridge_task
-            except asyncio.CancelledError:
-                pass
+        for task in (_bridge_task, _reminder_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
     app = (
         ApplicationBuilder()
@@ -259,12 +354,14 @@ def main():
         .build()
     )
 
-    app.add_handler(CommandHandler("start",  cmd_start))
-    app.add_handler(CommandHandler("help",   cmd_help))
-    app.add_handler(CommandHandler("app",    cmd_app))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("clear",  cmd_clear))
-    app.add_handler(CommandHandler("pc",     cmd_pc))
+    app.add_handler(CommandHandler("start",     cmd_start))
+    app.add_handler(CommandHandler("help",      cmd_help))
+    app.add_handler(CommandHandler("app",       cmd_app))
+    app.add_handler(CommandHandler("status",    cmd_status))
+    app.add_handler(CommandHandler("clear",     cmd_clear))
+    app.add_handler(CommandHandler("pc",        cmd_pc))
+    app.add_handler(CommandHandler("remind",    cmd_remind))
+    app.add_handler(CommandHandler("reminders", cmd_reminders))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
