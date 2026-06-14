@@ -4,5 +4,11 @@
   "spotify_client_id": "your_spotify_client_id_here",
   "spotify_client_secret": "your_spotify_client_secret_here",
   "spotify_redirect_uri": "http://127.0.0.1:8888/callback",
-  "spotify_refresh_token": "your_spotify_refresh_token_here"
+  "spotify_refresh_token": "your_spotify_refresh_token_here",
+
+  "_comment_telegram": "--- Telegram Bot (опционально) ---",
+  "telegram_bot_token": "your_bot_token_from_botfather",
+  "telegram_allowed_users": "123456789,987654321",
+  "pc_ws_host": "your_pc_public_ip_or_ddns",
+  "pc_ws_port": 8765
 }

@@ -36,3 +36,7 @@ feedparser>=6.0.0
 # Spotify API - requests и fuzzy matching
 requests>=2.31.0
 rapidfuzz>=3.0.0
+
+# Telegram Bot (опционально — только для telegram_bot/)
+python-telegram-bot>=20.0
+websockets>=12.0
