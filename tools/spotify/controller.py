@@ -14,6 +14,11 @@ from .search import SpotifySearch
 from .devices import SpotifyDevices
 from .moods import SpotifyMoods
 
+_NO_DEVICE_MSG = (
+    "Spotify запускается на ПК. "
+    "Подождите 20 секунд и повторите команду."
+)
+
 
 class SpotifyController:
     """
@@ -308,9 +313,7 @@ class SpotifyController:
             self.last_uri = uri
             return f"Включил {query}, сэр."
 
-        return ("Не удалось включить трек, сэр. "
-                "Откройте приложение Spotify на компьютере и включите любой трек, "
-                "затем повторите команду.")
+        return _NO_DEVICE_MSG
     
     def pause(self) -> str:
         """Pause playback."""
@@ -330,14 +333,17 @@ class SpotifyController:
             return "Spotify недоступен, сэр."
 
         device = self.ensure_device()
-        device_id = device.get('id', '') if device else ''
+        if not device:
+            return _NO_DEVICE_MSG
+
+        device_id = device.get('id', '')
         endpoint = f'/me/player/play?device_id={device_id}' if device_id else '/me/player/play'
         result = self._api_request(endpoint, method='PUT')
 
         if result is not None:
             return "Продолжаю, сэр."
 
-        return "Не удалось продолжить, сэр."
+        return _NO_DEVICE_MSG
     
     def next_track(self) -> str:
         """Skip to next track."""
