@@ -226,22 +226,36 @@ async def _on_notification(text: str, user_id: int = None, bot=None):
 
 # ── Запуск ─────────────────────────────────────────────────────────────────────
 
+_bridge_task: asyncio.Task | None = None
+
+
 def main():
     async def post_init(application: Application) -> None:
+        global _bridge_task
         # Register bot commands in Telegram menu
         await application.bot.set_my_commands(_BOT_COMMANDS)
         # Wire up PC → Telegram notifications
         bridge.on_notification(
             lambda t, uid: _on_notification(t, uid, application.bot)
         )
-        # Start PC bridge reconnect loop (fire-and-forget background task)
-        asyncio.get_event_loop().create_task(bridge.connect_loop())
+        # Start PC bridge reconnect loop (background task)
+        _bridge_task = asyncio.get_event_loop().create_task(bridge.connect_loop())
         logger.info("JARVIS Bot initialized ✅")
+
+    async def post_shutdown(application: Application) -> None:
+        # Cancel the bridge task cleanly so the loop can close without warnings
+        if _bridge_task and not _bridge_task.done():
+            _bridge_task.cancel()
+            try:
+                await _bridge_task
+            except asyncio.CancelledError:
+                pass
 
     app = (
         ApplicationBuilder()
         .token(cfg.telegram_token)
         .post_init(post_init)
+        .post_shutdown(post_shutdown)
         .build()
     )
 

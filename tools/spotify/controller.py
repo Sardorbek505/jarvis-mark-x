@@ -307,8 +307,10 @@ class SpotifyController:
             self.last_query = query
             self.last_uri = uri
             return f"Включил {query}, сэр."
-        
-        return "Не удалось включить трек, сэр."
+
+        return ("Не удалось включить трек, сэр. "
+                "Откройте приложение Spotify на компьютере и включите любой трек, "
+                "затем повторите команду.")
     
     def pause(self) -> str:
         """Pause playback."""
