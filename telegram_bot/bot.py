@@ -29,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger("jarvis-bot")
 
 cfg = load_config()
-gemini = GeminiClient(cfg.gemini_api_key)
+gemini = GeminiClient(cfg.gemini_api_key, cfg.gemini_model)
 bridge = PCBridge(cfg.pc_ws_host, cfg.pc_ws_port)
 
 _BOT_COMMANDS = [

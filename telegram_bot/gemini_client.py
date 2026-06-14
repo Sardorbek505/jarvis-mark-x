@@ -16,11 +16,12 @@ _MAX_HISTORY = 40  # messages per user
 
 
 class GeminiClient:
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
         self._client = genai.Client(
             api_key=api_key,
             http_options={"api_version": "v1beta"},
         )
+        self._model = model
         self._history: dict = {}  # user_id -> list of Content dicts
 
     def _history_for(self, user_id: int) -> list:
@@ -37,7 +38,7 @@ class GeminiClient:
             response = await loop.run_in_executor(
                 None,
                 lambda: self._client.models.generate_content(
-                    model="gemini-2.0-flash",
+                    model=self._model,
                     contents=contents,
                     config=types.GenerateContentConfig(
                         system_instruction=_SYSTEM_PROMPT,
