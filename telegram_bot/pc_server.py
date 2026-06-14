@@ -134,15 +134,15 @@ async def _execute(text: str) -> str:
 
 def _parse_music(text_lower: str) -> dict:
     """Turn a natural-language music command into spotify_player parameters."""
-    if any(k in text_lower for k in ["stop", "стоп", "выключи", "пауза", "pause"]):
+    if any(k in text_lower for k in ["stop", "стоп", "выключи", "пауза", "pause", "отключи", "замолчи", "хватит"]):
         return {"action": "pause"}
-    if any(k in text_lower for k in ["next", "следующий", "skip"]):
+    if any(k in text_lower for k in ["next", "следующий", "следующую", "следующая", "skip", "переключи", "дальше", "другую", "другой"]):
         return {"action": "next"}
-    if any(k in text_lower for k in ["prev", "предыдущий", "назад"]):
+    if any(k in text_lower for k in ["prev", "предыдущий", "предыдущую", "назад", "обратно"]):
         return {"action": "prev"}
-    if any(k in text_lower for k in ["громче", "louder"]):
+    if any(k in text_lower for k in ["громче", "louder", "прибавь"]):
         return {"action": "volume_up"}
-    if any(k in text_lower for k in ["тише", "quieter"]):
+    if any(k in text_lower for k in ["тише", "quieter", "убавь"]):
         return {"action": "volume_down"}
 
     match = re.search(r"(?:play|включи|играй|поставь|запусти)\s+(.+)", text_lower)
