@@ -230,7 +230,7 @@ async function playPCM(b64) {
         src.start();
       });
     } catch (e) {
-      logger.debug?.(`playPCM: ${e.message}`);
+      console.debug(`playPCM: ${e.message}`);
     }
   });
   await playChain;
