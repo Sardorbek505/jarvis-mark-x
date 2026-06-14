@@ -1,6 +1,5 @@
 """Gemini API wrapper for Telegram bot — text, voice and image responses."""
 import asyncio
-import base64
 import logging
 
 from google import genai
@@ -34,18 +33,22 @@ class GeminiClient:
 
     async def _generate(self, contents) -> str:
         loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: self._client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=_SYSTEM_PROMPT,
-                    temperature=0.7,
+        try:
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._client.models.generate_content(
+                    model="gemini-2.0-flash",
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=_SYSTEM_PROMPT,
+                        temperature=0.7,
+                    ),
                 ),
-            ),
-        )
-        return response.text or ""
+            )
+            return response.text or ""
+        except Exception as e:
+            logger.error(f"Gemini generate error: {e}")
+            return "Извини, произошла ошибка. Попробуй ещё раз."
 
     async def chat(self, user_id: int, text: str, pc_status: str = "офлайн") -> str:
         history = self._history_for(user_id)
@@ -61,13 +64,13 @@ class GeminiClient:
 
     async def chat_with_audio(self, user_id: int, audio_bytes: bytes) -> str:
         """Transcribe OGG voice message and respond as JARVIS."""
-        b64 = base64.b64encode(audio_bytes).decode()
         contents = [
             types.Content(
                 role="user",
                 parts=[
-                    types.Part(inline_data=types.Blob(mime_type="audio/ogg", data=b64)),
-                    types.Part(text="Транскрибируй это голосовое сообщение и ответь на него как JARVIS."),
+                    # Pass raw bytes — NOT base64 string
+                    types.Part(inline_data=types.Blob(mime_type="audio/ogg", data=audio_bytes)),
+                    types.Part(text="Транскрибируй это голосовое сообщение и ответь как JARVIS."),
                 ],
             )
         ]
@@ -81,13 +84,13 @@ class GeminiClient:
 
     async def chat_with_image(self, user_id: int, image_bytes: bytes, caption: str = "") -> str:
         """Analyze image and respond as JARVIS."""
-        b64 = base64.b64encode(image_bytes).decode()
         prompt = caption if caption else "Опиши что видишь и помоги разобраться с этим."
         contents = [
             types.Content(
                 role="user",
                 parts=[
-                    types.Part(inline_data=types.Blob(mime_type="image/jpeg", data=b64)),
+                    # Pass raw bytes — NOT base64 string
+                    types.Part(inline_data=types.Blob(mime_type="image/jpeg", data=image_bytes)),
                     types.Part(text=prompt),
                 ],
             )

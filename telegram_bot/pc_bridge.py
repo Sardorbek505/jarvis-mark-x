@@ -42,7 +42,9 @@ class PCBridge:
         uri = f"ws://{self._host}:{self._port}"
         while True:
             try:
-                async with websockets.connect(uri, ping_interval=20, open_timeout=10) as ws:
+                async with websockets.connect(
+                    uri, ping_interval=20, ping_timeout=15, open_timeout=30
+                ) as ws:
                     self._ws = ws
                     self._connected = True
                     logger.info(f"PC bridge connected: {uri}")

@@ -13,9 +13,7 @@ const orbLabel = document.getElementById('orb-label');
 const msgs     = document.getElementById('messages');
 const textIn   = document.getElementById('text-in');
 const sendBtn  = document.getElementById('send-btn');
-const pcDot    = document.getElementById('pc-dot');
 const pcBadge  = document.getElementById('pc-badge');
-const connDot  = document.getElementById('conn-dot');
 const connBadge= document.getElementById('conn-badge');
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -55,6 +53,7 @@ let ws = null;
 
 function connect() {
   ws = new WebSocket(WS_URL);
+  ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
     connBadge.className = 'badge online';
@@ -73,7 +72,8 @@ function connect() {
   ws.onerror = () => addMsg('sys', '✕ Ошибка соединения');
 
   ws.onmessage = async ({ data }) => {
-    const msg = JSON.parse(data);
+    let msg;
+    try { msg = JSON.parse(data); } catch { return; }
 
     switch (msg.type) {
       case 'text':
@@ -83,12 +83,12 @@ function connect() {
         break;
 
       case 'transcript_user':
-        addMsg('user', msg.text);
+        if (msg.text) addMsg('user', msg.text);
         break;
 
       case 'transcript_bot':
         document.querySelector('.typing')?.remove();
-        addMsg('bot', msg.text);
+        if (msg.text) addMsg('bot', msg.text);
         break;
 
       case 'audio':
@@ -128,7 +128,11 @@ function sendText() {
 }
 
 // ── Voice ─────────────────────────────────────────────────────────────────────
-let audioCtx    = null;
+// Two separate AudioContexts to avoid sample rate conflict:
+// recCtx  — any rate (browser default), worklet downsamples to 16 kHz
+// playCtx — 24 000 Hz for Gemini audio playback
+let recCtx    = null;
+let playCtx   = null;
 let workletNode = null;
 let micStream   = null;
 let listening   = false;
@@ -137,70 +141,97 @@ orb.addEventListener('click', toggleVoice);
 orb.addEventListener('touchend', e => { e.preventDefault(); toggleVoice(); });
 
 async function toggleVoice() {
+  if (ws?.readyState !== WebSocket.OPEN) {
+    addMsg('sys', '⚠ Нет соединения с сервером'); return;
+  }
   listening ? stopVoice() : await startVoice();
 }
 
 async function startVoice() {
   try {
-    if (!audioCtx) audioCtx = new AudioContext();
-    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    // Recording context at browser's native rate (worklet downsamples internally)
+    recCtx = new AudioContext();
+    if (recCtx.state === 'suspended') await recCtx.resume();
 
     micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 }
+      audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 }
     });
 
-    await audioCtx.audioWorklet.addModule('worklet.js');
-    const src = audioCtx.createMediaStreamSource(micStream);
-    workletNode = new AudioWorkletNode(audioCtx, 'pcm-processor');
+    // Load worklet — use absolute URL derived from page location
+    const workletURL = new URL('./worklet.js', location.href).href;
+    await recCtx.audioWorklet.addModule(workletURL);
+
+    const src = recCtx.createMediaStreamSource(micStream);
+    workletNode = new AudioWorkletNode(recCtx, 'pcm-processor');
 
     workletNode.port.onmessage = ({ data }) => {
       if (ws?.readyState !== WebSocket.OPEN) return;
-      const b64 = btoa(String.fromCharCode(...new Uint8Array(data.pcm)));
-      ws.send(JSON.stringify({ type: 'audio', data: b64 }));
+      // Convert ArrayBuffer to base64
+      const bytes = new Uint8Array(data.pcm);
+      let b64 = '';
+      for (let i = 0; i < bytes.length; i++) b64 += String.fromCharCode(bytes[i]);
+      ws.send(JSON.stringify({ type: 'audio', data: btoa(b64) }));
     };
 
     src.connect(workletNode);
     listening = true;
     setState('listening');
-    ws?.send(JSON.stringify({ type: 'start_voice' }));
+    ws.send(JSON.stringify({ type: 'start_voice' }));
   } catch (e) {
     addMsg('sys', `⚠ Микрофон: ${e.message}`);
+    stopVoice();
   }
 }
 
 function stopVoice() {
   micStream?.getTracks().forEach(t => t.stop());
   workletNode?.disconnect();
+  if (recCtx) { recCtx.close().catch(() => {}); recCtx = null; }
   micStream = workletNode = null;
   listening = false;
-  setState('processing');
-  ws?.send(JSON.stringify({ type: 'stop_voice' }));
+  if (ws?.readyState === WebSocket.OPEN) {
+    setState('processing');
+    ws.send(JSON.stringify({ type: 'stop_voice' }));
+  } else {
+    setState('idle');
+  }
 }
 
-// ── Audio playback (24 kHz int16 PCM) ────────────────────────────────────────
+// ── Audio playback — 24 kHz int16 PCM from Gemini ────────────────────────────
 let playChain = Promise.resolve();
 
 async function playPCM(b64) {
   setState('speaking');
   playChain = playChain.then(async () => {
     try {
-      const bytes   = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+      // Decode base64 → Int16 samples → Float32
+      const binary = atob(b64);
+      const bytes  = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
       const samples = new Int16Array(bytes.buffer);
       const f32     = new Float32Array(samples.length);
       for (let i = 0; i < samples.length; i++) f32[i] = samples[i] / 32768;
 
-      if (!audioCtx) audioCtx = new AudioContext({ sampleRate: 24000 });
-      const buf = audioCtx.createBuffer(1, f32.length, 24000);
+      // Playback context at 24 kHz — matches Gemini output
+      if (!playCtx || playCtx.state === 'closed') {
+        playCtx = new AudioContext({ sampleRate: 24000 });
+      }
+      if (playCtx.state === 'suspended') await playCtx.resume();
+
+      const buf = playCtx.createBuffer(1, f32.length, 24000);
       buf.copyToChannel(f32, 0);
 
       await new Promise(res => {
-        const src = audioCtx.createBufferSource();
+        const src = playCtx.createBufferSource();
         src.buffer = buf;
-        src.connect(audioCtx.destination);
+        src.connect(playCtx.destination);
         src.onended = res;
         src.start();
       });
-    } catch (_) { /* ignore stale chunks */ }
+    } catch (e) {
+      logger.debug?.(`playPCM: ${e.message}`);
+    }
   });
   await playChain;
 }
