@@ -10,5 +10,9 @@
   "telegram_bot_token": "your_bot_token_from_botfather",
   "telegram_allowed_users": "123456789,987654321",
   "pc_ws_host": "your_pc_public_ip_or_ddns",
-  "pc_ws_port": 8765
+  "pc_ws_port": 8765,
+
+  "_comment_miniapp": "--- Mini App (опционально, нужен HTTPS) ---",
+  "miniapp_url": "https://your-domain-or-vps-ip:8000",
+  "miniapp_port": 8000
 }
