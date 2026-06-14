@@ -75,14 +75,13 @@ class GeminiClient:
         self._trim_history(user_id)
         return reply
 
-    async def chat_with_audio(self, user_id: int, audio_bytes: bytes) -> str:
-        """Transcribe OGG voice message and respond as JARVIS."""
+    async def chat_with_audio(self, user_id: int, audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
+        """Transcribe audio and respond as JARVIS. Supports ogg (Telegram) and wav (Mini App)."""
         contents = [
             types.Content(
                 role="user",
                 parts=[
-                    # Pass raw bytes — NOT base64 string
-                    types.Part(inline_data=types.Blob(mime_type="audio/ogg", data=audio_bytes)),
+                    types.Part(inline_data=types.Blob(mime_type=mime_type, data=audio_bytes)),
                     types.Part(text="Транскрибируй это голосовое сообщение и ответь как JARVIS."),
                 ],
             )
