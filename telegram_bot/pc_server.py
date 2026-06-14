@@ -85,37 +85,32 @@ async def _execute(text: str) -> str:
     text_lower = text.lower()
 
     try:
-        # Spotify / Music
+        # Spotify / Music — spotify_player expects a dict {action, query, value}
         if any(k in text_lower for k in _PC_COMMAND_KEYWORDS["music"]):
             from actions.spotify_controller import spotify_player
-            match = re.search(r"(?:play|включи|играй|поставь)\s+(.+)", text_lower)
-            query = match.group(1).strip() if match else ""
-            if query:
-                result = await asyncio.to_thread(spotify_player, f"play {query}")
-            elif any(k in text_lower for k in ["stop", "стоп", "выключи"]):
-                result = await asyncio.to_thread(spotify_player, "pause")
-            elif any(k in text_lower for k in ["next", "следующий"]):
-                result = await asyncio.to_thread(spotify_player, "next")
-            else:
-                result = await asyncio.to_thread(spotify_player, text)
+            params = _parse_music(text_lower)
+            result = await asyncio.to_thread(spotify_player, params)
             return result or "Выполнено"
 
-        # Weather
+        # Weather — weather_action expects {city}
         if any(k in text_lower for k in _PC_COMMAND_KEYWORDS["weather"]):
             from actions.weather import weather_action
-            result = await asyncio.to_thread(weather_action, text)
+            city = _extract_after(text_lower, ["в ", "in ", "погода "]) or "Ташкент"
+            result = await asyncio.to_thread(weather_action, {"city": city})
             return result or "Погода получена"
 
-        # Open app
+        # Open app — open_app expects {app_name}
         if any(k in text_lower for k in _PC_COMMAND_KEYWORDS["app"]):
             from actions.open_app import open_app
-            result = await asyncio.to_thread(open_app, text)
+            app_name = _extract_after(text_lower, ["открой ", "запусти ", "open ", "закрой ", "close "])
+            result = await asyncio.to_thread(open_app, {"app_name": app_name or text})
             return result or "Выполнено"
 
-        # Web search
+        # Web search — web_search expects {query}
         if any(k in text_lower for k in _PC_COMMAND_KEYWORDS["search"]):
             from actions.web_search import web_search
-            result = await asyncio.to_thread(web_search, text)
+            query = _extract_after(text_lower, ["найди ", "поищи ", "search ", "find ", "найти "]) or text
+            result = await asyncio.to_thread(web_search, {"query": query})
             return result or "Поиск запущен"
 
         return f"Команда «{text}» получена. JARVIS выполняет..."
@@ -123,6 +118,36 @@ async def _execute(text: str) -> str:
     except Exception as e:
         logger.error(f"PC execute error: {e}")
         return f"Ошибка: {e}"
+
+
+def _parse_music(text_lower: str) -> dict:
+    """Turn a natural-language music command into spotify_player parameters."""
+    if any(k in text_lower for k in ["stop", "стоп", "выключи", "пауза", "pause"]):
+        return {"action": "pause"}
+    if any(k in text_lower for k in ["next", "следующий", "skip"]):
+        return {"action": "next"}
+    if any(k in text_lower for k in ["prev", "предыдущий", "назад"]):
+        return {"action": "prev"}
+    if any(k in text_lower for k in ["громче", "louder"]):
+        return {"action": "volume_up"}
+    if any(k in text_lower for k in ["тише", "quieter"]):
+        return {"action": "volume_down"}
+
+    match = re.search(r"(?:play|включи|играй|поставь|запусти)\s+(.+)", text_lower)
+    query = match.group(1).strip() if match else ""
+    # Strip a trailing "музыку"/"music" filler when no real query was given
+    if query in ("музыку", "music", "музыка", "трек", "песню"):
+        query = ""
+    return {"action": "play", "query": query}
+
+
+def _extract_after(text_lower: str, markers: list) -> str:
+    """Return the text following the first matching marker word, else ''."""
+    for marker in markers:
+        idx = text_lower.find(marker)
+        if idx != -1:
+            return text_lower[idx + len(marker):].strip()
+    return ""
 
 
 # Singleton for import into main.py

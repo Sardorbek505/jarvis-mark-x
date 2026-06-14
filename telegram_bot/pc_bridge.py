@@ -40,28 +40,33 @@ class PCBridge:
             return
 
         uri = f"ws://{self._host}:{self._port}"
-        while True:
-            try:
-                async with websockets.connect(
-                    uri, ping_interval=20, ping_timeout=15, open_timeout=30
-                ) as ws:
-                    self._ws = ws
-                    self._connected = True
-                    logger.info(f"PC bridge connected: {uri}")
-                    async for raw in ws:
-                        await self._on_message(raw)
-            except Exception as e:
-                logger.debug(f"PC bridge: {e}")
-            finally:
-                self._ws = None
-                self._connected = False
-                # Fail all pending futures
-                for fut in self._pending.values():
-                    if not fut.done():
-                        fut.set_result(None)
-                self._pending.clear()
+        try:
+            while True:
+                try:
+                    async with websockets.connect(
+                        uri, ping_interval=20, ping_timeout=15, open_timeout=30
+                    ) as ws:
+                        self._ws = ws
+                        self._connected = True
+                        logger.info(f"PC bridge connected: {uri}")
+                        async for raw in ws:
+                            await self._on_message(raw)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.debug(f"PC bridge: {e}")
+                finally:
+                    self._ws = None
+                    self._connected = False
+                    # Fail all pending futures
+                    for fut in self._pending.values():
+                        if not fut.done():
+                            fut.set_result(None)
+                    self._pending.clear()
 
-            await asyncio.sleep(self.RECONNECT_INTERVAL)
+                await asyncio.sleep(self.RECONNECT_INTERVAL)
+        except asyncio.CancelledError:
+            logger.debug("PC bridge loop cancelled")
 
     async def _on_message(self, raw: str):
         try:
