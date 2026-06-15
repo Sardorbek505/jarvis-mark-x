@@ -34,7 +34,7 @@ def load(require_bot: bool = True) -> Config:
             raw = json.load(f)
 
     gemini_key = os.getenv("GEMINI_API_KEY") or raw.get("gemini_api_key", "")
-    gemini_model = os.getenv("GEMINI_MODEL") or raw.get("gemini_model", "gemini-1.5-flash")
+    gemini_model = os.getenv("GEMINI_MODEL") or raw.get("gemini_model", "gemini-2.5-flash")
     token = os.getenv("TELEGRAM_BOT_TOKEN") or raw.get("telegram_bot_token", "")
 
     allowed_raw = os.getenv("TELEGRAM_ALLOWED_USERS") or raw.get("telegram_allowed_users", "")
