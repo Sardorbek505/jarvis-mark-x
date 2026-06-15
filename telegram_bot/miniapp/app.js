@@ -102,7 +102,9 @@ function connect() {
       case 'text':
         document.querySelector('.typing')?.remove();
         addMsg('bot', msg.text);
-        speak(msg.text);
+        // Server sends real JARVIS-voice audio right after. Arm a browser-TTS
+        // fallback only if that audio doesn't arrive (TTS failed/disabled).
+        if (voiceEnabled) armSpeakFallback(msg.text); else setState('idle');
         break;
 
       case 'image':
@@ -116,10 +118,14 @@ function connect() {
 
       case 'transcript_bot':
         document.querySelector('.typing')?.remove();
-        if (msg.text) { addMsg('bot', msg.text); speak(msg.text); }
+        if (msg.text) {
+          addMsg('bot', msg.text);
+          if (voiceEnabled) armSpeakFallback(msg.text); else setState('idle');
+        }
         break;
 
       case 'audio':
+        cancelSpeakFallback();   // real voice arrived — don't use robotic fallback
         await playPCM(msg.data);
         break;
 
@@ -178,7 +184,7 @@ function sendText() {
   const text = textIn.value.trim();
   if (!text || ws?.readyState !== WebSocket.OPEN) return;
   addMsg('user', text);
-  ws.send(JSON.stringify({ type: 'text', text }));
+  ws.send(JSON.stringify({ type: 'text', text, tts: voiceEnabled }));
   textIn.value = '';
   setState('processing');
   showTyping();
@@ -188,7 +194,7 @@ function sendText() {
 function pcCmd(text) {
   if (ws?.readyState !== WebSocket.OPEN) { addMsg('sys', '⚠ Нет соединения'); return; }
   addMsg('user', text);
-  ws.send(JSON.stringify({ type: 'text', text }));
+  ws.send(JSON.stringify({ type: 'text', text, tts: voiceEnabled }));
   setState('processing');
   showTyping();
 }
@@ -254,7 +260,7 @@ function stopVoice() {
   listening = false;
   if (ws?.readyState === WebSocket.OPEN) {
     setState('processing');
-    ws.send(JSON.stringify({ type: 'stop_voice' }));
+    ws.send(JSON.stringify({ type: 'stop_voice', tts: voiceEnabled }));
   } else {
     setState('idle');
   }
@@ -293,9 +299,23 @@ async function playPCM(b64) {
   await playChain;
 }
 
-// ── Text-to-speech (browser, free, works 24/7) ────────────────────────────────
+// ── Voice output ──────────────────────────────────────────────────────────────
+// Primary: real JARVIS voice (Charon) synthesized server-side by Gemini and
+// streamed as PCM → playPCM(). Fallback: browser speechSynthesis, used ONLY if
+// the server audio doesn't arrive (e.g. TTS quota hit).
 let voiceEnabled = true;
 let ruVoice = null;
+let speakTimer = null;
+
+function armSpeakFallback(text) {
+  cancelSpeakFallback();
+  setState('processing');
+  speakTimer = setTimeout(() => { speakTimer = null; speak(text); }, 4000);
+}
+
+function cancelSpeakFallback() {
+  if (speakTimer) { clearTimeout(speakTimer); speakTimer = null; }
+}
 
 function pickVoice() {
   const voices = window.speechSynthesis?.getVoices() || [];
@@ -342,7 +362,7 @@ if (voiceBtn) {
     voiceEnabled = !voiceEnabled;
     voiceBtn.textContent = voiceEnabled ? '🔊' : '🔇';
     voiceBtn.title = voiceEnabled ? 'Голос включён' : 'Голос выключен';
-    if (!voiceEnabled) window.speechSynthesis?.cancel();
+    if (!voiceEnabled) { cancelSpeakFallback(); window.speechSynthesis?.cancel(); }
   });
 }
 

@@ -188,5 +188,45 @@ class GeminiClient:
         ]
         return await self._generate(contents, user_id=user_id)
 
+    # TTS models tried in order (preview names can change per region/account)
+    _TTS_MODELS = ["gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"]
+
+    async def synthesize_speech(self, text: str, voice: str = "Charon") -> bytes | None:
+        """Generate natural speech as raw PCM (24 kHz, 16-bit, mono) using the
+        SAME voice as the desktop JARVIS (Charon). Returns None on failure so
+        the caller can fall back to browser TTS."""
+        clean = (text or "").strip()
+        if not clean:
+            return None
+        loop = asyncio.get_event_loop()
+
+        def _call(model: str):
+            return self._client.models.generate_content(
+                model=model,
+                contents=clean,
+                config=types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                voice_name=voice
+                            )
+                        )
+                    ),
+                ),
+            )
+
+        for model in self._TTS_MODELS:
+            try:
+                resp = await loop.run_in_executor(None, lambda m=model: _call(m))
+                for part in resp.candidates[0].content.parts:
+                    inline = getattr(part, "inline_data", None)
+                    if inline and inline.data:
+                        return inline.data  # bytes (SDK already base64-decoded)
+            except Exception as e:
+                logger.error(f"TTS model '{model}' failed: {e}")
+                continue
+        return None
+
     def clear_history(self, user_id: int):
         self._history.pop(user_id, None)
