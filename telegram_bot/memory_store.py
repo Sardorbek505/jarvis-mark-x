@@ -99,12 +99,13 @@ class MemoryStore:
     # ── cache ──────────────────────────────────────────────────────────────────
 
     async def ensure_loaded(self, uid: int):
-        """Load this user's dossier + facts into the RAM cache (once)."""
+        """Load this user's dossier + facts + open tasks into the RAM cache (once)."""
         if uid in self._cache:
             return
         profile = await self._load_profile(uid)
         facts = await self._load_facts(uid)
-        self._cache[uid] = {"profile": profile, "facts": facts}
+        tasks = await self._load_tasks(uid)
+        self._cache[uid] = {"profile": profile, "facts": facts, "tasks": tasks}
 
     def cached_block(self, uid: int) -> str:
         """Synchronous context string for the system prompt (from RAM cache)."""
@@ -125,6 +126,21 @@ class MemoryStore:
         if facts:
             joined = "; ".join(facts[-_MAX_FACTS:])
             parts.append(f"Что я о нём помню: {joined}")
+        tasks = data.get("tasks", [])
+        if tasks:
+            tlines = []
+            for t in tasks[:15]:
+                due = t.get("due")
+                when = ""
+                if due:
+                    try:
+                        d = datetime.fromisoformat(due)
+                        when = (" — " + d.strftime("%d.%m %H:%M")) if (d.hour or d.minute) \
+                            else (" — " + d.strftime("%d.%m"))
+                    except Exception:
+                        pass
+                tlines.append(f"{t['title']}{when}")
+            parts.append("Его актуальные задачи/планы: " + "; ".join(tlines))
         if not parts:
             return ""
         return "ПАМЯТЬ О ПОЛЬЗОВАТЕЛЕ (используй это, помни как близкий человек): " + " ".join(parts)
@@ -206,9 +222,46 @@ class MemoryStore:
         await self.ensure_loaded(uid)
         return list(self._cache[uid]["facts"])
 
+    # ── tasks / calendar ─────────────────────────────────────────────────────────
+
+    async def _load_tasks(self, uid: int) -> list:
+        rows = await self._fetchall(
+            "SELECT id, title, due, done FROM tasks WHERE user_id=? AND done=0", (uid,)
+        )
+        items = [{"id": r[0], "title": r[1], "due": r[2]} for r in rows]
+        return _sort_tasks(items)
+
+    async def add_task(self, uid: int, title: str, due: Optional[str] = None) -> dict:
+        title = (title or "").strip()
+        await self.ensure_loaded(uid)
+        await self._exec(
+            "INSERT INTO tasks(user_id, title, due, done, created_at) VALUES(?,?,?,0,?)",
+            (uid, title, due, datetime.now().isoformat()),
+        )
+        row = await self._fetchone(
+            "SELECT id FROM tasks WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)
+        )
+        task = {"id": row[0] if row else 0, "title": title, "due": due}
+        self._cache[uid]["tasks"] = _sort_tasks(self._cache[uid]["tasks"] + [task])
+        return task
+
+    async def get_tasks(self, uid: int) -> list:
+        await self.ensure_loaded(uid)
+        return list(self._cache[uid]["tasks"])
+
+    async def complete_task(self, uid: int, task_id: int) -> Optional[dict]:
+        await self.ensure_loaded(uid)
+        match = next((t for t in self._cache[uid]["tasks"] if t["id"] == task_id), None)
+        if not match:
+            return None
+        await self._exec("UPDATE tasks SET done=1 WHERE id=? AND user_id=?", (task_id, uid))
+        self._cache[uid]["tasks"] = [t for t in self._cache[uid]["tasks"] if t["id"] != task_id]
+        return match
+
     async def clear(self, uid: int):
         await self._exec("DELETE FROM facts WHERE user_id=?", (uid,))
         await self._exec("DELETE FROM profile WHERE user_id=?", (uid,))
+        await self._exec("DELETE FROM tasks WHERE user_id=?", (uid,))
         self._cache.pop(uid, None)
 
     async def observe(self, uid: int, gemini, user_text: str, reply_text: str = ""):
@@ -222,6 +275,14 @@ class MemoryStore:
                     logger.info(f"Learned about {uid}: {f}")
         except Exception as e:
             logger.debug(f"observe: {e}")
+
+
+def _sort_tasks(items: list) -> list:
+    """Dated tasks first (earliest due), then undated todos. Stable by id."""
+    def key(t):
+        due = t.get("due")
+        return (0, due) if due else (1, "")
+    return sorted(items, key=key)
 
 
 def _pg(sql: str) -> str:
@@ -254,7 +315,16 @@ CREATE TABLE IF NOT EXISTS facts (
     fact    TEXT NOT NULL,
     ts      TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tasks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    title      TEXT NOT NULL,
+    due        TEXT,
+    done       INTEGER DEFAULT 0,
+    created_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 """
 
 _SCHEMA_PG = """
@@ -273,5 +343,14 @@ CREATE TABLE IF NOT EXISTS facts (
     fact    TEXT NOT NULL,
     ts      TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tasks (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    title      TEXT NOT NULL,
+    due        TEXT,
+    done       INTEGER DEFAULT 0,
+    created_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 """
