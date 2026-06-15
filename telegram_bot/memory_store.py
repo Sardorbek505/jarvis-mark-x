@@ -258,6 +258,68 @@ class MemoryStore:
         self._cache[uid]["tasks"] = [t for t in self._cache[uid]["tasks"] if t["id"] != task_id]
         return match
 
+    # ── habits ───────────────────────────────────────────────────────────────────
+
+    async def add_habit(self, uid: int, title: str) -> dict:
+        title = (title or "").strip()
+        await self._exec(
+            "INSERT INTO habits(user_id, title, created_at) VALUES(?,?,?)",
+            (uid, title, datetime.now().isoformat()),
+        )
+        row = await self._fetchone(
+            "SELECT id FROM habits WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)
+        )
+        return {"id": row[0] if row else 0, "title": title}
+
+    async def _habit_days(self, habit_id: int) -> set:
+        rows = await self._fetchall(
+            "SELECT day FROM habit_checks WHERE habit_id=?", (habit_id,)
+        )
+        return {r[0] for r in rows}
+
+    async def get_habits(self, uid: int, today: str) -> list:
+        rows = await self._fetchall(
+            "SELECT id, title FROM habits WHERE user_id=? ORDER BY id ASC", (uid,)
+        )
+        out = []
+        for hid, title in rows:
+            days = await self._habit_days(hid)
+            out.append({
+                "id": hid, "title": title,
+                "done_today": today in days,
+                "streak": _streak(days, today),
+            })
+        return out
+
+    async def toggle_habit(self, uid: int, habit_id: int, day: str) -> Optional[bool]:
+        owner = await self._fetchone(
+            "SELECT id FROM habits WHERE id=? AND user_id=?", (habit_id, uid)
+        )
+        if not owner:
+            return None
+        exists = await self._fetchone(
+            "SELECT 1 FROM habit_checks WHERE habit_id=? AND day=?", (habit_id, day)
+        )
+        if exists:
+            await self._exec(
+                "DELETE FROM habit_checks WHERE habit_id=? AND day=?", (habit_id, day)
+            )
+            return False
+        await self._exec(
+            "INSERT INTO habit_checks(habit_id, day) VALUES(?,?)", (habit_id, day)
+        )
+        return True
+
+    async def delete_habit(self, uid: int, habit_id: int) -> bool:
+        owner = await self._fetchone(
+            "SELECT id FROM habits WHERE id=? AND user_id=?", (habit_id, uid)
+        )
+        if not owner:
+            return False
+        await self._exec("DELETE FROM habit_checks WHERE habit_id=?", (habit_id,))
+        await self._exec("DELETE FROM habits WHERE id=? AND user_id=?", (habit_id, uid))
+        return True
+
     # ── meta (proactive bookkeeping) + recipients ────────────────────────────────
 
     async def set_meta(self, uid: int, key: str, value: str):
@@ -284,9 +346,13 @@ class MemoryStore:
         return [r[0] for r in rows]
 
     async def clear(self, uid: int):
+        rows = await self._fetchall("SELECT id FROM habits WHERE user_id=?", (uid,))
+        for (hid,) in rows:
+            await self._exec("DELETE FROM habit_checks WHERE habit_id=?", (hid,))
         await self._exec("DELETE FROM facts WHERE user_id=?", (uid,))
         await self._exec("DELETE FROM profile WHERE user_id=?", (uid,))
         await self._exec("DELETE FROM tasks WHERE user_id=?", (uid,))
+        await self._exec("DELETE FROM habits WHERE user_id=?", (uid,))
         self._cache.pop(uid, None)
 
     async def observe(self, uid: int, gemini, user_text: str, reply_text: str = ""):
@@ -300,6 +366,23 @@ class MemoryStore:
                     logger.info(f"Learned about {uid}: {f}")
         except Exception as e:
             logger.debug(f"observe: {e}")
+
+
+def _streak(days: set, today: str) -> int:
+    """Count consecutive checked days ending today (or yesterday if today not yet
+    checked, so the streak survives until a full day is actually missed)."""
+    from datetime import date, timedelta
+    try:
+        cur = date.fromisoformat(today)
+    except Exception:
+        return 0
+    if today not in days:
+        cur = cur - timedelta(days=1)
+    n = 0
+    while cur.isoformat() in days:
+        n += 1
+        cur -= timedelta(days=1)
+    return n
 
 
 def _sort_tasks(items: list) -> list:
@@ -354,8 +437,20 @@ CREATE TABLE IF NOT EXISTS meta (
     value   TEXT,
     PRIMARY KEY (user_id, key)
 );
+CREATE TABLE IF NOT EXISTS habits (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    title      TEXT NOT NULL,
+    created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS habit_checks (
+    habit_id INTEGER NOT NULL,
+    day      TEXT NOT NULL,
+    PRIMARY KEY (habit_id, day)
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
+CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
 """
 
 _SCHEMA_PG = """
@@ -388,6 +483,18 @@ CREATE TABLE IF NOT EXISTS meta (
     value   TEXT,
     PRIMARY KEY (user_id, key)
 );
+CREATE TABLE IF NOT EXISTS habits (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    title      TEXT NOT NULL,
+    created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS habit_checks (
+    habit_id BIGINT NOT NULL,
+    day      TEXT NOT NULL,
+    PRIMARY KEY (habit_id, day)
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
+CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
 """
