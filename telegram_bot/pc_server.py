@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 # ── Keyword tables ─────────────────────────────────────────────────────────────
 
 _KW = {
+    "camera": [
+        "камер", "веб-камер", "вебкам", "webcam", "camera",
+        "что рядом", "что вокруг", "что там происходит", "посмотри вокруг",
+        "сфоткай", "снимок с камеры", "фото с камеры",
+    ],
     "system": [
         "скриншот", "screenshot", "снимок экрана",
         "заблокируй экран", "заблокировать экран", "lock screen", "lock pc",
@@ -101,6 +106,10 @@ async def _execute(text: str) -> dict:
     tl = text.lower().strip()
 
     try:
+        # Camera first — "снимок с камеры" must not be caught by screenshot
+        if any(k in tl for k in _KW["camera"]):
+            return await _do_camera()
+
         if any(k in tl for k in _KW["system"]):
             if any(k in tl for k in ["скриншот", "screenshot", "снимок"]):
                 return await _do_screenshot()
@@ -180,6 +189,21 @@ async def _do_screenshot() -> dict:
         image_b64 = _encode_image(path)
         if image_b64:
             return {"text": "Скриншот ✅", "image_b64": image_b64}
+    return _r(msg)
+
+
+async def _do_camera() -> dict:
+    from actions.camera import camera_snapshot
+    msg = await asyncio.to_thread(camera_snapshot, {})
+    path = msg.split(":", 1)[-1].strip() if msg.startswith("Снимок с камеры:") else None
+    if path and os.path.exists(path):
+        image_b64 = _encode_image(path)
+        try:
+            os.remove(path)  # clean up temp file
+        except OSError:
+            pass
+        if image_b64:
+            return {"text": "📷 Снимок с камеры", "image_b64": image_b64}
     return _r(msg)
 
 
