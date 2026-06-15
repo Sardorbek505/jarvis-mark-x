@@ -19,3 +19,6 @@ websockets>=12.0
 # Долгая память: Postgres (Neon) для постоянного хранения на Render.
 # Без DATABASE_URL используется SQLite (стирается при перезапуске Render).
 asyncpg>=0.29.0
+
+# Голосовые ответы: портативный ffmpeg для PCM→OGG/Opus (без системных пакетов)
+imageio-ffmpeg>=0.5.1

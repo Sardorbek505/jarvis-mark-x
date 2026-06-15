@@ -238,6 +238,15 @@ class GeminiClient:
     def clear_history(self, user_id: int):
         self._history.pop(user_id, None)
 
+    async def speak_ogg(self, text: str, voice: str = "Charon") -> bytes | None:
+        """Synthesize speech and return it as OGG/Opus ready for Telegram voice
+        notes. Returns None if TTS or encoding is unavailable."""
+        from telegram_bot import voice_util
+        pcm = await self.synthesize_speech(text, voice=voice)
+        if not pcm:
+            return None
+        return await voice_util.pcm_to_ogg(pcm)
+
     async def extract_facts(self, user_text: str, reply_text: str = "") -> list:
         """Pull durable personal facts about the user from a message exchange.
         Returns a list of short Russian fact strings (may be empty)."""
