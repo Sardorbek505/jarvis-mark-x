@@ -230,3 +230,45 @@ class GeminiClient:
 
     def clear_history(self, user_id: int):
         self._history.pop(user_id, None)
+
+    async def extract_facts(self, user_text: str, reply_text: str = "") -> list:
+        """Pull durable personal facts about the user from a message exchange.
+        Returns a list of short Russian fact strings (may be empty)."""
+        snippet = f"Пользователь: {user_text}".strip()
+        if reply_text:
+            snippet += f"\nJARVIS: {reply_text}"
+        prompt = (
+            "Из этого диалога выпиши ТОЛЬКО устойчивые личные факты о пользователе, "
+            "которые стоит помнить надолго (имя, работа, учёба, город, семья, друзья, "
+            "вкусы, привычки, цели, важные даты, планы). "
+            "НЕ включай сиюминутные команды, вопросы и общую болтовню. "
+            "Верни строго JSON-массив коротких строк на русском. "
+            "Если запоминать нечего — верни []."
+            f"\n\nДиалог:\n{snippet}"
+        )
+        loop = asyncio.get_event_loop()
+        for model in self._models_to_try():
+            try:
+                resp = await loop.run_in_executor(
+                    None,
+                    lambda m=model: self._client.models.generate_content(
+                        model=m,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(temperature=0.0),
+                    ),
+                )
+                raw = (resp.text or "").strip()
+                if not raw:
+                    return []
+                # Strip markdown fences if present
+                raw = raw.replace("```json", "").replace("```", "").strip()
+                start, end = raw.find("["), raw.rfind("]")
+                if start == -1 or end == -1:
+                    return []
+                import json as _json
+                facts = _json.loads(raw[start:end + 1])
+                return [str(f).strip() for f in facts if str(f).strip()][:8]
+            except Exception as e:
+                logger.debug(f"extract_facts '{model}': {e}")
+                continue
+        return []
