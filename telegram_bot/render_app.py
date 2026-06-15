@@ -1,8 +1,8 @@
 """
-Render entry point — runs the Telegram bot + Mini App server in one process.
+Render entry point — Telegram bot (webhook) + Mini App server in one process.
 
-On Render, a "web service" must bind to $PORT.
-The FastAPI app does that; the Telegram bot runs as a background asyncio task.
+Webhook mode eliminates telegram.error.Conflict — no more polling fights between
+deploys. Telegram POSTs updates to /webhook/<token>; FastAPI processes them.
 """
 import asyncio
 import logging
@@ -11,15 +11,17 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from telegram import Update
+
 from telegram_bot.config import load as load_config
 from telegram_bot.gemini_client import GeminiClient
 from telegram_bot.pc_bridge import PCBridge
-from telegram_bot import miniapp_server  # imports the FastAPI `app` + sets _gemini/_bridge
+from telegram_bot import miniapp_server
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -40,20 +42,16 @@ miniapp_server._bridge = bridge
 bridge.on_status_change(miniapp_server.broadcast_pc_status)
 
 
-# ── Telegram bot (inline, no separate event loop) ─────────────────────────────
+# ── Build the Telegram Application (webhook mode, no Updater) ─────────────────
 
-async def _run_bot():
-    """Run Telegram bot inside the existing asyncio event loop."""
-    from datetime import datetime
-    from telegram import BotCommand
+_tg_app = None  # set during lifespan startup
+
+
+async def _build_tg_app():
     from telegram.ext import (
-        ApplicationBuilder, CommandHandler, MessageHandler, filters
+        ApplicationBuilder, CommandHandler, MessageHandler, filters,
     )
-    from telegram_bot.reminders import get_due, mark_sent, list_reminders, parse_reminder, add_reminder
 
-    # IMPORTANT: the bot handlers reference bot.py's module-level `gemini` and
-    # `bridge`. Point them at OUR shared instances so Telegram, Mini App and the
-    # PC link all use the SAME bridge + the SAME conversation memory.
     import telegram_bot.bot as botmod
     botmod.gemini = gemini
     botmod.bridge = bridge
@@ -69,6 +67,7 @@ async def _run_bot():
     app = (
         ApplicationBuilder()
         .token(cfg.telegram_token)
+        .updater(None)          # disable polling/updater — we receive via webhook
         .build()
     )
 
@@ -91,60 +90,102 @@ async def _run_bot():
 
     bridge.on_notification(lambda t, uid: _on_notification(t, uid, app.bot))
 
-    async def reminder_loop():
-        while True:
-            try:
-                await asyncio.sleep(30)
-                due = get_due(datetime.now())
-                for r in due:
-                    try:
-                        await app.bot.send_message(chat_id=r["user_id"],
-                                                   text=f"🔔 Напоминание: {r['text']}")
-                        mark_sent(r["id"])
-                    except Exception as e:
-                        logger.error(f"Reminder: {e}")
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Reminder loop: {e}")
-
-    await app.initialize()
-    await app.bot.set_my_commands(_BOT_COMMANDS)
-    await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
-    asyncio.create_task(reminder_loop())
-    logger.info("Telegram bot started (inline) ✅")
+    return app, _BOT_COMMANDS
 
 
-# ── FastAPI lifespan — start everything on uvicorn boot ───────────────────────
+# ── Reminder loop ─────────────────────────────────────────────────────────────
 
 _tasks: list[asyncio.Task] = []
 
 
+async def _reminder_loop(bot):
+    from datetime import datetime
+    from telegram_bot.reminders import get_due, mark_sent
+    while True:
+        try:
+            await asyncio.sleep(30)
+            for r in get_due(datetime.now()):
+                try:
+                    await bot.send_message(chat_id=r["user_id"],
+                                           text=f"🔔 Напоминание: {r['text']}")
+                    mark_sent(r["id"])
+                except Exception as e:
+                    logger.error(f"Reminder send: {e}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Reminder loop: {e}")
+
+
+# ── FastAPI lifespan ──────────────────────────────────────────────────────────
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _tg_app
     logger.info("Render app starting…")
-    # PC bridge is passive (PCs dial in via /pc-link) — no connect loop needed.
-    _tasks.append(asyncio.create_task(_run_bot()))
+
+    _tg_app, bot_commands = await _build_tg_app()
+    await _tg_app.initialize()
+    await _tg_app.start()
+    await _tg_app.bot.set_my_commands(bot_commands)
+
+    if cfg.miniapp_url:
+        webhook_url = f"{cfg.miniapp_url}/webhook/{cfg.telegram_token}"
+        await _tg_app.bot.set_webhook(
+            url=webhook_url,
+            drop_pending_updates=True,
+            allowed_updates=["message", "edited_message", "callback_query"],
+        )
+        logger.info(f"Webhook registered: {cfg.miniapp_url}/webhook/***")
+    else:
+        logger.warning(
+            "MINIAPP_URL not set — webhook NOT registered. "
+            "Set MINIAPP_URL in Render env to https://<your-app>.onrender.com"
+        )
+
+    _tasks.append(asyncio.create_task(_reminder_loop(_tg_app.bot)))
+    logger.info("JARVIS started ✅ (webhook mode)")
+
     yield
+
     for t in _tasks:
         t.cancel()
         try:
             await t
         except asyncio.CancelledError:
             pass
+
+    if cfg.miniapp_url:
+        try:
+            await _tg_app.bot.delete_webhook()
+        except Exception:
+            pass
+    await _tg_app.stop()
+    await _tg_app.shutdown()
     logger.info("Render app stopped.")
 
 
-# ── Build the combined FastAPI app ────────────────────────────────────────────
+# ── Attach lifespan and routes to miniapp_server's FastAPI app ────────────────
 
-# Re-use miniapp_server's `app` but attach our lifespan
 miniapp_server.app.router.lifespan_context = lifespan
+
+
+@miniapp_server.app.post("/webhook/{token}")
+async def telegram_webhook(token: str, request: Request):
+    """Telegram calls this endpoint for every update."""
+    if token != cfg.telegram_token:
+        return JSONResponse({"ok": False}, status_code=403)
+    if _tg_app is None:
+        return JSONResponse({"ok": False}, status_code=503)
+    data = await request.json()
+    update = Update.de_json(data, _tg_app.bot)
+    await _tg_app.process_update(update)
+    return JSONResponse({"ok": True})
 
 
 @miniapp_server.app.get("/health")
 async def health():
-    """Keep-alive endpoint — ping this every 5 min to prevent Render sleep."""
+    """Keep-alive endpoint — ping every 5 min to prevent Render sleep."""
     return JSONResponse({"status": "ok", "pc": bridge.connected})
 
 
