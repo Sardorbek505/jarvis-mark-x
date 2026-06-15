@@ -11,6 +11,7 @@ from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Upd
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -291,6 +292,65 @@ async def cmd_remember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def _mode_keyboard() -> InlineKeyboardMarkup:
+    btns = [InlineKeyboardButton(personas.label(mid), callback_data=f"mode:{mid}")
+            for mid in personas.PERSONAS]
+    rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
+    return InlineKeyboardMarkup(rows)
+
+
+def _habits_keyboard(habits: list) -> InlineKeyboardMarkup | None:
+    if not habits:
+        return None
+    rows = [[InlineKeyboardButton(
+        f"{'✅' if h['done_today'] else '⬜'} {h['title']}",
+        callback_data=f"hab:{h['id']}")] for h in habits]
+    return InlineKeyboardMarkup(rows)
+
+
+def _tasks_keyboard(tasks: list) -> InlineKeyboardMarkup | None:
+    if not tasks:
+        return None
+    rows = [[InlineKeyboardButton(f"✓ {t['title'][:40]}", callback_data=f"task:{t['id']}")]
+            for t in tasks]
+    return InlineKeyboardMarkup(rows)
+
+
+async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not _is_authorized(update):
+        await q.answer("Нет доступа", show_alert=True)
+        return
+    uid = q.from_user.id
+    data = q.data or ""
+    try:
+        if data.startswith("mode:"):
+            mid = data.split(":", 1)[1]
+            await memory.set_mode(uid, mid)
+            await q.answer(f"Режим: {personas.label(mid)}")
+            await q.edit_message_text(
+                f"Готово, теперь я в режиме: {personas.label(mid)} ✅",
+                reply_markup=_mode_keyboard())
+        elif data.startswith("hab:"):
+            today = _today_str(uid)
+            await memory.toggle_habit(uid, int(data.split(":", 1)[1]), today)
+            habits = await memory.get_habits(uid, today)
+            await q.answer("Отмечено 🔥")
+            await q.edit_message_text(_render_habits(habits), parse_mode="Markdown",
+                                      reply_markup=_habits_keyboard(habits))
+        elif data.startswith("task:"):
+            await memory.complete_task(uid, int(data.split(":", 1)[1]))
+            tasks = await memory.get_tasks(uid)
+            await q.answer("Закрыто ✅")
+            await q.edit_message_text(agenda.render_list(tasks), parse_mode="Markdown",
+                                      reply_markup=_tasks_keyboard(tasks))
+        else:
+            await q.answer()
+    except Exception as e:
+        logger.error(f"on_callback '{data}': {e}")
+        await q.answer("Не получилось 😕", show_alert=False)
+
+
 def _today_str(uid: int) -> str:
     return user_context.local_now(uid, cfg.timezone).date().isoformat()
 
@@ -328,7 +388,9 @@ async def cmd_habits(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     uid = update.effective_user.id
     habits = await memory.get_habits(uid, _today_str(uid))
-    await update.effective_message.reply_text(_render_habits(habits), parse_mode="Markdown")
+    await update.effective_message.reply_text(
+        _render_habits(habits), parse_mode="Markdown",
+        reply_markup=_habits_keyboard(habits))
 
 
 async def cmd_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -405,7 +467,8 @@ async def cmd_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     tasks = await memory.get_tasks(update.effective_user.id)
     await update.effective_message.reply_text(
-        agenda.render_list(tasks), parse_mode="Markdown"
+        agenda.render_list(tasks), parse_mode="Markdown",
+        reply_markup=_tasks_keyboard(tasks)
     )
 
 
@@ -449,7 +512,8 @@ async def cmd_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not arg:
         current = await memory.get_mode(uid) or personas.DEFAULT_MODE
         await update.effective_message.reply_text(
-            personas.list_text(current), parse_mode="Markdown"
+            personas.list_text(current), parse_mode="Markdown",
+            reply_markup=_mode_keyboard()
         )
         return
     mid = personas.resolve(arg)
@@ -856,6 +920,7 @@ def main():
     app.add_handler(CommandHandler("check",      cmd_check))
     app.add_handler(CommandHandler("morning",    cmd_morning))
     app.add_handler(CommandHandler("evening",    cmd_evening))
+    app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))

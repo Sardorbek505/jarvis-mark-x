@@ -78,7 +78,7 @@ _tg_app = None  # set during lifespan startup
 
 async def _build_tg_app():
     from telegram.ext import (
-        ApplicationBuilder, CommandHandler, MessageHandler, filters,
+        ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters,
     )
 
     import telegram_bot.bot as botmod
@@ -92,6 +92,7 @@ async def _build_tg_app():
         cmd_remind, cmd_reminders, cmd_task, cmd_tasks, cmd_today, cmd_done,
         cmd_habit, cmd_habits, cmd_check,
         cmd_morning, cmd_evening, cmd_mode, cmd_profile, cmd_remember, cmd_forget,
+        on_callback,
         handle_text, handle_voice, handle_photo,
         _on_notification, _BOT_COMMANDS,
     )
@@ -130,6 +131,7 @@ async def _build_tg_app():
     app.add_handler(CommandHandler("check",      cmd_check))
     app.add_handler(CommandHandler("morning",    cmd_morning))
     app.add_handler(CommandHandler("evening",    cmd_evening))
+    app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
