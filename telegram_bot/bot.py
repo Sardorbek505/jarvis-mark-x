@@ -75,6 +75,9 @@ _BOT_COMMANDS = [
     BotCommand("tasks",      "Список задач"),
     BotCommand("today",      "Задачи на сегодня"),
     BotCommand("done",       "Закрыть задачу по номеру"),
+    BotCommand("habit",      "Добавить привычку"),
+    BotCommand("habits",     "Мои привычки и серии"),
+    BotCommand("check",      "Отметить привычку за сегодня"),
     BotCommand("morning",    "Утренний брифинг сейчас"),
     BotCommand("evening",    "Вечерний разбор сейчас"),
     BotCommand("mode",       "Режим личности (ментор/друг/бизнес)"),
@@ -193,6 +196,8 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"`/task завтра в 9:00 созвон`\n"
         f"`/task купить хлеб` · `/tasks` · `/today`\n"
         f"`/done 2` — закрыть задачу №2\n\n"
+        f"*Привычки*\n"
+        f"`/habit пить воду` · `/habits` · `/check 1`\n\n"
         f"*Проактивный секретарь*\n"
         f"Сам пишу утром (8:00) и вечером (22:00)\n"
         f"`/morning` · `/evening` — брифинг сейчас\n\n"
@@ -284,6 +289,71 @@ async def cmd_remember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "Запомнил ✅" if added else "Я это уже знаю 🙂"
     )
+
+
+def _today_str(uid: int) -> str:
+    return user_context.local_now(uid, cfg.timezone).date().isoformat()
+
+
+def _render_habits(habits: list) -> str:
+    if not habits:
+        return ("Привычек пока нет 🌱\nДобавь: `/habit пить воду`, "
+                "`/habit читать 20 минут`")
+    lines = ["🔁 *Твои привычки*\n"]
+    for i, h in enumerate(habits, 1):
+        box = "✅" if h["done_today"] else "⬜"
+        streak = f" 🔥{h['streak']}" if h["streak"] else ""
+        lines.append(f"{i}. {box} {h['title']}{streak}")
+    lines.append("\nОтметить за сегодня: `/check <номер>`")
+    return "\n".join(lines)
+
+
+async def cmd_habit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    title = " ".join(ctx.args).strip()
+    if not title:
+        await update.effective_message.reply_text(
+            "Какую привычку добавить?\n`/habit пить воду`\n`/habit спорт`\n"
+            "`/habit читать 20 минут`", parse_mode="Markdown")
+        return
+    await memory.add_habit(update.effective_user.id, title)
+    await update.effective_message.reply_text(
+        f"Добавил привычку 🌱 *{title}*\nОтмечай каждый день — соберём серию 🔥",
+        parse_mode="Markdown")
+
+
+async def cmd_habits(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    habits = await memory.get_habits(uid, _today_str(uid))
+    await update.effective_message.reply_text(_render_habits(habits), parse_mode="Markdown")
+
+
+async def cmd_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    arg = " ".join(ctx.args).strip()
+    if not arg.isdigit():
+        await update.effective_message.reply_text(
+            "Укажи номер привычки из `/habits`. Пример: `/check 1`", parse_mode="Markdown")
+        return
+    uid = update.effective_user.id
+    today = _today_str(uid)
+    habits = await memory.get_habits(uid, today)
+    n = int(arg)
+    if n < 1 or n > len(habits):
+        await update.effective_message.reply_text(f"Нет привычки №{n}. Список: /habits")
+        return
+    h = habits[n - 1]
+    done = await memory.toggle_habit(uid, h["id"], today)
+    if done:
+        new_streak = h["streak"] + (0 if h["done_today"] else 1)
+        await update.effective_message.reply_text(
+            f"✅ «{h['title']}» отмечено! Серия: 🔥{new_streak}")
+    else:
+        await update.effective_message.reply_text(f"↩️ Снял отметку с «{h['title']}»")
 
 
 async def cmd_morning(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -781,6 +851,9 @@ def main():
     app.add_handler(CommandHandler("tasks",      cmd_tasks))
     app.add_handler(CommandHandler("today",      cmd_today))
     app.add_handler(CommandHandler("done",       cmd_done))
+    app.add_handler(CommandHandler("habit",      cmd_habit))
+    app.add_handler(CommandHandler("habits",     cmd_habits))
+    app.add_handler(CommandHandler("check",      cmd_check))
     app.add_handler(CommandHandler("morning",    cmd_morning))
     app.add_handler(CommandHandler("evening",    cmd_evening))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
