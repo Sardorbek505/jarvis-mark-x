@@ -223,7 +223,7 @@ async def lifespan(app: FastAPI):
 
     _tasks.append(asyncio.create_task(_reminder_loop(_tg_app.bot)))
     _tasks.append(asyncio.create_task(
-        proactive.loop(_tg_app.bot, gemini, memory, cfg.timezone)
+        proactive.loop(_tg_app.bot, gemini, memory, cfg.timezone, cfg.default_city)
     ))
     logger.info("JARVIS started ✅ (webhook mode)")
 

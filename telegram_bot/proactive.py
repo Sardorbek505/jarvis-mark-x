@@ -15,6 +15,7 @@ from datetime import datetime
 
 from telegram_bot import user_context
 from telegram_bot import agenda
+from telegram_bot import weather
 
 logger = logging.getLogger("jarvis-proactive")
 
@@ -42,17 +43,19 @@ def _tasks_text(tasks: list) -> str:
     return "\n".join(lines)
 
 
-def _morning_prompt(name: str, today: list, all_open: list) -> str:
+def _morning_prompt(name: str, today: list, all_open: list, weather_line: str = "") -> str:
     who = f" Пользователя зовут {name}." if name else ""
+    wx = f"Погода сегодня: {weather_line}.\n\n" if weather_line else ""
     return (
         "Сейчас утро. Составь короткий тёплый утренний брифинг для пользователя "
         "в своём текущем стиле (учитывай режим личности и что ты о нём знаешь)."
         f"{who}\n\n"
+        f"{wx}"
         f"Задачи и события на сегодня:\n{_tasks_text(today)}\n\n"
         f"Всего открытых задач: {len(all_open)}.\n\n"
-        "Поздоровайся по-человечески, кратко проговори план на день "
-        "(если задач нет — мягко предложи задать цель на день), добавь одну "
-        "искреннюю мотивирующую мысль. Без воды, 3–6 строк, можно эмодзи."
+        "Поздоровайся по-человечески, упомяни погоду если она есть, кратко "
+        "проговори план на день (если задач нет — мягко предложи задать цель), "
+        "добавь одну искреннюю мотивирующую мысль. Без воды, 3–6 строк, эмодзи ок."
     )
 
 
@@ -70,13 +73,16 @@ def _evening_prompt(name: str, today: list, all_open: list) -> str:
     )
 
 
-async def _send_briefing(bot, gemini, memory, uid: int, slot: str, default_tz: str):
+async def _send_briefing(bot, gemini, memory, uid: int, slot: str,
+                         default_tz: str, default_city: str = ""):
     profile = await memory.get_profile(uid)
     tasks = await memory.get_tasks(uid)
     today = _today_tasks(tasks)
     name = profile.get("name", "")
     if slot == "morning":
-        prompt = _morning_prompt(name, today, tasks)
+        city = user_context.get_city(uid, default_city)
+        weather_line = await weather.for_city(city) if city else None
+        prompt = _morning_prompt(name, today, tasks, weather_line or "")
         header = "☀️"
     else:
         prompt = _evening_prompt(name, today, tasks)
@@ -94,7 +100,7 @@ async def _send_briefing(bot, gemini, memory, uid: int, slot: str, default_tz: s
         return False
 
 
-async def tick(bot, gemini, memory, default_tz: str):
+async def tick(bot, gemini, memory, default_tz: str, default_city: str = ""):
     """One scheduler pass — send any due briefings."""
     try:
         uids = await memory.all_user_ids()
@@ -110,19 +116,20 @@ async def tick(bot, gemini, memory, default_tz: str):
             marker = f"briefing_{slot}"
             if await memory.get_meta(uid, marker) == today_key:
                 continue  # already sent today
-            sent = await _send_briefing(bot, gemini, memory, uid, slot, default_tz)
+            sent = await _send_briefing(bot, gemini, memory, uid, slot,
+                                        default_tz, default_city)
             # Mark even on send-failure to avoid hammering a blocked chat all day
             await memory.set_meta(uid, marker, today_key)
             if sent:
                 logger.info(f"Sent {slot} briefing to {uid}")
 
 
-async def loop(bot, gemini, memory, default_tz: str = "Asia/Almaty"):
+async def loop(bot, gemini, memory, default_tz: str = "Asia/Almaty", default_city: str = ""):
     logger.info("Proactive secretary loop started ✅")
     while True:
         try:
             await asyncio.sleep(_CHECK_EVERY)
-            await tick(bot, gemini, memory, default_tz)
+            await tick(bot, gemini, memory, default_tz, default_city)
         except asyncio.CancelledError:
             break
         except Exception as e:
