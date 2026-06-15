@@ -24,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from telegram_bot.config import load as load_config
 from telegram_bot.gemini_client import GeminiClient
 from telegram_bot.pc_bridge import PCBridge
-from telegram_bot.reminders import add_reminder, get_due, mark_sent, list_reminders, parse_reminder
+from telegram_bot import reminders as rem
+from telegram_bot.reminders import parse_reminder
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -675,8 +676,8 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "• /remind в 15:00 купить продукты"
         )
         return
-    parsed = parse_reminder(text)
-    if not parsed:
+    confirm = await _store_reminder(update.effective_user.id, text)
+    if not confirm:
         await update.effective_message.reply_text(
             "Не понял когда напомнить. Попробуй:\n"
             "• через 30 минут\n"
@@ -684,14 +685,34 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "• завтра в 9:00"
         )
         return
+    await update.effective_message.reply_text(confirm)
+
+
+async def _store_reminder(uid: int, text: str) -> str | None:
+    """Parse a reminder in the user's local time, save it durably (UTC), and
+    return a confirmation string — or None if the phrase isn't parseable."""
+    now_local = user_context.local_now(uid, cfg.timezone)
+    parsed = parse_reminder(text, now_local)
+    if not parsed:
+        return None
     when, what = parsed
-    await update.effective_message.reply_text(add_reminder(update.effective_user.id, what, when))
+    await memory.add_reminder(uid, what, rem.to_utc_iso(when))
+    return f"✅ Напомню: «{what}» — {rem.confirm_label(when, now_local)}"
 
 
 async def cmd_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    await update.effective_message.reply_text(list_reminders(update.effective_user.id))
+    uid = update.effective_user.id
+    items = await memory.list_reminders(uid)
+    if not items:
+        await update.effective_message.reply_text("У тебя нет активных напоминаний.")
+        return
+    tz = user_context.local_now(uid, cfg.timezone).tzinfo
+    lines = ["📋 *Твои напоминания:*"]
+    for r in items:
+        lines.append(f"  • {rem.fmt_local(r['due'], tz)} — {r['text']}")
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 # ── Message handlers ───────────────────────────────────────────────────────────
@@ -731,10 +752,9 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         # 1. Reminder?
         if _looks_like_reminder(text):
-            parsed = parse_reminder(text)
-            if parsed:
-                when, what = parsed
-                await update.effective_message.reply_text(add_reminder(user_id, what, when))
+            confirm = await _store_reminder(user_id, text)
+            if confirm:
+                await update.effective_message.reply_text(confirm)
                 return
 
         # 2. PC command?
@@ -863,14 +883,13 @@ async def _reminder_loop(bot):
     while True:
         try:
             await asyncio.sleep(30)
-            due = get_due(datetime.now())
-            for r in due:
+            for r in await memory.get_due_reminders(rem.now_utc_iso()):
                 try:
                     await bot.send_message(
                         chat_id=r["user_id"],
                         text=f"🔔 Напоминание: {r['text']}"
                     )
-                    mark_sent(r["id"])
+                    await memory.mark_reminder_sent(r["id"])
                 except Exception as e:
                     logger.error(f"Reminder send: {e}")
         except asyncio.CancelledError:

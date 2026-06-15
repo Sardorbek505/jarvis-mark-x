@@ -320,6 +320,37 @@ class MemoryStore:
         await self._exec("DELETE FROM habits WHERE id=? AND user_id=?", (habit_id, uid))
         return True
 
+    # ── reminders (durable, timezone-correct: due stored as UTC ISO) ─────────────
+
+    async def add_reminder(self, uid: int, text: str, due_utc_iso: str) -> dict:
+        await self._exec(
+            "INSERT INTO reminders(user_id, text, due, sent, created_at) VALUES(?,?,?,0,?)",
+            (uid, (text or "").strip(), due_utc_iso, datetime.now().isoformat()),
+        )
+        row = await self._fetchone(
+            "SELECT id FROM reminders WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)
+        )
+        return {"id": row[0] if row else 0, "text": text, "due": due_utc_iso}
+
+    async def get_due_reminders(self, now_utc_iso: str) -> list:
+        rows = await self._fetchall(
+            "SELECT id, user_id, text, due FROM reminders WHERE sent=0", ()
+        )
+        return [
+            {"id": r[0], "user_id": r[1], "text": r[2], "due": r[3]}
+            for r in rows if r[3] and r[3] <= now_utc_iso
+        ]
+
+    async def mark_reminder_sent(self, reminder_id: int):
+        await self._exec("UPDATE reminders SET sent=1 WHERE id=?", (reminder_id,))
+
+    async def list_reminders(self, uid: int) -> list:
+        rows = await self._fetchall(
+            "SELECT id, text, due FROM reminders WHERE user_id=? AND sent=0 ORDER BY due ASC",
+            (uid,),
+        )
+        return [{"id": r[0], "text": r[1], "due": r[2]} for r in rows]
+
     # ── meta (proactive bookkeeping) + recipients ────────────────────────────────
 
     async def set_meta(self, uid: int, key: str, value: str):
@@ -353,6 +384,7 @@ class MemoryStore:
         await self._exec("DELETE FROM profile WHERE user_id=?", (uid,))
         await self._exec("DELETE FROM tasks WHERE user_id=?", (uid,))
         await self._exec("DELETE FROM habits WHERE user_id=?", (uid,))
+        await self._exec("DELETE FROM reminders WHERE user_id=?", (uid,))
         self._cache.pop(uid, None)
 
     async def observe(self, uid: int, gemini, user_text: str, reply_text: str = ""):
@@ -448,9 +480,18 @@ CREATE TABLE IF NOT EXISTS habit_checks (
     day      TEXT NOT NULL,
     PRIMARY KEY (habit_id, day)
 );
+CREATE TABLE IF NOT EXISTS reminders (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    text       TEXT NOT NULL,
+    due        TEXT NOT NULL,
+    sent       INTEGER DEFAULT 0,
+    created_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
+CREATE INDEX IF NOT EXISTS idx_reminders_sent ON reminders(sent);
 """
 
 _SCHEMA_PG = """
@@ -494,7 +535,16 @@ CREATE TABLE IF NOT EXISTS habit_checks (
     day      TEXT NOT NULL,
     PRIMARY KEY (habit_id, day)
 );
+CREATE TABLE IF NOT EXISTS reminders (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    text       TEXT NOT NULL,
+    due        TEXT NOT NULL,
+    sent       INTEGER DEFAULT 0,
+    created_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
+CREATE INDEX IF NOT EXISTS idx_reminders_sent ON reminders(sent);
 """

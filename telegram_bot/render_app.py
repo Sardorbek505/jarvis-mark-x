@@ -147,16 +147,15 @@ _tasks: list[asyncio.Task] = []
 
 
 async def _reminder_loop(bot):
-    from datetime import datetime
-    from telegram_bot.reminders import get_due, mark_sent
+    from telegram_bot.reminders import now_utc_iso
     while True:
         try:
             await asyncio.sleep(30)
-            for r in get_due(datetime.now()):
+            for r in await memory.get_due_reminders(now_utc_iso()):
                 try:
                     await bot.send_message(chat_id=r["user_id"],
                                            text=f"🔔 Напоминание: {r['text']}")
-                    mark_sent(r["id"])
+                    await memory.mark_reminder_sent(r["id"])
                 except Exception as e:
                     logger.error(f"Reminder send: {e}")
         except asyncio.CancelledError:

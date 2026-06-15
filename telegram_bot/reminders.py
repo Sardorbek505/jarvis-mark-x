@@ -1,101 +1,71 @@
-"""Simple reminder store + natural-language parser for the Telegram bot."""
-import json
+"""Natural-language reminder parser + time helpers for the Telegram bot.
+
+Storage and delivery live in MemoryStore (durable Postgres/SQLite) — see
+add_reminder / get_due_reminders there. This module only turns Russian phrases
+like «напомни через 30 минут позвонить маме» into a concrete moment in time,
+respecting the user's timezone, plus small helpers to move between local time
+and the UTC strings we store/compare against.
+"""
 import re
-import time
-import logging
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import List, Dict, Optional
-
-_BASE = Path(__file__).resolve().parent.parent
-_FILE = _BASE / "config" / "bot_reminders.json"
-logger = logging.getLogger(__name__)
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 
-# ── Storage ────────────────────────────────────────────────────────────────────
-
-def _load() -> List[Dict]:
-    if _FILE.exists():
-        try:
-            return json.loads(_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-    return []
+def now_utc_iso() -> str:
+    """Current UTC moment as a naive ISO string (same shape we store `due` in)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 
-def _save(reminders: List[Dict]) -> None:
-    _FILE.write_text(json.dumps(reminders, ensure_ascii=False, indent=2), encoding="utf-8")
+def to_utc_iso(when: datetime) -> str:
+    """Convert a (possibly tz-aware) local datetime to a naive-UTC ISO string."""
+    if when.tzinfo is not None:
+        when = when.astimezone(timezone.utc).replace(tzinfo=None)
+    return when.isoformat()
 
 
-def add_reminder(user_id: int, text: str, when: datetime) -> str:
-    reminders = _load()
-    reminders.append({
-        "id": int(time.time() * 1000),
-        "user_id": user_id,
-        "text": text,
-        "when": when.isoformat(),
-        "sent": False,
-    })
-    _save(reminders)
-    # Format time nicely
-    now = datetime.now()
+def confirm_label(when: datetime, now: datetime) -> str:
+    """Human confirmation like «через 25 мин» / «сегодня в 15:00» (local time)."""
     delta = when - now
     if delta.total_seconds() < 3600:
         mins = max(1, int(delta.total_seconds() / 60))
-        time_label = f"через {mins} мин"
-    elif when.date() == now.date():
-        time_label = f"сегодня в {when.strftime('%H:%M')}"
-    elif when.date() == (now + timedelta(days=1)).date():
-        time_label = f"завтра в {when.strftime('%H:%M')}"
-    else:
-        time_label = when.strftime("%d.%m в %H:%M")
-    return f"✅ Напомню: «{text}» — {time_label}"
+        return f"через {mins} мин"
+    if when.date() == now.date():
+        return f"сегодня в {when.strftime('%H:%M')}"
+    if when.date() == (now + timedelta(days=1)).date():
+        return f"завтра в {when.strftime('%H:%M')}"
+    return when.strftime("%d.%m в %H:%M")
 
 
-def get_due(now: Optional[datetime] = None) -> List[Dict]:
-    if now is None:
-        now = datetime.now()
-    return [r for r in _load() if not r["sent"] and datetime.fromisoformat(r["when"]) <= now]
-
-
-def mark_sent(reminder_id: int) -> None:
-    reminders = _load()
-    for r in reminders:
-        if r["id"] == reminder_id:
-            r["sent"] = True
-    _save(reminders)
-
-
-def list_reminders(user_id: int) -> str:
-    reminders = [r for r in _load() if not r["sent"] and r["user_id"] == user_id]
-    if not reminders:
-        return "У вас нет активных напоминаний."
-    lines = ["📋 Ваши напоминания:"]
-    for r in reminders:
-        when = datetime.fromisoformat(r["when"])
-        lines.append(f"  • {when.strftime('%d.%m в %H:%M')} — {r['text']}")
-    return "\n".join(lines)
+def fmt_local(due_utc_iso: str, tz) -> str:
+    """Render a stored UTC reminder time back in the user's local zone."""
+    try:
+        dt = datetime.fromisoformat(due_utc_iso).replace(tzinfo=timezone.utc)
+        return dt.astimezone(tz).strftime("%d.%m в %H:%M")
+    except Exception:
+        return due_utc_iso
 
 
 # ── Natural-language parser ────────────────────────────────────────────────────
 
-def parse_reminder(text: str) -> Optional[tuple]:
+def parse_reminder(text: str, now: Optional[datetime] = None) -> Optional[tuple]:
+    """Parse a reminder phrase into (when, what).
+
+    `now` should be the user's *local* (tz-aware) current time so absolute times
+    like «в 15:00» land in the right timezone. `when` is returned in the same
+    frame as `now`. Returns None if nothing parseable.
     """
-    Parse 'напомни мне через 30 минут позвонить маме' into (when: datetime, what: str).
-    Returns None if can't parse.
-    """
-    now = datetime.now()
+    if now is None:
+        now = datetime.now()
     original = text.strip()
     low = original.lower()
 
-    # Strip leading trigger words
     for prefix in ("напомни мне", "напомни", "remind me", "remind"):
         if low.startswith(prefix):
             low = low[len(prefix):].strip()
             original = original[len(prefix):].strip()
             break
 
-    # ── "через N минут/часов" ─────────────────────────────────────────────────
+    # «через N минут/часов/секунд» — relative, timezone-independent
     m = re.match(r"через\s+(\d+)\s*(минут|мин|часов|часа|час|секунд|сек)", low)
     if m:
         n = int(m.group(1))
@@ -106,11 +76,10 @@ def parse_reminder(text: str) -> Optional[tuple]:
             delta = timedelta(hours=n)
         else:
             delta = timedelta(seconds=n)
-        what = low[m.end():].strip().lstrip(",").strip()
-        what = what or "таймер"
+        what = low[m.end():].strip().lstrip(",").strip() or "таймер"
         return now + delta, what
 
-    # ── "в HH:MM [что]" ──────────────────────────────────────────────────────
+    # «в HH:MM [что]» — absolute, in the user's local timezone
     m = re.match(r"(?:сегодня\s+)?в\s+(\d{1,2})[:.](\d{2})\s*(.*)", low)
     if m:
         hour, minute = int(m.group(1)), int(m.group(2))
@@ -120,7 +89,7 @@ def parse_reminder(text: str) -> Optional[tuple]:
             when += timedelta(days=1)
         return when, what
 
-    # ── "завтра в HH:MM [что]" ───────────────────────────────────────────────
+    # «завтра в HH:MM [что]»
     m = re.match(r"завтра\s+в\s+(\d{1,2})[:.](\d{2})\s*(.*)", low)
     if m:
         hour, minute = int(m.group(1)), int(m.group(2))
@@ -128,7 +97,7 @@ def parse_reminder(text: str) -> Optional[tuple]:
         when = (now + timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
         return when, what
 
-    # ── "через час [что]" ────────────────────────────────────────────────────
+    # «через час / полчаса / полтора часа [что]»
     m = re.match(r"через\s+(час|полчаса|полтора\s+часа)\s*(.*)", low)
     if m:
         word = m.group(1)
