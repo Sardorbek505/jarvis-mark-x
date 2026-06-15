@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import re
 import struct
 import sys
 from pathlib import Path
@@ -172,8 +173,9 @@ async def ws_endpoint(ws: WebSocket):
                 text = (msg.get("text") or "").strip()
                 if not text:
                     continue
+                want_audio = bool(msg.get("tts", True))
                 await ws.send_text(json.dumps({"type": "thinking"}))
-                await _handle_text(ws, user_id, text)
+                await _handle_text(ws, user_id, text, want_audio=want_audio)
 
             elif mtype == "start_voice":
                 _audio_buffers[user_id] = b""
@@ -185,9 +187,10 @@ async def ws_endpoint(ws: WebSocket):
                     _audio_buffers[user_id] += base64.b64decode(chunk_b64)
 
             elif mtype == "stop_voice":
+                want_audio = bool(msg.get("tts", True))
                 await ws.send_text(json.dumps({"type": "status", "state": "processing"}))
                 pcm = _audio_buffers.pop(user_id, b"")
-                await _handle_voice(ws, user_id, pcm)
+                await _handle_voice(ws, user_id, pcm, want_audio=want_audio)
                 await ws.send_text(json.dumps({"type": "status", "state": "idle"}))
 
     except WebSocketDisconnect:
@@ -199,7 +202,44 @@ async def ws_endpoint(ws: WebSocket):
         _audio_buffers.pop(user_id, None)
 
 
-async def _handle_text(ws: WebSocket, user_id: int, text: str):
+_SPEECH_STRIP = re.compile(
+    r"[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF"
+    r"\U00002190-\U000021FF\U00002B00-\U00002BFF]"
+)
+
+
+def _clean_for_speech(text: str) -> str:
+    """Strip emoji / markdown / urls so the spoken text sounds natural."""
+    if not text:
+        return ""
+    t = _SPEECH_STRIP.sub("", text)
+    t = re.sub(r"https?://\S+", "", t)
+    t = re.sub(r"[*_`#>•►]", "", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+async def _send_text(ws: WebSocket, text: str, want_audio: bool):
+    """Send a text bubble and, if wanted, the same text spoken in the JARVIS
+    voice (Charon) via Gemini TTS — same voice as the desktop app."""
+    await ws.send_text(json.dumps({"type": "text", "text": text}))
+    if want_audio and _gemini:
+        spoken = _clean_for_speech(text)
+        if not spoken:
+            return
+        try:
+            pcm = await _gemini.synthesize_speech(spoken)
+        except Exception as e:
+            logger.debug(f"TTS: {e}")
+            pcm = None
+        if pcm:
+            await ws.send_text(json.dumps({
+                "type": "audio",
+                "data": base64.b64encode(pcm).decode(),
+            }))
+
+
+async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool = True):
     is_pc_cmd = _looks_like_pc_command(text)
 
     if _bridge and _bridge.connected and is_pc_cmd:
@@ -212,23 +252,22 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str):
                     "caption": rich.get("text", ""),
                 }))
             if rich.get("text"):
-                await ws.send_text(json.dumps({
-                    "type": "text",
-                    "text": f"🖥 {rich['text']}",
-                }))
+                await _send_text(ws, f"🖥 {rich['text']}", want_audio)
         else:
             # PC connected but didn't respond — never fall through to Gemini
-            await ws.send_text(json.dumps({
-                "type": "text",
-                "text": "❌ ПК не ответил. Убедись что pc_server запущен на компьютере (`scripts\\start_pc.bat`).",
-            }))
+            await _send_text(
+                ws,
+                "❌ ПК не ответил. Убедись что pc_server запущен на компьютере (`scripts\\start_pc.bat`).",
+                want_audio,
+            )
         return
 
     if _bridge and not _bridge.connected and is_pc_cmd:
-        await ws.send_text(json.dumps({
-            "type": "text",
-            "text": "❌ ПК офлайн. Запусти `scripts\\start_pc.bat` на своём компьютере.",
-        }))
+        await _send_text(
+            ws,
+            "❌ ПК офлайн. Запусти `scripts\\start_pc.bat` на своём компьютере.",
+            want_audio,
+        )
         return
 
     # Not a PC command — send to Gemini
@@ -236,10 +275,10 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str):
         reply = await _gemini.chat(user_id, text)
     else:
         reply = "AI-сервис недоступен."
-    await ws.send_text(json.dumps({"type": "text", "text": reply}))
+    await _send_text(ws, reply, want_audio)
 
 
-async def _handle_voice(ws: WebSocket, user_id: int, pcm: bytes):
+async def _handle_voice(ws: WebSocket, user_id: int, pcm: bytes, want_audio: bool = True):
     if not _gemini:
         await ws.send_text(json.dumps({"type": "text", "text": "AI-сервис недоступен."}))
         return
@@ -262,7 +301,8 @@ async def _handle_voice(ws: WebSocket, user_id: int, pcm: bytes):
             return
         # Show the user what was recognised
         await ws.send_text(json.dumps({"type": "transcript_user", "text": transcript}))
-        await _handle_text(ws, user_id, transcript)
+        # Voice input → speak the reply by default
+        await _handle_text(ws, user_id, transcript, want_audio=want_audio)
     except Exception as e:
         logger.error(f"Voice handle error: {e}")
         await ws.send_text(json.dumps({
