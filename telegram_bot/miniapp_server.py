@@ -64,6 +64,7 @@ app = FastAPI(title="JARVIS Mini App")
 # Lazy references set by render_app.py / __main__
 _gemini = None
 _bridge = None
+_memory = None
 _audio_buffers: Dict[int, bytes] = {}
 _miniapp_clients: Set[WebSocket] = set()
 
@@ -270,9 +271,13 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
         )
         return
 
-    # Not a PC command — send to Gemini
+    # Not a PC command — send to Gemini (with long-term memory)
     if _gemini:
+        if _memory:
+            await _memory.ensure_loaded(user_id)
         reply = await _gemini.chat(user_id, text)
+        if _memory:
+            asyncio.create_task(_memory.observe(user_id, _gemini, text, reply))
     else:
         reply = "AI-сервис недоступен."
     await _send_text(ws, reply, want_audio)

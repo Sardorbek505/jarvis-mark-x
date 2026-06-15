@@ -32,13 +32,21 @@ logging.basicConfig(
 logger = logging.getLogger("jarvis-bot")
 
 from telegram_bot import user_context
+from telegram_bot.memory_store import MemoryStore
 
 cfg = load_config()
 gemini = GeminiClient(cfg.gemini_api_key, cfg.gemini_model)
-gemini.set_context_provider(
-    lambda uid: user_context.describe(uid, cfg.default_city, cfg.timezone)
-)
 bridge = PCBridge()
+memory = MemoryStore()
+
+
+def _build_context(uid: int) -> str:
+    base = user_context.describe(uid, cfg.default_city, cfg.timezone)
+    mem = memory.cached_block(uid)
+    return f"{base}\n{mem}" if mem else base
+
+
+gemini.set_context_provider(_build_context)
 
 _BOT_COMMANDS = [
     BotCommand("start",      "Запустить JARVIS"),
@@ -54,6 +62,9 @@ _BOT_COMMANDS = [
     BotCommand("briefing",   "Утренний брифинг"),
     BotCommand("remind",     "Добавить напоминание"),
     BotCommand("reminders",  "Мои напоминания"),
+    BotCommand("profile",    "Что JARVIS обо мне знает"),
+    BotCommand("remember",   "Запомнить факт обо мне"),
+    BotCommand("forget",     "Стереть всё обо мне"),
     BotCommand("clear",      "Очистить историю диалога"),
 ]
 
@@ -157,6 +168,10 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"`/remind через 30 минут позвонить`\n"
         f"`/remind завтра в 9:00 встреча`\n"
         f"`/reminders` — список\n\n"
+        f"*Память (я тебя помню)*\n"
+        f"`/profile` — что я о тебе знаю\n"
+        f"`/remember меня зовут Сардор`\n"
+        f"`/forget` — стереть всё обо мне\n\n"
         f"*Прочее*\n"
         f"`/status` — статус ПК\n"
         f"`/clear` — очистить историю\n"
@@ -191,6 +206,64 @@ async def cmd_clear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     gemini.clear_history(update.effective_user.id)
     await update.effective_message.reply_text("История диалога очищена ✅")
+
+
+async def cmd_profile(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    profile = await memory.get_profile(uid)
+    facts = await memory.get_facts(uid)
+    lines = ["🧠 *Что я о тебе знаю*\n"]
+    if profile.get("name"):
+        lines.append(f"*Имя:* {profile['name']}")
+    if profile.get("about"):
+        lines.append(f"*О тебе:* {profile['about']}")
+    if profile.get("goals"):
+        lines.append(f"*Цели:* {profile['goals']}")
+    if profile.get("preferences"):
+        lines.append(f"*Предпочтения:* {profile['preferences']}")
+    if facts:
+        lines.append("\n*Факты:*\n" + "\n".join(f"• {f}" for f in facts[-30:]))
+    if len(lines) == 1:
+        lines.append("Пока ничего. Просто общайся со мной — я запоминаю сам. "
+                     "Или напиши `/remember <факт>`.")
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_remember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    fact = " ".join(ctx.args).strip()
+    if not fact:
+        await update.effective_message.reply_text(
+            "Что запомнить?\nПример: `/remember я живу в Шымкенте`\n"
+            "`/remember меня зовут Сардор`", parse_mode="Markdown"
+        )
+        return
+    uid = update.effective_user.id
+    low = fact.lower()
+    # Smart routing into dossier fields
+    if low.startswith(("меня зовут", "я ")) and "зовут" in low:
+        name = fact.split("зовут", 1)[1].strip()
+        await memory.set_profile_field(uid, "name", name)
+        await update.effective_message.reply_text(f"Запомнил, тебя зовут {name} ✅")
+        return
+    added = await memory.add_fact(uid, fact)
+    await update.effective_message.reply_text(
+        "Запомнил ✅" if added else "Я это уже знаю 🙂"
+    )
+
+
+async def cmd_forget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    await memory.clear(uid)
+    gemini.clear_history(uid)
+    await update.effective_message.reply_text(
+        "Стёр всё, что о тебе знал. Начинаем с чистого листа 🧹"
+    )
 
 
 # ── PC commands ────────────────────────────────────────────────────────────────
@@ -380,9 +453,12 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
             return
 
-        # 3. Gemini conversation
+        # 3. Gemini conversation (with long-term memory)
+        await memory.ensure_loaded(user_id)
         reply = await gemini.chat(user_id, text)
         await update.effective_message.reply_text(reply)
+        # Learn durable facts in the background — never blocks the reply
+        asyncio.create_task(memory.observe(user_id, gemini, text, reply))
     except Exception as e:
         logger.error(f"handle_text error: {e}")
         await update.effective_message.reply_text("❌ Что-то пошло не так. Попробуй ещё раз.")
@@ -484,6 +560,7 @@ def main():
     async def post_init(application: Application) -> None:
         global _bridge_task, _reminder_task, _miniapp_task
         await application.bot.set_my_commands(_BOT_COMMANDS)
+        await memory.init()
         bridge.on_notification(
             lambda t, uid: _on_notification(t, uid, application.bot)
         )
@@ -494,6 +571,8 @@ def main():
         # Start Mini App server if port is configured
         if cfg.miniapp_port:
             try:
+                from telegram_bot import miniapp_server
+                miniapp_server._memory = memory
                 from telegram_bot.miniapp_server import run as run_miniapp
                 _miniapp_task = loop.create_task(
                     run_miniapp(port=cfg.miniapp_port, gemini=gemini, bridge=bridge)
@@ -526,6 +605,9 @@ def main():
     app.add_handler(CommandHandler("app",        cmd_app))
     app.add_handler(CommandHandler("status",     cmd_status))
     app.add_handler(CommandHandler("clear",      cmd_clear))
+    app.add_handler(CommandHandler("profile",    cmd_profile))
+    app.add_handler(CommandHandler("remember",   cmd_remember))
+    app.add_handler(CommandHandler("forget",     cmd_forget))
     app.add_handler(CommandHandler("pc",         cmd_pc))
     app.add_handler(CommandHandler("screenshot", cmd_screenshot))
     app.add_handler(CommandHandler("camera",     cmd_camera))

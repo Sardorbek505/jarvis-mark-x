@@ -25,6 +25,7 @@ from telegram_bot.gemini_client import GeminiClient
 from telegram_bot.pc_bridge import PCBridge
 from telegram_bot import miniapp_server
 from telegram_bot import user_context
+from telegram_bot.memory_store import MemoryStore
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -44,14 +45,22 @@ _WEBHOOK_PATH = "/telegram-webhook"
 
 # Shared instances
 gemini = GeminiClient(cfg.gemini_api_key, cfg.gemini_model)
-gemini.set_context_provider(
-    lambda uid: user_context.describe(uid, cfg.default_city, cfg.timezone)
-)
 bridge = PCBridge()
+memory = MemoryStore()
+
+
+def _build_context(uid: int) -> str:
+    base = user_context.describe(uid, cfg.default_city, cfg.timezone)
+    mem = memory.cached_block(uid)
+    return f"{base}\n{mem}" if mem else base
+
+
+gemini.set_context_provider(_build_context)
 
 # Wire into miniapp_server
 miniapp_server._gemini = gemini
 miniapp_server._bridge = bridge
+miniapp_server._memory = memory
 bridge.on_status_change(miniapp_server.broadcast_pc_status)
 
 
@@ -68,11 +77,12 @@ async def _build_tg_app():
     import telegram_bot.bot as botmod
     botmod.gemini = gemini
     botmod.bridge = bridge
+    botmod.memory = memory
 
     from telegram_bot.bot import (
         cmd_start, cmd_help, cmd_app, cmd_status, cmd_clear,
         cmd_pc, cmd_screenshot, cmd_camera, cmd_vol, cmd_lock, cmd_sysinfo, cmd_briefing,
-        cmd_remind, cmd_reminders,
+        cmd_remind, cmd_reminders, cmd_profile, cmd_remember, cmd_forget,
         handle_text, handle_voice, handle_photo,
         _on_notification, _BOT_COMMANDS,
     )
@@ -89,6 +99,9 @@ async def _build_tg_app():
     app.add_handler(CommandHandler("app",        cmd_app))
     app.add_handler(CommandHandler("status",     cmd_status))
     app.add_handler(CommandHandler("clear",      cmd_clear))
+    app.add_handler(CommandHandler("profile",    cmd_profile))
+    app.add_handler(CommandHandler("remember",   cmd_remember))
+    app.add_handler(CommandHandler("forget",     cmd_forget))
     app.add_handler(CommandHandler("pc",         cmd_pc))
     app.add_handler(CommandHandler("screenshot", cmd_screenshot))
     app.add_handler(CommandHandler("camera",     cmd_camera))
@@ -168,6 +181,8 @@ async def _webhook_keeper(bot, webhook_url: str):
 async def lifespan(app: FastAPI):
     global _tg_app
     logger.info("Render app starting…")
+
+    await memory.init()
 
     _tg_app, bot_commands = await _build_tg_app()
     await _tg_app.initialize()
