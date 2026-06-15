@@ -106,6 +106,13 @@ class GeminiClient:
         logger.error(f"All Gemini models failed. Last error: {last_err}")
         return "Извини, ИИ сейчас недоступен (проблема с моделью Gemini). Проверь API-ключ и квоту."
 
+    async def generate_once(self, user_id: int, prompt: str) -> str:
+        """One-shot generation using the user's full context (memory, tasks,
+        persona) but WITHOUT touching conversation history. For proactive
+        briefings and other system-initiated messages."""
+        contents = [{"role": "user", "parts": [{"text": prompt}]}]
+        return await self._generate(contents, user_id=user_id)
+
     async def chat(self, user_id: int, text: str) -> str:
         history = self._history_for(user_id)
         user_msg = {"role": "user", "parts": [{"text": text}]}

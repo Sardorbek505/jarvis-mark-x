@@ -258,6 +258,31 @@ class MemoryStore:
         self._cache[uid]["tasks"] = [t for t in self._cache[uid]["tasks"] if t["id"] != task_id]
         return match
 
+    # ── meta (proactive bookkeeping) + recipients ────────────────────────────────
+
+    async def set_meta(self, uid: int, key: str, value: str):
+        await self._exec(
+            "INSERT INTO meta(user_id, key, value) VALUES(?,?,?) "
+            "ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value",
+            (uid, key, value),
+        )
+
+    async def get_meta(self, uid: int, key: str) -> Optional[str]:
+        row = await self._fetchone(
+            "SELECT value FROM meta WHERE user_id=? AND key=?", (uid, key)
+        )
+        return row[0] if row else None
+
+    async def all_user_ids(self) -> list:
+        """Every user the bot knows — to deliver proactive briefings to."""
+        rows = await self._fetchall(
+            "SELECT user_id FROM profile "
+            "UNION SELECT user_id FROM tasks "
+            "UNION SELECT user_id FROM facts "
+            "UNION SELECT user_id FROM meta"
+        )
+        return [r[0] for r in rows]
+
     async def clear(self, uid: int):
         await self._exec("DELETE FROM facts WHERE user_id=?", (uid,))
         await self._exec("DELETE FROM profile WHERE user_id=?", (uid,))
@@ -323,6 +348,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     done       INTEGER DEFAULT 0,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS meta (
+    user_id INTEGER NOT NULL,
+    key     TEXT NOT NULL,
+    value   TEXT,
+    PRIMARY KEY (user_id, key)
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 """
@@ -350,6 +381,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     due        TEXT,
     done       INTEGER DEFAULT 0,
     created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS meta (
+    user_id BIGINT NOT NULL,
+    key     TEXT NOT NULL,
+    value   TEXT,
+    PRIMARY KEY (user_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
