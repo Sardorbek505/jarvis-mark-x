@@ -26,6 +26,7 @@ from telegram_bot.pc_bridge import PCBridge
 from telegram_bot import miniapp_server
 from telegram_bot import user_context
 from telegram_bot import personas
+from telegram_bot import proactive
 from telegram_bot.memory_store import MemoryStore
 
 logging.basicConfig(
@@ -89,7 +90,7 @@ async def _build_tg_app():
         cmd_start, cmd_help, cmd_app, cmd_status, cmd_clear,
         cmd_pc, cmd_screenshot, cmd_camera, cmd_vol, cmd_lock, cmd_sysinfo, cmd_briefing,
         cmd_remind, cmd_reminders, cmd_task, cmd_tasks, cmd_today, cmd_done,
-        cmd_mode, cmd_profile, cmd_remember, cmd_forget,
+        cmd_morning, cmd_evening, cmd_mode, cmd_profile, cmd_remember, cmd_forget,
         handle_text, handle_voice, handle_photo,
         _on_notification, _BOT_COMMANDS,
     )
@@ -123,6 +124,8 @@ async def _build_tg_app():
     app.add_handler(CommandHandler("tasks",      cmd_tasks))
     app.add_handler(CommandHandler("today",      cmd_today))
     app.add_handler(CommandHandler("done",       cmd_done))
+    app.add_handler(CommandHandler("morning",    cmd_morning))
+    app.add_handler(CommandHandler("evening",    cmd_evening))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
@@ -213,6 +216,9 @@ async def lifespan(app: FastAPI):
         )
 
     _tasks.append(asyncio.create_task(_reminder_loop(_tg_app.bot)))
+    _tasks.append(asyncio.create_task(
+        proactive.loop(_tg_app.bot, gemini, memory, cfg.timezone)
+    ))
     logger.info("JARVIS started ✅ (webhook mode)")
 
     yield

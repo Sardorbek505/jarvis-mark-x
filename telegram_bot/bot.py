@@ -34,6 +34,7 @@ logger = logging.getLogger("jarvis-bot")
 from telegram_bot import user_context
 from telegram_bot import personas
 from telegram_bot import agenda
+from telegram_bot import proactive
 from telegram_bot.memory_store import MemoryStore
 
 cfg = load_config()
@@ -73,6 +74,8 @@ _BOT_COMMANDS = [
     BotCommand("tasks",      "Список задач"),
     BotCommand("today",      "Задачи на сегодня"),
     BotCommand("done",       "Закрыть задачу по номеру"),
+    BotCommand("morning",    "Утренний брифинг сейчас"),
+    BotCommand("evening",    "Вечерний разбор сейчас"),
     BotCommand("mode",       "Режим личности (ментор/друг/бизнес)"),
     BotCommand("profile",    "Что JARVIS обо мне знает"),
     BotCommand("remember",   "Запомнить факт обо мне"),
@@ -184,6 +187,9 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"`/task завтра в 9:00 созвон`\n"
         f"`/task купить хлеб` · `/tasks` · `/today`\n"
         f"`/done 2` — закрыть задачу №2\n\n"
+        f"*Проактивный секретарь*\n"
+        f"Сам пишу утром (8:00) и вечером (22:00)\n"
+        f"`/morning` · `/evening` — брифинг сейчас\n\n"
         f"*Память (я тебя помню)*\n"
         f"`/profile` — что я о тебе знаю\n"
         f"`/remember меня зовут Сардор`\n"
@@ -271,6 +277,24 @@ async def cmd_remember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     added = await memory.add_fact(uid, fact)
     await update.effective_message.reply_text(
         "Запомнил ✅" if added else "Я это уже знаю 🙂"
+    )
+
+
+async def cmd_morning(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    await update.effective_message.chat.send_action("typing")
+    await proactive._send_briefing(
+        ctx.bot, gemini, memory, update.effective_user.id, "morning", cfg.timezone
+    )
+
+
+async def cmd_evening(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    await update.effective_message.chat.send_action("typing")
+    await proactive._send_briefing(
+        ctx.bot, gemini, memory, update.effective_user.id, "evening", cfg.timezone
     )
 
 
@@ -664,19 +688,23 @@ async def _reminder_loop(bot):
 _bridge_task: asyncio.Task | None = None
 _reminder_task: asyncio.Task | None = None
 _miniapp_task: asyncio.Task | None = None
+_proactive_task: asyncio.Task | None = None
 
 
 def main():
     async def post_init(application: Application) -> None:
-        global _bridge_task, _reminder_task, _miniapp_task
+        global _bridge_task, _reminder_task, _miniapp_task, _proactive_task
         await application.bot.set_my_commands(_BOT_COMMANDS)
         await memory.init()
         bridge.on_notification(
             lambda t, uid: _on_notification(t, uid, application.bot)
         )
         loop = asyncio.get_event_loop()
-        _bridge_task   = loop.create_task(bridge.connect_loop())
-        _reminder_task = loop.create_task(_reminder_loop(application.bot))
+        _bridge_task    = loop.create_task(bridge.connect_loop())
+        _reminder_task  = loop.create_task(_reminder_loop(application.bot))
+        _proactive_task = loop.create_task(
+            proactive.loop(application.bot, gemini, memory, cfg.timezone)
+        )
 
         # Start Mini App server if port is configured
         if cfg.miniapp_port:
@@ -694,7 +722,7 @@ def main():
         logger.info("JARVIS Bot initialized ✅")
 
     async def post_shutdown(application: Application) -> None:
-        for task in (_bridge_task, _reminder_task, _miniapp_task):
+        for task in (_bridge_task, _reminder_task, _miniapp_task, _proactive_task):
             if task and not task.done():
                 task.cancel()
                 try:
@@ -732,6 +760,8 @@ def main():
     app.add_handler(CommandHandler("tasks",      cmd_tasks))
     app.add_handler(CommandHandler("today",      cmd_today))
     app.add_handler(CommandHandler("done",       cmd_done))
+    app.add_handler(CommandHandler("morning",    cmd_morning))
+    app.add_handler(CommandHandler("evening",    cmd_evening))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
