@@ -755,7 +755,17 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             confirm = await _store_reminder(user_id, text)
             if confirm:
                 await update.effective_message.reply_text(confirm)
-                return
+            else:
+                # Trigger word present but time unparseable — ask for the format
+                # instead of falling through to Gemini (which would falsely
+                # "confirm" a reminder that was never saved).
+                await update.effective_message.reply_text(
+                    "Когда напомнить? Скажи так:\n"
+                    "• напомни через 30 минут …\n"
+                    "• напомни в 15:00 …\n"
+                    "• напомни завтра в 9:00 …"
+                )
+            return
 
         # 2. PC command?
         if _looks_like_pc_command(text):
