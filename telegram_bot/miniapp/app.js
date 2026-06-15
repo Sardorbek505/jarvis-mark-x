@@ -63,6 +63,9 @@ function addImage(b64, caption) {
 }
 
 function showTyping() {
+  // Idempotent: the client shows it on send AND the server sends 'thinking',
+  // so remove any existing one first to avoid stacking two animations.
+  document.querySelectorAll('.typing').forEach(el => el.remove());
   const d = document.createElement('div');
   d.className = 'msg bot typing';
   d.innerHTML = '<span></span><span></span><span></span>';
@@ -100,11 +103,10 @@ function connect() {
 
     switch (msg.type) {
       case 'text':
-        document.querySelector('.typing')?.remove();
         addMsg('bot', msg.text);
-        // Server sends real JARVIS-voice audio right after. Arm a browser-TTS
-        // fallback only if that audio doesn't arrive (TTS failed/disabled).
-        if (voiceEnabled) armSpeakFallback(msg.text); else setState('idle');
+        // The server will follow with either 'audio' (real JARVIS voice) or
+        // 'tts_failed' (use browser fallback). Just wait — no timer race.
+        awaitVoice(msg.text);
         break;
 
       case 'image':
@@ -117,16 +119,22 @@ function connect() {
         break;
 
       case 'transcript_bot':
-        document.querySelector('.typing')?.remove();
         if (msg.text) {
           addMsg('bot', msg.text);
-          if (voiceEnabled) armSpeakFallback(msg.text); else setState('idle');
+          awaitVoice(msg.text);
         }
         break;
 
       case 'audio':
-        cancelSpeakFallback();   // real voice arrived — don't use robotic fallback
+        clearVoiceWait();
+        window.speechSynthesis?.cancel();  // kill any fallback that may have started
         await playPCM(msg.data);
+        setState('idle');
+        break;
+
+      case 'tts_failed':
+        clearVoiceWait();
+        speak(pendingSpeech);  // real voice unavailable — use browser TTS once
         break;
 
       case 'status':
@@ -305,16 +313,23 @@ async function playPCM(b64) {
 // the server audio doesn't arrive (e.g. TTS quota hit).
 let voiceEnabled = true;
 let ruVoice = null;
-let speakTimer = null;
+let pendingSpeech = '';
+let voiceWaitTimer = null;
 
-function armSpeakFallback(text) {
-  cancelSpeakFallback();
+// After a bot text, wait for the server's 'audio' or 'tts_failed'. No early
+// browser TTS — that caused the robotic voice to overlap the real one.
+// A long safety timeout only handles the rare case where neither arrives
+// (e.g. a direct error message): it just drops back to idle, never speaks.
+function awaitVoice(text) {
+  clearVoiceWait();
+  pendingSpeech = text;
+  if (!voiceEnabled) { setState('idle'); return; }
   setState('processing');
-  speakTimer = setTimeout(() => { speakTimer = null; speak(text); }, 4000);
+  voiceWaitTimer = setTimeout(() => { voiceWaitTimer = null; setState('idle'); }, 20000);
 }
 
-function cancelSpeakFallback() {
-  if (speakTimer) { clearTimeout(speakTimer); speakTimer = null; }
+function clearVoiceWait() {
+  if (voiceWaitTimer) { clearTimeout(voiceWaitTimer); voiceWaitTimer = null; }
 }
 
 function pickVoice() {
@@ -362,7 +377,7 @@ if (voiceBtn) {
     voiceEnabled = !voiceEnabled;
     voiceBtn.textContent = voiceEnabled ? '🔊' : '🔇';
     voiceBtn.title = voiceEnabled ? 'Голос включён' : 'Голос выключен';
-    if (!voiceEnabled) { cancelSpeakFallback(); window.speechSynthesis?.cancel(); }
+    if (!voiceEnabled) { clearVoiceWait(); window.speechSynthesis?.cancel(); }
   });
 }
 
