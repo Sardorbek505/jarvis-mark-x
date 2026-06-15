@@ -33,6 +33,7 @@ logger = logging.getLogger("jarvis-bot")
 
 from telegram_bot import user_context
 from telegram_bot import personas
+from telegram_bot import agenda
 from telegram_bot.memory_store import MemoryStore
 
 cfg = load_config()
@@ -68,6 +69,10 @@ _BOT_COMMANDS = [
     BotCommand("briefing",   "Утренний брифинг"),
     BotCommand("remind",     "Добавить напоминание"),
     BotCommand("reminders",  "Мои напоминания"),
+    BotCommand("task",       "Добавить задачу/событие"),
+    BotCommand("tasks",      "Список задач"),
+    BotCommand("today",      "Задачи на сегодня"),
+    BotCommand("done",       "Закрыть задачу по номеру"),
     BotCommand("mode",       "Режим личности (ментор/друг/бизнес)"),
     BotCommand("profile",    "Что JARVIS обо мне знает"),
     BotCommand("remember",   "Запомнить факт обо мне"),
@@ -175,6 +180,10 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"`/remind через 30 минут позвонить`\n"
         f"`/remind завтра в 9:00 встреча`\n"
         f"`/reminders` — список\n\n"
+        f"*Задачи и календарь*\n"
+        f"`/task завтра в 9:00 созвон`\n"
+        f"`/task купить хлеб` · `/tasks` · `/today`\n"
+        f"`/done 2` — закрыть задачу №2\n\n"
         f"*Память (я тебя помню)*\n"
         f"`/profile` — что я о тебе знаю\n"
         f"`/remember меня зовут Сардор`\n"
@@ -263,6 +272,73 @@ async def cmd_remember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "Запомнил ✅" if added else "Я это уже знаю 🙂"
     )
+
+
+async def cmd_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    text = " ".join(ctx.args).strip()
+    if not text:
+        await update.effective_message.reply_text(
+            "Что добавить?\n"
+            "`/task купить хлеб`\n"
+            "`/task завтра в 9:00 созвон с клиентом`\n"
+            "`/task 25.06 сдать отчёт`",
+            parse_mode="Markdown",
+        )
+        return
+    uid = update.effective_user.id
+    due, title = agenda.parse(text)
+    await memory.add_task(uid, title, due)
+    if due:
+        await update.effective_message.reply_text(
+            f"Записал 🗓 *{title}* — {agenda.fmt_due(due)}", parse_mode="Markdown"
+        )
+    else:
+        await update.effective_message.reply_text(
+            f"Добавил в список ☐ *{title}*", parse_mode="Markdown"
+        )
+
+
+async def cmd_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    tasks = await memory.get_tasks(update.effective_user.id)
+    await update.effective_message.reply_text(
+        agenda.render_list(tasks), parse_mode="Markdown"
+    )
+
+
+async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    tasks = [t for t in await memory.get_tasks(update.effective_user.id)
+             if t.get("due") and agenda.is_today(t["due"])]
+    await update.effective_message.reply_text(
+        agenda.render_list(tasks, "🗓 *На сегодня*"), parse_mode="Markdown"
+    )
+
+
+async def cmd_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    arg = " ".join(ctx.args).strip()
+    if not arg.isdigit():
+        await update.effective_message.reply_text(
+            "Укажи номер задачи из `/tasks`. Пример: `/done 2`", parse_mode="Markdown"
+        )
+        return
+    uid = update.effective_user.id
+    tasks = await memory.get_tasks(uid)
+    n = int(arg)
+    if n < 1 or n > len(tasks):
+        await update.effective_message.reply_text(
+            f"Нет задачи №{n}. Посмотри список: /tasks"
+        )
+        return
+    target = tasks[n - 1]
+    await memory.complete_task(uid, target["id"])
+    await update.effective_message.reply_text(f"Закрыто ✅ «{target['title']}»")
 
 
 async def cmd_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -652,6 +728,10 @@ def main():
     app.add_handler(CommandHandler("briefing",   cmd_briefing))
     app.add_handler(CommandHandler("remind",     cmd_remind))
     app.add_handler(CommandHandler("reminders",  cmd_reminders))
+    app.add_handler(CommandHandler("task",       cmd_task))
+    app.add_handler(CommandHandler("tasks",      cmd_tasks))
+    app.add_handler(CommandHandler("today",      cmd_today))
+    app.add_handler(CommandHandler("done",       cmd_done))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
