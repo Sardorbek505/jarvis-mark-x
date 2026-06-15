@@ -17,5 +17,9 @@
 
   "_comment_miniapp": "--- Mini App (заполняется на сервере) ---",
   "miniapp_url": "https://your-app.onrender.com",
-  "miniapp_port": 8000
+  "miniapp_port": 8000,
+
+  "_comment_location": "--- Локация по умолчанию (если телефон не сообщил свою) ---",
+  "default_city": "Шымкент",
+  "timezone": "Asia/Almaty"
 }

@@ -40,6 +40,22 @@ class GeminiClient:
         )
         self._model = model
         self._history: dict = {}  # user_id -> list of Content dicts
+        self._context_provider = None  # callable(user_id) -> str (live time/location)
+
+    def set_context_provider(self, fn):
+        """Register a callback that returns live context (date/time/location)
+        for a user_id, injected into the system prompt on every request."""
+        self._context_provider = fn
+
+    def _system_for(self, user_id) -> str:
+        if self._context_provider and user_id is not None:
+            try:
+                extra = self._context_provider(user_id)
+                if extra:
+                    return f"{_SYSTEM_PROMPT}\n\nТЕКУЩИЙ КОНТЕКСТ: {extra}"
+            except Exception as e:
+                logger.debug(f"context provider: {e}")
+        return _SYSTEM_PROMPT
 
     def _history_for(self, user_id: int) -> list:
         return self._history.setdefault(user_id, [])
@@ -59,9 +75,10 @@ class GeminiClient:
                 chain.append(m)
         return chain
 
-    async def _generate(self, contents) -> str:
+    async def _generate(self, contents, user_id=None) -> str:
         loop = asyncio.get_event_loop()
         last_err = None
+        system_instruction = self._system_for(user_id)
         for model in self._models_to_try():
             try:
                 response = await loop.run_in_executor(
@@ -70,7 +87,7 @@ class GeminiClient:
                         model=m,
                         contents=contents,
                         config=types.GenerateContentConfig(
-                            system_instruction=_SYSTEM_PROMPT,
+                            system_instruction=system_instruction,
                             temperature=0.7,
                         ),
                     ),
@@ -94,7 +111,7 @@ class GeminiClient:
         user_msg = {"role": "user", "parts": [{"text": text}]}
         contents = history + [user_msg]
 
-        reply = await self._generate(contents)
+        reply = await self._generate(contents, user_id=user_id)
 
         history.append({"role": "user", "parts": [{"text": text}]})
         history.append({"role": "model", "parts": [{"text": reply}]})
@@ -112,7 +129,7 @@ class GeminiClient:
                 ],
             )
         ]
-        reply = await self._generate(contents)
+        reply = await self._generate(contents, user_id=user_id)
 
         history = self._history_for(user_id)
         history.append({"role": "user", "parts": [{"text": "[голосовое сообщение]"}]})
@@ -169,7 +186,7 @@ class GeminiClient:
                 ],
             )
         ]
-        return await self._generate(contents)
+        return await self._generate(contents, user_id=user_id)
 
     def clear_history(self, user_id: int):
         self._history.pop(user_id, None)

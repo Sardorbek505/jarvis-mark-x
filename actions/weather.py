@@ -16,6 +16,8 @@ _CITY_ALIASES = {
     "астана": "Astana",
     "нур-султан": "Astana",
     "кызылорда": "Kyzylorda",
+    "шымкент": "Shymkent",
+    "чимкент": "Shymkent",
     "ташкент": "Tashkent",
     "бишкек": "Bishkek",
     "минск": "Minsk",

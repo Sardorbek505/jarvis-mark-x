@@ -61,6 +61,40 @@ _KW = {
 }
 
 
+# ── Location ────────────────────────────────────────────────────────────────────
+
+_CITY_CACHE = None
+
+
+def _default_city() -> str:
+    """Determine the user's current city — works wherever the PC is.
+
+    1. IP-based geolocation (auto, follows a travelling laptop).
+    2. Fallback to config default_city.
+    """
+    global _CITY_CACHE
+    if _CITY_CACHE:
+        return _CITY_CACHE
+    try:
+        import urllib.request
+        with urllib.request.urlopen(
+            "http://ip-api.com/json/?fields=city&lang=ru", timeout=4
+        ) as r:
+            city = json.loads(r.read().decode()).get("city")
+            if city:
+                _CITY_CACHE = city
+                logger.info(f"Определён город по IP: {city}")
+                return city
+    except Exception as e:
+        logger.debug(f"IP geolocation failed: {e}")
+    try:
+        from telegram_bot.config import load as load_config
+        _CITY_CACHE = load_config(require_bot=False).default_city or "Шымкент"
+    except Exception:
+        _CITY_CACHE = "Шымкент"
+    return _CITY_CACHE
+
+
 # ── Command execution ──────────────────────────────────────────────────────────
 
 async def _execute(text: str) -> dict:
@@ -94,7 +128,7 @@ async def _execute(text: str) -> dict:
 
         if any(k in tl for k in _KW["weather"]):
             from actions.weather import weather_action
-            city = _extract_after(tl, ["в ", "in ", "погода ", "погоду в "]) or "Ташкент"
+            city = _extract_after(tl, ["в ", "in ", "погода ", "погоду в "]) or _default_city()
             return _r(await asyncio.to_thread(weather_action, {"city": city}) or "Погода получена")
 
         if any(k in tl for k in _KW["app"]):
@@ -121,7 +155,7 @@ async def _execute(text: str) -> dict:
         if any(k in tl for k in _KW["briefing"]):
             try:
                 from actions.morning_briefing import morning_briefing
-                return _r(await asyncio.to_thread(morning_briefing, {}) or "Брифинг недоступен")
+                return _r(await asyncio.to_thread(morning_briefing, {"city": _default_city()}) or "Брифинг недоступен")
             except Exception as e:
                 return _r(f"Брифинг недоступен: {e}")
 

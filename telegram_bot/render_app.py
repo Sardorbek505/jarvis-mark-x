@@ -22,6 +22,7 @@ from telegram_bot.config import load as load_config
 from telegram_bot.gemini_client import GeminiClient
 from telegram_bot.pc_bridge import PCBridge
 from telegram_bot import miniapp_server
+from telegram_bot import user_context
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -34,6 +35,9 @@ cfg = load_config()
 
 # Shared instances
 gemini = GeminiClient(cfg.gemini_api_key, cfg.gemini_model)
+gemini.set_context_provider(
+    lambda uid: user_context.describe(uid, cfg.default_city, cfg.timezone)
+)
 bridge = PCBridge()
 
 # Wire into miniapp_server
