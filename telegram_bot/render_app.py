@@ -122,6 +122,26 @@ async def _reminder_loop(bot):
             logger.error(f"Reminder loop: {e}")
 
 
+async def _webhook_keeper(bot, webhook_url: str):
+    """Re-assert the webhook if anything wipes it (e.g. a stray local bot
+    running getUpdates deletes it). Keeps the bot responsive without manual
+    intervention."""
+    while True:
+        try:
+            await asyncio.sleep(90)
+            info = await bot.get_webhook_info()
+            if info.url != webhook_url:
+                await bot.set_webhook(
+                    url=webhook_url,
+                    allowed_updates=["message", "edited_message", "callback_query"],
+                )
+                logger.warning(f"Webhook was lost (was '{info.url}') — re-registered ✅")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug(f"Webhook keeper: {e}")
+
+
 # ── FastAPI lifespan ──────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -142,6 +162,7 @@ async def lifespan(app: FastAPI):
             allowed_updates=["message", "edited_message", "callback_query"],
         )
         logger.info(f"Webhook registered: {cfg.miniapp_url}/webhook/***")
+        _tasks.append(asyncio.create_task(_webhook_keeper(_tg_app.bot, webhook_url)))
     else:
         logger.warning(
             "MINIAPP_URL not set — webhook NOT registered. "
