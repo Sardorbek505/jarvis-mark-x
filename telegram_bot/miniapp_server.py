@@ -14,6 +14,8 @@ from fastapi.responses import FileResponse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from telegram_bot import user_context
+
 logger = logging.getLogger("jarvis-miniapp")
 
 MINIAPP_DIR = Path(__file__).parent / "miniapp"
@@ -152,6 +154,18 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             mtype = msg.get("type", "")
+
+            if mtype == "client_info":
+                # Phone reports its timezone + location so JARVIS knows where
+                # the user is and the correct local time — wherever they travel.
+                user_context.update(
+                    user_id,
+                    tz=msg.get("tz"),
+                    city=msg.get("city"),
+                    lat=msg.get("lat"),
+                    lon=msg.get("lon"),
+                )
+                continue
 
             if mtype == "text":
                 text = (msg.get("text") or "").strip()

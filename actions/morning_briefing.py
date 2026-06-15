@@ -25,7 +25,8 @@ def morning_briefing(parameters: Dict[str, Any], player=None) -> str:
     # Загрузка памяти пользователя
     user_data = _load_memory()
     user_name = user_data.get("name", "сэр")
-    city = user_data.get("city", "Москва")
+    # Город из параметров (определяется по геолокации) важнее памяти
+    city = (parameters or {}).get("city") or user_data.get("city") or "Москва"
     
     # Сбор компонентов брифинга
     weather_part = _get_weather(city)

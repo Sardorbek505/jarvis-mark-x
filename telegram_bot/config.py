@@ -20,6 +20,8 @@ class Config(NamedTuple):
     miniapp_port: int
     pc_link_url: str
     pc_link_token: str
+    default_city: str
+    timezone: str
 
 
 def load(require_bot: bool = True) -> Config:
@@ -52,6 +54,11 @@ def load(require_bot: bool = True) -> Config:
     pc_link_url = os.getenv("PC_LINK_URL") or raw.get("pc_link_url", "") or miniapp_url
     pc_link_token = os.getenv("PC_LINK_TOKEN") or raw.get("pc_link_token", "")
 
+    # Fallback location/timezone when the phone hasn't reported its own.
+    # Defaults tuned for the owner (Shymkent, Kazakhstan, UTC+5).
+    default_city = os.getenv("DEFAULT_CITY") or raw.get("default_city", "Шымкент")
+    timezone = os.getenv("TIMEZONE") or raw.get("timezone", "Asia/Almaty")
+
     if require_bot:
         if not gemini_key:
             print("ERROR: gemini_api_key not found. Set it in config/api_keys.json or GEMINI_API_KEY env.")
@@ -71,4 +78,6 @@ def load(require_bot: bool = True) -> Config:
         miniapp_port=miniapp_port,
         pc_link_url=pc_link_url,
         pc_link_token=pc_link_token,
+        default_city=default_city,
+        timezone=timezone,
     )

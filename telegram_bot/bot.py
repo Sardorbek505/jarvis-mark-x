@@ -31,8 +31,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("jarvis-bot")
 
+from telegram_bot import user_context
+
 cfg = load_config()
 gemini = GeminiClient(cfg.gemini_api_key, cfg.gemini_model)
+gemini.set_context_provider(
+    lambda uid: user_context.describe(uid, cfg.default_city, cfg.timezone)
+)
 bridge = PCBridge()
 
 _BOT_COMMANDS = [

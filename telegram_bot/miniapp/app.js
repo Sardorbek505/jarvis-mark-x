@@ -81,6 +81,7 @@ function connect() {
     connBadge.className = 'badge online';
     setState('idle');
     addMsg('sys', '● JARVIS подключён');
+    reportClientInfo();
   };
 
   ws.onclose = () => {
@@ -136,6 +137,35 @@ function connect() {
         break;
     }
   };
+}
+
+// ── Client context: timezone + location (so JARVIS knows where/when you are) ──
+function sendClientInfo(extra) {
+  if (ws?.readyState !== WebSocket.OPEN) return;
+  let tz = '';
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch {}
+  ws.send(JSON.stringify({ type: 'client_info', tz, ...extra }));
+}
+
+async function reportClientInfo() {
+  // Always send timezone immediately (reliable, no permission needed)
+  sendClientInfo({});
+
+  // Then try precise location → reverse-geocode to a city name
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    const { latitude: lat, longitude: lon } = pos.coords;
+    let city = '';
+    try {
+      const r = await fetch(
+        `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=ru`
+      );
+      const j = await r.json();
+      city = j.city || j.locality || j.principalSubdivision || '';
+    } catch {}
+    sendClientInfo({ lat, lon, city });
+  }, () => { /* permission denied — timezone already sent */ },
+     { enableHighAccuracy: false, timeout: 8000, maximumAge: 600000 });
 }
 
 // ── Text input ────────────────────────────────────────────────────────────────
