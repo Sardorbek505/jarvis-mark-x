@@ -131,9 +131,15 @@ async def _execute(text: str) -> dict:
                 return _r(_get_sysinfo())
 
         if any(k in tl for k in _KW["music"]):
-            from actions.spotify_controller import spotify_player
             params = _parse_music(tl)
-            return _r(await asyncio.to_thread(spotify_player, params) or "Выполнено")
+            # play/pause/next/prev/stop/volume работают БЕЗ Spotify Web API —
+            # через media-клавиши (Win32 keybd_event) и Spotify URI. Web API
+            # используется только для точного поиска трека, если креды есть.
+            if params["action"] in ("shuffle", "now_playing"):
+                from actions.spotify_controller import spotify_player
+                return _r(await asyncio.to_thread(spotify_player, params) or "Выполнено")
+            from actions.music_player import music_player
+            return _r(await asyncio.to_thread(music_player, params) or "Выполнено")
 
         if any(k in tl for k in _KW["weather"]):
             from actions.weather import weather_action
@@ -170,9 +176,16 @@ async def _execute(text: str) -> dict:
 
         return _r(f"Не понял команду: «{text}». Напиши /help чтобы увидеть что я умею.")
 
+    except ModuleNotFoundError as e:
+        logger.error(f"PC execute missing module: {e}")
+        pkg = (e.name or "").split(".")[0]
+        return _r(
+            f"⚠ Для этой команды на ПК не хватает модуля «{pkg}». "
+            f"Установи в консоли компьютера: `pip install {pkg}`"
+        )
     except Exception as e:
         logger.error(f"PC execute error: {e}")
-        return _r(f"Ошибка: {e}")
+        return _r(f"Ошибка при выполнении: {e}")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
