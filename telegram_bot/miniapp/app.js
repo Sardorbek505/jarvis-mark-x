@@ -101,7 +101,7 @@ function connect() {
       case 'text':
         document.querySelector('.typing')?.remove();
         addMsg('bot', msg.text);
-        setState('idle');
+        speak(msg.text);
         break;
 
       case 'image':
@@ -115,7 +115,7 @@ function connect() {
 
       case 'transcript_bot':
         document.querySelector('.typing')?.remove();
-        if (msg.text) addMsg('bot', msg.text);
+        if (msg.text) { addMsg('bot', msg.text); speak(msg.text); }
         break;
 
       case 'audio':
@@ -261,6 +261,59 @@ async function playPCM(b64) {
     } catch (e) { console.debug(`playPCM: ${e.message}`); }
   });
   await playChain;
+}
+
+// ── Text-to-speech (browser, free, works 24/7) ────────────────────────────────
+let voiceEnabled = true;
+let ruVoice = null;
+
+function pickVoice() {
+  const voices = window.speechSynthesis?.getVoices() || [];
+  ruVoice = voices.find(v => /ru[-_]/i.test(v.lang) && /google|yandex|milena|premium/i.test(v.name))
+         || voices.find(v => /ru[-_]/i.test(v.lang))
+         || null;
+}
+if (window.speechSynthesis) {
+  pickVoice();
+  window.speechSynthesis.onvoiceschanged = pickVoice;
+}
+
+function cleanForSpeech(text) {
+  return (text || '')
+    .replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}←-⇿⬀-⯿]/gu, '') // emoji/symbols
+    .replace(/[*_`#>•]/g, '')                 // markdown
+    .replace(/https?:\/\/\S+/g, '')           // urls
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function speak(text) {
+  setState('idle');
+  if (!voiceEnabled || !window.speechSynthesis) return;
+  const clean = cleanForSpeech(text);
+  if (!clean) return;
+  try {
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(clean);
+    u.lang = 'ru-RU';
+    u.rate = 1.05;
+    u.pitch = 1.0;
+    if (ruVoice) u.voice = ruVoice;
+    u.onstart = () => setState('speaking');
+    u.onend   = () => setState('idle');
+    window.speechSynthesis.speak(u);
+  } catch (e) { console.debug('speak:', e.message); }
+}
+
+// Voice on/off toggle
+const voiceBtn = document.getElementById('voice-toggle');
+if (voiceBtn) {
+  voiceBtn.addEventListener('click', () => {
+    voiceEnabled = !voiceEnabled;
+    voiceBtn.textContent = voiceEnabled ? '🔊' : '🔇';
+    voiceBtn.title = voiceEnabled ? 'Голос включён' : 'Голос выключен';
+    if (!voiceEnabled) window.speechSynthesis?.cancel();
+  });
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────

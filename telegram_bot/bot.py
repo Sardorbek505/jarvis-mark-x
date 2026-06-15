@@ -362,11 +362,31 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
+    user_id = update.effective_user.id
     await update.effective_message.chat.send_action("typing")
     try:
         file = await ctx.bot.get_file(update.effective_message.voice.file_id)
         audio = bytes(await file.download_as_bytearray())
-        reply = await gemini.chat_with_audio(update.effective_user.id, audio)
+
+        # Transcribe, then route through the same pipeline as text — so voice
+        # commands control the PC, not just chat.
+        transcript = await gemini.transcribe(audio, mime_type="audio/ogg")
+        if transcript and _looks_like_pc_command(transcript):
+            await update.effective_message.reply_text(f"🎙 «{transcript}»")
+            if not bridge.connected:
+                await update.effective_message.reply_text(
+                    "❌ ПК офлайн. Запусти `scripts\\start_pc.bat` на компьютере.",
+                    parse_mode="Markdown",
+                )
+                return
+            pc_result = await bridge.send_command(transcript, user_id)
+            await update.effective_message.reply_text(
+                f"🖥 {pc_result}" if pc_result is not None else "❌ ПК не ответил."
+            )
+            return
+
+        # Otherwise — normal voice conversation
+        reply = await gemini.chat_with_audio(user_id, audio)
         await update.effective_message.reply_text(reply)
     except Exception as e:
         logger.error(f"handle_voice error: {e}")
