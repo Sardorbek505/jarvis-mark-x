@@ -56,11 +56,10 @@ def parse_reminder(text: str, now: Optional[datetime] = None) -> Optional[tuple]
     """
     if now is None:
         now = datetime.now()
-    original = text.strip()
-    low = original.lower()
+    low = text.strip().lower()
 
     # Cut everything up to and including the trigger word, so leading filler
-    # («отлично, напомни мне …») doesn't break the start-anchored regexes below.
+    # («отлично, напомни мне …») doesn't get mistaken for the task text.
     for trg in ("напомни мне", "напомни", "remind me", "remind",
                 "поставь напоминание", "таймер на", "таймер"):
         idx = low.find(trg)
@@ -68,50 +67,60 @@ def parse_reminder(text: str, now: Optional[datetime] = None) -> Optional[tuple]
             low = low[idx + len(trg):].strip().lstrip(",").strip()
             break
 
-    # «через N минут/часов/секунд» — relative, timezone-independent. Trailing
-    # \w* eats word endings (минут→минуты, час→часа) so «what» stays clean.
-    m = re.match(r"(?:через\s+)?(\d+)\s*(секунд|сек|минут|мин|часов|часа|час)\w*", low)
+    found = _find_time(low, now)
+    if not found:
+        return None
+    when, (start, end) = found
+
+    # «what» = the phrase minus the time expression, cleaned of filler.
+    what = re.sub(r"\s+", " ", (low[:start] + " " + low[end:])).strip(" ,.")
+    what = re.sub(r"^(мне|меня|что|чтобы|чтоб|о том,?\s*чтобы)\s+", "", what).strip()
+    return when, (what or "напоминание")
+
+
+def _find_time(low: str, now: datetime):
+    """Find a time expression ANYWHERE in `low`. Returns (when, (start, end)) or
+    None. Time can be at the start or end («написать тебе через минуту»)."""
+    # завтра в HH:MM
+    m = re.search(r"завтра\s+в\s+(\d{1,2})[:.](\d{2})", low)
     if m:
-        n = int(m.group(1))
-        unit = m.group(2)
-        if "сек" in unit:
+        when = (now + timedelta(days=1)).replace(
+            hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        return when, m.span()
+
+    # (сегодня) в HH:MM
+    m = re.search(r"(?:сегодня\s+)?\bв\s+(\d{1,2})[:.](\d{2})", low)
+    if m:
+        when = now.replace(hour=int(m.group(1)), minute=int(m.group(2)),
+                           second=0, microsecond=0)
+        if when <= now:
+            when += timedelta(days=1)
+        return when, m.span()
+
+    # через N единиц  /  N единиц (после «таймер на»)
+    m = re.search(r"(?:через\s+)?(\d+)\s*(секунд\w*|сек|минут\w*|мин|часов|часа|час\w*)", low)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        if unit.startswith("сек"):
             delta = timedelta(seconds=n)
-        elif "мин" in unit:
+        elif unit.startswith("мин"):
             delta = timedelta(minutes=n)
         else:
             delta = timedelta(hours=n)
-        what = low[m.end():].strip().lstrip(",").strip() or "таймер"
-        return now + delta, what
+        return now + delta, m.span()
 
-    # «в HH:MM [что]» — absolute, in the user's local timezone
-    m = re.match(r"(?:сегодня\s+)?в\s+(\d{1,2})[:.](\d{2})\s*(.*)", low)
+    # через минуту/час/полчаса/полтора часа (без цифры)
+    m = re.search(r"через\s+(полтора\s+часа|полчаса|минут\w*|час\w*)", low)
     if m:
-        hour, minute = int(m.group(1)), int(m.group(2))
-        what = m.group(3).strip() or "напоминание"
-        when = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if when <= now:
-            when += timedelta(days=1)
-        return when, what
-
-    # «завтра в HH:MM [что]»
-    m = re.match(r"завтра\s+в\s+(\d{1,2})[:.](\d{2})\s*(.*)", low)
-    if m:
-        hour, minute = int(m.group(1)), int(m.group(2))
-        what = m.group(3).strip() or "напоминание"
-        when = (now + timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
-        return when, what
-
-    # «через час / полчаса / полтора часа [что]»
-    m = re.match(r"через\s+(час|полчаса|полтора\s+часа)\s*(.*)", low)
-    if m:
-        word = m.group(1)
-        what = m.group(2).strip() or "напоминание"
-        if "полтора" in word:
+        w = m.group(1)
+        if "полтора" in w:
             delta = timedelta(hours=1, minutes=30)
-        elif "полчаса" in word:
+        elif "полчаса" in w:
             delta = timedelta(minutes=30)
+        elif "минут" in w:
+            delta = timedelta(minutes=1)
         else:
             delta = timedelta(hours=1)
-        return now + delta, what
+        return now + delta, m.span()
 
     return None
