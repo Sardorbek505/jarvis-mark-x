@@ -42,12 +42,18 @@ class MemoryStore:
             # Neon and most managed PGs require SSL
             self._pool = await asyncpg.create_pool(self._url, min_size=1, max_size=3)
             await self._exec_pg(_SCHEMA_PG)
+            await self._exec_pg("ALTER TABLE profile ADD COLUMN IF NOT EXISTS mode TEXT DEFAULT ''")
             logger.info("Memory: Postgres connected (durable) ✅")
         else:
             import aiosqlite
             _SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
             self._sqlite = await aiosqlite.connect(_SQLITE_PATH)
             await self._sqlite.executescript(_SCHEMA_SQLITE)
+            try:
+                await self._sqlite.execute("ALTER TABLE profile ADD COLUMN mode TEXT DEFAULT ''")
+                await self._sqlite.commit()
+            except Exception:
+                pass  # column already exists
             await self._sqlite.commit()
             logger.warning(
                 "Memory: SQLite fallback (ephemeral on Render free). "
@@ -123,40 +129,51 @@ class MemoryStore:
             return ""
         return "ПАМЯТЬ О ПОЛЬЗОВАТЕЛЕ (используй это, помни как близкий человек): " + " ".join(parts)
 
+    def cached_mode(self, uid: int) -> str:
+        """Synchronous personality-mode id from cache (for the system prompt)."""
+        data = self._cache.get(uid)
+        return (data["profile"].get("mode") or "") if data else ""
+
+    async def get_mode(self, uid: int) -> str:
+        await self.ensure_loaded(uid)
+        return self._cache[uid]["profile"].get("mode", "")
+
+    async def set_mode(self, uid: int, mode: str):
+        await self.set_profile_field(uid, "mode", mode)
+
     # ── profile ────────────────────────────────────────────────────────────────
 
     async def _load_profile(self, uid: int) -> dict:
         row = await self._fetchone(
-            "SELECT name, about, goals, preferences FROM profile WHERE user_id=?", (uid,)
+            "SELECT name, about, goals, preferences, mode FROM profile WHERE user_id=?", (uid,)
         )
         if not row:
             return {}
         return {"name": row[0] or "", "about": row[1] or "",
-                "goals": row[2] or "", "preferences": row[3] or ""}
+                "goals": row[2] or "", "preferences": row[3] or "",
+                "mode": row[4] or ""}
 
     async def get_profile(self, uid: int) -> dict:
         await self.ensure_loaded(uid)
         return dict(self._cache[uid]["profile"])
 
     async def set_profile_field(self, uid: int, field: str, value: str):
-        if field not in ("name", "about", "goals", "preferences"):
+        if field not in ("name", "about", "goals", "preferences", "mode"):
             return
         await self.ensure_loaded(uid)
         now = datetime.now().isoformat()
-        # Upsert
+        cur = self._cache[uid]["profile"]
+        vals = {f: (value if f == field else cur.get(f, "")) for f in _PROFILE_FIELDS}
+        # Upsert all known fields; only `field` actually changes
         await self._exec(
-            "INSERT INTO profile(user_id, name, about, goals, preferences, updated_at) "
-            "VALUES(?,?,?,?,?,?) "
+            "INSERT INTO profile(user_id, name, about, goals, preferences, mode, updated_at) "
+            "VALUES(?,?,?,?,?,?,?) "
             "ON CONFLICT(user_id) DO UPDATE SET "
             f"{field}=excluded.{field}, updated_at=excluded.updated_at",
-            (uid,
-             value if field == "name" else self._cache[uid]["profile"].get("name", ""),
-             value if field == "about" else self._cache[uid]["profile"].get("about", ""),
-             value if field == "goals" else self._cache[uid]["profile"].get("goals", ""),
-             value if field == "preferences" else self._cache[uid]["profile"].get("preferences", ""),
-             now),
+            (uid, vals["name"], vals["about"], vals["goals"],
+             vals["preferences"], vals["mode"], now),
         )
-        self._cache[uid]["profile"][field] = value
+        cur[field] = value
 
     # ── facts ──────────────────────────────────────────────────────────────────
 
@@ -219,6 +236,8 @@ def _pg(sql: str) -> str:
     return "".join(out)
 
 
+_PROFILE_FIELDS = ("name", "about", "goals", "preferences", "mode")
+
 _SCHEMA_SQLITE = """
 CREATE TABLE IF NOT EXISTS profile (
     user_id     INTEGER PRIMARY KEY,
@@ -226,6 +245,7 @@ CREATE TABLE IF NOT EXISTS profile (
     about       TEXT DEFAULT '',
     goals       TEXT DEFAULT '',
     preferences TEXT DEFAULT '',
+    mode        TEXT DEFAULT '',
     updated_at  TEXT
 );
 CREATE TABLE IF NOT EXISTS facts (
@@ -244,6 +264,7 @@ CREATE TABLE IF NOT EXISTS profile (
     about       TEXT DEFAULT '',
     goals       TEXT DEFAULT '',
     preferences TEXT DEFAULT '',
+    mode        TEXT DEFAULT '',
     updated_at  TEXT
 );
 CREATE TABLE IF NOT EXISTS facts (

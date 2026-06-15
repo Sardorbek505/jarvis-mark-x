@@ -25,6 +25,7 @@ from telegram_bot.gemini_client import GeminiClient
 from telegram_bot.pc_bridge import PCBridge
 from telegram_bot import miniapp_server
 from telegram_bot import user_context
+from telegram_bot import personas
 from telegram_bot.memory_store import MemoryStore
 
 logging.basicConfig(
@@ -50,9 +51,14 @@ memory = MemoryStore()
 
 
 def _build_context(uid: int) -> str:
-    base = user_context.describe(uid, cfg.default_city, cfg.timezone)
+    parts = [user_context.describe(uid, cfg.default_city, cfg.timezone)]
     mem = memory.cached_block(uid)
-    return f"{base}\n{mem}" if mem else base
+    if mem:
+        parts.append(mem)
+    persona = personas.overlay(memory.cached_mode(uid))
+    if persona:
+        parts.append(persona)
+    return "\n".join(parts)
 
 
 gemini.set_context_provider(_build_context)
@@ -82,7 +88,7 @@ async def _build_tg_app():
     from telegram_bot.bot import (
         cmd_start, cmd_help, cmd_app, cmd_status, cmd_clear,
         cmd_pc, cmd_screenshot, cmd_camera, cmd_vol, cmd_lock, cmd_sysinfo, cmd_briefing,
-        cmd_remind, cmd_reminders, cmd_profile, cmd_remember, cmd_forget,
+        cmd_remind, cmd_reminders, cmd_mode, cmd_profile, cmd_remember, cmd_forget,
         handle_text, handle_voice, handle_photo,
         _on_notification, _BOT_COMMANDS,
     )
@@ -99,6 +105,7 @@ async def _build_tg_app():
     app.add_handler(CommandHandler("app",        cmd_app))
     app.add_handler(CommandHandler("status",     cmd_status))
     app.add_handler(CommandHandler("clear",      cmd_clear))
+    app.add_handler(CommandHandler("mode",       cmd_mode))
     app.add_handler(CommandHandler("profile",    cmd_profile))
     app.add_handler(CommandHandler("remember",   cmd_remember))
     app.add_handler(CommandHandler("forget",     cmd_forget))

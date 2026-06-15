@@ -32,6 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger("jarvis-bot")
 
 from telegram_bot import user_context
+from telegram_bot import personas
 from telegram_bot.memory_store import MemoryStore
 
 cfg = load_config()
@@ -41,9 +42,14 @@ memory = MemoryStore()
 
 
 def _build_context(uid: int) -> str:
-    base = user_context.describe(uid, cfg.default_city, cfg.timezone)
+    parts = [user_context.describe(uid, cfg.default_city, cfg.timezone)]
     mem = memory.cached_block(uid)
-    return f"{base}\n{mem}" if mem else base
+    if mem:
+        parts.append(mem)
+    persona = personas.overlay(memory.cached_mode(uid))
+    if persona:
+        parts.append(persona)
+    return "\n".join(parts)
 
 
 gemini.set_context_provider(_build_context)
@@ -62,6 +68,7 @@ _BOT_COMMANDS = [
     BotCommand("briefing",   "Утренний брифинг"),
     BotCommand("remind",     "Добавить напоминание"),
     BotCommand("reminders",  "Мои напоминания"),
+    BotCommand("mode",       "Режим личности (ментор/друг/бизнес)"),
     BotCommand("profile",    "Что JARVIS обо мне знает"),
     BotCommand("remember",   "Запомнить факт обо мне"),
     BotCommand("forget",     "Стереть всё обо мне"),
@@ -172,6 +179,9 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"`/profile` — что я о тебе знаю\n"
         f"`/remember меня зовут Сардор`\n"
         f"`/forget` — стереть всё обо мне\n\n"
+        f"*Личность*\n"
+        f"`/mode друг` · `/mode ментор` · `/mode бизнес`\n"
+        f"`/mode` — список и текущий режим\n\n"
         f"*Прочее*\n"
         f"`/status` — статус ПК\n"
         f"`/clear` — очистить историю\n"
@@ -252,6 +262,30 @@ async def cmd_remember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     added = await memory.add_fact(uid, fact)
     await update.effective_message.reply_text(
         "Запомнил ✅" if added else "Я это уже знаю 🙂"
+    )
+
+
+async def cmd_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    arg = " ".join(ctx.args).strip()
+    if not arg:
+        current = await memory.get_mode(uid) or personas.DEFAULT_MODE
+        await update.effective_message.reply_text(
+            personas.list_text(current), parse_mode="Markdown"
+        )
+        return
+    mid = personas.resolve(arg)
+    if not mid:
+        await update.effective_message.reply_text(
+            "Не знаю такой режим 🤔\n\n" + personas.list_text(await memory.get_mode(uid)),
+            parse_mode="Markdown",
+        )
+        return
+    await memory.set_mode(uid, mid)
+    await update.effective_message.reply_text(
+        f"Готово, переключился в режим: {personas.label(mid)} ✅"
     )
 
 
@@ -605,6 +639,7 @@ def main():
     app.add_handler(CommandHandler("app",        cmd_app))
     app.add_handler(CommandHandler("status",     cmd_status))
     app.add_handler(CommandHandler("clear",      cmd_clear))
+    app.add_handler(CommandHandler("mode",       cmd_mode))
     app.add_handler(CommandHandler("profile",    cmd_profile))
     app.add_handler(CommandHandler("remember",   cmd_remember))
     app.add_handler(CommandHandler("forget",     cmd_forget))
