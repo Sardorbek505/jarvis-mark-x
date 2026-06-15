@@ -47,7 +47,10 @@ def load(require_bot: bool = True) -> Config:
 
     pc_host = os.getenv("PC_WS_HOST") or raw.get("pc_ws_host", "")
     pc_port = int(os.getenv("PC_WS_PORT") or raw.get("pc_ws_port", 8765))
-    miniapp_url = os.getenv("MINIAPP_URL") or raw.get("miniapp_url", "")
+    # Render automatically provides RENDER_EXTERNAL_URL — use it so the user
+    # never has to set MINIAPP_URL by hand (fixes "Mini App не настроен").
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "")
+    miniapp_url = os.getenv("MINIAPP_URL") or raw.get("miniapp_url", "") or render_url
     miniapp_port = int(os.getenv("MINIAPP_PORT") or raw.get("miniapp_port", 8000))
 
     # PC link — home PC dials out to the server (works behind NAT)
