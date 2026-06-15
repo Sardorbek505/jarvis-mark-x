@@ -2,6 +2,7 @@
 """JARVIS Telegram Bot — mobile interface, runs on VPS."""
 import asyncio
 import base64
+import contextlib
 import logging
 import sys
 from datetime import datetime
@@ -695,6 +696,24 @@ async def cmd_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Message handlers ───────────────────────────────────────────────────────────
 
+@contextlib.asynccontextmanager
+async def _busy(chat, action: str = "typing"):
+    """Keep Telegram's status indicator alive (it expires after ~5s) so long
+    operations like voice synthesis don't look like the bot fell asleep."""
+    async def _loop():
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            while True:
+                await chat.send_action(action)
+                await asyncio.sleep(4)
+    task = asyncio.create_task(_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
@@ -751,61 +770,62 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     user_id = update.effective_user.id
-    await update.effective_message.chat.send_action("typing")
+    msg = update.effective_message
     try:
-        file = await ctx.bot.get_file(update.effective_message.voice.file_id)
-        audio = bytes(await file.download_as_bytearray())
+        # Show "recording audio…" the whole time — voice synthesis takes a while
+        # and a one-shot indicator expires in 5s, making the bot look asleep.
+        async with _busy(msg.chat, "record_voice"):
+            file = await ctx.bot.get_file(msg.voice.file_id)
+            audio = bytes(await file.download_as_bytearray())
 
-        # Transcribe, then route through the same pipeline as text — so voice
-        # commands control the PC, not just chat.
-        transcript = await gemini.transcribe(audio, mime_type="audio/ogg")
+            # Transcribe, then route through the same pipeline as text — so voice
+            # commands control the PC, not just chat.
+            transcript = await gemini.transcribe(audio, mime_type="audio/ogg")
 
-        # 0. Onboarding in progress? Capture the spoken answer too (not just text),
-        # otherwise a voice reply would silently skip the question.
-        if onboarding.is_active(user_id):
-            await memory.ensure_loaded(user_id)
-            if not transcript:
-                await update.effective_message.reply_text(
-                    "Не расслышал, повтори голосом или напиши текстом 🙏")
+            # 0. Onboarding in progress? Capture the spoken answer too (not just
+            # text), otherwise a voice reply would silently skip the question.
+            if onboarding.is_active(user_id):
+                await memory.ensure_loaded(user_id)
+                if not transcript:
+                    await msg.reply_text("Не расслышал, повтори голосом или напиши текстом 🙏")
+                    return
+                reply = await onboarding.handle(memory, user_id, transcript)
+                ogg = await gemini.speak_ogg(reply)
+                if ogg:
+                    cap = reply if len(reply) <= 1000 else reply[:997] + "…"
+                    await msg.reply_voice(voice=ogg, caption=cap, parse_mode="Markdown")
+                else:
+                    await msg.reply_text(reply, parse_mode="Markdown")
                 return
-            reply = await onboarding.handle(memory, user_id, transcript)
-            ogg = await gemini.speak_ogg(reply)
-            if ogg:
-                cap = reply if len(reply) <= 1000 else reply[:997] + "…"
-                await update.effective_message.reply_voice(
-                    voice=ogg, caption=cap, parse_mode="Markdown")
-            else:
-                await update.effective_message.reply_text(reply, parse_mode="Markdown")
-            return
 
-        if transcript and _looks_like_pc_command(transcript):
-            await update.effective_message.reply_text(f"🎙 «{transcript}»")
-            if not bridge.connected:
-                await update.effective_message.reply_text(
-                    "❌ ПК офлайн. Запусти `scripts\\start_pc.bat` на компьютере.",
-                    parse_mode="Markdown",
+            if transcript and _looks_like_pc_command(transcript):
+                await msg.reply_text(f"🎙 «{transcript}»")
+                if not bridge.connected:
+                    await msg.reply_text(
+                        "❌ ПК офлайн. Запусти `scripts\\start_pc.bat` на компьютере.",
+                        parse_mode="Markdown",
+                    )
+                    return
+                pc_result = await bridge.send_command(transcript, user_id)
+                await msg.reply_text(
+                    f"🖥 {pc_result}" if pc_result is not None else "❌ ПК не ответил."
                 )
                 return
-            pc_result = await bridge.send_command(transcript, user_id)
-            await update.effective_message.reply_text(
-                f"🖥 {pc_result}" if pc_result is not None else "❌ ПК не ответил."
-            )
-            return
 
-        # Otherwise — normal voice conversation. Voice in → voice out (mirror).
-        await memory.ensure_loaded(user_id)
-        reply = await gemini.chat_with_audio(user_id, audio)
-        ogg = await gemini.speak_ogg(reply)
-        if ogg:
-            caption = reply if len(reply) <= 1000 else reply[:997] + "…"
-            await update.effective_message.reply_voice(voice=ogg, caption=caption)
-        else:
-            await update.effective_message.reply_text(reply)
-        if transcript:
-            asyncio.create_task(memory.observe(user_id, gemini, transcript, reply))
+            # Otherwise — normal voice conversation. Voice in → voice out (mirror).
+            await memory.ensure_loaded(user_id)
+            reply = await gemini.chat_with_audio(user_id, audio)
+            ogg = await gemini.speak_ogg(reply)
+            if ogg:
+                caption = reply if len(reply) <= 1000 else reply[:997] + "…"
+                await msg.reply_voice(voice=ogg, caption=caption)
+            else:
+                await msg.reply_text(reply)
+            if transcript:
+                asyncio.create_task(memory.observe(user_id, gemini, transcript, reply))
     except Exception as e:
         logger.error(f"handle_voice error: {e}")
-        await update.effective_message.reply_text("❌ Не смог обработать голосовое.")
+        await msg.reply_text("❌ Не смог обработать голосовое.")
 
 
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
