@@ -1,21 +1,25 @@
-"""FastAPI WebSocket server for the JARVIS Mini App (runs on VPS alongside the bot)."""
+"""FastAPI WebSocket server for the JARVIS Mini App (runs on VPS/Render with the bot)."""
 import asyncio
 import base64
 import json
 import logging
+import os
 import struct
 import sys
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 logger = logging.getLogger("jarvis-miniapp")
 
 MINIAPP_DIR = Path(__file__).parent / "miniapp"
+
+# Shared secret — the home PC must present this to link. Set via env on Render.
+PC_LINK_TOKEN = os.getenv("PC_LINK_TOKEN", "")
 
 _PC_KEYWORDS = [
     "play", "stop", "pause", "next", "prev", "volume",
@@ -53,10 +57,11 @@ def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000) -> bytes:
 
 app = FastAPI(title="JARVIS Mini App")
 
-# Lazy references set by run() or __main__
+# Lazy references set by render_app.py / __main__
 _gemini = None
 _bridge = None
 _audio_buffers: Dict[int, bytes] = {}
+_miniapp_clients: Set[WebSocket] = set()
 
 
 # ── Static files ──────────────────────────────────────────────────────────────
@@ -78,11 +83,54 @@ async def serve_worklet():
     return FileResponse(MINIAPP_DIR / "worklet.js", media_type="application/javascript")
 
 
-# ── WebSocket ─────────────────────────────────────────────────────────────────
+# ── PC status broadcast to Mini App clients ───────────────────────────────────
+
+async def broadcast_pc_status(online: bool):
+    dead = []
+    for ws in list(_miniapp_clients):
+        try:
+            await ws.send_text(json.dumps({"type": "pc_status", "online": online}))
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        _miniapp_clients.discard(ws)
+
+
+# ── PC link — home PC connects OUT to here (works behind NAT) ──────────────────
+
+@app.websocket("/pc-link")
+async def pc_link(ws: WebSocket):
+    token = ws.query_params.get("token", "")
+    if PC_LINK_TOKEN and token != PC_LINK_TOKEN:
+        await ws.close(code=1008)
+        logger.warning("PC link rejected — bad token")
+        return
+    await ws.accept()
+    cid = await _bridge.register(ws) if _bridge else None
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if _bridge:
+                await _bridge.handle_message(msg)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error(f"pc-link error: {e}")
+    finally:
+        if _bridge and cid is not None:
+            await _bridge.unregister(cid)
+
+
+# ── Mini App clients (browser / Telegram) ─────────────────────────────────────
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
+    _miniapp_clients.add(ws)
     try:
         user_id = int(ws.query_params.get("user_id", 0) or 0)
     except ValueError:
@@ -90,7 +138,6 @@ async def ws_endpoint(ws: WebSocket):
 
     _audio_buffers[user_id] = b""
 
-    # Send initial status
     await ws.send_text(json.dumps({
         "type": "pc_status",
         "online": _bridge.connected if _bridge else False,
@@ -133,13 +180,13 @@ async def ws_endpoint(ws: WebSocket):
     except Exception as e:
         logger.error(f"WS error uid={user_id}: {e}")
     finally:
+        _miniapp_clients.discard(ws)
         _audio_buffers.pop(user_id, None)
 
 
 async def _handle_text(ws: WebSocket, user_id: int, text: str):
     sent = False
 
-    # Try PC bridge first
     if _bridge and _bridge.connected and _looks_like_pc_command(text):
         rich = await _bridge.send_command_full(text, user_id)
         if rich:
@@ -157,7 +204,6 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str):
                 }))
                 sent = True
 
-    # Fall through to Gemini
     if not sent:
         if _gemini:
             reply = await _gemini.chat(user_id, text)
@@ -170,8 +216,11 @@ async def _handle_voice(ws: WebSocket, user_id: int, pcm: bytes):
     if not _gemini:
         await ws.send_text(json.dumps({"type": "text", "text": "AI-сервис недоступен."}))
         return
-    if len(pcm) < 3200:  # < 100ms
-        await ws.send_text(json.dumps({"type": "text", "text": "Не услышал. Нажми и удерживай кнопку пока говоришь."}))
+    if len(pcm) < 3200:
+        await ws.send_text(json.dumps({
+            "type": "text",
+            "text": "Не услышал. Нажми кнопку, говори, потом нажми ещё раз."
+        }))
         return
     try:
         wav = _pcm_to_wav(pcm)
@@ -185,18 +234,16 @@ async def _handle_voice(ws: WebSocket, user_id: int, pcm: bytes):
 # ── Entry points ──────────────────────────────────────────────────────────────
 
 async def run(port: int = 8000, gemini=None, bridge=None):
-    """Start server within existing asyncio loop (called from bot.py post_init)."""
+    """Start server within an existing asyncio loop."""
     global _gemini, _bridge
     if gemini is not None:
         _gemini = gemini
     if bridge is not None:
         _bridge = bridge
+        _bridge.on_status_change(broadcast_pc_status)
 
     import uvicorn
-    config = uvicorn.Config(
-        app, host="0.0.0.0", port=port,
-        log_level="info", access_log=False,
-    )
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info", access_log=False)
     server = uvicorn.Server(config)
     await server.serve()
 
@@ -213,12 +260,7 @@ if __name__ == "__main__":
 
     cfg = load_config()
     _gemini = GeminiClient(cfg.gemini_api_key, cfg.gemini_model)
-    _bridge = PCBridge(cfg.pc_ws_host, cfg.pc_ws_port)
+    _bridge = PCBridge()
+    _bridge.on_status_change(broadcast_pc_status)
 
-    async def _main():
-        await asyncio.gather(
-            _bridge.connect_loop(),
-            run(port=cfg.miniapp_port),
-        )
-
-    asyncio.run(_main())
+    asyncio.run(run(port=cfg.miniapp_port))

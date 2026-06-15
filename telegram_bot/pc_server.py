@@ -1,8 +1,11 @@
 """
-Desktop JARVIS WebSocket server — accepts commands from Telegram bot / Mini App.
+Desktop JARVIS — connects OUT to your Render/VPS server and executes commands.
+
+Because it dials out, it works behind a home router (NAT) with no port-forwarding.
 
 Run on your PC:
     python -m telegram_bot.pc_server
+or double-click  scripts\\start_pc.bat
 """
 import asyncio
 import base64
@@ -24,7 +27,6 @@ logger = logging.getLogger(__name__)
 # ── Keyword tables ─────────────────────────────────────────────────────────────
 
 _KW = {
-    # Checked FIRST — prevents "выключи пк" from matching music pause
     "system": [
         "скриншот", "screenshot", "снимок экрана",
         "заблокируй экран", "заблокировать экран", "lock screen", "lock pc",
@@ -54,64 +56,9 @@ _KW = {
         "встреча", "что сегодня", "планы",
     ],
     "briefing": [
-        "брифинг", "briefing", "сводка", "утренний брифинг", "что сегодня",
+        "брифинг", "briefing", "сводка", "утренний брифинг",
     ],
 }
-
-
-# ── PC Server class ────────────────────────────────────────────────────────────
-
-class PCServer:
-    def __init__(self, port: int = 8765):
-        self._port = port
-        self._clients: set = set()
-
-    async def start(self):
-        async with websockets.serve(self._handler, "0.0.0.0", self._port):
-            logger.info(f"PC Server started on port {self._port}")
-            try:
-                await asyncio.Future()
-            except asyncio.CancelledError:
-                pass
-
-    async def notify_all(self, text: str, user_id: int = None):
-        msg = json.dumps({"type": "notification", "text": text, "user_id": user_id})
-        for ws in list(self._clients):
-            try:
-                await ws.send(msg)
-            except Exception:
-                self._clients.discard(ws)
-
-    async def _handler(self, ws):
-        self._clients.add(ws)
-        logger.info(f"Bot connected: {ws.remote_address}")
-        try:
-            async for raw in ws:
-                await self._process(ws, raw)
-        except websockets.ConnectionClosed:
-            pass
-        finally:
-            self._clients.discard(ws)
-            logger.info(f"Bot disconnected: {ws.remote_address}")
-
-    async def _process(self, ws, raw: str):
-        try:
-            msg = json.loads(raw)
-        except json.JSONDecodeError:
-            return
-
-        if msg.get("type") != "command":
-            return
-
-        text = msg.get("text", "")
-        result = await _execute(text)
-        await ws.send(json.dumps({
-            "type": "response",
-            "req_id": msg.get("req_id"),
-            "text": result.get("text", ""),
-            "image_b64": result.get("image_b64"),
-            "user_id": msg.get("user_id"),
-        }))
 
 
 # ── Command execution ──────────────────────────────────────────────────────────
@@ -120,93 +67,61 @@ async def _execute(text: str) -> dict:
     tl = text.lower().strip()
 
     try:
-        # ── 1. System commands (checked before music to avoid keyword clashes) ──
         if any(k in tl for k in _KW["system"]):
-
-            # Screenshot
             if any(k in tl for k in ["скриншот", "screenshot", "снимок"]):
                 return await _do_screenshot()
-
-            # Lock screen
             if any(k in tl for k in ["заблокируй", "заблокировать", "lock screen", "lock pc"]):
                 from actions.computer_settings import computer_settings
-                msg = await asyncio.to_thread(computer_settings, {"action": "lock"})
-                return _r(msg)
-
-            # Shutdown / restart
+                return _r(await asyncio.to_thread(computer_settings, {"action": "lock"}))
             if any(k in tl for k in ["выключи компьютер", "выключи пк", "shutdown пк", "shutdown компьютер"]):
                 from actions.computer_settings import computer_settings
-                msg = await asyncio.to_thread(computer_settings, {"action": "shutdown"})
-                return _r(msg)
+                return _r(await asyncio.to_thread(computer_settings, {"action": "shutdown"}))
             if any(k in tl for k in ["перезагрузи", "restart пк"]):
                 from actions.computer_settings import computer_settings
-                msg = await asyncio.to_thread(computer_settings, {"action": "перезагруз"})
-                return _r(msg)
-
-            # System volume (absolute %)
+                return _r(await asyncio.to_thread(computer_settings, {"action": "перезагруз"}))
             if "системная громкость" in tl:
                 m = re.search(r'\d+', tl)
-                val = int(m.group()) if m else 50
-                val = max(0, min(100, val))
+                val = max(0, min(100, int(m.group()) if m else 50))
                 from actions.computer_settings import computer_settings
-                msg = await asyncio.to_thread(computer_settings, {"action": "volume", "value": str(val)})
-                return _r(msg)
-
-            # System info
+                return _r(await asyncio.to_thread(computer_settings, {"action": "volume", "value": str(val)}))
             if any(k in tl for k in ["системная информация", "sysinfo", "батарея", "battery", "заряд"]):
                 return _r(_get_sysinfo())
 
-        # ── 2. Music / Spotify ────────────────────────────────────────────────
         if any(k in tl for k in _KW["music"]):
             from actions.spotify_controller import spotify_player
             params = _parse_music(tl)
-            result = await asyncio.to_thread(spotify_player, params)
-            return _r(result or "Выполнено")
+            return _r(await asyncio.to_thread(spotify_player, params) or "Выполнено")
 
-        # ── 3. Weather ────────────────────────────────────────────────────────
         if any(k in tl for k in _KW["weather"]):
             from actions.weather import weather_action
             city = _extract_after(tl, ["в ", "in ", "погода ", "погоду в "]) or "Ташкент"
-            result = await asyncio.to_thread(weather_action, {"city": city})
-            return _r(result or "Погода получена")
+            return _r(await asyncio.to_thread(weather_action, {"city": city}) or "Погода получена")
 
-        # ── 4. Open app ───────────────────────────────────────────────────────
         if any(k in tl for k in _KW["app"]):
             from actions.open_app import open_app
             app_name = _extract_after(tl, ["открой ", "запусти ", "open ", "закрой ", "close "])
-            result = await asyncio.to_thread(open_app, {"app_name": app_name or text})
-            return _r(result or "Выполнено")
+            return _r(await asyncio.to_thread(open_app, {"app_name": app_name or text}) or "Выполнено")
 
-        # ── 5. Web search ─────────────────────────────────────────────────────
         if any(k in tl for k in _KW["search"]):
             from actions.web_search import web_search
             query = _extract_after(tl, ["найди ", "поищи ", "search ", "find ", "найти "]) or text
-            result = await asyncio.to_thread(web_search, {"query": query})
-            return _r(result or "Поиск запущен")
+            return _r(await asyncio.to_thread(web_search, {"query": query}) or "Поиск запущен")
 
-        # ── 6. Window control ─────────────────────────────────────────────────
         if any(k in tl for k in _KW["window"]):
             from actions.window_control import window_control
-            params = _parse_window(tl)
-            result = await asyncio.to_thread(window_control, params)
-            return _r(result or "Выполнено")
+            return _r(await asyncio.to_thread(window_control, _parse_window(tl)) or "Выполнено")
 
-        # ── 7. Calendar ───────────────────────────────────────────────────────
         if any(k in tl for k in _KW["calendar"]):
             try:
                 from actions.calendar import calendar_action
-                params = _parse_calendar(tl)
-                result = await asyncio.to_thread(calendar_action, params)
-                return _r(result or "Готово")
+                return _r(await asyncio.to_thread(calendar_action, _parse_calendar(tl)) or "Готово")
             except Exception as e:
                 return _r(f"Календарь недоступен: {e}")
 
-        # ── 8. Morning briefing ───────────────────────────────────────────────
         if any(k in tl for k in _KW["briefing"]):
             try:
                 from actions.morning_briefing import morning_briefing
-                result = await asyncio.to_thread(morning_briefing, {})
-                return _r(result or "Брифинг недоступен")
+                return _r(await asyncio.to_thread(morning_briefing, {}) or "Брифинг недоступен")
             except Exception as e:
                 return _r(f"Брифинг недоступен: {e}")
 
@@ -224,25 +139,17 @@ def _r(text: str, image_b64: str = None) -> dict:
 
 
 async def _do_screenshot() -> dict:
-    """Take a screenshot, compress to JPEG and return base64."""
     from actions.computer_settings import computer_settings
     msg = await asyncio.to_thread(computer_settings, {"action": "screenshot"})
-
-    # Extract the saved file path from the result message
-    path = None
-    if ":" in msg:
-        path = msg.split(":", 1)[-1].strip()
-
+    path = msg.split(":", 1)[-1].strip() if ":" in msg else None
     if path and os.path.exists(path):
         image_b64 = _encode_image(path)
         if image_b64:
             return {"text": "Скриншот ✅", "image_b64": image_b64}
-
     return _r(msg)
 
 
-def _encode_image(path: str) -> str | None:
-    """Read image file, compress to JPEG, return base64 or None."""
+def _encode_image(path: str):
     try:
         try:
             from PIL import Image
@@ -266,14 +173,12 @@ def _get_sysinfo() -> str:
         import psutil
         cpu = psutil.cpu_percent(interval=0.5)
         mem = psutil.virtual_memory()
-        disk_path = "C:\\" if platform.system() == "Windows" else "/"
-        disk = psutil.disk_usage(disk_path)
-
+        disk = psutil.disk_usage("C:\\" if platform.system() == "Windows" else "/")
         lines = [
             "🖥 *Состояние системы*",
             f"CPU: {cpu:.0f}%",
             f"RAM: {mem.percent:.0f}% ({mem.used // 1024**2} МБ / {mem.total // 1024**2} МБ)",
-            f"Диск: {disk.percent:.0f}% ({disk.used // 1024**3:.1f} ГБ / {disk.total // 1024**3:.1f} ГБ)",
+            f"Диск: {disk.percent:.0f}% ({disk.used // 1024**3:.1f} / {disk.total // 1024**3:.1f} ГБ)",
         ]
         try:
             bat = psutil.sensors_battery()
@@ -304,7 +209,6 @@ def _parse_music(tl: str) -> dict:
         return {"action": "shuffle"}
     if any(k in tl for k in ["что играет", "какой трек", "now playing"]):
         return {"action": "now_playing"}
-
     match = re.search(r"(?:play|включи|играй|поставь|запусти|воспроизведи)\s+(.+)", tl)
     query = match.group(1).strip() if match else ""
     if query in ("музыку", "music", "музыка", "трек", "песню", ""):
@@ -352,16 +256,60 @@ def _extract_after(tl: str, markers: list) -> str:
     return ""
 
 
-# ── Singleton ──────────────────────────────────────────────────────────────────
+# ── WebSocket client — dials out to Render/VPS ─────────────────────────────────
 
-_server: PCServer | None = None
+async def _handle(ws, msg: dict):
+    result = await _execute(msg.get("text", ""))
+    try:
+        await ws.send(json.dumps({
+            "type": "response",
+            "req_id": msg.get("req_id"),
+            "text": result.get("text", ""),
+            "image_b64": result.get("image_b64"),
+            "user_id": msg.get("user_id"),
+        }))
+    except Exception as e:
+        logger.error(f"Send response: {e}")
 
 
-def get_server(port: int = 8765) -> PCServer:
-    global _server
-    if _server is None:
-        _server = PCServer(port)
-    return _server
+async def run_client(url: str, token: str):
+    if not url:
+        logger.error(
+            "pc_link_url не задан. Добавь в config/api_keys.json:\n"
+            '  "pc_link_url": "wss://ТВОЙ-САЙТ.onrender.com",\n'
+            '  "pc_link_token": "ТВОЙ-СЕКРЕТ"'
+        )
+        return
+
+    base = url.rstrip("/")
+    if base.startswith("https://"):
+        base = "wss://" + base[len("https://"):]
+    elif base.startswith("http://"):
+        base = "ws://" + base[len("http://"):]
+
+    sep = "&" if "?" in base else "?"
+    uri = f"{base}/pc-link{sep}token={token}"
+    safe_uri = uri.split("token=")[0] + "token=***"
+    logger.info(f"Подключаюсь к JARVIS: {safe_uri}")
+
+    while True:
+        try:
+            async with websockets.connect(
+                uri, ping_interval=20, ping_timeout=20, max_size=8 * 1024 * 1024
+            ) as ws:
+                logger.info("✅ Подключено. Жду команды с телефона/Telegram…")
+                async for raw in ws:
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if msg.get("type") == "command":
+                        asyncio.create_task(_handle(ws, msg))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Отключено: {e}. Переподключение через 5 секунд…")
+            await asyncio.sleep(5)
 
 
 if __name__ == "__main__":
@@ -370,8 +318,8 @@ if __name__ == "__main__":
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
     from telegram_bot.config import load as load_config
-    cfg = load_config()
+    cfg = load_config(require_bot=False)
     try:
-        asyncio.run(get_server(cfg.pc_ws_port).start())
+        asyncio.run(run_client(cfg.pc_link_url, cfg.pc_link_token))
     except KeyboardInterrupt:
-        logger.info("PC Server stopped.")
+        logger.info("PC client stopped.")

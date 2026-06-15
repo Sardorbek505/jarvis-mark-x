@@ -26,11 +26,9 @@ services:
         sync: false
       - key: TELEGRAM_ALLOWED_USERS
         sync: false          # твой Telegram user_id
-      - key: PC_WS_HOST
-        sync: false          # IP/DDNS твоего ПК (если нужно управление ПК)
-      - key: PC_WS_PORT
-        value: "8765"
       - key: MINIAPP_URL
         sync: false          # https://<имя>.onrender.com  (узнаешь после деплоя)
       - key: MINIAPP_PORT
         value: "8000"
+      - key: PC_LINK_TOKEN
+        generateValue: true  # секрет для подключения твоего ПК (Render сгенерит сам)

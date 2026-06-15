@@ -33,7 +33,7 @@ logger = logging.getLogger("jarvis-bot")
 
 cfg = load_config()
 gemini = GeminiClient(cfg.gemini_api_key, cfg.gemini_model)
-bridge = PCBridge(cfg.pc_ws_host, cfg.pc_ws_port)
+bridge = PCBridge()
 
 _BOT_COMMANDS = [
     BotCommand("start",      "Запустить JARVIS"),
