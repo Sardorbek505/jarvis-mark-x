@@ -759,6 +759,25 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Transcribe, then route through the same pipeline as text — so voice
         # commands control the PC, not just chat.
         transcript = await gemini.transcribe(audio, mime_type="audio/ogg")
+
+        # 0. Onboarding in progress? Capture the spoken answer too (not just text),
+        # otherwise a voice reply would silently skip the question.
+        if onboarding.is_active(user_id):
+            await memory.ensure_loaded(user_id)
+            if not transcript:
+                await update.effective_message.reply_text(
+                    "Не расслышал, повтори голосом или напиши текстом 🙏")
+                return
+            reply = await onboarding.handle(memory, user_id, transcript)
+            ogg = await gemini.speak_ogg(reply)
+            if ogg:
+                cap = reply if len(reply) <= 1000 else reply[:997] + "…"
+                await update.effective_message.reply_voice(
+                    voice=ogg, caption=cap, parse_mode="Markdown")
+            else:
+                await update.effective_message.reply_text(reply, parse_mode="Markdown")
+            return
+
         if transcript and _looks_like_pc_command(transcript):
             await update.effective_message.reply_text(f"🎙 «{transcript}»")
             if not bridge.connected:
