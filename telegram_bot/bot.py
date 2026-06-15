@@ -47,6 +47,7 @@ _BOT_COMMANDS = [
     BotCommand("status",     "Статус ПК"),
     BotCommand("pc",         "Команда на ПК"),
     BotCommand("screenshot", "Скриншот рабочего стола"),
+    BotCommand("camera",     "Снимок с веб-камеры"),
     BotCommand("vol",        "Громкость ПК: /vol 70"),
     BotCommand("lock",       "Заблокировать экран"),
     BotCommand("sysinfo",    "Состояние системы"),
@@ -71,6 +72,8 @@ _PC_KEYWORDS = [
     # Window control
     "сверни", "свернуть", "minimize", "рабочий стол", "разверни",
     "закрой окно", "переключи окно", "проводник", "диспетчер",
+    # Camera
+    "камер", "вебкам", "webcam", "сфоткай", "что рядом", "что вокруг", "что там происходит",
     # System
     "screenshot", "скриншот",
     "заблокируй", "заблокировать",
@@ -137,6 +140,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"*ПК* ({pc})\n"
         f"`/pc <команда>` — любая команда\n"
         f"`/screenshot` — скриншот рабочего стола\n"
+        f"`/camera` — снимок с веб-камеры\n"
         f"`/vol 70` — установить громкость 70%\n"
         f"`/lock` — заблокировать экран\n"
         f"`/sysinfo` — CPU, RAM, батарея\n"
@@ -232,6 +236,26 @@ async def cmd_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.effective_message.reply_text(result.get("text") or "❌ Не удалось сделать скриншот")
+
+
+async def cmd_camera(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    if not bridge.connected:
+        await update.effective_message.reply_text("❌ ПК офлайн.")
+        return
+    await update.effective_message.chat.send_action("upload_photo")
+    result = await bridge.send_command_full("снимок с камеры", update.effective_user.id, timeout=30.0)
+    if not result:
+        await update.effective_message.reply_text("❌ ПК не ответил вовремя.")
+        return
+    if result.get("image_b64"):
+        photo = base64.b64decode(result["image_b64"])
+        await update.effective_message.reply_photo(
+            photo, caption=f"📷 {result.get('text', 'Снимок с камеры')}"
+        )
+    else:
+        await update.effective_message.reply_text(result.get("text") or "❌ Не удалось сделать снимок с камеры")
 
 
 async def cmd_vol(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -504,6 +528,7 @@ def main():
     app.add_handler(CommandHandler("clear",      cmd_clear))
     app.add_handler(CommandHandler("pc",         cmd_pc))
     app.add_handler(CommandHandler("screenshot", cmd_screenshot))
+    app.add_handler(CommandHandler("camera",     cmd_camera))
     app.add_handler(CommandHandler("vol",        cmd_vol))
     app.add_handler(CommandHandler("lock",       cmd_lock))
     app.add_handler(CommandHandler("sysinfo",    cmd_sysinfo))
