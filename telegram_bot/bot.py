@@ -423,7 +423,8 @@ async def cmd_morning(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await update.effective_message.chat.send_action("typing")
     await proactive._send_briefing(
-        ctx.bot, gemini, memory, update.effective_user.id, "morning", cfg.timezone
+        ctx.bot, gemini, memory, update.effective_user.id, "morning",
+        cfg.timezone, cfg.default_city
     )
 
 
@@ -432,7 +433,8 @@ async def cmd_evening(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await update.effective_message.chat.send_action("typing")
     await proactive._send_briefing(
-        ctx.bot, gemini, memory, update.effective_user.id, "evening", cfg.timezone
+        ctx.bot, gemini, memory, update.effective_user.id, "evening",
+        cfg.timezone, cfg.default_city
     )
 
 
@@ -858,7 +860,7 @@ def main():
         _bridge_task    = loop.create_task(bridge.connect_loop())
         _reminder_task  = loop.create_task(_reminder_loop(application.bot))
         _proactive_task = loop.create_task(
-            proactive.loop(application.bot, gemini, memory, cfg.timezone)
+            proactive.loop(application.bot, gemini, memory, cfg.timezone, cfg.default_city)
         )
 
         # Start Mini App server if port is configured
