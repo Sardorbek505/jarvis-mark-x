@@ -226,18 +226,22 @@ async def _send_text(ws: WebSocket, text: str, want_audio: bool):
     await ws.send_text(json.dumps({"type": "text", "text": text}))
     if want_audio and _gemini:
         spoken = _clean_for_speech(text)
-        if not spoken:
-            return
-        try:
-            pcm = await _gemini.synthesize_speech(spoken)
-        except Exception as e:
-            logger.debug(f"TTS: {e}")
-            pcm = None
+        pcm = None
+        if spoken:
+            try:
+                pcm = await _gemini.synthesize_speech(spoken)
+            except Exception as e:
+                logger.debug(f"TTS: {e}")
+                pcm = None
         if pcm:
             await ws.send_text(json.dumps({
                 "type": "audio",
                 "data": base64.b64encode(pcm).decode(),
             }))
+        else:
+            # Real voice unavailable — tell the client explicitly so it can use
+            # its browser-TTS fallback. No timers, so the two never overlap.
+            await ws.send_text(json.dumps({"type": "tts_failed"}))
 
 
 async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool = True):
