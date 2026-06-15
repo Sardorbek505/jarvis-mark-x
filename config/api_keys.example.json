@@ -9,10 +9,13 @@
   "_comment_telegram": "--- Telegram Bot (опционально) ---",
   "telegram_bot_token": "your_bot_token_from_botfather",
   "telegram_allowed_users": "123456789,987654321",
-  "pc_ws_host": "your_pc_public_ip_or_ddns",
-  "pc_ws_port": 8765,
 
-  "_comment_miniapp": "--- Mini App (опционально, нужен HTTPS) ---",
-  "miniapp_url": "https://your-domain-or-vps-ip:8000",
+  "_comment_pclink": "--- Связь ПК <-> сервер (для управления компьютером) ---",
+  "_comment_pclink2": "На ПК впиши адрес своего Render и тот же токен, что в Render env PC_LINK_TOKEN",
+  "pc_link_url": "wss://your-app.onrender.com",
+  "pc_link_token": "your_secret_token",
+
+  "_comment_miniapp": "--- Mini App (заполняется на сервере) ---",
+  "miniapp_url": "https://your-app.onrender.com",
   "miniapp_port": 8000
 }

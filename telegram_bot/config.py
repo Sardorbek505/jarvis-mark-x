@@ -18,9 +18,16 @@ class Config(NamedTuple):
     pc_ws_port: int
     miniapp_url: str
     miniapp_port: int
+    pc_link_url: str
+    pc_link_token: str
 
 
-def load() -> Config:
+def load(require_bot: bool = True) -> Config:
+    """Load config.
+
+    require_bot=True  → bot/server needs gemini key + telegram token (exits if missing).
+    require_bot=False → PC client mode; only pc_link_* matter (no hard requirements).
+    """
     raw: dict = {}
     if _CONFIG_FILE.exists():
         with open(_CONFIG_FILE, encoding="utf-8") as f:
@@ -41,12 +48,17 @@ def load() -> Config:
     miniapp_url = os.getenv("MINIAPP_URL") or raw.get("miniapp_url", "")
     miniapp_port = int(os.getenv("MINIAPP_PORT") or raw.get("miniapp_port", 8000))
 
-    if not gemini_key:
-        print("ERROR: gemini_api_key not found. Set it in config/api_keys.json or GEMINI_API_KEY env.")
-        sys.exit(1)
-    if not token:
-        print("ERROR: telegram_bot_token not found. Set it in config/api_keys.json or TELEGRAM_BOT_TOKEN env.")
-        sys.exit(1)
+    # PC link — home PC dials out to the server (works behind NAT)
+    pc_link_url = os.getenv("PC_LINK_URL") or raw.get("pc_link_url", "") or miniapp_url
+    pc_link_token = os.getenv("PC_LINK_TOKEN") or raw.get("pc_link_token", "")
+
+    if require_bot:
+        if not gemini_key:
+            print("ERROR: gemini_api_key not found. Set it in config/api_keys.json or GEMINI_API_KEY env.")
+            sys.exit(1)
+        if not token:
+            print("ERROR: telegram_bot_token not found. Set it in config/api_keys.json or TELEGRAM_BOT_TOKEN env.")
+            sys.exit(1)
 
     return Config(
         gemini_api_key=gemini_key,
@@ -57,4 +69,6 @@ def load() -> Config:
         pc_ws_port=pc_port,
         miniapp_url=miniapp_url,
         miniapp_port=miniapp_port,
+        pc_link_url=pc_link_url,
+        pc_link_token=pc_link_token,
     )

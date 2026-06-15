@@ -32,11 +32,12 @@ cfg = load_config()
 
 # Shared instances
 gemini = GeminiClient(cfg.gemini_api_key, cfg.gemini_model)
-bridge = PCBridge(cfg.pc_ws_host, cfg.pc_ws_port)
+bridge = PCBridge()
 
 # Wire into miniapp_server
 miniapp_server._gemini = gemini
 miniapp_server._bridge = bridge
+bridge.on_status_change(miniapp_server.broadcast_pc_status)
 
 
 # ── Telegram bot (inline, no separate event loop) ─────────────────────────────
@@ -115,7 +116,7 @@ _tasks: list[asyncio.Task] = []
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Render app starting…")
-    _tasks.append(asyncio.create_task(bridge.connect_loop()))
+    # PC bridge is passive (PCs dial in via /pc-link) — no connect loop needed.
     _tasks.append(asyncio.create_task(_run_bot()))
     yield
     for t in _tasks:

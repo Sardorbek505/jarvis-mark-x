@@ -1,4 +1,9 @@
-"""WebSocket client — connects VPS bot to Desktop JARVIS."""
+"""
+Server-side PC link registry — runs on Render/VPS (inside the Mini App server).
+
+Home PCs connect OUT to us via the /pc-link WebSocket (works behind NAT).
+This class keeps those connections and routes commands to them.
+"""
 import asyncio
 import json
 import logging
@@ -7,113 +12,91 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-try:
-    import websockets
-    _WS_AVAILABLE = True
-except ImportError:
-    _WS_AVAILABLE = False
-
 
 class PCBridge:
-    RECONNECT_INTERVAL = 30
-
-    def __init__(self, host: str, port: int):
-        self._host = host
-        self._port = port
-        self._ws = None
-        self._connected = False
-        self._pending: dict = {}
+    def __init__(self, *_args, **_kwargs):
+        # *_args kept for backward-compatible constructor calls
+        self._clients: dict = {}   # client_id -> websocket (FastAPI WebSocket)
+        self._pending: dict = {}   # req_id -> Future
         self._notify_cb: Optional[Callable] = None
+        self._on_change: Optional[Callable] = None
 
     @property
     def connected(self) -> bool:
-        return self._connected
+        return len(self._clients) > 0
 
     def on_notification(self, callback: Callable):
         self._notify_cb = callback
 
-    async def connect_loop(self):
-        """Reconnect loop — runs as background task."""
-        if not self._host or not _WS_AVAILABLE:
-            if not _WS_AVAILABLE:
-                logger.warning("websockets not installed — PC bridge disabled")
-            return
+    def on_status_change(self, callback: Callable):
+        """callback(online: bool) — fired when a PC connects/disconnects."""
+        self._on_change = callback
 
-        uri = f"ws://{self._host}:{self._port}"
-        try:
-            while True:
-                try:
-                    async with websockets.connect(
-                        uri, ping_interval=20, ping_timeout=15, open_timeout=30
-                    ) as ws:
-                        self._ws = ws
-                        self._connected = True
-                        logger.info(f"PC bridge connected: {uri}")
-                        async for raw in ws:
-                            await self._on_message(raw)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    logger.debug(f"PC bridge: {e}")
-                finally:
-                    self._ws = None
-                    self._connected = False
-                    for fut in self._pending.values():
-                        if not fut.done():
-                            fut.set_result(None)
-                    self._pending.clear()
+    # ── PC connection lifecycle ────────────────────────────────────────────────
 
-                await asyncio.sleep(self.RECONNECT_INTERVAL)
-        except asyncio.CancelledError:
-            logger.debug("PC bridge loop cancelled")
+    async def register(self, ws) -> int:
+        cid = id(ws)
+        self._clients[cid] = ws
+        logger.info(f"PC linked (total={len(self._clients)})")
+        await self._fire_change(True)
+        return cid
 
-    async def _on_message(self, raw: str):
-        try:
-            msg = json.loads(raw)
-        except json.JSONDecodeError:
-            return
+    async def unregister(self, cid: int):
+        self._clients.pop(cid, None)
+        logger.info(f"PC unlinked (total={len(self._clients)})")
+        await self._fire_change(self.connected)
 
-        if msg.get("type") == "response":
+    async def _fire_change(self, online: bool):
+        if self._on_change:
+            try:
+                await self._on_change(online)
+            except Exception as e:
+                logger.debug(f"status change cb: {e}")
+
+    # ── Incoming messages from the PC ──────────────────────────────────────────
+
+    async def handle_message(self, msg: dict):
+        mtype = msg.get("type")
+        if mtype == "response":
             fut = self._pending.pop(msg.get("req_id", ""), None)
             if fut and not fut.done():
                 fut.set_result({
                     "text": msg.get("text", ""),
                     "image_b64": msg.get("image_b64"),
                 })
-
-        elif msg.get("type") == "notification" and self._notify_cb:
+        elif mtype == "notification" and self._notify_cb:
             await self._notify_cb(msg.get("text", ""), msg.get("user_id"))
 
-    async def _send_raw(self, text: str, user_id: int, timeout: float = 25.0) -> Optional[dict]:
-        """Send a command and return the full response dict or None."""
-        if not self._connected or not self._ws:
-            return None
+    # ── Sending commands to the PC ─────────────────────────────────────────────
 
+    async def _send(self, text: str, user_id: int, timeout: float) -> Optional[dict]:
+        if not self._clients:
+            return None
+        ws = next(iter(self._clients.values()))  # single PC for now
         req_id = f"{user_id}_{int(time.monotonic() * 1000)}"
         loop = asyncio.get_event_loop()
         fut: asyncio.Future = loop.create_future()
         self._pending[req_id] = fut
-
         try:
-            await self._ws.send(json.dumps({
+            await ws.send_text(json.dumps({
                 "type": "command",
                 "text": text,
                 "user_id": user_id,
                 "req_id": req_id,
             }))
             return await asyncio.wait_for(fut, timeout=timeout)
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.debug(f"Bridge send: {e}")
+        except Exception as e:
+            logger.debug(f"PC send: {e}")
             self._pending.pop(req_id, None)
             return None
 
     async def send_command(self, text: str, user_id: int, timeout: float = 25.0) -> Optional[str]:
-        """Send command; return text reply or None (backward-compatible)."""
-        result = await self._send_raw(text, user_id, timeout)
-        if result is None:
-            return None
-        return result.get("text", "")
+        result = await self._send(text, user_id, timeout)
+        return None if result is None else result.get("text", "")
 
     async def send_command_full(self, text: str, user_id: int, timeout: float = 25.0) -> Optional[dict]:
-        """Send command; return full dict with 'text' and optional 'image_b64'."""
-        return await self._send_raw(text, user_id, timeout)
+        return await self._send(text, user_id, timeout)
+
+    async def connect_loop(self):
+        """No-op — bridge is passive (server side). Kept for API compatibility."""
+        return
