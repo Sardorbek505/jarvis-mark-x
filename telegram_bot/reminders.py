@@ -59,23 +59,27 @@ def parse_reminder(text: str, now: Optional[datetime] = None) -> Optional[tuple]
     original = text.strip()
     low = original.lower()
 
-    for prefix in ("напомни мне", "напомни", "remind me", "remind"):
-        if low.startswith(prefix):
-            low = low[len(prefix):].strip()
-            original = original[len(prefix):].strip()
+    # Cut everything up to and including the trigger word, so leading filler
+    # («отлично, напомни мне …») doesn't break the start-anchored regexes below.
+    for trg in ("напомни мне", "напомни", "remind me", "remind",
+                "поставь напоминание", "таймер на", "таймер"):
+        idx = low.find(trg)
+        if idx != -1:
+            low = low[idx + len(trg):].strip().lstrip(",").strip()
             break
 
-    # «через N минут/часов/секунд» — relative, timezone-independent
-    m = re.match(r"через\s+(\d+)\s*(минут|мин|часов|часа|час|секунд|сек)", low)
+    # «через N минут/часов/секунд» — relative, timezone-independent. Trailing
+    # \w* eats word endings (минут→минуты, час→часа) so «what» stays clean.
+    m = re.match(r"(?:через\s+)?(\d+)\s*(секунд|сек|минут|мин|часов|часа|час)\w*", low)
     if m:
         n = int(m.group(1))
         unit = m.group(2)
-        if "мин" in unit:
-            delta = timedelta(minutes=n)
-        elif "час" in unit:
-            delta = timedelta(hours=n)
-        else:
+        if "сек" in unit:
             delta = timedelta(seconds=n)
+        elif "мин" in unit:
+            delta = timedelta(minutes=n)
+        else:
+            delta = timedelta(hours=n)
         what = low[m.end():].strip().lstrip(",").strip() or "таймер"
         return now + delta, what
 
