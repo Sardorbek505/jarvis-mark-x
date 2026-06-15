@@ -30,7 +30,7 @@ _PC_KEYWORDS = [
     "сверни", "свернуть", "minimize", "рабочий стол", "разверни",
     "закрой окно", "переключи окно", "проводник", "диспетчер",
     "screenshot", "скриншот", "заблокируй", "sysinfo", "системная",
-    "переключи", "отключи", "громче", "тише", "дальше",
+    "переключи", "отключи", "громче", "тише", "дальше", "громкость",
     "брифинг", "briefing", "батарея", "calendar", "календарь",
 ]
 
@@ -185,9 +185,9 @@ async def ws_endpoint(ws: WebSocket):
 
 
 async def _handle_text(ws: WebSocket, user_id: int, text: str):
-    sent = False
+    is_pc_cmd = _looks_like_pc_command(text)
 
-    if _bridge and _bridge.connected and _looks_like_pc_command(text):
+    if _bridge and _bridge.connected and is_pc_cmd:
         rich = await _bridge.send_command_full(text, user_id)
         if rich:
             if rich.get("image_b64"):
@@ -196,20 +196,32 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str):
                     "data": rich["image_b64"],
                     "caption": rich.get("text", ""),
                 }))
-                sent = True
             if rich.get("text"):
                 await ws.send_text(json.dumps({
                     "type": "text",
                     "text": f"🖥 {rich['text']}",
                 }))
-                sent = True
-
-    if not sent:
-        if _gemini:
-            reply = await _gemini.chat(user_id, text)
         else:
-            reply = "AI-сервис недоступен."
-        await ws.send_text(json.dumps({"type": "text", "text": reply}))
+            # PC connected but didn't respond — never fall through to Gemini
+            await ws.send_text(json.dumps({
+                "type": "text",
+                "text": "❌ ПК не ответил. Убедись что pc_server запущен на компьютере (`scripts\\start_pc.bat`).",
+            }))
+        return
+
+    if _bridge and not _bridge.connected and is_pc_cmd:
+        await ws.send_text(json.dumps({
+            "type": "text",
+            "text": "❌ ПК офлайн. Запусти `scripts\\start_pc.bat` на своём компьютере.",
+        }))
+        return
+
+    # Not a PC command — send to Gemini
+    if _gemini:
+        reply = await _gemini.chat(user_id, text)
+    else:
+        reply = "AI-сервис недоступен."
+    await ws.send_text(json.dumps({"type": "text", "text": reply}))
 
 
 async def _handle_voice(ws: WebSocket, user_id: int, pcm: bytes):

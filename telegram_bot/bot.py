@@ -56,7 +56,7 @@ _PC_KEYWORDS = [
     "play", "stop", "pause", "next", "prev",
     "включи", "выключи", "стоп", "пауза", "следующий",
     "поставь", "запусти", "воспроизведи", "играй",
-    "переключи", "отключи", "громче", "тише", "дальше",
+    "переключи", "отключи", "громче", "тише", "дальше", "громкость",
     # Apps & browser
     "open", "открой",
     # Weather
@@ -334,9 +334,21 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 return
 
         # 2. PC command?
-        pc_result = await _try_pc(text, user_id)
-        if pc_result:
-            await update.effective_message.reply_text(f"🖥 {pc_result}")
+        if _looks_like_pc_command(text):
+            if not bridge.connected:
+                await update.effective_message.reply_text(
+                    "❌ ПК офлайн.\n"
+                    "Запусти `scripts\\start_pc.bat` на компьютере.",
+                    parse_mode="Markdown",
+                )
+                return
+            pc_result = await bridge.send_command(text, user_id)
+            if pc_result is not None:
+                await update.effective_message.reply_text(f"🖥 {pc_result}")
+            else:
+                await update.effective_message.reply_text(
+                    "❌ ПК не ответил. Убедись что pc_server запущен и попробуй ещё раз."
+                )
             return
 
         # 3. Gemini conversation
