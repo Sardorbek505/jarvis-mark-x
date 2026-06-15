@@ -35,6 +35,7 @@ from telegram_bot import user_context
 from telegram_bot import personas
 from telegram_bot import agenda
 from telegram_bot import proactive
+from telegram_bot import onboarding
 from telegram_bot.memory_store import MemoryStore
 
 cfg = load_config()
@@ -147,6 +148,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     name = update.effective_user.first_name or "сэр"
     pc = "онлайн ✅" if bridge.connected else "офлайн ❌"
+    uid = update.effective_user.id
+    await memory.ensure_loaded(uid)
     await update.effective_message.reply_text(
         f"Привет, {name}! Я JARVIS — твой личный ИИ-ассистент.\n\n"
         f"🖥 ПК: {pc}\n"
@@ -155,6 +158,9 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"/help — все команды",
         reply_markup=_app_keyboard(),
     )
+    # First meeting → get to know the user
+    if not await onboarding.already_onboarded(memory, uid):
+        await update.effective_message.reply_text(onboarding.start(uid))
 
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -561,6 +567,13 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.chat.send_action("typing")
 
     try:
+        # 0. Onboarding in progress? Capture the answer first.
+        if onboarding.is_active(user_id):
+            await memory.ensure_loaded(user_id)
+            reply = await onboarding.handle(memory, user_id, text)
+            await update.effective_message.reply_text(reply, parse_mode="Markdown")
+            return
+
         # 1. Reminder?
         if _looks_like_reminder(text):
             parsed = parse_reminder(text)
