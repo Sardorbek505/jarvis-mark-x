@@ -236,11 +236,24 @@ async def _handle_voice(ws: WebSocket, user_id: int, pcm: bytes):
         return
     try:
         wav = _pcm_to_wav(pcm)
-        reply = await _gemini.chat_with_audio(user_id, wav, mime_type="audio/wav")
+        # Transcribe first, then run the recognised text through the SAME pipeline
+        # as typed text — so voice commands control the PC, not just chat.
+        transcript = await _gemini.transcribe(wav, mime_type="audio/wav")
+        if not transcript:
+            await ws.send_text(json.dumps({
+                "type": "text",
+                "text": "Не разобрал, что ты сказал. Попробуй ещё раз чуть чётче."
+            }))
+            return
+        # Show the user what was recognised
+        await ws.send_text(json.dumps({"type": "transcript_user", "text": transcript}))
+        await _handle_text(ws, user_id, transcript)
     except Exception as e:
         logger.error(f"Voice handle error: {e}")
-        reply = "Не смог обработать голос. Попробуй ещё раз."
-    await ws.send_text(json.dumps({"type": "text", "text": reply}))
+        await ws.send_text(json.dumps({
+            "type": "text",
+            "text": "Не смог обработать голос. Попробуй ещё раз."
+        }))
 
 
 # ── Entry points ──────────────────────────────────────────────────────────────

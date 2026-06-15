@@ -120,6 +120,42 @@ class GeminiClient:
         self._trim_history(user_id)
         return reply
 
+    async def transcribe(self, audio_bytes: bytes, mime_type: str = "audio/wav") -> str:
+        """Transcribe audio to plain text ONLY (no JARVIS reply). Used to route voice
+        through the same command pipeline as typed text."""
+        loop = asyncio.get_event_loop()
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part(inline_data=types.Blob(mime_type=mime_type, data=audio_bytes)),
+                    types.Part(text=(
+                        "Распознай речь в этом аудио и верни ТОЛЬКО текст того, что было сказано. "
+                        "Без кавычек, без пояснений, без перевода. Если ничего не разобрать — верни пустую строку."
+                    )),
+                ],
+            )
+        ]
+        for model in self._models_to_try():
+            try:
+                response = await loop.run_in_executor(
+                    None,
+                    lambda m=model: self._client.models.generate_content(
+                        model=m,
+                        contents=contents,
+                        config=types.GenerateContentConfig(temperature=0.0),
+                    ),
+                )
+                text = (response.text or "").strip()
+                if text:
+                    if model != self._model:
+                        self._model = model
+                    return text
+            except Exception as e:
+                logger.error(f"Transcribe model '{model}' failed: {e}")
+                continue
+        return ""
+
     async def chat_with_image(self, user_id: int, image_bytes: bytes, caption: str = "") -> str:
         """Analyze image and respond as JARVIS."""
         prompt = caption if caption else "Опиши что видишь и помоги разобраться с этим."

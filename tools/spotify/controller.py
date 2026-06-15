@@ -380,13 +380,13 @@ class SpotifyController:
             Response message
         """
         percent = max(0, min(100, percent))
-        
+
         if not self._refresh_components():
             return "Spotify недоступен, сэр."
-        
-        device = self.devices.get_active_device()
+
+        device = self.ensure_device()
         if not device:
-            return "Нет активного устройства, сэр."
+            return _NO_DEVICE_MSG
         
         data = {'volume_percent': percent}
         result = self._api_request(f'/me/player/volume', method='PUT', data=data)
