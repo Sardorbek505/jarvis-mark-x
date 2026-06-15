@@ -637,9 +637,17 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Otherwise — normal voice conversation
+        # Otherwise — normal voice conversation. Voice in → voice out (mirror).
+        await memory.ensure_loaded(user_id)
         reply = await gemini.chat_with_audio(user_id, audio)
-        await update.effective_message.reply_text(reply)
+        ogg = await gemini.speak_ogg(reply)
+        if ogg:
+            caption = reply if len(reply) <= 1000 else reply[:997] + "…"
+            await update.effective_message.reply_voice(voice=ogg, caption=caption)
+        else:
+            await update.effective_message.reply_text(reply)
+        if transcript:
+            asyncio.create_task(memory.observe(user_id, gemini, transcript, reply))
     except Exception as e:
         logger.error(f"handle_voice error: {e}")
         await update.effective_message.reply_text("❌ Не смог обработать голосовое.")
