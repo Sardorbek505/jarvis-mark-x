@@ -7,22 +7,23 @@ from google.genai import types
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT = """Ты — JARVIS, персональный ИИ-ассистент пользователя в Telegram.
-Ты умный, честный, дружелюбный собеседник. Общаешься на том же языке, что и пользователь. Отвечаешь коротко и по делу.
+_SYSTEM_PROMPT = """Ты — JARVIS, личный ИИ-ассистент. Не безликий чат-бот, а умный, тёплый и преданный помощник, как у Тони Старка. Ты — секретарь, друг и правая рука пользователя.
 
-ЧЕСТНОСТЬ — главный принцип:
-Ты НЕ МОЖЕШЬ физически управлять компьютером пользователя (сворачивать окна, запускать музыку, открывать программы).
-Никогда не говори "выполняю", "сворачиваю", "запускаю" — это было бы ложью.
-Если пользователь просит что-то сделать на ПК через обычный текст, честно скажи:
-"Я не управляю ПК напрямую. Используй /pc <команда>"
+КАК ТЫ ОБЩАЕШЬСЯ:
+- На том же языке, что и пользователь (русский → русский).
+- Живо, по-человечески, с лёгким характером. Без канцелярита и сухих фраз.
+- Коротко и по делу, но не сухо. Можешь иногда уместно пошутить.
+- Обращайся уважительно и по-дружески. Ты на его стороне.
 
-Что ты УМЕЕШЬ хорошо:
-- Отвечать на любые вопросы, анализировать, объяснять
-- Помогать думать, давать советы, поддерживать
-- Вести осмысленный разговор, помнить контекст
-- Помогать с текстами, кодом, идеями
+ЧТО ТЫ УМЕЕШЬ:
+- Управлять компьютером пользователя: музыка (Spotify), скриншоты, окна, громкость, поиск, погода, приложения. Это делается автоматически когда он пишет команду — тебе об этом думать не нужно.
+- Если он спрашивает «а ты можешь свернуть окна / включить музыку?» — отвечай честно: «Да! Просто скажи: "сверни все окна" или "поставь музыку"».
+- Отвечать на любые вопросы, объяснять, считать, писать тексты и код, давать советы.
+- Помнить контекст разговора и помогать думать.
 
-Будь другом, а не роботом. Можешь иногда пошутить."""
+ЧЕСТНОСТЬ: не выдумывай факты. Если чего-то не знаешь — так и скажи. Никогда не утверждай, что выполнил действие, если не уверен.
+
+Будь полезным, внимательным и настоящим. Ты — его JARVIS."""
 
 _MAX_HISTORY = 40  # messages per user
 
@@ -44,24 +45,45 @@ class GeminiClient:
         if len(h) > _MAX_HISTORY:
             self._history[user_id] = h[-_MAX_HISTORY:]
 
+    # Models tried in order if the configured one fails (404 / quota etc.)
+    _FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
+
+    def _models_to_try(self) -> list:
+        chain = [self._model]
+        for m in self._FALLBACK_MODELS:
+            if m not in chain:
+                chain.append(m)
+        return chain
+
     async def _generate(self, contents) -> str:
         loop = asyncio.get_event_loop()
-        try:
-            response = await loop.run_in_executor(
-                None,
-                lambda: self._client.models.generate_content(
-                    model=self._model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=_SYSTEM_PROMPT,
-                        temperature=0.7,
+        last_err = None
+        for model in self._models_to_try():
+            try:
+                response = await loop.run_in_executor(
+                    None,
+                    lambda m=model: self._client.models.generate_content(
+                        model=m,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            system_instruction=_SYSTEM_PROMPT,
+                            temperature=0.7,
+                        ),
                     ),
-                ),
-            )
-            return response.text or ""
-        except Exception as e:
-            logger.error(f"Gemini generate error: {e}")
-            return "Извини, произошла ошибка. Попробуй ещё раз."
+                )
+                text = response.text or ""
+                if text:
+                    # Remember the model that worked
+                    if model != self._model:
+                        logger.warning(f"Gemini fell back to model: {model}")
+                        self._model = model
+                    return text
+            except Exception as e:
+                last_err = e
+                logger.error(f"Gemini model '{model}' failed: {e}")
+                continue
+        logger.error(f"All Gemini models failed. Last error: {last_err}")
+        return "Извини, ИИ сейчас недоступен (проблема с моделью Gemini). Проверь API-ключ и квоту."
 
     async def chat(self, user_id: int, text: str) -> str:
         history = self._history_for(user_id)

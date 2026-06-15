@@ -50,6 +50,14 @@ async def _run_bot():
         ApplicationBuilder, CommandHandler, MessageHandler, filters
     )
     from telegram_bot.reminders import get_due, mark_sent, list_reminders, parse_reminder, add_reminder
+
+    # IMPORTANT: the bot handlers reference bot.py's module-level `gemini` and
+    # `bridge`. Point them at OUR shared instances so Telegram, Mini App and the
+    # PC link all use the SAME bridge + the SAME conversation memory.
+    import telegram_bot.bot as botmod
+    botmod.gemini = gemini
+    botmod.bridge = bridge
+
     from telegram_bot.bot import (
         cmd_start, cmd_help, cmd_app, cmd_status, cmd_clear,
         cmd_pc, cmd_screenshot, cmd_vol, cmd_lock, cmd_sysinfo, cmd_briefing,
