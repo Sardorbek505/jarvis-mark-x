@@ -2,11 +2,13 @@
 Render entry point — Telegram bot (webhook) + Mini App server in one process.
 
 Webhook mode eliminates telegram.error.Conflict — no more polling fights between
-deploys. Telegram POSTs updates to /webhook/<token>; FastAPI processes them.
+deploys. Telegram POSTs updates to /telegram-webhook with a secret header;
+FastAPI feeds them into the Application's update queue.
 """
 import asyncio
 import logging
 import os
+import re
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -32,6 +34,13 @@ logging.basicConfig(
 logger = logging.getLogger("jarvis-render")
 
 cfg = load_config()
+
+# Webhook secret (Telegram sends it back in the X-Telegram-Bot-Api-Secret-Token
+# header). Derived from the bot token but stripped to the allowed charset
+# [A-Za-z0-9_-] — the raw token contains ':' which is NOT allowed here and
+# also breaks when placed in a URL path. Static path + header = robust delivery.
+_WEBHOOK_SECRET = re.sub(r"[^A-Za-z0-9_-]", "", cfg.telegram_token)[:256]
+_WEBHOOK_PATH = "/telegram-webhook"
 
 # Shared instances
 gemini = GeminiClient(cfg.gemini_api_key, cfg.gemini_model)
@@ -122,19 +131,30 @@ async def _reminder_loop(bot):
             logger.error(f"Reminder loop: {e}")
 
 
+async def _set_webhook(bot, webhook_url: str, drop_pending: bool = False):
+    await bot.set_webhook(
+        url=webhook_url,
+        secret_token=_WEBHOOK_SECRET,
+        drop_pending_updates=drop_pending,
+        allowed_updates=["message", "edited_message", "callback_query"],
+    )
+
+
 async def _webhook_keeper(bot, webhook_url: str):
     """Re-assert the webhook if anything wipes it (e.g. a stray local bot
-    running getUpdates deletes it). Keeps the bot responsive without manual
-    intervention."""
+    running getUpdates deletes it). Also surfaces Telegram delivery errors so
+    they show up in the Render logs. Keeps the bot responsive automatically."""
     while True:
         try:
             await asyncio.sleep(90)
             info = await bot.get_webhook_info()
-            if info.url != webhook_url:
-                await bot.set_webhook(
-                    url=webhook_url,
-                    allowed_updates=["message", "edited_message", "callback_query"],
+            if info.last_error_message:
+                logger.warning(
+                    f"Telegram webhook last error: {info.last_error_message} "
+                    f"(pending={info.pending_update_count})"
                 )
+            if info.url != webhook_url:
+                await _set_webhook(bot, webhook_url)
                 logger.warning(f"Webhook was lost (was '{info.url}') — re-registered ✅")
         except asyncio.CancelledError:
             break
@@ -155,13 +175,9 @@ async def lifespan(app: FastAPI):
     await _tg_app.bot.set_my_commands(bot_commands)
 
     if cfg.miniapp_url:
-        webhook_url = f"{cfg.miniapp_url}/webhook/{cfg.telegram_token}"
-        await _tg_app.bot.set_webhook(
-            url=webhook_url,
-            drop_pending_updates=True,
-            allowed_updates=["message", "edited_message", "callback_query"],
-        )
-        logger.info(f"Webhook registered: {cfg.miniapp_url}/webhook/***")
+        webhook_url = f"{cfg.miniapp_url.rstrip('/')}{_WEBHOOK_PATH}"
+        await _set_webhook(_tg_app.bot, webhook_url, drop_pending=True)
+        logger.info(f"Webhook registered: {webhook_url}")
         _tasks.append(asyncio.create_task(_webhook_keeper(_tg_app.bot, webhook_url)))
     else:
         logger.warning(
@@ -196,16 +212,23 @@ async def lifespan(app: FastAPI):
 miniapp_server.app.router.lifespan_context = lifespan
 
 
-@miniapp_server.app.post("/webhook/{token}")
-async def telegram_webhook(token: str, request: Request):
+@miniapp_server.app.post(_WEBHOOK_PATH)
+async def telegram_webhook(request: Request):
     """Telegram calls this endpoint for every update."""
-    if token != cfg.telegram_token:
+    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != _WEBHOOK_SECRET:
+        logger.warning("Webhook rejected — bad secret token")
         return JSONResponse({"ok": False}, status_code=403)
     if _tg_app is None:
         return JSONResponse({"ok": False}, status_code=503)
-    data = await request.json()
-    update = Update.de_json(data, _tg_app.bot)
-    await _tg_app.process_update(update)
+    try:
+        data = await request.json()
+        update = Update.de_json(data, _tg_app.bot)
+        # Hand off to the running Application's queue → processed asynchronously
+        # so Telegram gets a fast 200 OK and never times out on slow handlers.
+        await _tg_app.update_queue.put(update)
+    except Exception as e:
+        logger.error(f"Webhook processing error: {e}")
+    # Always 200 so Telegram doesn't spam retries on transient handler errors.
     return JSONResponse({"ok": True})
 
 
