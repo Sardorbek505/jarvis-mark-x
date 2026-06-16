@@ -18,10 +18,10 @@ const connBadge = document.getElementById('conn-badge');
 
 // ── State machine ─────────────────────────────────────────────────────────────
 const S = {
-  idle:       { label: 'Нажми чтобы говорить', cls: 'idle' },
-  listening:  { label: 'Слушаю...',             cls: 'listening' },
-  processing: { label: 'Думаю...',              cls: 'processing' },
-  speaking:   { label: 'Говорю...',             cls: 'speaking' },
+  idle:       { label: 'Зажми — говори · тап — диалог', cls: 'idle' },
+  listening:  { label: 'Слушаю…',  cls: 'listening' },
+  processing: { label: 'Думаю…',   cls: 'processing' },
+  speaking:   { label: 'Говорю…',  cls: 'speaking' },
 };
 
 function setState(name) {
@@ -128,8 +128,10 @@ function connect() {
       case 'audio':
         clearVoiceWait();
         window.speechSynthesis?.cancel();  // kill any fallback that may have started
+        botSpeaking = true;
         await playPCM(msg.data);
-        setState('idle');
+        botSpeaking = false;
+        setState(continuous ? 'listening' : 'idle');
         break;
 
       case 'tts_failed':
@@ -214,67 +216,115 @@ function pcCmd(text) {
 // Expose for inline onclick
 window.pcCmd = pcCmd;
 
-// ── Voice control ─────────────────────────────────────────────────────────────
-let recCtx    = null;
-let playCtx   = null;
-let workletNode = null;
-let micStream   = null;
-let listening   = false;
+// ── Voice control — hold-to-talk + tap for hands-free (WhatsApp-style) ──────────
+let recCtx = null, playCtx = null, workletNode = null, micStream = null;
+let micOpen = false;        // mic stream alive
+let continuous = false;     // hands-free conversation mode
+let botSpeaking = false;    // pause capture while JARVIS talks
+let pressTs = 0;
+const TAP_MS = 350;         // ≤ this = tap (hands-free), longer = push-to-talk
+const VAD_THRESH = 0.016;   // speech energy threshold
+const VAD_HANG_MS = 1100;   // silence after speech that ends an utterance
+let vadSpoke = false, vadSilence = 0;
 
-orb.addEventListener('click', toggleVoice);
-orb.addEventListener('touchend', e => { e.preventDefault(); toggleVoice(); });
+orb.addEventListener('pointerdown', onOrbDown);
+orb.addEventListener('pointerup', onOrbUp);
+orb.addEventListener('pointercancel', onOrbUp);
 
-async function toggleVoice() {
-  if (ws?.readyState !== WebSocket.OPEN) {
-    addMsg('sys', '⚠ Нет соединения с сервером'); return;
-  }
-  listening ? stopVoice() : await startVoice();
+async function onOrbDown(e) {
+  e.preventDefault();
+  if (ws?.readyState !== WebSocket.OPEN) { addMsg('sys', '⚠ Нет соединения'); return; }
+  try { orb.setPointerCapture(e.pointerId); } catch {}
+  pressTs = Date.now();
+  if (continuous) return;          // already hands-free; release decides whether to stop
+  await openMic();
+  if (micOpen) beginSegment();
 }
 
-async function startVoice() {
+function onOrbUp(e) {
+  e?.preventDefault();
+  const dt = Date.now() - pressTs;
+  if (continuous) {
+    if (dt < TAP_MS) stopAll();    // tap while hands-free → stop
+    return;
+  }
+  if (!micOpen) return;
+  if (dt < TAP_MS) {
+    continuous = true;             // quick tap → hands-free (mic already running)
+    orb.classList.add('hands-free');
+    setState('listening');
+  } else {
+    endSegment();                  // hold release → send this take, then stop
+    closeMic();
+  }
+}
+
+function stopAll() { endSegment(); closeMic(); }
+
+function beginSegment() {
+  vadSpoke = false; vadSilence = 0;
+  setState('listening');
+  orb.classList.add('rec');
+  send({ type: 'start_voice' });
+}
+function endSegment() {
+  orb.classList.remove('rec');
+  setState('processing');
+  send({ type: 'stop_voice', tts: voiceEnabled });
+}
+
+async function openMic() {
+  if (micOpen) return;
   try {
     recCtx = new AudioContext();
     if (recCtx.state === 'suspended') await recCtx.resume();
-
     micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 }
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }
     });
-
     const workletURL = new URL('./worklet.js', location.href).href;
     await recCtx.audioWorklet.addModule(workletURL);
-
-    const src = recCtx.createMediaStreamSource(micStream);
+    const srcNode = recCtx.createMediaStreamSource(micStream);
     workletNode = new AudioWorkletNode(recCtx, 'pcm-processor');
-
-    workletNode.port.onmessage = ({ data }) => {
-      if (ws?.readyState !== WebSocket.OPEN) return;
-      const bytes = new Uint8Array(data.pcm);
-      let b64 = '';
-      for (let i = 0; i < bytes.length; i++) b64 += String.fromCharCode(bytes[i]);
-      ws.send(JSON.stringify({ type: 'audio', data: btoa(b64) }));
-    };
-
-    src.connect(workletNode);
-    listening = true;
-    setState('listening');
-    ws.send(JSON.stringify({ type: 'start_voice' }));
+    workletNode.port.onmessage = ({ data }) => onAudioChunk(data.pcm);
+    srcNode.connect(workletNode);
+    micOpen = true;
   } catch (e) {
     addMsg('sys', `⚠ Микрофон: ${e.message}`);
-    stopVoice();
+    closeMic();
   }
 }
 
-function stopVoice() {
+function closeMic() {
   micStream?.getTracks().forEach(t => t.stop());
   workletNode?.disconnect();
   if (recCtx) { recCtx.close().catch(() => {}); recCtx = null; }
   micStream = workletNode = null;
-  listening = false;
-  if (ws?.readyState === WebSocket.OPEN) {
-    setState('processing');
-    ws.send(JSON.stringify({ type: 'stop_voice', tts: voiceEnabled }));
-  } else {
-    setState('idle');
+  micOpen = false;
+  continuous = false;
+  orb.classList.remove('rec', 'hands-free');
+  setState('idle');
+}
+
+function onAudioChunk(buf) {
+  if (ws?.readyState !== WebSocket.OPEN) return;
+  if (continuous && botSpeaking) return;       // don't capture JARVIS's own voice
+  // forward PCM to the server
+  const bytes = new Uint8Array(buf);
+  let b64 = '';
+  for (let i = 0; i < bytes.length; i++) b64 += String.fromCharCode(bytes[i]);
+  ws.send(JSON.stringify({ type: 'audio', data: btoa(b64) }));
+  // Voice-activity detection drives hands-free segmentation
+  if (!continuous) return;
+  const i16 = new Int16Array(buf);
+  let sum = 0; for (let i = 0; i < i16.length; i++) { const v = i16[i] / 32768; sum += v * v; }
+  const rms = Math.sqrt(sum / i16.length);
+  if (rms > VAD_THRESH) { vadSpoke = true; vadSilence = 0; orb.classList.add('rec'); }
+  else if (vadSpoke) {
+    vadSilence += 100;                          // worklet chunk ≈ 100ms
+    if (vadSilence >= VAD_HANG_MS) {            // end of utterance
+      endSegment();                             // → server transcribes & replies
+      beginSegment();                           // keep listening for the next one
+    }
   }
 }
 
@@ -368,8 +418,8 @@ function speak(text) {
     u.rate = 1.05;
     u.pitch = 1.0;
     if (ruVoice) u.voice = ruVoice;
-    u.onstart = () => setState('speaking');
-    u.onend   = () => setState('idle');
+    u.onstart = () => { botSpeaking = true; setState('speaking'); };
+    u.onend   = () => { botSpeaking = false; setState(continuous ? 'listening' : 'idle'); };
     window.speechSynthesis.speak(u);
   } catch (e) { console.debug('speak:', e.message); }
 }

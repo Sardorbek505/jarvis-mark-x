@@ -299,14 +299,18 @@ async def ws_endpoint(ws: WebSocket):
             elif mtype == "audio":
                 chunk_b64 = msg.get("data", "")
                 if chunk_b64:
-                    _audio_buffers[user_id] += base64.b64decode(chunk_b64)
+                    # get/set (not +=) so hands-free streaming never KeyErrors
+                    # after a segment boundary reset the buffer.
+                    _audio_buffers[user_id] = _audio_buffers.get(user_id, b"") + base64.b64decode(chunk_b64)
 
             elif mtype == "stop_voice":
                 want_audio = bool(msg.get("tts", True))
-                await ws.send_text(json.dumps({"type": "status", "state": "processing"}))
-                pcm = _audio_buffers.pop(user_id, b"")
-                await _handle_voice(ws, user_id, pcm, want_audio=want_audio)
-                await ws.send_text(json.dumps({"type": "status", "state": "idle"}))
+                # Reset (not pop) so continued streaming keeps a valid buffer.
+                pcm = _audio_buffers.get(user_id, b"")
+                _audio_buffers[user_id] = b""
+                if len(pcm) >= 3200:
+                    await ws.send_text(json.dumps({"type": "status", "state": "processing"}))
+                    await _handle_voice(ws, user_id, pcm, want_audio=want_audio)
 
     except WebSocketDisconnect:
         pass
