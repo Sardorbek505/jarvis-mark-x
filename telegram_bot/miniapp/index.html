@@ -118,13 +118,35 @@
 
         </main>
 
-        <!-- Bottom tab bar -->
+        <!-- Bottom tab bar — floating pill, neon active icon + dot indicator -->
         <nav id="tabbar">
-            <button class="tab active" data-tab="chat"      onclick="switchTab('chat')">💬<span>Чат</span></button>
-            <button class="tab"        data-tab="dashboard" onclick="switchTab('dashboard')">📊<span>Сводка</span></button>
-            <button class="tab"        data-tab="tasks"     onclick="switchTab('tasks')">✅<span>Дела</span></button>
-            <button class="tab"        data-tab="habits"    onclick="switchTab('habits')">🔁<span>Привычки</span></button>
-            <button class="tab"        data-tab="pc"        onclick="switchTab('pc')">🖥<span>ПК</span></button>
+            <button class="tab active" data-tab="chat" onclick="switchTab('chat')" aria-label="Чат">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg><i class="dot"></i>
+            </button>
+            <button class="tab" data-tab="dashboard" onclick="switchTab('dashboard')" aria-label="Сводка">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+                    <rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>
+                </svg><i class="dot"></i>
+            </button>
+            <button class="tab" data-tab="tasks" onclick="switchTab('tasks')" aria-label="Дела">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+                </svg><i class="dot"></i>
+            </button>
+            <button class="tab" data-tab="habits" onclick="switchTab('habits')" aria-label="Привычки">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                    <polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                </svg><i class="dot"></i>
+            </button>
+            <button class="tab" data-tab="pc" onclick="switchTab('pc')" aria-label="ПК">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+                </svg><i class="dot"></i>
+            </button>
         </nav>
 
     </div>
