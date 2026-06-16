@@ -93,6 +93,12 @@ async def serve_appjs():
 async def serve_css():
     return FileResponse(MINIAPP_DIR / "style.css", media_type="text/css", headers=_NOCACHE)
 
+@app.get("/ping")
+async def ping():
+    # Ultra-light keep-alive target for cron-job.org (no file I/O, tiny payload).
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse("ok", headers=_NOCACHE)
+
 @app.get("/worklet.js")
 async def serve_worklet():
     return FileResponse(MINIAPP_DIR / "worklet.js", media_type="application/javascript", headers=_NOCACHE)
