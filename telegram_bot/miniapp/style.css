@@ -455,3 +455,41 @@ header {
 .row:active { transform: scale(.99); border-color: rgba(0,212,255,.25); }
 .check { transition: transform .1s, background .15s, border-color .15s; }
 .check:active { transform: scale(.85); }
+
+/* ─── Floating pill tab bar (dot indicator + neon active) ───────────── */
+#tabbar {
+  margin: 8px 14px calc(10px + env(safe-area-inset-bottom, 0));
+  padding: 9px 8px 7px;
+  background: rgba(13,13,28,.92);
+  border: 1px solid rgba(0,212,255,.14);
+  border-radius: 26px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.04);
+  backdrop-filter: blur(12px);
+  display: flex; justify-content: space-around; align-items: center;
+  flex-shrink: 0;
+}
+.tab {
+  flex: 1; background: none; border: none; cursor: pointer; position: relative;
+  display: flex; flex-direction: column; align-items: center; gap: 0;
+  padding: 6px 0 3px; color: var(--dim);
+  transition: color .2s, transform .12s;
+}
+.tab svg { width: 24px; height: 24px; display: block; transition: filter .2s, transform .2s; }
+.tab span { display: none; }                 /* icon-only, like the reference */
+.tab.active::before { content: none; }       /* drop the old top line */
+.tab:active { transform: scale(.88); }
+
+/* Neon active state — our cyan glow + dot indicator under the icon */
+.tab.active { color: var(--cyan); }
+.tab.active svg {
+  filter: drop-shadow(0 0 7px rgba(0,212,255,.85)) drop-shadow(0 0 14px rgba(0,212,255,.4));
+  transform: translateY(-1px);
+}
+.tab .dot {
+  width: 5px; height: 5px; border-radius: 50%; margin-top: 4px;
+  background: transparent; transition: background .2s, box-shadow .2s;
+}
+.tab.active .dot {
+  background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan), 0 0 14px rgba(0,212,255,.6);
+}
