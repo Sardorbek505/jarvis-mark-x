@@ -4,6 +4,7 @@ import asyncio
 import base64
 import contextlib
 import logging
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -688,6 +689,35 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(confirm)
 
 
+# Gemini emits this hidden block to actually create reminders from a free chat
+# («Да, поставь будильник на 7:00»). The bot executes it and strips it out.
+_REM_BLOCK = re.compile(r"\[\[REMINDERS\]\](.*?)\[\[/REMINDERS\]\]", re.S | re.I)
+_REM_LINE = re.compile(r"(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2})[:.](\d{2})\s*\|\s*(.+)")
+
+
+async def _apply_reminder_directives(uid: int, reply: str) -> tuple[str, int]:
+    """Turn Gemini's hidden [[REMINDERS]] block into real durable reminders.
+    Returns the cleaned reply (block removed) and how many were created."""
+    block = _REM_BLOCK.search(reply or "")
+    if not block:
+        return reply, 0
+    tz = user_context.local_now(uid, cfg.timezone).tzinfo
+    count = 0
+    for line in block.group(1).splitlines():
+        lm = _REM_LINE.search(line.strip())
+        if not lm:
+            continue
+        y, mo, d, hh, mm, what = lm.groups()
+        try:
+            when_local = datetime(int(y), int(mo), int(d), int(hh), int(mm), tzinfo=tz)
+        except ValueError:
+            continue
+        await memory.add_reminder(uid, what.strip(), rem.to_utc_iso(when_local))
+        count += 1
+    clean = _REM_BLOCK.sub("", reply).strip()
+    return clean, count
+
+
 async def _store_reminder(uid: int, text: str) -> str | None:
     """Parse a reminder in the user's local time, save it durably (UTC), and
     return a confirmation string — or None if the phrase isn't parseable."""
@@ -788,6 +818,9 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # 3. Gemini conversation (with long-term memory)
         await memory.ensure_loaded(user_id)
         reply = await gemini.chat(user_id, text)
+        reply, n = await _apply_reminder_directives(user_id, reply)
+        if n:
+            reply += f"\n\n🔔 Поставил напоминаний: {n} — пришлю вовремя."
         await update.effective_message.reply_text(reply)
         # Learn durable facts in the background — never blocks the reply
         asyncio.create_task(memory.observe(user_id, gemini, text, reply))
@@ -845,6 +878,9 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # Otherwise — normal voice conversation. Voice in → voice out (mirror).
             await memory.ensure_loaded(user_id)
             reply = await gemini.chat_with_audio(user_id, audio)
+            reply, n = await _apply_reminder_directives(user_id, reply)
+            if n:
+                reply += f"\n\n🔔 Поставил напоминаний: {n} — пришлю вовремя."
             ogg = await gemini.speak_ogg(reply)
             if ogg:
                 caption = reply if len(reply) <= 1000 else reply[:997] + "…"
