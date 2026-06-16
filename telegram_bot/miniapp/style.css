@@ -5,7 +5,8 @@
   --purple:  #7c3aed;
   --green:   #22c55e;
   --text:    #dde4f0;
-  --dim:     #4a5568;
+  --muted:   #8b93a7;   /* legible secondary/tertiary text on dark */
+  --dim:     #4a5568;   /* very subtle / inactive */
   --r:       20px;
 }
 
@@ -509,3 +510,46 @@ header {
 .tab:not(.active):active { color: rgba(223,229,242,.8); }
 .tab.active { color: var(--cyan); }
 .tab .dot { width: 4px; height: 4px; margin-top: 5px; }
+
+/* ═══ Typography system (DesignMe rules) — clear premium hierarchy ═══ */
+/* Page title in header — centered-title scale */
+#screen-title { font-size: 17px; font-weight: 700; letter-spacing: .2px; }
+
+/* Large page title (impact) — dashboard greeting */
+.hero-hi   { font-size: 25px; font-weight: 800; letter-spacing: -.2px; line-height: 1.18; }
+.hero-wx   { font-size: 15px; font-weight: 500; color: var(--text); margin-top: 9px; }
+.hero-city { font-size: 13px; font-weight: 500; color: var(--muted); margin-top: 5px; }
+
+/* Stat tiles — big number + tertiary label */
+.stat-num { font-size: 26px; font-weight: 800; }
+.stat-num span { font-size: 15px; }
+.stat-lbl { font-size: 12px; font-weight: 500; color: var(--muted); }
+
+/* Card label = tertiary uppercase */
+.card h3 { font-size: 11px; font-weight: 700; letter-spacing: 1.2px; }
+.card .sub { color: var(--muted); }
+.dash-list div { font-size: 14px; font-weight: 500; }
+
+/* List rows — primary title + secondary meta */
+.row .title { font-size: 15px; font-weight: 500; line-height: 1.35; }
+.row .meta  { font-size: 12.5px; font-weight: 500; color: var(--muted); }
+.row .meta.overdue { color: #f87171; }
+.section-label { font-size: 11px; font-weight: 600; color: var(--muted); }
+
+/* Chat — primary body text */
+.msg { font-size: 14.5px; line-height: 1.5; }
+.msg.sys { font-size: 12px; color: var(--muted); }
+
+/* Inputs & CTAs — 15px primary, comfortable tap target */
+.add-row input, #text-in { font-size: 15px; }
+.add-row input::placeholder, #text-in::placeholder { color: var(--muted); }
+
+/* PC tiles — secondary action label */
+.pc-tile { font-size: 11px; font-weight: 600; }
+.pc-tile span { font-size: 23px; }
+.pc-hint { font-size: 12px; color: var(--muted); }
+
+/* Captions / labels / empty — tertiary muted */
+#orb-label { font-size: 11px; font-weight: 600; color: var(--muted); }
+.empty { font-size: 14px; color: var(--muted); }
+.loading { color: var(--muted); }
