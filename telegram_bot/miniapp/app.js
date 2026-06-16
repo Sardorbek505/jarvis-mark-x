@@ -149,6 +149,10 @@ function connect() {
         setState('processing');
         showTyping();
         break;
+
+      case 'data':
+        renderView(msg.view, msg.payload || {});
+        break;
     }
   };
 }
@@ -383,3 +387,133 @@ if (voiceBtn) {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 connect();
+
+// ── Tabs & data views ─────────────────────────────────────────────────────────
+let activeTab = 'chat';
+
+function send(obj) {
+  if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+function switchTab(name) {
+  activeTab = name;
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById('view-' + name)?.classList.add('active');
+  document.querySelectorAll('.tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.tab === name));
+  // Data tabs fetch fresh state each time they're opened.
+  if (['dashboard', 'tasks', 'habits'].includes(name)) {
+    send({ type: 'get_data', view: name });
+  }
+}
+window.switchTab = switchTab;
+
+function esc(s) {
+  return (s || '').replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function renderView(view, p) {
+  if (view === 'dashboard') return renderDashboard(p);
+  if (view === 'habits')    return renderHabits(p);
+  if (view === 'tasks')     return renderTasks(p);
+}
+
+function renderDashboard(p) {
+  const body = document.getElementById('dash-body');
+  const hello = p.name ? `Привет, ${esc(p.name)}!` : 'Привет!';
+  const today = (p.today_tasks || []);
+  body.innerHTML = `
+    <div class="card wide" style="background:linear-gradient(135deg,#10243a,#0a0a1e)">
+      <div class="big">${hello}</div>
+      ${p.weather ? `<div class="sub">${esc(p.city)} · ${esc(p.weather)}</div>`
+                  : `<div class="sub">${esc(p.city || '')}</div>`}
+    </div>
+    <div class="dash-grid">
+      <div class="card"><h3>Привычки</h3><div class="big">${p.habits_done}/${p.habits_total}</div><div class="sub">сегодня · серия 🔥${p.best_streak}</div></div>
+      <div class="card"><h3>Задачи</h3><div class="big">${p.open_tasks}</div><div class="sub">открыто всего</div></div>
+      <div class="card wide"><h3>На сегодня</h3>
+        ${today.length ? `<div class="dash-list">${today.map(t => `<div>• ${esc(t)}</div>`).join('')}</div>`
+                       : `<div class="sub">Задач на сегодня нет — добавь во вкладке «Дела»</div>`}
+      </div>
+      <div class="card wide"><h3>Ближайшее напоминание</h3>
+        <div class="sub" style="color:var(--text)">${p.next_reminder ? '🔔 ' + esc(p.next_reminder) : 'Напоминаний нет'}</div>
+      </div>
+    </div>`;
+}
+
+function renderHabits(p) {
+  const body = document.getElementById('habits-body');
+  const habits = p.habits || [];
+  if (!habits.length) {
+    body.innerHTML = `<div class="empty">Привычек пока нет 🌱<br>Добавь сверху — и отмечай каждый день.</div>`;
+    return;
+  }
+  body.innerHTML = habits.map(h => `
+    <div class="row">
+      <button class="check ${h.done_today ? 'on' : ''}" onclick="habitToggle(${h.id})">${h.done_today ? '✓' : ''}</button>
+      <div class="body"><div class="title">${esc(h.title)}</div></div>
+      ${h.streak ? `<div class="streak">🔥${h.streak}</div>` : ''}
+      <button class="x" onclick="habitDelete(${h.id})">✕</button>
+    </div>`).join('');
+}
+
+function renderTasks(p) {
+  const body = document.getElementById('tasks-body');
+  const tasks = p.tasks || [], reminders = p.reminders || [];
+  let html = '';
+  if (tasks.length) {
+    html += `<div class="section-label">Задачи</div>`;
+    html += tasks.map(t => `
+      <div class="row">
+        <button class="check" onclick="taskDone(${t.id})"></button>
+        <div class="body"><div class="title">${esc(t.title)}</div>
+          ${t.due ? `<div class="meta ${t.overdue ? 'overdue' : ''}">${esc(t.due)}</div>` : ''}</div>
+      </div>`).join('');
+  }
+  if (reminders.length) {
+    html += `<div class="section-label">Напоминания</div>`;
+    html += reminders.map(r => `
+      <div class="row">
+        <div class="check on" style="cursor:default">🔔</div>
+        <div class="body"><div class="title">${esc(r.text)}</div><div class="meta">${esc(r.when)}</div></div>
+      </div>`).join('');
+  }
+  body.innerHTML = html || `<div class="empty">Пусто ✨<br>Добавь задачу или напиши «напомни в 15:00 …»</div>`;
+}
+
+// Actions (re-rendered automatically when the server echoes the updated view)
+function habitToggle(id) { send({ type: 'habit_toggle', id }); }
+function habitDelete(id) { send({ type: 'habit_delete', id }); }
+function taskDone(id)    { send({ type: 'task_done', id }); }
+window.habitToggle = habitToggle;
+window.habitDelete = habitDelete;
+window.taskDone = taskDone;
+
+function addHabit() {
+  const el = document.getElementById('habit-in');
+  const t = el.value.trim();
+  if (!t) return;
+  send({ type: 'habit_add', title: t });
+  el.value = '';
+}
+window.addHabit = addHabit;
+
+function addTaskOrReminder() {
+  const el = document.getElementById('task-in');
+  const t = el.value.trim();
+  if (!t) return;
+  // «напомни …» → reminder, otherwise a task
+  if (/^\s*(напомни|таймер|remind)/i.test(t)) send({ type: 'reminder_add', text: t });
+  else send({ type: 'task_add', text: t });
+  el.value = '';
+}
+window.addTaskOrReminder = addTaskOrReminder;
+
+// Enter to add in task/habit inputs
+document.getElementById('task-in')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); addTaskOrReminder(); }
+});
+document.getElementById('habit-in')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); addHabit(); }
+});
