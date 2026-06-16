@@ -12,5 +12,6 @@ COPY . .
 # Config directory (mounted as volume in production)
 RUN mkdir -p /app/config
 
-# Default: start both bot and miniapp server
-CMD ["sh", "-c", "python -m telegram_bot.bot"]
+# Run the webhook app (bot + Mini App + WebSocket) on $PORT.
+# Portable across Koyeb / Fly / Railway / Render — each injects $PORT.
+CMD ["sh", "-c", "python -m uvicorn telegram_bot.render_app:app --host 0.0.0.0 --port ${PORT:-8000}"]
