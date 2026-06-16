@@ -185,98 +185,79 @@ header {
   flex-shrink: 0;
 }
 
-/* ─── Arc-reactor orb (real-JARVIS look) ───────────── */
+/* ─── Arc-reactor orb (Iron-Man style — clean, centered, premium) ──── */
 #orb {
-  position: relative;
-  width: 138px;
-  height: 138px;
-  cursor: pointer;
-  user-select: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  touch-action: none;            /* let pointerdown/up drive hold-to-talk */
+  width: 144px; height: 144px;
+  cursor: pointer; user-select: none;
+  display: grid; place-items: center;     /* perfect concentric centering */
+  touch-action: none;
 }
+#orb > * { grid-area: 1 / 1; }            /* every layer shares one centered cell */
 
-.ring {
-  position: absolute;
-  border-radius: 50%;
-  -webkit-mask: radial-gradient(circle, transparent 56%, #000 57%);
-          mask: radial-gradient(circle, transparent 56%, #000 57%);
-}
-/* outer: rotating tech segments */
+.ring { border-radius: 50%; }
+
+/* outer metallic ring */
 .r1 {
-  inset: 0;
-  background: repeating-conic-gradient(from 0deg,
-      rgba(0,212,255,0) 0deg 9deg, rgba(0,212,255,.6) 9deg 11deg, rgba(0,212,255,0) 11deg 18deg);
-  animation: spin 9s linear infinite;
+  width: 144px; height: 144px;
+  border: 1.5px solid rgba(120,220,255,.22);
+  box-shadow: 0 0 16px rgba(0,180,255,.16), inset 0 0 18px rgba(0,180,255,.08);
 }
-/* middle: counter-rotating arc sweep */
+/* coil ring — evenly spaced short bars on a thin annulus (the reactor coils) */
 .r2 {
-  inset: 16px;
-  -webkit-mask: radial-gradient(circle, transparent 60%, #000 61%);
-          mask: radial-gradient(circle, transparent 60%, #000 61%);
-  background: conic-gradient(from 0deg,
-      rgba(0,212,255,0) 0deg, rgba(0,212,255,.75) 70deg, rgba(124,58,237,0) 190deg,
-      rgba(124,58,237,.6) 300deg, rgba(0,212,255,0) 360deg);
-  animation: spin-rev 5.5s linear infinite;
+  width: 120px; height: 120px;
+  background: repeating-conic-gradient(from 0deg,
+      rgba(120,225,255,.9) 0deg 3.5deg, rgba(120,225,255,0) 3.5deg 30deg);
+  -webkit-mask: radial-gradient(circle, transparent 67%, #000 68% 85%, transparent 86%);
+          mask: radial-gradient(circle, transparent 67%, #000 68% 85%, transparent 86%);
+  animation: orb-rotate 20s linear infinite;
+  opacity: .8;
 }
-/* inner static ring */
+/* inner glowing ring */
 .r3 {
-  inset: 33px;
-  -webkit-mask: none; mask: none;
-  border: 2px solid rgba(0,212,255,.35);
-  box-shadow: inset 0 0 12px rgba(0,212,255,.35);
+  width: 90px; height: 90px;
+  border: 1.5px solid rgba(80,210,255,.5);
+  box-shadow: 0 0 14px rgba(0,200,255,.35), inset 0 0 12px rgba(0,200,255,.28);
+  transition: border-color .4s, box-shadow .4s;
 }
-
+/* reactor core */
 #core {
-  position: absolute;
-  width: 52px;
-  height: 52px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 50% 42%, #eaffff 0%, #5fe6ff 28%, #00a2ff 58%, #14143a 100%);
-  box-shadow: 0 0 22px rgba(0,212,255,.85), 0 0 46px rgba(0,212,255,.45),
-              inset 0 0 14px rgba(255,255,255,.55);
-  transition: box-shadow .35s, transform .25s;
+  width: 62px; height: 62px; border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%,
+      #ffffff 0%, #cdf4ff 16%, #4cd9ff 40%, #0a90ff 72%, #0b1740 100%);
+  box-shadow: 0 0 26px rgba(80,215,255,.85), 0 0 52px rgba(0,150,255,.45),
+              inset 0 0 16px rgba(255,255,255,.6);
+  animation: orb-breathe 4s ease-in-out infinite;
 }
 
-/* idle — slow breathing reactor */
-#orb.idle #core { animation: reactor-idle 3.6s ease-in-out infinite; }
-
-/* listening / recording — brighter, rings spin up */
-#orb.listening #core, #orb.rec #core {
-  transform: scale(1.1);
-  box-shadow: 0 0 34px rgba(0,212,255,.95), 0 0 64px rgba(0,212,255,.6),
-              inset 0 0 16px rgba(255,255,255,.7);
+@keyframes orb-rotate { to { transform: rotate(360deg); } }
+@keyframes orb-breathe {
+  0%,100% { transform: scale(.97); box-shadow: 0 0 22px rgba(80,215,255,.75), 0 0 44px rgba(0,150,255,.38), inset 0 0 14px rgba(255,255,255,.55); }
+  50%     { transform: scale(1.03); box-shadow: 0 0 34px rgba(130,230,255,1), 0 0 66px rgba(0,170,255,.58), inset 0 0 18px rgba(255,255,255,.72); }
 }
-#orb.listening .r1, #orb.rec .r1 { animation-duration: 3.5s; }
-#orb.listening .r2, #orb.rec .r2 { animation-duration: 2.4s; }
 
-/* processing — fast spin + hue shift */
-#orb.processing .r1 { animation-duration: 1.3s; }
-#orb.processing .r2 { animation-duration: 1s; }
-#orb.processing #core { animation: reactor-proc 1.1s linear infinite; }
+/* listening / recording — core brighter, coils a touch livelier */
+#orb.listening #core, #orb.rec #core { animation-duration: 1.7s; }
+#orb.listening .r2, #orb.rec .r2 { opacity: 1; animation-duration: 12s; }
+#orb.listening .r3, #orb.rec .r3 { border-color: rgba(80,220,255,.85); box-shadow: 0 0 22px rgba(0,210,255,.55), inset 0 0 16px rgba(0,210,255,.4); }
+
+/* processing — smooth energy pulse (no janky spin) */
+#orb.processing .r2 { opacity: 1; animation-duration: 6s; }
+#orb.processing #core { animation: orb-proc 1.5s ease-in-out infinite; }
 
 /* speaking — pulse with the voice */
-#orb.speaking .r2 { animation-duration: 1.6s; }
-#orb.speaking #core { animation: reactor-speak .5s ease-in-out infinite alternate; }
+#orb.speaking #core { animation: orb-speak .46s ease-in-out infinite alternate; }
+#orb.speaking .r3 { border-color: rgba(150,110,255,.7); box-shadow: 0 0 20px rgba(124,58,237,.5), inset 0 0 14px rgba(124,58,237,.4); }
 
 /* hands-free — green accent so it's clear the mic stays on */
-#orb.hands-free .r3 { border-color: rgba(34,197,94,.65); box-shadow: inset 0 0 12px rgba(34,197,94,.4); }
+#orb.hands-free .r1 { border-color: rgba(52,211,153,.55); box-shadow: 0 0 18px rgba(52,211,153,.25), inset 0 0 18px rgba(52,211,153,.12); }
 
-@keyframes spin     { to { transform: rotate(360deg); } }
-@keyframes spin-rev { to { transform: rotate(-360deg); } }
-@keyframes reactor-idle {
-  0%,100% { box-shadow: 0 0 18px rgba(0,212,255,.7), 0 0 36px rgba(0,212,255,.32), inset 0 0 12px rgba(255,255,255,.45); }
-  50%     { box-shadow: 0 0 30px rgba(0,212,255,.95), 0 0 58px rgba(0,212,255,.5), inset 0 0 16px rgba(255,255,255,.6); }
+@keyframes orb-proc {
+  0%,100% { box-shadow: 0 0 24px rgba(80,215,255,.8), 0 0 50px rgba(0,150,255,.45), inset 0 0 16px rgba(255,255,255,.6); }
+  50%     { box-shadow: 0 0 32px rgba(150,130,255,.9), 0 0 62px rgba(110,90,255,.5), inset 0 0 18px rgba(255,255,255,.66); }
 }
-@keyframes reactor-proc {
-  0%   { filter: hue-rotate(0deg); }
-  100% { filter: hue-rotate(300deg); }
-}
-@keyframes reactor-speak {
-  from { transform: scale(1);    box-shadow: 0 0 26px rgba(124,58,237,.7), 0 0 50px rgba(0,212,255,.4), inset 0 0 14px rgba(255,255,255,.5); }
-  to   { transform: scale(1.16); box-shadow: 0 0 42px rgba(124,58,237,.95), 0 0 72px rgba(0,212,255,.6), inset 0 0 18px rgba(255,255,255,.7); }
+@keyframes orb-speak {
+  from { transform: scale(1);    box-shadow: 0 0 26px rgba(124,58,237,.7), 0 0 50px rgba(0,160,255,.4), inset 0 0 14px rgba(255,255,255,.55); }
+  to   { transform: scale(1.12); box-shadow: 0 0 42px rgba(150,100,255,.95), 0 0 72px rgba(0,170,255,.6), inset 0 0 18px rgba(255,255,255,.72); }
 }
 
 #orb-label {
@@ -520,3 +501,11 @@ header {
   background: var(--cyan);
   box-shadow: 0 0 8px var(--cyan), 0 0 14px rgba(0,212,255,.6);
 }
+
+/* ─── Premium navbar refinements (Apple-like) ──────── */
+#tabbar { padding: 11px 10px 9px; gap: 2px; }
+.tab svg { width: 25px; height: 25px; stroke-width: 1.7px; }
+.tab { color: rgba(223,229,242,.46); padding: 5px 0 3px; }
+.tab:not(.active):active { color: rgba(223,229,242,.8); }
+.tab.active { color: var(--cyan); }
+.tab .dot { width: 4px; height: 4px; margin-top: 5px; }
