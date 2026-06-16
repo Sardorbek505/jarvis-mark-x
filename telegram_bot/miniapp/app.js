@@ -390,6 +390,10 @@ connect();
 
 // ── Tabs & data views ─────────────────────────────────────────────────────────
 let activeTab = 'chat';
+const TAB_TITLES = {
+  chat: '💬 Чат', dashboard: '📊 Сводка', tasks: '✅ Дела',
+  habits: '🔁 Привычки', pc: '🖥 ПК-пульт',
+};
 
 function send(obj) {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -401,12 +405,22 @@ function switchTab(name) {
   document.getElementById('view-' + name)?.classList.add('active');
   document.querySelectorAll('.tab').forEach(t =>
     t.classList.toggle('active', t.dataset.tab === name));
+  const title = document.getElementById('screen-title');
+  if (title) title.textContent = TAB_TITLES[name] || 'JARVIS';
   // Data tabs fetch fresh state each time they're opened.
   if (['dashboard', 'tasks', 'habits'].includes(name)) {
     send({ type: 'get_data', view: name });
   }
 }
 window.switchTab = switchTab;
+
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 5)  return ['Доброй ночи', '🌙'];
+  if (h < 12) return ['Доброе утро', '🌅'];
+  if (h < 18) return ['Добрый день', '☀️'];
+  return ['Добрый вечер', '🌆'];
+}
 
 function esc(s) {
   return (s || '').replace(/[&<>"]/g, c =>
@@ -421,24 +435,34 @@ function renderView(view, p) {
 
 function renderDashboard(p) {
   const body = document.getElementById('dash-body');
-  const hello = p.name ? `Привет, ${esc(p.name)}!` : 'Привет!';
+  const [g, gi] = greeting();
+  const hello = p.name ? `${g}, ${esc(p.name)}!` : `${g}!`;
   const today = (p.today_tasks || []);
   body.innerHTML = `
-    <div class="card wide" style="background:linear-gradient(135deg,#10243a,#0a0a1e)">
-      <div class="big">${hello}</div>
-      ${p.weather ? `<div class="sub">${esc(p.city)} · ${esc(p.weather)}</div>`
-                  : `<div class="sub">${esc(p.city || '')}</div>`}
+    <div class="hero">
+      <div class="hero-row"><div class="hero-hi">${gi} ${hello}</div></div>
+      ${p.weather
+        ? `<div class="hero-wx">${esc(p.weather)}</div><div class="hero-city">📍 ${esc(p.city)}</div>`
+        : `<div class="hero-city">📍 ${esc(p.city || 'Город не задан')}</div>`}
     </div>
     <div class="dash-grid">
-      <div class="card"><h3>Привычки</h3><div class="big">${p.habits_done}/${p.habits_total}</div><div class="sub">сегодня · серия 🔥${p.best_streak}</div></div>
-      <div class="card"><h3>Задачи</h3><div class="big">${p.open_tasks}</div><div class="sub">открыто всего</div></div>
-      <div class="card wide"><h3>На сегодня</h3>
-        ${today.length ? `<div class="dash-list">${today.map(t => `<div>• ${esc(t)}</div>`).join('')}</div>`
-                       : `<div class="sub">Задач на сегодня нет — добавь во вкладке «Дела»</div>`}
+      <div class="stat stat-habits">
+        <div class="stat-ico">🔁</div>
+        <div><div class="stat-num">${p.habits_done}<span>/${p.habits_total}</span></div>
+        <div class="stat-lbl">привычки · 🔥${p.best_streak}</div></div>
       </div>
-      <div class="card wide"><h3>Ближайшее напоминание</h3>
-        <div class="sub" style="color:var(--text)">${p.next_reminder ? '🔔 ' + esc(p.next_reminder) : 'Напоминаний нет'}</div>
+      <div class="stat stat-tasks">
+        <div class="stat-ico">✅</div>
+        <div><div class="stat-num">${p.open_tasks}</div>
+        <div class="stat-lbl">задач открыто</div></div>
       </div>
+    </div>
+    <div class="card wide"><h3>📅 На сегодня</h3>
+      ${today.length ? `<div class="dash-list">${today.map(t => `<div>• ${esc(t)}</div>`).join('')}</div>`
+                     : `<div class="sub">Планов нет — добавь во вкладке «Дела» или скажи в чат</div>`}
+    </div>
+    <div class="card wide"><h3>🔔 Ближайшее напоминание</h3>
+      <div class="sub" style="color:var(--text);font-size:14px">${p.next_reminder ? esc(p.next_reminder) : 'Напоминаний нет'}</div>
     </div>`;
 }
 

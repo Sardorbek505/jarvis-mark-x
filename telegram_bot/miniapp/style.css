@@ -400,3 +400,58 @@ header {
 .pc-tile span { font-size: 24px; }
 .pc-tile:active { transform: scale(.92); background: rgba(0,212,255,.18); }
 .pc-hint { text-align: center; color: var(--dim); font-size: 12px; margin-top: 14px; }
+
+/* ─── UI polish pass ─────────────────────────────── */
+#screen-title {
+  font-size: 16px; font-weight: 700; letter-spacing: .3px; color: var(--text);
+}
+
+/* Active tab gets a soft pill */
+.tab.active {
+  color: var(--cyan); text-shadow: 0 0 16px rgba(0,212,255,.5);
+}
+.tab.active::before {
+  content: ''; position: absolute; top: 3px; width: 36px; height: 3px;
+  border-radius: 3px; background: var(--cyan); box-shadow: 0 0 10px var(--cyan);
+}
+.tab { position: relative; }
+
+/* Dashboard hero */
+.hero {
+  border-radius: var(--r); padding: 18px 18px 16px;
+  background: linear-gradient(135deg, #13294a 0%, #1a1145 60%, #0a0a1e 100%);
+  border: 1px solid rgba(0,212,255,.22);
+  box-shadow: 0 8px 30px rgba(0,80,160,.18);
+}
+.hero-hi { font-size: 21px; font-weight: 800; }
+.hero-wx { font-size: 15px; color: var(--text); margin-top: 8px; }
+.hero-city { font-size: 13px; color: var(--dim); margin-top: 4px; }
+
+/* Stat tiles */
+.stat {
+  display: flex; align-items: center; gap: 12px;
+  border-radius: var(--r); padding: 15px;
+  border: 1px solid rgba(124,58,237,.22);
+  background: linear-gradient(135deg, #0f0f24, #0a0a1e);
+}
+.stat-ico {
+  width: 42px; height: 42px; border-radius: 12px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; font-size: 21px;
+}
+.stat-habits .stat-ico { background: rgba(34,197,94,.14); }
+.stat-tasks  .stat-ico { background: rgba(0,212,255,.14); }
+.stat-num { font-size: 24px; font-weight: 800; line-height: 1; }
+.stat-num span { font-size: 15px; color: var(--dim); font-weight: 600; }
+.stat-lbl { font-size: 12px; color: var(--dim); margin-top: 4px; }
+
+/* Empty states — centered, breathing */
+.empty {
+  margin: auto; text-align: center; color: var(--dim);
+  font-size: 15px; line-height: 1.7; padding: 20px;
+}
+
+/* Tap feedback on rows */
+.row { transition: transform .08s, border-color .15s; }
+.row:active { transform: scale(.99); border-color: rgba(0,212,255,.25); }
+.check { transition: transform .1s, background .15s, border-color .15s; }
+.check:active { transform: scale(.85); }
