@@ -16,10 +16,15 @@ from fastapi.responses import FileResponse
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from telegram_bot import user_context
+from telegram_bot import agenda
+from telegram_bot import weather
+from telegram_bot import reminders as rem
 
 logger = logging.getLogger("jarvis-miniapp")
 
 MINIAPP_DIR = Path(__file__).parent / "miniapp"
+_DEFAULT_TZ = os.getenv("TIMEZONE", "Asia/Almaty")
+_DEFAULT_CITY = os.getenv("DEFAULT_CITY", "Шымкент")
 
 # Shared secret — the home PC must present this to link. Set via env on Render.
 PC_LINK_TOKEN = os.getenv("PC_LINK_TOKEN", "")
@@ -130,6 +135,101 @@ async def pc_link(ws: WebSocket):
             await _bridge.unregister(cid)
 
 
+# ── Mini App data tabs (habits / tasks / reminders / dashboard) ───────────────
+
+def _today_iso(user_id: int) -> str:
+    return user_context.local_now(user_id, _DEFAULT_TZ).date().isoformat()
+
+
+async def _build_view(user_id: int, view: str) -> dict:
+    """Assemble the payload for a Mini App data tab from the durable store."""
+    if not _memory:
+        return {"error": "memory offline"}
+    await _memory.ensure_loaded(user_id)
+    tz = user_context.local_now(user_id, _DEFAULT_TZ).tzinfo
+
+    if view == "habits":
+        return {"habits": await _memory.get_habits(user_id, _today_iso(user_id))}
+
+    if view == "tasks":  # «Дела» — tasks + reminders together
+        tasks = await _memory.get_tasks(user_id)
+        reminders = await _memory.list_reminders(user_id)
+        return {
+            "tasks": [
+                {"id": t["id"], "title": t["title"],
+                 "due": agenda.fmt_due(t["due"]) if t.get("due") else "",
+                 "overdue": bool(t.get("due") and agenda.is_overdue(t["due"]))}
+                for t in tasks
+            ],
+            "reminders": [
+                {"id": r["id"], "text": r["text"], "when": rem.fmt_local(r["due"], tz)}
+                for r in reminders
+            ],
+        }
+
+    if view == "dashboard":
+        tasks = await _memory.get_tasks(user_id)
+        today = [t for t in tasks if t.get("due") and agenda.is_today(t["due"])]
+        habits = await _memory.get_habits(user_id, _today_iso(user_id))
+        reminders = await _memory.list_reminders(user_id)
+        profile = await _memory.get_profile(user_id)
+        city = user_context.get_city(user_id, _DEFAULT_CITY)
+        wx = await weather.for_city(city) if city else None
+        return {
+            "name": profile.get("name", ""),
+            "city": city,
+            "weather": wx or "",
+            "open_tasks": len(tasks),
+            "today_tasks": [t["title"] for t in today][:5],
+            "habits_done": sum(1 for h in habits if h["done_today"]),
+            "habits_total": len(habits),
+            "best_streak": max([h["streak"] for h in habits], default=0),
+            "next_reminder": (
+                f"{reminders[0]['text']} — {rem.fmt_local(reminders[0]['due'], tz)}"
+                if reminders else ""
+            ),
+        }
+
+    return {"error": f"unknown view {view}"}
+
+
+async def _send_view(ws: WebSocket, user_id: int, view: str):
+    payload = await _build_view(user_id, view)
+    await ws.send_text(json.dumps({"type": "data", "view": view, "payload": payload}))
+
+
+async def _handle_action(ws: WebSocket, user_id: int, msg: dict):
+    """Mutations from data tabs, then echo back the refreshed view."""
+    if not _memory:
+        return
+    await _memory.ensure_loaded(user_id)
+    mtype = msg.get("type")
+
+    if mtype == "habit_add" and msg.get("title"):
+        await _memory.add_habit(user_id, msg["title"].strip())
+        await _send_view(ws, user_id, "habits")
+    elif mtype == "habit_toggle" and msg.get("id") is not None:
+        await _memory.toggle_habit(user_id, int(msg["id"]), _today_iso(user_id))
+        await _send_view(ws, user_id, "habits")
+    elif mtype == "habit_delete" and msg.get("id") is not None:
+        await _memory.delete_habit(user_id, int(msg["id"]))
+        await _send_view(ws, user_id, "habits")
+    elif mtype == "task_add" and msg.get("text"):
+        due, title = agenda.parse(msg["text"].strip())
+        await _memory.add_task(user_id, title, due)
+        await _send_view(ws, user_id, "tasks")
+    elif mtype == "task_done" and msg.get("id") is not None:
+        await _memory.complete_task(user_id, int(msg["id"]))
+        await _send_view(ws, user_id, "tasks")
+    elif mtype == "reminder_add" and msg.get("text"):
+        now_local = user_context.local_now(user_id, _DEFAULT_TZ)
+        parsed = rem.parse_reminder(msg["text"].strip(), now_local)
+        if parsed:
+            when, what = parsed
+            await _memory.add_reminder(user_id, what, rem.to_utc_iso(when))
+        await _send_view(ws, user_id, "tasks")
+
+
 # ── Mini App clients (browser / Telegram) ─────────────────────────────────────
 
 @app.websocket("/ws")
@@ -168,6 +268,15 @@ async def ws_endpoint(ws: WebSocket):
                     lat=msg.get("lat"),
                     lon=msg.get("lon"),
                 )
+                continue
+
+            if mtype == "get_data":
+                await _send_view(ws, user_id, msg.get("view", "dashboard"))
+                continue
+
+            if mtype in ("habit_add", "habit_toggle", "habit_delete",
+                         "task_add", "task_done", "reminder_add"):
+                await _handle_action(ws, user_id, msg)
                 continue
 
             if mtype == "text":
