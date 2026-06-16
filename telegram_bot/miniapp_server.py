@@ -76,22 +76,26 @@ _miniapp_clients: Set[WebSocket] = set()
 
 
 # ── Static files ──────────────────────────────────────────────────────────────
+# Telegram's in-app webview caches static assets aggressively, so changes never
+# show up. Force revalidation on every load with no-store.
+_NOCACHE = {"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"}
+
 
 @app.get("/")
 async def serve_index():
-    return FileResponse(MINIAPP_DIR / "index.html")
+    return FileResponse(MINIAPP_DIR / "index.html", headers=_NOCACHE)
 
 @app.get("/app.js")
 async def serve_appjs():
-    return FileResponse(MINIAPP_DIR / "app.js", media_type="application/javascript")
+    return FileResponse(MINIAPP_DIR / "app.js", media_type="application/javascript", headers=_NOCACHE)
 
 @app.get("/style.css")
 async def serve_css():
-    return FileResponse(MINIAPP_DIR / "style.css", media_type="text/css")
+    return FileResponse(MINIAPP_DIR / "style.css", media_type="text/css", headers=_NOCACHE)
 
 @app.get("/worklet.js")
 async def serve_worklet():
-    return FileResponse(MINIAPP_DIR / "worklet.js", media_type="application/javascript")
+    return FileResponse(MINIAPP_DIR / "worklet.js", media_type="application/javascript", headers=_NOCACHE)
 
 
 # ── PC status broadcast to Mini App clients ───────────────────────────────────
