@@ -553,3 +553,32 @@ header {
 #orb-label { font-size: 11px; font-weight: 600; color: var(--muted); }
 .empty { font-size: 14px; color: var(--muted); }
 .loading { color: var(--muted); }
+
+/* ═══ Orb cinematic depth — halo + slow HUD sweep (film JARVIS feel) ═══ */
+#orb::before, #orb::after { content: ''; grid-area: 1 / 1; border-radius: 50%; pointer-events: none; }
+/* soft halo glow behind the reactor */
+#orb::before {
+  width: 168px; height: 168px;
+  background: radial-gradient(circle, rgba(0,185,255,.24) 0%, rgba(0,150,255,.08) 46%, transparent 70%);
+  filter: blur(3px);
+  animation: orb-halo 4.5s ease-in-out infinite;
+}
+/* rotating HUD radar sweep over the rings */
+#orb::after {
+  width: 132px; height: 132px;
+  background: conic-gradient(from 0deg, transparent 0deg, rgba(130,230,255,.0) 8deg,
+      rgba(130,230,255,.4) 46deg, rgba(130,230,255,0) 92deg);
+  -webkit-mask: radial-gradient(circle, transparent 58%, #000 59% 93%, transparent 94%);
+          mask: radial-gradient(circle, transparent 58%, #000 59% 93%, transparent 94%);
+  animation: orb-sweep 6.5s linear infinite;
+  opacity: .75;
+}
+@keyframes orb-halo {
+  0%,100% { opacity: .55; transform: scale(.98); }
+  50%     { opacity: 1;   transform: scale(1.05); }
+}
+@keyframes orb-sweep { to { transform: rotate(360deg); } }
+
+/* sweep speeds up subtly while processing */
+#orb.processing::after { animation-duration: 2.6s; opacity: 1; }
+#orb.speaking::after   { animation-duration: 4s; }
