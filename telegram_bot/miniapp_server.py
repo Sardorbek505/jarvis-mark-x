@@ -19,6 +19,7 @@ from telegram_bot import user_context
 from telegram_bot import agenda
 from telegram_bot import weather
 from telegram_bot import reminders as rem
+from telegram_bot import directives
 
 logger = logging.getLogger("jarvis-miniapp")
 
@@ -389,7 +390,12 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
         if _memory:
             await _memory.ensure_loaded(user_id)
         reply = await _gemini.chat(user_id, text)
+        # Execute any hidden reminder/habit/task directives → durable store
         if _memory:
+            tz = user_context.local_now(user_id, _DEFAULT_TZ).tzinfo
+            reply, summary = await directives.apply(_memory, user_id, reply, tz)
+            if summary:
+                reply += "\n\n✅ Добавил — " + ", ".join(summary)
             asyncio.create_task(_memory.observe(user_id, _gemini, text, reply))
     else:
         reply = "AI-сервис недоступен."
