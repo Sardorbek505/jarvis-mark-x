@@ -44,6 +44,8 @@ function setState(name) {
 // ── Message rendering ─────────────────────────────────────────────────────────
 function addMsg(role, text) {
   document.querySelector('.typing')?.remove();
+  // First real message turns the hero-orb empty state into a normal chat feed.
+  if (role === 'user' || role === 'bot') exitEmptyChat();
   const d = document.createElement('div');
   d.className = `msg ${role}`;
   d.textContent = text;
@@ -51,8 +53,13 @@ function addMsg(role, text) {
   msgs.parentElement.scrollTop = msgs.parentElement.scrollHeight;
 }
 
+function exitEmptyChat() {
+  document.getElementById('view-chat')?.classList.remove('is-empty');
+}
+
 function addImage(b64, caption) {
   document.querySelector('.typing')?.remove();
+  exitEmptyChat();
   const wrap = document.createElement('div');
   wrap.className = 'msg bot';
   wrap.style.padding = '6px';
