@@ -1,7 +1,18 @@
 /* JARVIS Mini App — client */
 
 const tg = window.Telegram?.WebApp;
-if (tg) { tg.expand(); tg.disableClosingConfirmation(); }
+if (tg) {
+  tg.ready();                                  // signal the WebApp is initialised
+  tg.expand();
+  tg.disableClosingConfirmation();
+  // Stitch the Telegram chrome to our dark UI (header + background)
+  try { tg.setHeaderColor('#07070f'); tg.setBackgroundColor('#07070f'); } catch {}
+}
+
+// Light haptic feedback on taps — no-op outside Telegram
+function haptic(kind = 'light') {
+  try { tg?.HapticFeedback?.impactOccurred(kind); } catch {}
+}
 
 const USER_ID = tg?.initDataUnsafe?.user?.id ?? 0;
 const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -73,6 +84,14 @@ function showTyping() {
   msgs.parentElement.scrollTop = msgs.parentElement.scrollHeight;
 }
 
+// One-time friendly empty state (shown on first connect, not on reconnects)
+let welcomed = false;
+function showWelcomeOnce() {
+  if (welcomed || msgs.children.length) return;
+  welcomed = true;
+  addMsg('sys', 'JARVIS на связи. Напиши или зажми орб, чтобы говорить.');
+}
+
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 let ws = null;
 
@@ -80,22 +99,24 @@ function connect() {
   ws = new WebSocket(WS_URL);
   ws.binaryType = 'arraybuffer';
 
+  // Connection state lives in the header badge (green dot) — no chat spam.
   ws.onopen = () => {
     connBadge.className = 'badge online';
+    connBadge.title = 'Сервер: на связи';
     setState('idle');
-    addMsg('sys', '● JARVIS подключён');
+    showWelcomeOnce();
     reportClientInfo();
   };
 
   ws.onclose = () => {
     connBadge.className = 'badge';
+    connBadge.title = 'Сервер: переподключение…';
     pcBadge.className   = 'badge';
     setState('idle');
-    addMsg('sys', '○ Переподключение...');
     setTimeout(connect, 3500);
   };
 
-  ws.onerror = () => addMsg('sys', '✕ Ошибка соединения');
+  ws.onerror = () => { connBadge.title = 'Сервер: ошибка соединения'; };
 
   ws.onmessage = async ({ data }) => {
     let msg;
@@ -197,6 +218,7 @@ textIn.addEventListener('keydown', e => {
 function sendText() {
   const text = textIn.value.trim();
   if (!text || ws?.readyState !== WebSocket.OPEN) return;
+  haptic();
   addMsg('user', text);
   ws.send(JSON.stringify({ type: 'text', text, tts: voiceEnabled }));
   textIn.value = '';
@@ -207,6 +229,7 @@ function sendText() {
 // ── Quick PC actions ──────────────────────────────────────────────────────────
 function pcCmd(text) {
   if (ws?.readyState !== WebSocket.OPEN) { addMsg('sys', '⚠ Нет соединения'); return; }
+  haptic();
   addMsg('user', text);
   ws.send(JSON.stringify({ type: 'text', text, tts: voiceEnabled }));
   setState('processing');
@@ -235,6 +258,7 @@ async function onOrbDown(e) {
   e.preventDefault();
   if (ws?.readyState !== WebSocket.OPEN) { addMsg('sys', '⚠ Нет соединения'); return; }
   try { orb.setPointerCapture(e.pointerId); } catch {}
+  haptic('medium');
   pressTs = Date.now();
   if (continuous) return;          // already hands-free; release decides whether to stop
   await openMic();
@@ -450,6 +474,7 @@ function send(obj) {
 }
 
 function switchTab(name) {
+  haptic();
   activeTab = name;
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById('view-' + name)?.classList.add('active');
@@ -557,9 +582,9 @@ function renderTasks(p) {
 }
 
 // Actions (re-rendered automatically when the server echoes the updated view)
-function habitToggle(id) { send({ type: 'habit_toggle', id }); }
-function habitDelete(id) { send({ type: 'habit_delete', id }); }
-function taskDone(id)    { send({ type: 'task_done', id }); }
+function habitToggle(id) { haptic('medium'); send({ type: 'habit_toggle', id }); }
+function habitDelete(id) { haptic('rigid');  send({ type: 'habit_delete', id }); }
+function taskDone(id)    { haptic('medium'); send({ type: 'task_done', id }); }
 window.habitToggle = habitToggle;
 window.habitDelete = habitDelete;
 window.taskDone = taskDone;

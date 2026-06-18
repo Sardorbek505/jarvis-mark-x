@@ -2,7 +2,9 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#07070f">
+    <meta name="color-scheme" content="dark">
     <title>JARVIS</title>
     <link rel="stylesheet" href="style.css">
 </head>
@@ -30,25 +32,26 @@
                 <div id="chat"><div id="messages"></div></div>
 
                 <div id="quick-bar">
-                    <button class="q-btn" onclick="pcCmd('скриншот')">📸</button>
-                    <button class="q-btn" onclick="pcCmd('снимок с камеры')">📷</button>
-                    <button class="q-btn" onclick="pcCmd('стоп')">⏸</button>
-                    <button class="q-btn" onclick="pcCmd('переключи музыку')">⏭</button>
-                    <button class="q-btn" onclick="pcCmd('громче')">🔊</button>
-                    <button class="q-btn" onclick="pcCmd('тише')">🔉</button>
-                    <button class="q-btn" onclick="pcCmd('рабочий стол')">🖥</button>
-                    <button class="q-btn" onclick="pcCmd('системная информация')">ℹ️</button>
-                    <button class="q-btn" onclick="pcCmd('брифинг')">📋</button>
+                    <button class="q-btn" onclick="pcCmd('скриншот')" aria-label="Скриншот">📸</button>
+                    <button class="q-btn" onclick="pcCmd('снимок с камеры')" aria-label="Снимок с камеры">📷</button>
+                    <button class="q-btn" onclick="pcCmd('стоп')" aria-label="Пауза">⏸</button>
+                    <button class="q-btn" onclick="pcCmd('переключи музыку')" aria-label="Следующий трек">⏭</button>
+                    <button class="q-btn" onclick="pcCmd('громче')" aria-label="Громче">🔊</button>
+                    <button class="q-btn" onclick="pcCmd('тише')" aria-label="Тише">🔉</button>
+                    <button class="q-btn" onclick="pcCmd('рабочий стол')" aria-label="Свернуть на рабочий стол">🖥</button>
+                    <button class="q-btn" onclick="pcCmd('системная информация')" aria-label="Системная информация">ℹ️</button>
+                    <button class="q-btn" onclick="pcCmd('брифинг')" aria-label="Брифинг">📋</button>
                 </div>
 
                 <div id="orb-section">
-                    <div id="orb" class="idle">
+                    <div id="orb" class="idle" role="button" tabindex="0"
+                         aria-label="Голосовой ввод: зажми чтобы говорить, тап для режима диалога">
                         <div class="ring r1"></div>
                         <div class="ring r2"></div>
                         <div class="ring r3"></div>
                         <div id="core"></div>
                     </div>
-                    <div id="orb-label">Нажми чтобы говорить</div>
+                    <div id="orb-label" aria-live="polite">Нажми чтобы говорить</div>
                 </div>
 
                 <div id="input-bar">
