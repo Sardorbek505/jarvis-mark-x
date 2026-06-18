@@ -424,6 +424,35 @@ class MemoryStore:
                 return target
         return None
 
+    # ── notes (единая входящая: свободные мысли/идеи) ────────────────────────────
+
+    async def add_note(self, uid: int, text: str) -> dict:
+        text = text.strip()
+        await self._exec(
+            "INSERT INTO notes(user_id, text, created_at) VALUES(?,?,?)",
+            (uid, text, datetime.now().isoformat(timespec="seconds")),
+        )
+        row = await self._fetchone(
+            "SELECT id FROM notes WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)
+        )
+        return {"id": row[0] if row else None, "text": text}
+
+    async def list_notes(self, uid: int, limit: int = 50) -> list:
+        rows = await self._fetchall(
+            "SELECT id, text, created_at FROM notes WHERE user_id=? ORDER BY id DESC LIMIT ?",
+            (uid, limit),
+        )
+        return [{"id": r[0], "text": r[1], "created_at": r[2]} for r in rows]
+
+    async def delete_note(self, uid: int, note_id: int) -> bool:
+        owner = await self._fetchone(
+            "SELECT 1 FROM notes WHERE id=? AND user_id=?", (note_id, uid)
+        )
+        if not owner:
+            return False
+        await self._exec("DELETE FROM notes WHERE id=? AND user_id=?", (note_id, uid))
+        return True
+
     async def all_user_ids(self) -> list:
         """Every user the bot knows — to deliver proactive briefings to."""
         rows = await self._fetchall(
@@ -553,6 +582,12 @@ CREATE TABLE IF NOT EXISTS contacts (
     created_at TEXT,
     PRIMARY KEY (user_id, alias)
 );
+CREATE TABLE IF NOT EXISTS notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    text       TEXT NOT NULL,
+    created_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
@@ -614,6 +649,12 @@ CREATE TABLE IF NOT EXISTS contacts (
     target     TEXT NOT NULL,
     created_at TEXT,
     PRIMARY KEY (user_id, alias)
+);
+CREATE TABLE IF NOT EXISTS notes (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    text       TEXT NOT NULL,
+    created_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);

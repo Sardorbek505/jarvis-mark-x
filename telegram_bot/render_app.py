@@ -141,6 +141,7 @@ async def _build_tg_app():
     from telegram_bot.bot import (
         cmd_start, cmd_help, cmd_app, cmd_status, cmd_clear,
         cmd_contacts, cmd_addcontact, cmd_delcontact,
+        cmd_notes, cmd_note, cmd_delnote,
         cmd_pc, cmd_screenshot, cmd_camera, cmd_vol, cmd_lock, cmd_sysinfo, cmd_briefing,
         cmd_remind, cmd_reminders, cmd_task, cmd_tasks, cmd_today, cmd_done,
         cmd_habit, cmd_habits, cmd_check,
@@ -181,6 +182,9 @@ async def _build_tg_app():
     app.add_handler(CommandHandler("contacts",   cmd_contacts))
     app.add_handler(CommandHandler("addcontact", cmd_addcontact))
     app.add_handler(CommandHandler("delcontact", cmd_delcontact))
+    app.add_handler(CommandHandler("notes",      cmd_notes))
+    app.add_handler(CommandHandler("note",       cmd_note))
+    app.add_handler(CommandHandler("delnote",    cmd_delnote))
     app.add_handler(CommandHandler("mode",       cmd_mode))
     app.add_handler(CommandHandler("profile",    cmd_profile))
     app.add_handler(CommandHandler("remember",   cmd_remember))

@@ -18,9 +18,10 @@ logger = logging.getLogger("jarvis-directives")
 _RE_REMINDERS = re.compile(r"\[\[REMINDERS\]\](.*?)\[\[/REMINDERS\]\]", re.S | re.I)
 _RE_HABITS = re.compile(r"\[\[HABITS\]\](.*?)\[\[/HABITS\]\]", re.S | re.I)
 _RE_TASKS = re.compile(r"\[\[TASKS\]\](.*?)\[\[/TASKS\]\]", re.S | re.I)
+_RE_NOTES = re.compile(r"\[\[NOTES\]\](.*?)\[\[/NOTES\]\]", re.S | re.I)
 _REM_LINE = re.compile(r"(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2})[:.](\d{2})\s*\|\s*(.+)")
 
-_ALL = (_RE_REMINDERS, _RE_HABITS, _RE_TASKS)
+_ALL = (_RE_REMINDERS, _RE_HABITS, _RE_TASKS, _RE_NOTES)
 
 
 def _clean_line(line: str) -> str:
@@ -73,6 +74,17 @@ async def apply(memory, user_id: int, reply: str, tz) -> tuple[str, list]:
                 n += 1
         if n:
             summary.append(f"✅ задач: {n}")
+
+    block = _RE_NOTES.search(reply)
+    if block and hasattr(memory, "add_note"):
+        n = 0
+        for line in block.group(1).splitlines():
+            t = _clean_line(line)
+            if t:
+                await memory.add_note(user_id, t)
+                n += 1
+        if n:
+            summary.append(f"📝 заметок: {n}")
 
     clean = reply
     for rx in _ALL:
