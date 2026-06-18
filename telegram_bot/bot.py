@@ -90,6 +90,9 @@ _BOT_COMMANDS = [
     BotCommand("check",      "Отметить привычку за сегодня"),
     BotCommand("morning",    "Утренний брифинг сейчас"),
     BotCommand("evening",    "Вечерний разбор сейчас"),
+    BotCommand("notes",      "Мои заметки (входящая)"),
+    BotCommand("note",       "Записать заметку: /note текст"),
+    BotCommand("delnote",    "Удалить заметку: /delnote номер"),
     BotCommand("contacts",   "Кому можно писать (белый список)"),
     BotCommand("addcontact", "Добавить контакт: /addcontact имя @user"),
     BotCommand("delcontact", "Удалить контакт: /delcontact имя"),
@@ -705,6 +708,51 @@ async def cmd_delcontact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         f"🗑 Удалён: {parts[1].lower()}" if ok else f"Не найден: {parts[1]}"
     )
+
+
+async def cmd_notes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    notes = await memory.list_notes(uid)
+    if not notes:
+        await update.effective_message.reply_text(
+            "📝 Заметок пока нет.\nКинь мысль — «запиши: …» или просто скажи идею, "
+            "я сам разложу её по полкам."
+        )
+        return
+    lines = "\n".join(f"{i}. {n['text']}" for i, n in enumerate(notes, 1))
+    await update.effective_message.reply_text(
+        f"📝 *Твои заметки:*\n{lines}\n\nУдалить: `/delnote <номер>`", parse_mode="Markdown"
+    )
+
+
+async def cmd_note(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    parts = (update.effective_message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await update.effective_message.reply_text("Формат: `/note <текст>`", parse_mode="Markdown")
+        return
+    await memory.add_note(update.effective_user.id, parts[1])
+    await update.effective_message.reply_text("📝 Записал в заметки.")
+
+
+async def cmd_delnote(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    parts = (update.effective_message.text or "").split(maxsplit=1)
+    notes = await memory.list_notes(uid)
+    if len(parts) < 2 or not parts[1].strip().isdigit():
+        await update.effective_message.reply_text("Формат: `/delnote <номер из /notes>`", parse_mode="Markdown")
+        return
+    idx = int(parts[1].strip())
+    if idx < 1 or idx > len(notes):
+        await update.effective_message.reply_text("Нет заметки с таким номером.")
+        return
+    await memory.delete_note(uid, notes[idx - 1]["id"])
+    await update.effective_message.reply_text(f"🗑 Удалил заметку #{idx}.")
 
 
 async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
