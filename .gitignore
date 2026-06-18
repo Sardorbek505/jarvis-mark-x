@@ -5,6 +5,9 @@ __pycache__/
 .Python
 *.log
 
+# Секреты деплоя (Oracle/VPS) — НЕ коммитим
+.env
+
 # Конфиги с секретами и личными данными
 config/api_keys.json
 config/spotify_tokens.json
