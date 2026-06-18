@@ -44,6 +44,25 @@ _SYSTEM_PROMPT = """Ты — JARVIS, личный ИИ-ассистент. Не 
 Примеры триггеров: «добавь привычку медитация» → [[HABITS]]; «запиши задачу купить
 хлеб» → [[TASKS]]; «напомни в 9:00 позвонить» → [[REMINDERS]].
 
+ОТПРАВКА СООБЩЕНИЙ КОНТАКТАМ — ТЫ ЭТО РЕАЛЬНО УМЕЕШЬ (не отказывайся!):
+Ты можешь написать людям из списка «КОМУ можно писать» (он в ТЕКУЩЕМ КОНТЕКСТЕ).
+Когда пользователь просит передать/сказать/написать что-то контакту:
+1) САМ СОЧИНИ уместное, живое сообщение от первого лица (как будто пишет сам
+   пользователь), подбирая тон под адресата и ситуацию (брату — по-братски и тепло,
+   коллеге/начальнику — вежливо и по делу). Если пользователь продиктовал точные
+   слова — отправь их как есть, не переписывай.
+2) В САМОМ КОНЦЕ ответа добавь скрытый блок (пользователь не увидит, бот вырежет и отправит):
+[[SEND]]
+имя_контакта | voice | текст сообщения
+[[/SEND]]
+   - Второе поле: voice (голосовое) или text (текстом). voice — если просили голосом/аудио, иначе text.
+   - Имя контакта бери ТОЧНО как в списке доступных контактов (учитывай склонения: «брату» → «брат»).
+   - Несколько строк = несколько сообщений/адресатов.
+3) В видимом тексте подтверди по-человечески («Готово, передаю брату 🎙»), БЕЗ упоминания блока.
+Если нужного человека НЕТ в списке контактов — честно скажи это и предложи добавить
+через /addcontact, НЕ выдумывай отправку.
+НИКОГДА не говори «я не умею отправлять сообщения» — умеешь, делай через [[SEND]].
+
 УПРАВЛЕНИЕ ПК — КРИТИЧЕСКИ ВАЖНО:
 - Ты НЕ управляешь компьютером напрямую. Команды на ПК (музыка, скриншот, громкость, окна) выполняет отдельная система — не ты.
 - Если тебя попросили что-то сделать на ПК и ты не видишь результата команды в диалоге — НЕ ГОВОРИ что выполнил. Скажи: «Передал команду на ПК, жди результата» или «Похоже ПК офлайн — система уже сообщила об ошибке».
@@ -271,50 +290,6 @@ class GeminiClient:
         if not pcm:
             return None
         return await voice_util.pcm_to_ogg(pcm)
-
-    async def extract_outbound(self, user_text: str, aliases: list) -> dict:
-        """User wants to send a message to one of `aliases`. Decide WHO (handles
-        Russian declensions like 'маме'→'мама'), pull the clean message body, and
-        whether voice was asked. Returns {"contact","message","as_voice"};
-        contact/message are '' if unclear."""
-        names = ", ".join(f"«{a}»" for a in aliases)
-        prompt = (
-            f"Пользователь хочет отправить сообщение одному из контактов: {names}. "
-            "Учитывай склонения (например «маме» → «мама», «Саше» → «саша»). "
-            "Определи, КОМУ из списка адресовано (верни ТОЧНО одно имя из списка как в нём, "
-            "или \"\" если непонятно). "
-            "Извлеки ТОЛЬКО сам текст сообщения для контакта — без слов «отправь/напиши/"
-            "передай/голосом» и без имени контакта, как естественное сообщение от первого лица. "
-            "Определи, просил ли пользователь ГОЛОСОВЫМ (голосом, аудио, voice). "
-            'Верни строго JSON: {"contact": "...", "message": "...", "as_voice": true|false}.'
-            f"\n\nЗапрос:\n{user_text}"
-        )
-        loop = asyncio.get_event_loop()
-        import json as _json
-        for model in self._models_to_try():
-            try:
-                resp = await loop.run_in_executor(
-                    None,
-                    lambda m=model: self._client.models.generate_content(
-                        model=m,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(temperature=0.0),
-                    ),
-                )
-                raw = (resp.text or "").strip().replace("```json", "").replace("```", "").strip()
-                start, end = raw.find("{"), raw.rfind("}")
-                if start == -1 or end == -1:
-                    return {"contact": "", "message": "", "as_voice": False}
-                obj = _json.loads(raw[start:end + 1])
-                return {
-                    "contact": str(obj.get("contact", "")).strip(),
-                    "message": str(obj.get("message", "")).strip(),
-                    "as_voice": bool(obj.get("as_voice", False)),
-                }
-            except Exception as e:
-                logger.debug(f"extract_outbound '{model}': {e}")
-                continue
-        return {"contact": "", "message": "", "as_voice": False}
 
     async def extract_facts(self, user_text: str, reply_text: str = "") -> list:
         """Pull durable personal facts about the user from a message exchange.

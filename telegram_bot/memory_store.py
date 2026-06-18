@@ -105,7 +105,16 @@ class MemoryStore:
         profile = await self._load_profile(uid)
         facts = await self._load_facts(uid)
         tasks = await self._load_tasks(uid)
-        self._cache[uid] = {"profile": profile, "facts": facts, "tasks": tasks}
+        contacts = await self.list_contacts(uid)
+        self._cache[uid] = {
+            "profile": profile, "facts": facts, "tasks": tasks,
+            "contacts": [c["alias"] for c in contacts],
+        }
+
+    def cached_contacts(self, uid: int) -> list:
+        """Whitelisted contact aliases from cache (for the system prompt)."""
+        d = self._cache.get(uid)
+        return d.get("contacts", []) if d else []
 
     def cached_block(self, uid: int) -> str:
         """Synchronous context string for the system prompt (from RAM cache)."""
@@ -374,6 +383,12 @@ class MemoryStore:
             "ON CONFLICT(user_id, alias) DO UPDATE SET target=excluded.target",
             (uid, alias.strip().lower(), target.strip(), datetime.now().isoformat(timespec="seconds")),
         )
+        await self._refresh_contacts_cache(uid)
+
+    async def _refresh_contacts_cache(self, uid: int):
+        if uid in self._cache:
+            rows = await self.list_contacts(uid)
+            self._cache[uid]["contacts"] = [c["alias"] for c in rows]
 
     async def list_contacts(self, uid: int) -> list:
         rows = await self._fetchall(
@@ -389,6 +404,7 @@ class MemoryStore:
         if not existed:
             return False
         await self._exec("DELETE FROM contacts WHERE user_id=? AND alias=?", (uid, a))
+        await self._refresh_contacts_cache(uid)
         return True
 
     async def resolve_contact(self, uid: int, name: str) -> Optional[str]:

@@ -57,6 +57,11 @@ def _build_context(uid: int) -> str:
     persona = personas.overlay(memory.cached_mode(uid))
     if persona:
         parts.append(persona)
+    contacts = memory.cached_contacts(uid)
+    if contacts:
+        parts.append("КОМУ можно писать (контакты для отправки сообщений): " + ", ".join(contacts) + ".")
+    else:
+        parts.append("Контактов для отправки пока нет (пользователь добавляет их через /addcontact).")
     return "\n".join(parts)
 
 
@@ -122,7 +127,8 @@ _PC_KEYWORDS = [
 _REMINDER_TRIGGERS = ["напомни", "remind me", "поставь напоминание", "таймер на"]
 
 # ── JARVIS Outbound: send to whitelisted contacts (executed by PC userbot) ──────
-_SEND_VERBS = ["отправь", "напиши", "передай", "сообщи", "скажи", "send"]
+# JARVIS itself decides to send and composes the message, emitting a [[SEND]]
+# block (parsed by _apply_send_directives) — same agentic pattern as reminders.
 _pending_sends: dict = {}        # token -> asyncio.Task (5s undo window)
 _ub_counter = 0
 
@@ -146,59 +152,52 @@ async def _dispatch_outbound(token, target, alias, message, as_voice, user_id, s
         logger.debug(f"outbound edit: {e}")
 
 
-def _alias_stem(alias: str) -> str:
-    """Stem that survives Russian declension: drop up to 2 trailing letters
-    ('мама'→'мам' matches 'маме'; 'айгуль'→'айгу')."""
-    return alias[:max(3, len(alias) - 2)]
+_RE_SEND = re.compile(r"\[\[SEND\]\](.*?)\[\[/SEND\]\]", re.S | re.I)
 
 
-async def _maybe_outbound(update: Update, text: str, user_id: int) -> bool:
-    """If the message is 'send <something> to <whitelisted contact>', stage it with
-    a 5-second undo. Returns True if it handled the message."""
-    low = text.lower()
-    if not any(v in low for v in _SEND_VERBS):
-        return False
-    contacts = await memory.list_contacts(user_id)
-    if not contacts:
-        return False
-    # Cheap stem pre-gate so we only call Gemini when a contact is plausibly named.
-    candidates = [c for c in contacts if _alias_stem(c["alias"]) in low]
-    if not candidates:
-        return False
+async def _apply_send_directives(update: Update, user_id: int, reply: str) -> str:
+    """Parse [[SEND]] blocks JARVIS composed, stage each with a 5s undo window,
+    and strip the block from the visible reply. Returns the clean reply."""
+    block = _RE_SEND.search(reply)
+    clean = _RE_SEND.sub("", reply).strip()
+    if not block:
+        return clean
 
-    parsed = await gemini.extract_outbound(text, [c["alias"] for c in candidates])
-    chosen = (parsed.get("contact") or "").strip().lower()
-    matched = next((c for c in candidates if c["alias"] == chosen), None)
-    if matched is None and len(candidates) == 1:
-        matched = candidates[0]      # single plausible contact — trust the gate
-    if matched is None:
-        return False                 # couldn't tell who → fall through to chat
-    msg = (parsed.get("message") or "").strip()
-    if not msg:
-        await update.effective_message.reply_text(
-            f"Что передать {matched['alias']}? Сформулируй сообщение одним запросом."
+    for line in block.group(1).splitlines():
+        line = line.strip()
+        if not line or "|" not in line:
+            continue
+        parts = [p.strip() for p in line.split("|", 2)]
+        if len(parts) < 3:
+            continue
+        alias_raw, mode, message = parts[0], parts[1].lower(), parts[2]
+        if not message:
+            continue
+        target = await memory.resolve_contact(user_id, alias_raw)
+        if not target:
+            await update.effective_message.reply_text(
+                f"⚠️ «{alias_raw}» не в белом списке. Добавь: /addcontact {alias_raw.lower()} @username"
+            )
+            continue
+        if not bridge.connected:
+            await update.effective_message.reply_text(
+                "❌ ПК офлайн — userbot не сможет отправить. Включи ПК и повтори."
+            )
+            continue
+        as_voice = any(w in mode for w in ("voice", "голос", "audio", "аудио"))
+        global _ub_counter
+        _ub_counter += 1
+        token = f"{user_id}_{_ub_counter}"
+        kind = " 🎤 голосом" if as_voice else ""
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✖ Отменить", callback_data=f"ubcancel:{token}")]])
+        sent = await update.effective_message.reply_text(
+            f"✉️ {alias_raw}{kind}:\n«{message}»\n\nОтправлю через 5 сек… (тапни «Отменить», чтобы остановить)",
+            reply_markup=kb,
         )
-        return True
-    if not bridge.connected:
-        await update.effective_message.reply_text(
-            "❌ ПК офлайн — userbot не сможет отправить. Включи ПК и повтори."
+        _pending_sends[token] = asyncio.create_task(
+            _dispatch_outbound(token, target, alias_raw, message, as_voice, user_id, sent)
         )
-        return True
-
-    global _ub_counter
-    _ub_counter += 1
-    token = f"{user_id}_{_ub_counter}"
-    as_voice = bool(parsed.get("as_voice"))
-    kind = " 🎤 голосом" if as_voice else ""
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✖ Отменить", callback_data=f"ubcancel:{token}")]])
-    sent = await update.effective_message.reply_text(
-        f"✉️ {matched['alias']}{kind}:\n«{msg}»\n\nОтправлю через 5 сек… (тапни «Отменить», чтобы остановить)",
-        reply_markup=kb,
-    )
-    _pending_sends[token] = asyncio.create_task(
-        _dispatch_outbound(token, matched["target"], matched["alias"], msg, as_voice, user_id, sent)
-    )
-    return True
+    return clean
 
 
 def _is_authorized(update: Update) -> bool:
@@ -928,10 +927,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
             return
 
-        # 1.5 Send a message to a whitelisted contact (JARVIS Outbound)?
-        if await _maybe_outbound(update, text, user_id):
-            return
-
         # 2. PC command?
         if _looks_like_pc_command(text):
             if not bridge.connected:
@@ -950,13 +945,17 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
             return
 
-        # 3. Gemini conversation (with long-term memory)
+        # 3. Gemini conversation (with long-term memory). JARVIS may decide to
+        #    create reminders/tasks/habits or send a message to a contact —
+        #    handled via hidden [[...]] directive blocks it composes itself.
         await memory.ensure_loaded(user_id)
         reply = await gemini.chat(user_id, text)
         reply, summary = await _apply_reminder_directives(user_id, reply)
+        reply = await _apply_send_directives(update, user_id, reply)
         if summary:
             reply += "\n\n✅ Добавил — " + ", ".join(summary)
-        await update.effective_message.reply_text(reply)
+        if reply.strip():
+            await update.effective_message.reply_text(reply)
         # Learn durable facts in the background — never blocks the reply
         asyncio.create_task(memory.observe(user_id, gemini, text, reply))
     except Exception as e:
@@ -996,10 +995,6 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await msg.reply_text(reply, parse_mode="Markdown")
                 return
 
-            # 1.5 Send a message to a whitelisted contact (voice command too)
-            if transcript and await _maybe_outbound(update, transcript, user_id):
-                return
-
             if transcript and _looks_like_pc_command(transcript):
                 await msg.reply_text(f"🎙 «{transcript}»")
                 if not bridge.connected:
@@ -1015,11 +1010,15 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 return
 
             # Otherwise — normal voice conversation. Voice in → voice out (mirror).
+            # JARVIS may also send to a contact via a [[SEND]] block it composes.
             await memory.ensure_loaded(user_id)
             reply = await gemini.chat_with_audio(user_id, audio)
             reply, summary = await _apply_reminder_directives(user_id, reply)
+            reply = await _apply_send_directives(update, user_id, reply)
             if summary:
                 reply += "\n\n✅ Добавил — " + ", ".join(summary)
+            if not reply.strip():
+                return                      # only a send directive — preview already shown
             ogg = await gemini.speak_ogg(reply)
             if ogg:
                 caption = reply if len(reply) <= 1000 else reply[:997] + "…"
