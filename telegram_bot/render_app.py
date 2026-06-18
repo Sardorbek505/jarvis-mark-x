@@ -101,6 +101,12 @@ async def _build_tg_app():
         ApplicationBuilder()
         .token(cfg.telegram_token)
         .updater(None)          # disable polling/updater — we receive via webhook
+        # Free CPU hosts (HF Spaces) have a slow first outbound call — give the
+        # initial get_me/setWebhook room instead of timing out the whole startup.
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .pool_timeout(30.0)
         .build()
     )
 
@@ -205,7 +211,18 @@ async def lifespan(app: FastAPI):
     await memory.init()
 
     _tg_app, bot_commands = await _build_tg_app()
-    await _tg_app.initialize()
+
+    # Retry init: a single slow/timed-out first call to Telegram on a cold free
+    # host must not crash the app (was: telegram.error.TimedOut -> Exit code 3).
+    for attempt in range(1, 6):
+        try:
+            await _tg_app.initialize()
+            break
+        except Exception as e:
+            logger.warning(f"Telegram init attempt {attempt}/5 failed: {e}")
+            if attempt == 5:
+                raise
+            await asyncio.sleep(5)
     await _tg_app.start()
     await _tg_app.bot.set_my_commands(bot_commands)
 
