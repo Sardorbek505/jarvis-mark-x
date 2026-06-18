@@ -97,7 +97,7 @@ async def _build_tg_app():
         _on_notification, _BOT_COMMANDS,
     )
 
-    app = (
+    builder = (
         ApplicationBuilder()
         .token(cfg.telegram_token)
         .updater(None)          # disable polling/updater — we receive via webhook
@@ -107,8 +107,18 @@ async def _build_tg_app():
         .read_timeout(30.0)
         .write_timeout(30.0)
         .pool_timeout(30.0)
-        .build()
     )
+
+    # HF Spaces block outbound to api.telegram.org. Route the bot's API + file
+    # calls through a Cloudflare Worker proxy when TELEGRAM_API_BASE is set
+    # (e.g. https://jarvis-tg-proxy.<sub>.workers.dev). Webhook delivery is
+    # inbound (Telegram -> our public URL) so it is unaffected.
+    api_base = os.getenv("TELEGRAM_API_BASE", "").strip().rstrip("/")
+    if api_base:
+        builder = builder.base_url(f"{api_base}/bot").base_file_url(f"{api_base}/file/bot")
+        logger.info(f"Telegram API routed via proxy: {api_base}")
+
+    app = builder.build()
 
     app.add_handler(CommandHandler("start",      cmd_start))
     app.add_handler(CommandHandler("help",       cmd_help))
