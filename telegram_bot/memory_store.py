@@ -366,6 +366,48 @@ class MemoryStore:
         )
         return row[0] if row else None
 
+    # ── contacts whitelist (JARVIS Outbound) ─────────────────────────────────────
+
+    async def add_contact(self, uid: int, alias: str, target: str):
+        await self._exec(
+            "INSERT INTO contacts(user_id, alias, target, created_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(user_id, alias) DO UPDATE SET target=excluded.target",
+            (uid, alias.strip().lower(), target.strip(), datetime.now().isoformat(timespec="seconds")),
+        )
+
+    async def list_contacts(self, uid: int) -> list:
+        rows = await self._fetchall(
+            "SELECT alias, target FROM contacts WHERE user_id=? ORDER BY alias", (uid,)
+        )
+        return [{"alias": r[0], "target": r[1]} for r in rows]
+
+    async def del_contact(self, uid: int, alias: str) -> bool:
+        a = alias.strip().lower()
+        existed = await self._fetchone(
+            "SELECT 1 FROM contacts WHERE user_id=? AND alias=?", (uid, a)
+        )
+        if not existed:
+            return False
+        await self._exec("DELETE FROM contacts WHERE user_id=? AND alias=?", (uid, a))
+        return True
+
+    async def resolve_contact(self, uid: int, name: str) -> Optional[str]:
+        """Map a spoken/typed name to a whitelisted target (@username/phone/id).
+        Exact alias match first, then a forgiving partial match."""
+        n = (name or "").strip().lower()
+        if not n:
+            return None
+        rows = await self._fetchall(
+            "SELECT alias, target FROM contacts WHERE user_id=?", (uid,)
+        )
+        for alias, target in rows:
+            if alias == n:
+                return target
+        for alias, target in rows:
+            if n in alias or alias in n:
+                return target
+        return None
+
     async def all_user_ids(self) -> list:
         """Every user the bot knows — to deliver proactive briefings to."""
         rows = await self._fetchall(
@@ -488,6 +530,13 @@ CREATE TABLE IF NOT EXISTS reminders (
     sent       INTEGER DEFAULT 0,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS contacts (
+    user_id    INTEGER NOT NULL,
+    alias      TEXT NOT NULL,
+    target     TEXT NOT NULL,
+    created_at TEXT,
+    PRIMARY KEY (user_id, alias)
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
@@ -542,6 +591,13 @@ CREATE TABLE IF NOT EXISTS reminders (
     due        TEXT NOT NULL,
     sent       INTEGER DEFAULT 0,
     created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS contacts (
+    user_id    BIGINT NOT NULL,
+    alias      TEXT NOT NULL,
+    target     TEXT NOT NULL,
+    created_at TEXT,
+    PRIMARY KEY (user_id, alias)
 );
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);

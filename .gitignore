@@ -10,6 +10,10 @@ __pycache__/
 
 # Конфиги с секретами и личными данными
 config/api_keys.json
+
+# Userbot (Telethon) сессия — ПОЛНЫЙ доступ к аккаунту, НИКОГДА не коммитить
+config/userbot.session
+config/userbot.session-journal
 config/spotify_tokens.json
 config/user_profile.json
 config/calendar.json
