@@ -1,0 +1,61 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# JARVIS — Oracle Cloud Always Free deployment (24/7, не спит, бесплатно)
+#
+# Один процесс = бот (webhook) + Mini App + PC-мост с ОБЩИМ PCBridge.
+# (Старый docker-compose.yml поднимал бот и miniapp раздельно — у них были
+#  разные мосты, и команды на ПК из бота не доходили. Здесь это исправлено.)
+#
+# Требует рядом файл .env (см. .env.oracle.example).
+#
+# Запуск:
+#   docker compose -f docker-compose.oracle.yml up -d --build
+#   docker compose -f docker-compose.oracle.yml logs -f
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Объединённое приложение: бот + Mini App + PC-мост ───────────────────────
+  jarvis:
+    build: .
+    image: jarvis-mark-x
+    restart: unless-stopped
+    command: >
+      python -m uvicorn telegram_bot.render_app:app
+      --host 0.0.0.0
+      --port 8000
+      --log-level info
+    env_file:
+      - .env
+    volumes:
+      - ./config:/app/config     # api_keys.json, SQLite-память, профиль — переживают рестарт
+      - ./memory:/app/memory
+    expose:
+      - "8000"
+    networks:
+      - jarvis
+
+  # ── Caddy: автоматический HTTPS (Let's Encrypt) для домена DuckDNS ───────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - ./Caddyfile.oracle:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - jarvis
+    depends_on:
+      - jarvis
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  jarvis:
+    driver: bridge

@@ -1,0 +1,28 @@
+# Caddyfile — автоматический HTTPS для JARVIS на Oracle Cloud.
+# Домен берётся из переменной окружения DOMAIN (см. .env), напр. jarvismarkx.duckdns.org
+# Caddy сам получит и продлит сертификат Let's Encrypt.
+
+{$DOMAIN} {
+	# WebSocket-апгрейды (Mini App /ws и PC-мост /pc-link) — обрабатываем первыми
+	@websockets {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	handle @websockets {
+		reverse_proxy jarvis:8000
+	}
+
+	# Весь остальной трафик (HTTP, статика Mini App, /webhook, /health)
+	reverse_proxy jarvis:8000
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+	}
+
+	log {
+		output stderr
+		level INFO
+	}
+}
