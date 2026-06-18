@@ -119,34 +119,48 @@ class GeminiClient:
                 chain.append(m)
         return chain
 
+    @staticmethod
+    def _is_retryable(err: Exception) -> bool:
+        s = str(err)
+        return any(t in s for t in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE", "overloaded"))
+
     async def _generate(self, contents, user_id=None) -> str:
         loop = asyncio.get_event_loop()
         last_err = None
         system_instruction = self._system_for(user_id)
-        for model in self._models_to_try():
-            try:
-                response = await loop.run_in_executor(
-                    None,
-                    lambda m=model: self._client.models.generate_content(
-                        model=m,
-                        contents=contents,
-                        config=types.GenerateContentConfig(
-                            system_instruction=system_instruction,
-                            temperature=0.7,
+        # Two passes: free-tier RPM bursts and 503 spikes are transient, so a
+        # short backoff + retry recovers most of them instead of surfacing
+        # "ИИ недоступен". The configured model (gemini-2.5-flash) stays first.
+        for attempt in range(2):
+            retryable_seen = False
+            for model in self._models_to_try():
+                try:
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda m=model: self._client.models.generate_content(
+                            model=m,
+                            contents=contents,
+                            config=types.GenerateContentConfig(
+                                system_instruction=system_instruction,
+                                temperature=0.7,
+                            ),
                         ),
-                    ),
-                )
-                text = response.text or ""
-                if text:
-                    # Remember the model that worked
-                    if model != self._model:
-                        logger.warning(f"Gemini fell back to model: {model}")
-                        self._model = model
-                    return text
-            except Exception as e:
-                last_err = e
-                logger.error(f"Gemini model '{model}' failed: {e}")
+                    )
+                    text = response.text or ""
+                    if text:
+                        if model != self._model:
+                            logger.warning(f"Gemini used fallback model: {model}")
+                        return text
+                except Exception as e:
+                    last_err = e
+                    if self._is_retryable(e):
+                        retryable_seen = True
+                    logger.error(f"Gemini model '{model}' failed: {e}")
+                    continue
+            if retryable_seen and attempt == 0:
+                await asyncio.sleep(2.5)   # let an RPM/503 spike pass, try once more
                 continue
+            break
         logger.error(f"All Gemini models failed. Last error: {last_err}")
         return "Извини, ИИ сейчас недоступен (проблема с моделью Gemini). Проверь API-ключ и квоту."
 
