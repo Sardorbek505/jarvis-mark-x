@@ -1,4 +1,4 @@
-# install_autostart.ps1 — Register JARVIS PC Server as a Windows Startup Task
+# install_autostart.ps1 - Register JARVIS PC Server as a Windows Startup Task
 # Run as Administrator: powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1
 
 param(
@@ -27,7 +27,7 @@ $action = New-ScheduledTaskAction `
 $trigger = New-ScheduledTaskTrigger -AtLogon
 
 # NOTE: switch parameters must be bare (-StartWhenAvailable), NOT "-X $true"
-# (a value after a switch is parsed as a positional arg → binding error).
+# (a value after a switch is parsed as a positional arg -> binding error).
 $settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -RestartCount 5 `
@@ -50,19 +50,19 @@ try {
         -Principal $principal `
         -Force -ErrorAction Stop | Out-Null
 } catch {
-    Write-Host "[ERROR] Не удалось зарегистрировать задачу: $($_.Exception.Message)"
+    Write-Host "[ERROR] Failed to register task: $($_.Exception.Message)"
     exit 1
 }
 
-Write-Host "[OK] Задача '$TaskName' зарегистрирована — старт при каждом входе в Windows."
+Write-Host "[OK] Task '$TaskName' registered - starts at every Windows login."
 
 # Start it right now so you don't need to reboot.
 try {
     Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-    Write-Host "[OK] Запущена сейчас. Через несколько секунд в Telegram придёт 'ПК онлайн'."
+    Write-Host "[OK] Started now. In a few seconds you'll get 'PC online' in Telegram."
 } catch {
-    Write-Host "[WARN] Зарегистрирована, но не стартовала: $($_.Exception.Message)"
+    Write-Host "[WARN] Registered, but did not start: $($_.Exception.Message)"
 }
 
 Write-Host ""
-Write-Host "Удалить автозапуск:  Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false"
+Write-Host "To remove: Unregister-ScheduledTask -TaskName '$TaskName'"
