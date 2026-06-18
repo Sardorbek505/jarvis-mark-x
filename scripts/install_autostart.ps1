@@ -26,31 +26,43 @@ $action = New-ScheduledTaskAction `
 
 $trigger = New-ScheduledTaskTrigger -AtLogon
 
+# NOTE: switch parameters must be bare (-StartWhenAvailable), NOT "-X $true"
+# (a value after a switch is parsed as a positional arg → binding error).
 $settings = New-ScheduledTaskSettingsSet `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 0) `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -RestartCount 5 `
     -RestartInterval (New-TimeSpan -Minutes 2) `
-    -StartWhenAvailable $true `
-    -RunOnlyIfNetworkAvailable $true
+    -StartWhenAvailable `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries
 
 $principal = New-ScheduledTaskPrincipal `
     -UserId $env:USERNAME `
     -LogonType Interactive `
     -RunLevel Highest
 
-Register-ScheduledTask `
-    -TaskName  $TaskName `
-    -Action    $action `
-    -Trigger   $trigger `
-    -Settings  $settings `
-    -Principal $principal `
-    -Force | Out-Null
+try {
+    Register-ScheduledTask `
+        -TaskName  $TaskName `
+        -Action    $action `
+        -Trigger   $trigger `
+        -Settings  $settings `
+        -Principal $principal `
+        -Force -ErrorAction Stop | Out-Null
+} catch {
+    Write-Host "[ERROR] Не удалось зарегистрировать задачу: $($_.Exception.Message)"
+    exit 1
+}
 
-Write-Host "[OK] Task registered: '$TaskName'"
-Write-Host "     Starts automatically at every login."
+Write-Host "[OK] Задача '$TaskName' зарегистрирована — старт при каждом входе в Windows."
+
+# Start it right now so you don't need to reboot.
+try {
+    Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    Write-Host "[OK] Запущена сейчас. Через несколько секунд в Telegram придёт 'ПК онлайн'."
+} catch {
+    Write-Host "[WARN] Зарегистрирована, но не стартовала: $($_.Exception.Message)"
+}
+
 Write-Host ""
-Write-Host "To start now:"
-Write-Host "  Start-ScheduledTask -TaskName '$TaskName'"
-Write-Host ""
-Write-Host "To remove:"
-Write-Host "  Unregister-ScheduledTask -TaskName '$TaskName'"
+Write-Host "Удалить автозапуск:  Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false"
