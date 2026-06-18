@@ -224,8 +224,11 @@ def _looks_like_pc_command(text: str) -> bool:
 
 
 def _looks_like_reminder(text: str) -> bool:
-    low = text.lower()
-    return any(k in low for k in _REMINDER_TRIGGERS)
+    # Only a CLEAN reminder command (starts with a trigger) takes the fast path.
+    # A reminder word buried in a longer brain-dump must fall through to the
+    # unified inbox (Gemini), which sorts reminders + tasks + notes together.
+    low = text.strip().lower()
+    return any(low.startswith(k) for k in _REMINDER_TRIGGERS)
 
 
 async def _try_pc(text: str, user_id: int) -> str | None:
@@ -967,22 +970,15 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text(reply, parse_mode="Markdown")
             return
 
-        # 1. Reminder?
+        # 1. Clean single reminder ("напомни …")? Fast-path it. If it doesn't
+        #    parse, fall through to Gemini's unified inbox instead of a dead-end
+        #    prompt — the inbox handles complex brain-dumps (reminder+task+note).
         if _looks_like_reminder(text):
             confirm = await _store_reminder(user_id, text)
             if confirm:
                 await update.effective_message.reply_text(confirm)
-            else:
-                # Trigger word present but time unparseable — ask for the format
-                # instead of falling through to Gemini (which would falsely
-                # "confirm" a reminder that was never saved).
-                await update.effective_message.reply_text(
-                    "Когда напомнить? Напиши одним сообщением со словом «напомни»:\n"
-                    "• напомни написать тебе через минуту\n"
-                    "• напомни купить хлеб в 15:00\n"
-                    "• напомни завтра в 9:00 встреча"
-                )
-            return
+                return
+            # else: not a parseable single reminder → let the inbox sort it
 
         # 2. PC command?
         if _looks_like_pc_command(text):
