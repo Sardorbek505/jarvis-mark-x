@@ -996,6 +996,10 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await msg.reply_text(reply, parse_mode="Markdown")
                 return
 
+            # 1.5 Send a message to a whitelisted contact (voice command too)
+            if transcript and await _maybe_outbound(update, transcript, user_id):
+                return
+
             if transcript and _looks_like_pc_command(transcript):
                 await msg.reply_text(f"🎙 «{transcript}»")
                 if not bridge.connected:
