@@ -1,3 +1,13 @@
+---
+title: JARVIS Mark X
+emoji: 🤖
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 8000
+pinned: false
+---
+
 # 🤖 ДЖАРВИС — Русскоязычный голосовой ИИ-ассистент
 
 Клон Mark-XXXIX с полной поддержкой русского языка.  
