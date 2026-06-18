@@ -85,6 +85,9 @@ _BOT_COMMANDS = [
     BotCommand("check",      "Отметить привычку за сегодня"),
     BotCommand("morning",    "Утренний брифинг сейчас"),
     BotCommand("evening",    "Вечерний разбор сейчас"),
+    BotCommand("contacts",   "Кому можно писать (белый список)"),
+    BotCommand("addcontact", "Добавить контакт: /addcontact имя @user"),
+    BotCommand("delcontact", "Удалить контакт: /delcontact имя"),
     BotCommand("mode",       "Режим личности (ментор/друг/бизнес)"),
     BotCommand("profile",    "Что JARVIS обо мне знает"),
     BotCommand("remember",   "Запомнить факт обо мне"),
@@ -117,6 +120,85 @@ _PC_KEYWORDS = [
 ]
 
 _REMINDER_TRIGGERS = ["напомни", "remind me", "поставь напоминание", "таймер на"]
+
+# ── JARVIS Outbound: send to whitelisted contacts (executed by PC userbot) ──────
+_SEND_VERBS = ["отправь", "напиши", "передай", "сообщи", "скажи", "send"]
+_pending_sends: dict = {}        # token -> asyncio.Task (5s undo window)
+_ub_counter = 0
+
+
+async def _dispatch_outbound(token, target, alias, message, as_voice, user_id, sent_msg):
+    """After the 5s undo window, hand the message to the PC userbot via the bridge."""
+    try:
+        await asyncio.sleep(5)
+    except asyncio.CancelledError:
+        return
+    _pending_sends.pop(token, None)
+    res = await bridge.send_userbot(target, message, as_voice, user_id)
+    txt = (res or {}).get("text", "")
+    try:
+        if res and "Отправлено" in txt:
+            kind = "🎤 голосом" if as_voice else "✍️ текстом"
+            await sent_msg.edit_text(f"✅ Отправлено {alias} ({kind})")
+        else:
+            await sent_msg.edit_text(f"❌ Не отправлено {alias}: {txt or 'ПК офлайн / не ответил'}")
+    except Exception as e:
+        logger.debug(f"outbound edit: {e}")
+
+
+def _alias_stem(alias: str) -> str:
+    """Stem that survives Russian declension: drop up to 2 trailing letters
+    ('мама'→'мам' matches 'маме'; 'айгуль'→'айгу')."""
+    return alias[:max(3, len(alias) - 2)]
+
+
+async def _maybe_outbound(update: Update, text: str, user_id: int) -> bool:
+    """If the message is 'send <something> to <whitelisted contact>', stage it with
+    a 5-second undo. Returns True if it handled the message."""
+    low = text.lower()
+    if not any(v in low for v in _SEND_VERBS):
+        return False
+    contacts = await memory.list_contacts(user_id)
+    if not contacts:
+        return False
+    # Cheap stem pre-gate so we only call Gemini when a contact is plausibly named.
+    candidates = [c for c in contacts if _alias_stem(c["alias"]) in low]
+    if not candidates:
+        return False
+
+    parsed = await gemini.extract_outbound(text, [c["alias"] for c in candidates])
+    chosen = (parsed.get("contact") or "").strip().lower()
+    matched = next((c for c in candidates if c["alias"] == chosen), None)
+    if matched is None and len(candidates) == 1:
+        matched = candidates[0]      # single plausible contact — trust the gate
+    if matched is None:
+        return False                 # couldn't tell who → fall through to chat
+    msg = (parsed.get("message") or "").strip()
+    if not msg:
+        await update.effective_message.reply_text(
+            f"Что передать {matched['alias']}? Сформулируй сообщение одним запросом."
+        )
+        return True
+    if not bridge.connected:
+        await update.effective_message.reply_text(
+            "❌ ПК офлайн — userbot не сможет отправить. Включи ПК и повтори."
+        )
+        return True
+
+    global _ub_counter
+    _ub_counter += 1
+    token = f"{user_id}_{_ub_counter}"
+    as_voice = bool(parsed.get("as_voice"))
+    kind = " 🎤 голосом" if as_voice else ""
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✖ Отменить", callback_data=f"ubcancel:{token}")]])
+    sent = await update.effective_message.reply_text(
+        f"✉️ {matched['alias']}{kind}:\n«{msg}»\n\nОтправлю через 5 сек… (тапни «Отменить», чтобы остановить)",
+        reply_markup=kb,
+    )
+    _pending_sends[token] = asyncio.create_task(
+        _dispatch_outbound(token, matched["target"], matched["alias"], msg, as_voice, user_id, sent)
+    )
+    return True
 
 
 def _is_authorized(update: Update) -> bool:
@@ -328,6 +410,16 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     data = q.data or ""
     try:
+        if data.startswith("ubcancel:"):
+            token = data.split(":", 1)[1]
+            task = _pending_sends.pop(token, None)
+            if task:
+                task.cancel()
+                await q.answer("Отменено")
+                await q.edit_message_text("✖ Отменено — ничего не отправлено.")
+            else:
+                await q.answer("Уже отправлено")
+            return
         if data.startswith("mode:"):
             mid = data.split(":", 1)[1]
             await memory.set_mode(uid, mid)
@@ -547,6 +639,65 @@ async def cmd_forget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ── PC commands ────────────────────────────────────────────────────────────────
+
+async def cmd_contacts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    contacts = await memory.list_contacts(uid)
+    if not contacts:
+        await update.effective_message.reply_text(
+            "📇 Белый список пуст.\n\n"
+            "Добавь, кому JARVIS может писать:\n"
+            "`/addcontact <имя> <@username или +телефон>`\n"
+            "Пример: `/addcontact айгуль @aigul_k`",
+            parse_mode="Markdown",
+        )
+        return
+    lines = "\n".join(f"• *{c['alias']}* → `{c['target']}`" for c in contacts)
+    await update.effective_message.reply_text(
+        f"📇 *Кому можно писать:*\n{lines}\n\n"
+        f"Сказать: «отправь {contacts[0]['alias']} голосом, что опоздаю»\n"
+        f"Удалить: `/delcontact {contacts[0]['alias']}`",
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_addcontact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    parts = (update.effective_message.text or "").split(maxsplit=2)
+    if len(parts) < 3:
+        await update.effective_message.reply_text(
+            "Формат: `/addcontact <имя> <@username или +телефон>`\n"
+            "Пример: `/addcontact айгуль @aigul_k`\n"
+            "(телефон работает, если контакт уже в твоей адресной книге Telegram)",
+            parse_mode="Markdown",
+        )
+        return
+    alias, target = parts[1], parts[2].strip()
+    await memory.add_contact(uid, alias, target)
+    await update.effective_message.reply_text(
+        f"✅ Добавлен: *{alias.lower()}* → `{target}`\n"
+        f"Теперь можно: «отправь {alias.lower()} голосом, …»",
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_delcontact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    parts = (update.effective_message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await update.effective_message.reply_text("Формат: `/delcontact <имя>`", parse_mode="Markdown")
+        return
+    ok = await memory.del_contact(uid, parts[1])
+    await update.effective_message.reply_text(
+        f"🗑 Удалён: {parts[1].lower()}" if ok else f"Не найден: {parts[1]}"
+    )
+
 
 async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
@@ -775,6 +926,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     "• напомни купить хлеб в 15:00\n"
                     "• напомни завтра в 9:00 встреча"
                 )
+            return
+
+        # 1.5 Send a message to a whitelisted contact (JARVIS Outbound)?
+        if await _maybe_outbound(update, text, user_id):
             return
 
         # 2. PC command?

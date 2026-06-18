@@ -329,8 +329,44 @@ def _extract_after(tl: str, markers: list) -> str:
 
 # ── WebSocket client — dials out to Render/VPS ─────────────────────────────────
 
+_gemini = None
+
+
+def _get_gemini():
+    """Lazy GeminiClient for voice synthesis (uses the PC's own config key)."""
+    global _gemini
+    if _gemini is None:
+        try:
+            from telegram_bot.config import load as load_config
+            from telegram_bot.gemini_client import GeminiClient
+            c = load_config(require_bot=False)
+            if c.gemini_api_key:
+                _gemini = GeminiClient(c.gemini_api_key, c.gemini_model)
+        except Exception as e:
+            logger.warning(f"Gemini init (voice) failed: {e}")
+    return _gemini
+
+
+async def _handle_userbot(msg: dict) -> dict:
+    """Deliver an outbound message via the Telethon userbot."""
+    from telegram_bot import pc_userbot
+    target = msg.get("target", "")
+    text = msg.get("text", "")
+    as_voice = bool(msg.get("as_voice"))
+    res = await pc_userbot.send_message(
+        target, text, as_voice, gemini=_get_gemini() if as_voice else None
+    )
+    if res.get("ok"):
+        note = res.get("error")
+        return {"text": "✅ Отправлено" + (f" ({note})" if note else "")}
+    return {"text": f"❌ Не отправлено: {res.get('error')}"}
+
+
 async def _handle(ws, msg: dict):
-    result = await _execute(msg.get("text", ""))
+    if msg.get("action") == "send_telegram":
+        result = await _handle_userbot(msg)
+    else:
+        result = await _execute(msg.get("text", ""))
     try:
         await ws.send(json.dumps({
             "type": "response",

@@ -272,6 +272,50 @@ class GeminiClient:
             return None
         return await voice_util.pcm_to_ogg(pcm)
 
+    async def extract_outbound(self, user_text: str, aliases: list) -> dict:
+        """User wants to send a message to one of `aliases`. Decide WHO (handles
+        Russian declensions like 'маме'→'мама'), pull the clean message body, and
+        whether voice was asked. Returns {"contact","message","as_voice"};
+        contact/message are '' if unclear."""
+        names = ", ".join(f"«{a}»" for a in aliases)
+        prompt = (
+            f"Пользователь хочет отправить сообщение одному из контактов: {names}. "
+            "Учитывай склонения (например «маме» → «мама», «Саше» → «саша»). "
+            "Определи, КОМУ из списка адресовано (верни ТОЧНО одно имя из списка как в нём, "
+            "или \"\" если непонятно). "
+            "Извлеки ТОЛЬКО сам текст сообщения для контакта — без слов «отправь/напиши/"
+            "передай/голосом» и без имени контакта, как естественное сообщение от первого лица. "
+            "Определи, просил ли пользователь ГОЛОСОВЫМ (голосом, аудио, voice). "
+            'Верни строго JSON: {"contact": "...", "message": "...", "as_voice": true|false}.'
+            f"\n\nЗапрос:\n{user_text}"
+        )
+        loop = asyncio.get_event_loop()
+        import json as _json
+        for model in self._models_to_try():
+            try:
+                resp = await loop.run_in_executor(
+                    None,
+                    lambda m=model: self._client.models.generate_content(
+                        model=m,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(temperature=0.0),
+                    ),
+                )
+                raw = (resp.text or "").strip().replace("```json", "").replace("```", "").strip()
+                start, end = raw.find("{"), raw.rfind("}")
+                if start == -1 or end == -1:
+                    return {"contact": "", "message": "", "as_voice": False}
+                obj = _json.loads(raw[start:end + 1])
+                return {
+                    "contact": str(obj.get("contact", "")).strip(),
+                    "message": str(obj.get("message", "")).strip(),
+                    "as_voice": bool(obj.get("as_voice", False)),
+                }
+            except Exception as e:
+                logger.debug(f"extract_outbound '{model}': {e}")
+                continue
+        return {"contact": "", "message": "", "as_voice": False}
+
     async def extract_facts(self, user_text: str, reply_text: str = "") -> list:
         """Pull durable personal facts about the user from a message exchange.
         Returns a list of short Russian fact strings (may be empty)."""
