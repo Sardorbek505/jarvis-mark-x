@@ -122,6 +122,9 @@ header {
 
 .msg.sys {
   align-self: center;
+  text-align: center;
+  max-width: 92%;
+  overflow-wrap: anywhere;
   background: none;
   border: none;
   color: var(--dim);
@@ -149,35 +152,6 @@ header {
   30%          { transform: translateY(-7px); opacity: 1; }
 }
 
-/* ─── Quick PC bar ───────────────────────────────── */
-#quick-bar {
-  display: flex;
-  gap: 6px;
-  padding: 8px 14px;
-  overflow-x: auto;
-  scrollbar-width: none;
-  flex-shrink: 0;
-  border-top: 1px solid rgba(0,212,255,.08);
-}
-#quick-bar::-webkit-scrollbar { display: none; }
-
-.q-btn {
-  flex-shrink: 0;
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  border: 1px solid rgba(0,212,255,.18);
-  background: rgba(0,212,255,.06);
-  color: var(--text);
-  font-size: 17px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background .15s, transform .1s;
-}
-.q-btn:active { background: rgba(0,212,255,.2); transform: scale(.92); }
-
 /* ─── Orb ────────────────────────────────────────── */
 #orb-section {
   display: flex;
@@ -186,6 +160,15 @@ header {
   gap: 14px;
   padding: 18px 0 10px;
   flex-shrink: 0;
+}
+
+/* Empty chat = orb is the hero, centered in the free space.
+   Once a real message arrives, JS drops .is-empty and the chat takes over. */
+#view-chat.is-empty #chat { flex: 0 0 auto; }
+#view-chat.is-empty #orb-section {
+  flex: 1 1 auto;
+  justify-content: center;
+  padding: 0;
 }
 
 /* ─── Arc-reactor orb (Iron-Man style — clean, centered, premium) ──── */
