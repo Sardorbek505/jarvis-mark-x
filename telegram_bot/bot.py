@@ -163,6 +163,7 @@ async def _apply_send_directives(update: Update, user_id: int, reply: str) -> st
     if not block:
         return clean
 
+    staged = failed = 0
     for line in block.group(1).splitlines():
         line = line.strip()
         if not line or "|" not in line:
@@ -178,11 +179,13 @@ async def _apply_send_directives(update: Update, user_id: int, reply: str) -> st
             await update.effective_message.reply_text(
                 f"⚠️ «{alias_raw}» не в белом списке. Добавь: /addcontact {alias_raw.lower()} @username"
             )
+            failed += 1
             continue
         if not bridge.connected:
             await update.effective_message.reply_text(
                 "❌ ПК офлайн — userbot не сможет отправить. Включи ПК и повтори."
             )
+            failed += 1
             continue
         as_voice = any(w in mode for w in ("voice", "голос", "audio", "аудио"))
         global _ub_counter
@@ -197,6 +200,12 @@ async def _apply_send_directives(update: Update, user_id: int, reply: str) -> st
         _pending_sends[token] = asyncio.create_task(
             _dispatch_outbound(token, target, alias_raw, message, as_voice, user_id, sent)
         )
+        staged += 1
+
+    # Don't show JARVIS's optimistic "передаю…" text if nothing actually got
+    # staged (PC offline / contact not whitelisted) — only the clear error.
+    if failed and not staged:
+        return ""
     return clean
 
 
