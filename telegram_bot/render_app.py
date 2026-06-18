@@ -59,6 +59,11 @@ def _build_context(uid: int) -> str:
     persona = personas.overlay(memory.cached_mode(uid))
     if persona:
         parts.append(persona)
+    contacts = memory.cached_contacts(uid)
+    if contacts:
+        parts.append("КОМУ можно писать (контакты для отправки сообщений): " + ", ".join(contacts) + ".")
+    else:
+        parts.append("Контактов для отправки пока нет (пользователь добавляет их через /addcontact).")
     return "\n".join(parts)
 
 
@@ -68,7 +73,54 @@ gemini.set_context_provider(_build_context)
 miniapp_server._gemini = gemini
 miniapp_server._bridge = bridge
 miniapp_server._memory = memory
-bridge.on_status_change(miniapp_server.broadcast_pc_status)
+
+
+# ── PC online/offline → keep Mini App in sync AND ping the user in Telegram ────
+_pc_online_notified = False
+_pc_offline_task = None
+
+
+async def _notify_users(text: str):
+    if _tg_app is None:
+        return
+    for uid in cfg.allowed_user_ids:
+        try:
+            await _tg_app.bot.send_message(chat_id=uid, text=text)
+        except Exception as e:
+            logger.debug(f"notify {uid}: {e}")
+
+
+async def _on_pc_status(online: bool):
+    await miniapp_server.broadcast_pc_status(online)   # Mini App badge
+    global _pc_online_notified, _pc_offline_task
+    if online:
+        if _pc_offline_task:
+            _pc_offline_task.cancel()
+            _pc_offline_task = None
+        if not _pc_online_notified:
+            _pc_online_notified = True
+            await _notify_users("🖥 ПК онлайн — можно управлять компьютером.")
+    else:
+        # Debounce: brief reconnects flap online/offline. Only announce offline
+        # after 20s without a reconnect, so we don't spam on network blips.
+        if _pc_offline_task:
+            return
+
+        async def _confirm_offline():
+            global _pc_online_notified, _pc_offline_task
+            try:
+                await asyncio.sleep(20)
+            except asyncio.CancelledError:
+                return
+            _pc_offline_task = None
+            if not bridge.connected:
+                _pc_online_notified = False
+                await _notify_users("🌙 ПК офлайн.")
+
+        _pc_offline_task = asyncio.create_task(_confirm_offline())
+
+
+bridge.on_status_change(_on_pc_status)
 
 
 # ── Build the Telegram Application (webhook mode, no Updater) ─────────────────
