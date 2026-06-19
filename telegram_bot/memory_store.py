@@ -107,10 +107,12 @@ class MemoryStore:
         tasks = await self._load_tasks(uid)
         contacts = await self.list_contacts(uid)
         schedule = await self.list_schedule(uid)
+        projects = await self.list_projects(uid)
         self._cache[uid] = {
             "profile": profile, "facts": facts, "tasks": tasks,
             "contacts": [c["alias"] for c in contacts],
             "schedule": schedule,
+            "projects": projects,
         }
 
     def cached_contacts(self, uid: int) -> list:
@@ -507,6 +509,44 @@ class MemoryStore:
         await self._exec("DELETE FROM schedule WHERE user_id=?", (uid,))
         await self._refresh_schedule_cache(uid)
 
+    # ── projects (трекер статусов проектов) ──────────────────────────────────────
+
+    async def upsert_project(self, uid: int, name: str, status: str) -> dict:
+        name = name.strip()
+        await self._exec(
+            "INSERT INTO projects(user_id, name, status, updated_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(user_id, name) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at",
+            (uid, name, status.strip(), datetime.now().isoformat(timespec="seconds")),
+        )
+        await self._refresh_projects_cache(uid)
+        return {"name": name, "status": status.strip()}
+
+    async def list_projects(self, uid: int) -> list:
+        rows = await self._fetchall(
+            "SELECT name, status, updated_at FROM projects WHERE user_id=? ORDER BY updated_at DESC",
+            (uid,),
+        )
+        return [{"name": r[0], "status": r[1], "updated_at": r[2]} for r in rows]
+
+    async def delete_project(self, uid: int, name: str) -> bool:
+        n = name.strip()
+        owner = await self._fetchone(
+            "SELECT 1 FROM projects WHERE user_id=? AND lower(name)=lower(?)", (uid, n)
+        )
+        if not owner:
+            return False
+        await self._exec("DELETE FROM projects WHERE user_id=? AND lower(name)=lower(?)", (uid, n))
+        await self._refresh_projects_cache(uid)
+        return True
+
+    def cached_projects(self, uid: int) -> list:
+        d = self._cache.get(uid)
+        return d.get("projects", []) if d else []
+
+    async def _refresh_projects_cache(self, uid: int):
+        if uid in self._cache:
+            self._cache[uid]["projects"] = await self.list_projects(uid)
+
     async def all_user_ids(self) -> list:
         """Every user the bot knows — to deliver proactive briefings to."""
         rows = await self._fetchall(
@@ -651,6 +691,13 @@ CREATE TABLE IF NOT EXISTS schedule (
     location   TEXT,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS projects (
+    user_id    INTEGER NOT NULL,
+    name       TEXT NOT NULL,
+    status     TEXT,
+    updated_at TEXT,
+    PRIMARY KEY (user_id, name)
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
@@ -727,6 +774,13 @@ CREATE TABLE IF NOT EXISTS schedule (
     subject    TEXT NOT NULL,
     location   TEXT,
     created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS projects (
+    user_id    BIGINT NOT NULL,
+    name       TEXT NOT NULL,
+    status     TEXT,
+    updated_at TEXT,
+    PRIMARY KEY (user_id, name)
 );
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);

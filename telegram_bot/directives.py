@@ -20,9 +20,10 @@ _RE_HABITS = re.compile(r"\[\[HABITS\]\](.*?)\[\[/HABITS\]\]", re.S | re.I)
 _RE_TASKS = re.compile(r"\[\[TASKS\]\](.*?)\[\[/TASKS\]\]", re.S | re.I)
 _RE_NOTES = re.compile(r"\[\[NOTES\]\](.*?)\[\[/NOTES\]\]", re.S | re.I)
 _RE_SCHEDULE = re.compile(r"\[\[SCHEDULE\]\](.*?)\[\[/SCHEDULE\]\]", re.S | re.I)
+_RE_PROJECTS = re.compile(r"\[\[PROJECT\]\](.*?)\[\[/PROJECT\]\]", re.S | re.I)
 _REM_LINE = re.compile(r"(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2})[:.](\d{2})\s*\|\s*(.+)")
 
-_ALL = (_RE_REMINDERS, _RE_HABITS, _RE_TASKS, _RE_NOTES, _RE_SCHEDULE)
+_ALL = (_RE_REMINDERS, _RE_HABITS, _RE_TASKS, _RE_NOTES, _RE_SCHEDULE, _RE_PROJECTS)
 
 _WEEKDAYS = {
     "пн": 0, "вт": 1, "ср": 2, "чт": 3, "пт": 4, "сб": 5, "вс": 6,
@@ -123,6 +124,20 @@ async def apply(memory, user_id: int, reply: str, tz) -> tuple[str, list]:
                 n += 1
         if n:
             summary.append(f"📚 пар: {n}")
+
+    block = _RE_PROJECTS.search(reply)
+    if block and hasattr(memory, "upsert_project"):
+        n = 0
+        for line in block.group(1).splitlines():
+            parts = [p.strip() for p in _clean_line(line).split("|", 1)]
+            if not parts or not parts[0]:
+                continue
+            name = parts[0]
+            status = parts[1] if len(parts) > 1 else ""
+            await memory.upsert_project(user_id, name, status)
+            n += 1
+        if n:
+            summary.append(f"💻 проектов: {n}")
 
     clean = reply
     for rx in _ALL:

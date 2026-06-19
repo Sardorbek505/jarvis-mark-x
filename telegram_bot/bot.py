@@ -86,6 +86,11 @@ def _build_context(uid: int) -> str:
     sched = _schedule_today_str(uid)
     if sched:
         parts.append(sched)
+    projects = memory.cached_projects(uid)
+    if projects:
+        parts.append("Проекты пользователя: " + "; ".join(
+            (f"{p['name']} — {p['status']}" if p.get('status') else p['name']) for p in projects[:10]
+        ) + ".")
     return "\n".join(parts)
 
 
@@ -110,6 +115,8 @@ _BOT_COMMANDS = [
     BotCommand("today",      "Сегодня: пары + задачи"),
     BotCommand("schedule",   "Расписание пар на неделю"),
     BotCommand("clearschedule", "Очистить расписание"),
+    BotCommand("projects",   "Статусы моих проектов"),
+    BotCommand("delproject", "Удалить проект: /delproject имя"),
     BotCommand("done",       "Закрыть задачу по номеру"),
     BotCommand("habit",      "Добавить привычку"),
     BotCommand("habits",     "Мои привычки и серии"),
@@ -657,6 +664,36 @@ async def cmd_clearschedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await memory.clear_schedule(update.effective_user.id)
     await update.effective_message.reply_text("📚 Расписание очищено. Продиктуй новое одним сообщением.")
+
+
+async def cmd_projects(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    projects = await memory.list_projects(update.effective_user.id)
+    if not projects:
+        await update.effective_message.reply_text(
+            "💻 Проектов пока нет.\nПросто расскажи о работе — «по BTS задеплоил лендинг», "
+            "«начал проект X» — я запомню статус."
+        )
+        return
+    lines = ["💻 *Твои проекты:*"]
+    for p in projects:
+        lines.append(f"• *{p['name']}*" + (f" — {p['status']}" if p.get("status") else ""))
+    lines.append("\nУдалить: `/delproject <название>`")
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_delproject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    parts = (update.effective_message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await update.effective_message.reply_text("Формат: `/delproject <название>`", parse_mode="Markdown")
+        return
+    ok = await memory.delete_project(update.effective_user.id, parts[1])
+    await update.effective_message.reply_text(
+        f"🗑 Удалён проект: {parts[1]}" if ok else f"Не найден проект: {parts[1]}"
+    )
 
 
 async def cmd_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
