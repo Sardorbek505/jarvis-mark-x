@@ -1,0 +1,5 @@
+# Test-only dependencies for the curated tests/ suite (CI).
+# Pure unit tests — no Gemini, Telegram, Neon or network required.
+pytest>=8.0
+pytest-asyncio>=0.23
+aiosqlite>=0.19.0

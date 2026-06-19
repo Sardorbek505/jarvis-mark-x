@@ -41,6 +41,7 @@ from telegram_bot import agenda
 from telegram_bot import proactive
 from telegram_bot import onboarding
 from telegram_bot import directives
+from telegram_bot import context_builder
 from telegram_bot.memory_store import MemoryStore
 
 cfg = load_config()
@@ -71,33 +72,8 @@ def _schedule_today_str(uid: int) -> str:
 
 
 def _build_context(uid: int) -> str:
-    parts = [user_context.describe(uid, cfg.default_city, cfg.timezone)]
-    mem = memory.cached_block(uid)
-    if mem:
-        parts.append(mem)
-    persona = personas.overlay(memory.cached_mode(uid))
-    if persona:
-        parts.append(persona)
-    contacts = memory.cached_contacts(uid)
-    if contacts:
-        parts.append("КОМУ можно писать (имя — кто это, для верного тона): " + "; ".join(
-            (c["alias"] + (f" — {c['note']}" if c.get("note") else "")) for c in contacts
-        ) + ".")
-    else:
-        parts.append("Контактов для отправки пока нет (пользователь добавляет их через /addcontact).")
-    sched = _schedule_today_str(uid)
-    if sched:
-        parts.append(sched)
-    projects = memory.cached_projects(uid)
-    if projects:
-        parts.append("Проекты пользователя: " + "; ".join(
-            (f"{p['name']} — {p['status']}" if p.get('status') else p['name']) for p in projects[:10]
-        ) + ".")
-    notes = memory.cached_notes(uid)
-    if notes:
-        parts.append("Недавние заметки пользователя (можешь ссылаться на них): "
-                     + "; ".join(n["text"] for n in notes[:12]) + ".")
-    return "\n".join(parts)
+    # Single source of truth — shared with render_app.py (see context_builder.py).
+    return context_builder.build_context(memory, cfg, uid)
 
 
 gemini.set_context_provider(_build_context)
