@@ -381,13 +381,15 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
                     "caption": rich.get("text", ""),
                 }))
             if rich.get("text"):
-                await _send_text(ws, f"🖥 {rich['text']}", want_audio)
+                # PC command results are short status confirmations — show as text,
+                # don't speak them (avoids the browser-fallback voice on button taps).
+                await _send_text(ws, f"🖥 {rich['text']}", want_audio=False)
         else:
             # PC connected but didn't respond — never fall through to Gemini
             await _send_text(
                 ws,
                 "❌ ПК не ответил. Убедись что pc_server запущен на компьютере (`scripts\\start_pc.bat`).",
-                want_audio,
+                want_audio=False,
             )
         return
 
@@ -395,7 +397,7 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
         await _send_text(
             ws,
             "❌ ПК офлайн. Запусти `scripts\\start_pc.bat` на своём компьютере.",
-            want_audio,
+            want_audio=False,
         )
         return
 
