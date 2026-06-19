@@ -43,6 +43,7 @@ from telegram_bot import onboarding
 from telegram_bot import directives
 from telegram_bot import context_builder
 from telegram_bot import recall
+from telegram_bot import gcal
 from telegram_bot.memory_store import MemoryStore
 
 cfg = load_config()
@@ -654,14 +655,19 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     classes = await memory.schedule_for_day(uid, wd)
     tasks = [t for t in await memory.get_tasks(uid)
              if t.get("due") and agenda.is_today(t["due"])]
+    cal = await asyncio.to_thread(gcal.list_events, 0, 0, cfg.timezone)
     lines = [f"🗓 *Сегодня ({_WD_NAMES[wd]})*"]
+    if cal:
+        lines.append("\n📅 *Календарь:*")
+        lines += [f"• {(e['time']+' ' if e['time'] else '')}{e['summary']}"
+                  + (f" — {e['location']}" if e['location'] else "") for e in cal]
     if classes:
         lines.append("\n📚 *Пары:*")
         lines += [f"• {_fmt_class(c)}" for c in classes]
     if tasks:
         lines.append("\n✅ *Задачи:*")
         lines += [f"• {t['title']}" for t in tasks]
-    if not classes and not tasks:
+    if not cal and not classes and not tasks:
         lines.append("\nПусто — отдыхай 🙂")
     await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
 

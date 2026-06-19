@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from telegram_bot import user_context
 from telegram_bot import agenda
 from telegram_bot import weather
+from telegram_bot import gcal
 
 logger = logging.getLogger("jarvis-proactive")
 
@@ -66,14 +67,17 @@ def _reminders_text(reminders: list) -> str:
 
 
 def _morning_prompt(name: str, today: list, all_open: list, weather_line: str = "",
-                    classes: list = None, undone_habits: list = None, reminders: list = None) -> str:
+                    classes: list = None, undone_habits: list = None, reminders: list = None,
+                    calendar_text: str = "") -> str:
     who = f" Пользователя зовут {name}." if name else ""
     wx = f"Погода сегодня: {weather_line}.\n\n" if weather_line else ""
+    cal = f"События календаря на сегодня: {calendar_text}\n\n" if calendar_text else ""
     return (
         "Сейчас утро. Составь короткий тёплый утренний брифинг для пользователя "
         "в своём текущем стиле (учитывай режим личности и что ты о нём знаешь)."
         f"{who}\n\n"
         f"{wx}"
+        f"{cal}"
         f"{_classes_text(classes or [])}"
         f"Задачи и события на сегодня:\n{_tasks_text(today)}\n\n"
         f"{_reminders_text(reminders or [])}"
@@ -100,17 +104,19 @@ def _tomorrow_classes_text(classes: list) -> str:
 
 def _evening_prompt(name: str, today: list, all_open: list,
                     tomorrow_classes: list = None, undone_habits: list = None,
-                    tomorrow_reminders: list = None) -> str:
+                    tomorrow_reminders: list = None, tomorrow_calendar: str = "") -> str:
     who = f" Пользователя зовут {name}." if name else ""
     tr = ""
     if tomorrow_reminders:
         tr = "Напоминания на завтра: " + "; ".join(r['text'] for r in tomorrow_reminders[:3]) + "\n\n"
+    cal = f"События календаря на завтра: {tomorrow_calendar}\n\n" if tomorrow_calendar else ""
     return (
         "Сейчас вечер. Составь короткий, но содержательный вечерний разбор дня "
         "для пользователя в своём текущем стиле."
         f"{who}\n\n"
         f"Что было запланировано на сегодня:\n{_tasks_text(today)}\n\n"
         f"Открытых задач сейчас: {len(all_open)}.\n\n"
+        f"{cal}"
         f"{_tomorrow_classes_text(tomorrow_classes or [])}"
         f"{tr}"
         f"{_habits_text(undone_habits or [])}"
@@ -136,8 +142,9 @@ async def _send_briefing(bot, gemini, memory, uid: int, slot: str,
         habits = await memory.get_habits(uid, now.date().isoformat())
         undone_habits = [h for h in habits if not h.get("done_today")]
         reminders = await memory.list_reminders(uid)
+        cal_today = gcal.events_text(await asyncio.to_thread(gcal.list_events, 0, 0, default_tz))
         prompt = _morning_prompt(name, today, tasks, weather_line or "",
-                                 classes, undone_habits, reminders)
+                                 classes, undone_habits, reminders, cal_today)
         header = "☀️"
     else:
         now = user_context.local_now(uid, default_tz)
@@ -148,8 +155,9 @@ async def _send_briefing(bot, gemini, memory, uid: int, slot: str,
         tomorrow_str = (now.date() + timedelta(days=1)).isoformat()
         reminders = await memory.list_reminders(uid)
         tomorrow_reminders = [r for r in reminders if str(r.get("due", "")).startswith(tomorrow_str)]
+        cal_tomorrow = gcal.events_text(await asyncio.to_thread(gcal.list_events, 1, 1, default_tz))
         prompt = _evening_prompt(name, today, tasks, tomorrow_classes,
-                                 undone_habits, tomorrow_reminders)
+                                 undone_habits, tomorrow_reminders, cal_tomorrow)
         header = "🌙"
     try:
         text = await gemini.generate_once(uid, prompt)
