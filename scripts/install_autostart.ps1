@@ -19,12 +19,18 @@ Write-Host ""
 # Remove old task if exists
 Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 
+# Run the .bat via a SINGLE quoted token after /c. The old form appended
+# `>> log 2>&1`, which made cmd's quote-stripping mangle the command (it failed
+# before the bat ran -> empty log). The bat now self-logs, so no redirection here.
 $action = New-ScheduledTaskAction `
     -Execute "cmd.exe" `
-    -Argument "/c `"$ScriptPath`" >> `"$LogFile`" 2>&1" `
+    -Argument "/c `"$ScriptPath`"" `
     -WorkingDirectory $JarvisDir
 
+# AtLogon fires before the network is up; delay 20s so WiFi/Ethernet is ready.
+# (The bat also waits for internet, so this is belt-and-suspenders.)
 $trigger = New-ScheduledTaskTrigger -AtLogon
+$trigger.Delay = "PT20S"
 
 # NOTE: switch parameters must be bare (-StartWhenAvailable), NOT "-X $true"
 # (a value after a switch is parsed as a positional arg -> binding error).
