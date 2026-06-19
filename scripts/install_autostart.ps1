@@ -9,6 +9,7 @@ param(
 $TaskName   = "JARVIS PC Server"
 $LogFile    = Join-Path $JarvisDir "jarvis_pc_server.log"
 $ScriptPath = Join-Path $JarvisDir "scripts\start_pc.bat"
+$VbsPath    = Join-Path $JarvisDir "scripts\start_pc_hidden.vbs"
 
 Write-Host "Installing JARVIS PC Server as startup task..."
 Write-Host "  Project dir : $JarvisDir"
@@ -16,15 +17,23 @@ Write-Host "  Python      : $PythonExe"
 Write-Host "  Log file    : $LogFile"
 Write-Host ""
 
+# Stop the task + kill any stale instance (visible cmd window + its python) so
+# the new hidden launcher fully takes over. Runs elevated, so the kill works.
+Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+Get-CimInstance Win32_Process -Filter "Name='cmd.exe' OR Name='python.exe' OR Name='wscript.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like "*start_pc*" -or $_.CommandLine -like "*pc_server*" } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
 # Remove old task if exists
 Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 
-# Run the .bat via a SINGLE quoted token after /c. The old form appended
-# `>> log 2>&1`, which made cmd's quote-stripping mangle the command (it failed
-# before the bat ran -> empty log). The bat now self-logs, so no redirection here.
+# Launch fully HIDDEN via a VBS shim (wscript shows no window). The .bat itself
+# self-logs to $LogFile, so nothing is lost despite there being no console.
+# (Earlier the task used `cmd /c "bat" >> log 2>&1`; the multi-quote redirection
+# got mangled by Task Scheduler and the bat never ran -> empty log.)
 $action = New-ScheduledTaskAction `
-    -Execute "cmd.exe" `
-    -Argument "/c `"$ScriptPath`"" `
+    -Execute "wscript.exe" `
+    -Argument "`"$VbsPath`"" `
     -WorkingDirectory $JarvisDir
 
 # AtLogon fires before the network is up; delay 20s so WiFi/Ethernet is ready.
