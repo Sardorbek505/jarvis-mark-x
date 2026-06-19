@@ -44,6 +44,7 @@ from telegram_bot import directives
 from telegram_bot import context_builder
 from telegram_bot import recall
 from telegram_bot import gcal
+from telegram_bot import curiosity
 from telegram_bot.memory_store import MemoryStore
 
 cfg = load_config()
@@ -118,6 +119,8 @@ _BOT_COMMANDS = [
     BotCommand("mode",       "Режим личности (ментор/друг/бизнес)"),
     BotCommand("profile",    "Что JARVIS обо мне знает"),
     BotCommand("memstats",   "Состояние памяти"),
+    BotCommand("ask",        "Пусть JARVIS спросит обо мне"),
+    BotCommand("curiosity",  "Вкл/выкл вопросы обо мне"),
     BotCommand("remember",   "Запомнить факт обо мне"),
     BotCommand("forget",     "Стереть всё обо мне"),
     BotCommand("clear",      "Очистить историю диалога"),
@@ -470,6 +473,38 @@ async def cmd_memstats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"\n⚠️ {s['facts_total'] - s['facts_in_context']} старых фактов хранятся, "
             "но НЕ попадают в контекст (лимит). Фаза 2 это исправит.")
     await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_ask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """On-demand: JARVIS asks the user a get-to-know-you question now."""
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    await memory.ensure_loaded(uid)
+    q = await curiosity.pose(memory, uid)
+    if q:
+        await update.effective_message.reply_text(f"💭 {q}")
+    else:
+        done, total = await curiosity.progress(memory, uid)
+        await update.effective_message.reply_text(
+            f"Я уже расспросил тебя обо всём из своего списка ({done}/{total}) 🙂 "
+            "Но рассказывай что угодно — я всё запоминаю.")
+
+
+async def cmd_curiosity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Toggle the daily get-to-know-you questions on/off."""
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    off = (await memory.get_meta(uid, "curio_off")) == "1"
+    if off:
+        await memory.set_meta(uid, "curio_off", "")
+        await update.effective_message.reply_text(
+            "🔔 Снова буду иногда расспрашивать тебя о тебе (раз в день, днём).")
+    else:
+        await memory.set_meta(uid, "curio_off", "1")
+        await update.effective_message.reply_text(
+            "🔕 Ок, больше не буду задавать вопросы сам. Включить обратно: /curiosity")
 
 
 async def cmd_remember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1167,6 +1202,11 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text(reply, parse_mode="Markdown")
             return
 
+        # 0.5 If JARVIS asked a get-to-know-you question, save this as the answer
+        #     (still falls through so JARVIS also replies naturally).
+        await memory.ensure_loaded(user_id)
+        await curiosity.save_answer(memory, user_id, text)
+
         # 1. Clean single reminder ("напомни …")? Fast-path it. If it doesn't
         #    parse, fall through to Gemini's unified inbox instead of a dead-end
         #    prompt — the inbox handles complex brain-dumps (reminder+task+note).
@@ -1405,6 +1445,8 @@ def main():
     app.add_handler(CommandHandler("mode",       cmd_mode))
     app.add_handler(CommandHandler("profile",    cmd_profile))
     app.add_handler(CommandHandler("memstats",   cmd_memstats))
+    app.add_handler(CommandHandler("ask",        cmd_ask))
+    app.add_handler(CommandHandler("curiosity",  cmd_curiosity))
     app.add_handler(CommandHandler("remember",   cmd_remember))
     app.add_handler(CommandHandler("forget",     cmd_forget))
     app.add_handler(CommandHandler("pc",         cmd_pc))
