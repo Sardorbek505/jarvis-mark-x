@@ -42,6 +42,7 @@ from telegram_bot import proactive
 from telegram_bot import onboarding
 from telegram_bot import directives
 from telegram_bot import context_builder
+from telegram_bot import recall
 from telegram_bot.memory_store import MemoryStore
 
 cfg = load_config()
@@ -77,6 +78,7 @@ def _build_context(uid: int) -> str:
 
 
 gemini.set_context_provider(_build_context)
+gemini.set_recall_provider(lambda uid, text: recall.search(memory, uid, text))
 
 _BOT_COMMANDS = [
     BotCommand("start",      "Запустить JARVIS"),
@@ -1172,7 +1174,7 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # Otherwise — normal voice conversation. Voice in → voice out (mirror).
             # JARVIS may also send to a contact via a [[SEND]] block it composes.
             await memory.ensure_loaded(user_id)
-            reply = await gemini.chat_with_audio(user_id, audio)
+            reply = await gemini.chat_with_audio(user_id, audio, recall_text=transcript or "")
             reply, summary = await _apply_reminder_directives(user_id, reply)
             reply = await _apply_send_directives(update, user_id, reply)
             if summary:

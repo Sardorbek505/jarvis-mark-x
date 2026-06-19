@@ -115,11 +115,27 @@ class GeminiClient:
         self._model = model
         self._history: dict = {}  # user_id -> list of Content dicts
         self._context_provider = None  # callable(user_id) -> str (live time/location)
+        self._recall_provider = None   # async (user_id, text) -> str (notes/facts recall)
 
     def set_context_provider(self, fn):
         """Register a callback that returns live context (date/time/location)
         for a user_id, injected into the system prompt on every request."""
         self._context_provider = fn
+
+    def set_recall_provider(self, fn):
+        """Register an async callback (user_id, text) -> str that returns matching
+        notes/facts for a recall-style question, injected as extra context."""
+        self._recall_provider = fn
+
+    async def _recall_for(self, user_id, text: str) -> str:
+        fn = getattr(self, "_recall_provider", None)
+        if not fn or user_id is None or not text:
+            return ""
+        try:
+            return await fn(user_id, text) or ""
+        except Exception as e:
+            logger.debug(f"recall provider: {e}")
+            return ""
 
     def _system_for(self, user_id) -> str:
         if self._context_provider and user_id is not None:
@@ -154,10 +170,12 @@ class GeminiClient:
         s = str(err)
         return any(t in s for t in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE", "overloaded"))
 
-    async def _generate(self, contents, user_id=None) -> str:
+    async def _generate(self, contents, user_id=None, extra_system: str = "") -> str:
         loop = asyncio.get_event_loop()
         last_err = None
         system_instruction = self._system_for(user_id)
+        if extra_system:
+            system_instruction = f"{system_instruction}\n\n{extra_system}"
         # Two passes: free-tier RPM bursts and 503 spikes are transient, so a
         # short backoff + retry recovers most of them instead of surfacing
         # "ИИ недоступен". The configured model (gemini-2.5-flash) stays first.
@@ -206,15 +224,18 @@ class GeminiClient:
         user_msg = {"role": "user", "parts": [{"text": text}]}
         contents = history + [user_msg]
 
-        reply = await self._generate(contents, user_id=user_id)
+        recall = await self._recall_for(user_id, text)
+        reply = await self._generate(contents, user_id=user_id, extra_system=recall)
 
         history.append({"role": "user", "parts": [{"text": text}]})
         history.append({"role": "model", "parts": [{"text": reply}]})
         self._trim_history(user_id)
         return reply
 
-    async def chat_with_audio(self, user_id: int, audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
-        """Transcribe audio and respond as JARVIS. Supports ogg (Telegram) and wav (Mini App)."""
+    async def chat_with_audio(self, user_id: int, audio_bytes: bytes,
+                              mime_type: str = "audio/ogg", recall_text: str = "") -> str:
+        """Transcribe audio and respond as JARVIS. Supports ogg (Telegram) and wav (Mini App).
+        `recall_text` (the already-known transcript) enables notes/facts recall."""
         contents = [
             types.Content(
                 role="user",
@@ -224,7 +245,8 @@ class GeminiClient:
                 ],
             )
         ]
-        reply = await self._generate(contents, user_id=user_id)
+        recall = await self._recall_for(user_id, recall_text)
+        reply = await self._generate(contents, user_id=user_id, extra_system=recall)
 
         history = self._history_for(user_id)
         history.append({"role": "user", "parts": [{"text": "[голосовое сообщение]"}]})

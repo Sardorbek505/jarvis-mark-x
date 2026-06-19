@@ -29,6 +29,7 @@ from telegram_bot import user_context
 from telegram_bot import personas
 from telegram_bot import proactive
 from telegram_bot import context_builder
+from telegram_bot import recall
 from telegram_bot.memory_store import MemoryStore
 
 logging.basicConfig(
@@ -59,6 +60,7 @@ def _build_context(uid: int) -> str:
 
 
 gemini.set_context_provider(_build_context)
+gemini.set_recall_provider(lambda uid, text: recall.search(memory, uid, text))
 
 # Wire into miniapp_server
 miniapp_server._gemini = gemini

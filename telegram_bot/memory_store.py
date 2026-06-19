@@ -136,6 +136,11 @@ class MemoryStore:
         d = self._cache.get(uid)
         return d.get("notes", []) if d else []
 
+    def cached_facts(self, uid: int) -> list:
+        """Durable facts from cache (used by in-chat recall search)."""
+        d = self._cache.get(uid)
+        return d.get("facts", []) if d else []
+
     async def _refresh_notes_cache(self, uid: int):
         if uid in self._cache:
             self._cache[uid]["notes"] = await self.list_notes(uid, limit=12)
