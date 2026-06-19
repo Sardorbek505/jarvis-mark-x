@@ -46,3 +46,9 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Google Calendar OAuth — never commit secrets / tokens
+config/credentials.json
+config/token.json
+
+config/gcal_auth_url.txt
