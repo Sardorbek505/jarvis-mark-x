@@ -1,12 +1,27 @@
 /* JARVIS Mini App — client */
 
 const tg = window.Telegram?.WebApp;
+
+// Follow Telegram's light/dark mode with our own curated palettes (item #7).
+// data-theme="light" flips the CSS token set; dark is the default.
+function applyTheme() {
+  const scheme = tg?.colorScheme || (window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  const root = document.documentElement;
+  if (scheme === 'light') root.setAttribute('data-theme', 'light');
+  else root.removeAttribute('data-theme');
+  // Stitch the Telegram chrome (header + background) to the active palette.
+  const chrome = getComputedStyle(root).getPropertyValue('--chrome').trim() || '#07070f';
+  try { tg?.setHeaderColor(chrome); tg?.setBackgroundColor(chrome); } catch {}
+}
+
 if (tg) {
   tg.ready();                                  // signal the WebApp is initialised
   tg.expand();
   tg.disableClosingConfirmation();
-  // Stitch the Telegram chrome to our dark UI (header + background)
-  try { tg.setHeaderColor('#07070f'); tg.setBackgroundColor('#07070f'); } catch {}
+  applyTheme();
+  tg.onEvent?.('themeChanged', applyTheme);    // react if the user switches theme
+} else {
+  applyTheme();                                // browser preview: honour OS preference
 }
 
 // Light haptic feedback on taps — no-op outside Telegram

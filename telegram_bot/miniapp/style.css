@@ -25,6 +25,35 @@
   --r-sm: 10px;
   --r:    16px;
   --r-lg: 22px;
+
+  /* Telegram chrome (header/background) follows the active theme */
+  --chrome: #07070f;
+
+  /* Shared easing for tasteful, consistent motion */
+  --ease: cubic-bezier(.2,.8,.2,1);
+}
+
+/* Light theme — a curated premium light palette (cool off-white + ink + deeper
+   accent for contrast), NOT generic gray-on-white. Applied when Telegram is in
+   light mode (app.js sets data-theme from tg.colorScheme). Dark stays default. */
+:root[data-theme="light"] {
+  --bg:        #eef1f7;
+  --surface:   #ffffff;
+  --surface-2: #e6eaf2;
+
+  --line:    rgba(13,20,38,.09);
+  --line-2:  rgba(13,20,38,.16);
+  --elev-1:  0 1px 2px rgba(20,30,55,.10), 0 6px 18px rgba(20,30,55,.07);
+  --elev-2:  0 14px 40px rgba(20,30,55,.14);
+
+  --cyan:        #0891b2;   /* deeper cyan stays legible on light surfaces */
+  --accent-soft: rgba(8,145,178,.12);
+
+  --text:  #0d1426;
+  --muted: #51596b;
+  --dim:   #98a0b2;
+
+  --chrome: #eef1f7;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -337,13 +366,24 @@ header {
   padding-bottom: env(safe-area-inset-bottom, 0);
 }
 .tab {
+  position: relative;
   flex: 1; background: none; border: none; cursor: pointer;
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-  padding: 9px 0 7px; font-size: 19px; color: var(--dim);
-  transition: color .15s, transform .1s;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 10px 0 8px; font-size: 19px; color: var(--dim);
+  transition: color .18s var(--ease, ease), transform .1s;
 }
 .tab span { font-size: 10px; font-weight: 600; letter-spacing: .3px; }
-.tab.active { color: var(--cyan); text-shadow: 0 0 16px rgba(34,211,238,.5); }
+/* Animated indicator pill above the active tab — appears + widens on activation */
+.tab::before {
+  content: ""; position: absolute; top: 0; left: 50%;
+  width: 0; height: 2.5px; border-radius: 0 0 3px 3px;
+  background: var(--cyan);
+  transform: translateX(-50%);
+  transition: width .22s var(--ease, cubic-bezier(.2,.8,.2,1)), opacity .18s;
+  opacity: 0;
+}
+.tab.active::before { width: 26px; opacity: 1; box-shadow: 0 0 10px var(--accent-soft); }
+.tab.active { color: var(--cyan); }
 .tab:active { transform: scale(.9); }
 
 /* Add row (tasks / habits) */
