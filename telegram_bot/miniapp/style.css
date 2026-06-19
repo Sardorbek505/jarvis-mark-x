@@ -611,3 +611,37 @@ header {
   /* Hide the always-spinning radar sweep so the orb rests quietly */
   #orb::after, .r2 { display: none; }
 }
+
+/* ═══ Chat redesign: big orb only as the empty-state hero; mic lives in the
+       input bar during conversation (familiar messenger layout) ═══ */
+#view-chat:not(.is-empty) #orb-section { display: none; }   /* free the chat feed */
+#view-chat.is-empty #mic-btn { display: none; }             /* empty: the orb is the control */
+
+#mic-btn {
+  width: 44px; height: 44px; border-radius: 50%; flex-shrink: 0;
+  border: 1px solid rgba(0,212,255,.22);
+  background: rgba(0,212,255,.08); color: var(--cyan);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  transition: transform .12s, background .2s, color .2s, box-shadow .2s;
+  touch-action: none;
+}
+#mic-btn:active { transform: scale(.92); }
+/* Recording / listening — red, pulsing, unmistakable */
+#mic-btn.rec, #mic-btn.listening {
+  background: #ef4444; border-color: #ef4444; color: #fff;
+  box-shadow: 0 0 0 0 rgba(239,68,68,.55); animation: mic-pulse 1.2s ease-out infinite;
+}
+#mic-btn.hands-free { background: rgba(52,211,153,.18); border-color: var(--green); color: var(--green); }
+@keyframes mic-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(239,68,68,.5); }
+  70%  { box-shadow: 0 0 0 12px rgba(239,68,68,0); }
+  100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
+}
+
+/* Header voice toggle — clean line speaker icon (was a skeuomorphic emoji) */
+#voice-toggle { color: var(--cyan); }
+#voice-toggle svg { width: 20px; height: 20px; }
+#voice-toggle .slash { display: none; }
+#voice-toggle.muted { color: var(--dim); }
+#voice-toggle.muted .wave { display: none; }
+#voice-toggle.muted .slash { display: inline; }

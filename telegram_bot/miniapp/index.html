@@ -15,7 +15,13 @@
         <header>
             <div id="screen-title">💬 Чат</div>
             <div id="indicators">
-                <button id="voice-toggle" class="badge" title="Голос включён">🔊</button>
+                <button id="voice-toggle" class="badge" title="Голос включён" aria-label="Голос вкл/выкл">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                        <path class="wave" d="M15.5 8.5a5 5 0 0 1 0 7"/>
+                        <line class="slash" x1="22" y1="2" x2="2" y2="22"/>
+                    </svg>
+                </button>
                 <div id="pc-badge" class="badge" title="Desktop JARVIS">
                     <span class="dot" id="pc-dot"></span> ПК
                 </div>
@@ -45,6 +51,14 @@
                 <div id="input-bar">
                     <input id="text-in" type="text" placeholder="Напиши JARVIS..."
                            autocomplete="off" autocorrect="off" autocapitalize="off">
+                    <button id="mic-btn" aria-label="Голос: зажми чтобы говорить, тап — диалог">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="9" y="2" width="6" height="12" rx="3"/>
+                            <path d="M5 10v2a7 7 0 0 0 14 0v-2"/>
+                            <line x1="12" y1="19" x2="12" y2="22"/>
+                        </svg>
+                    </button>
                     <button id="send-btn" aria-label="Отправить">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
                              stroke="currentColor" stroke-width="2.5">
