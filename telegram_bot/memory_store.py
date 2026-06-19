@@ -31,7 +31,7 @@ _MAX_FACTS = 60  # keep the newest N facts per user in context
 # by habit_id, not user_id, so it is wiped separately in clear().
 USER_TABLES = (
     "facts", "profile", "tasks", "habits", "reminders",
-    "notes", "schedule", "projects", "outbox", "contacts", "meta",
+    "notes", "schedule", "projects", "outbox", "contacts", "meta", "messages",
 )
 
 
@@ -632,6 +632,52 @@ class MemoryStore:
             await self._exec(f"DELETE FROM {tbl} WHERE user_id=?", (uid,))
         self._cache.pop(uid, None)
 
+    # ── conversation log (every message, durable) ───────────────────────────────
+
+    async def add_message(self, uid: int, role: str, text: str):
+        """Persist one chat message forever (role = 'user' | 'model'). This is the
+        raw log that survives restarts — foundation for full recall / RAG."""
+        text = (text or "").strip()
+        if not text:
+            return
+        await self._exec(
+            "INSERT INTO messages(user_id, role, text, created_at) VALUES(?,?,?,?)",
+            (uid, role, text, datetime.now().isoformat()),
+        )
+
+    async def recent_messages(self, uid: int, limit: int = 40) -> list:
+        """Last N messages (oldest→newest) to re-seed the chat window after a
+        restart. Returns [{'role','text'}]."""
+        rows = await self._fetchall(
+            "SELECT role, text FROM (SELECT id, role, text FROM messages "
+            "WHERE user_id=? ORDER BY id DESC LIMIT ?) sub ORDER BY id ASC",
+            (uid, limit),
+        )
+        return [{"role": r[0], "text": r[1]} for r in rows]
+
+    async def message_count(self, uid: int) -> int:
+        row = await self._fetchone("SELECT COUNT(*) FROM messages WHERE user_id=?", (uid,))
+        return int(row[0]) if row else 0
+
+    async def stats(self, uid: int) -> dict:
+        """Counts across every per-user table + profile fields, for /memstats."""
+        await self.ensure_loaded(uid)
+        counts = {}
+        for tbl in USER_TABLES:
+            if tbl == "profile":
+                continue
+            row = await self._fetchone(f"SELECT COUNT(*) FROM {tbl} WHERE user_id=?", (uid,))
+            counts[tbl] = int(row[0]) if row else 0
+        profile = await self.get_profile(uid)
+        filled = [k for k in _PROFILE_FIELDS if (profile.get(k) or "").strip()]
+        return {
+            "backend": "Postgres" if self._pg else "SQLite",
+            "counts": counts,
+            "facts_total": counts.get("facts", 0),
+            "facts_in_context": min(counts.get("facts", 0), _MAX_FACTS),
+            "profile_filled": filled,
+        }
+
     async def observe(self, uid: int, gemini, user_text: str, reply_text: str = ""):
         """Background learning: extract durable facts from an exchange and store
         them. Safe to fire-and-forget (asyncio.create_task)."""
@@ -772,10 +818,18 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at TEXT,
     PRIMARY KEY (user_id, name)
 );
+CREATE TABLE IF NOT EXISTS messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    role       TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
 CREATE INDEX IF NOT EXISTS idx_reminders_sent ON reminders(sent);
+CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id);
 """
 
 _SCHEMA_PG = """
@@ -866,8 +920,16 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at TEXT,
     PRIMARY KEY (user_id, name)
 );
+CREATE TABLE IF NOT EXISTS messages (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    role       TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
 CREATE INDEX IF NOT EXISTS idx_reminders_sent ON reminders(sent);
+CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id);
 """

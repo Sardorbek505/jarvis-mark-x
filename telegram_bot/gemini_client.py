@@ -164,6 +164,20 @@ class GeminiClient:
     def _history_for(self, user_id: int) -> list:
         return self._history.setdefault(user_id, [])
 
+    def has_history(self, user_id: int) -> bool:
+        return bool(self._history.get(user_id))
+
+    def seed_history(self, user_id: int, messages: list):
+        """Re-seed the in-RAM chat window from the durable log after a restart,
+        so the conversation feels continuous. messages = [{'role','text'}]."""
+        if self._history.get(user_id) or not messages:
+            return
+        self._history[user_id] = [
+            {"role": m["role"], "parts": [{"text": m["text"]}]}
+            for m in messages if m.get("text")
+        ]
+        self._trim_history(user_id)
+
     def _trim_history(self, user_id: int):
         h = self._history.get(user_id, [])
         if len(h) > _MAX_HISTORY:
