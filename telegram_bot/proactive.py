@@ -17,6 +17,7 @@ from telegram_bot import user_context
 from telegram_bot import agenda
 from telegram_bot import weather
 from telegram_bot import gcal
+from telegram_bot import curiosity
 
 logger = logging.getLogger("jarvis-proactive")
 
@@ -24,6 +25,7 @@ logger = logging.getLogger("jarvis-proactive")
 # briefing is simply skipped (no late-night surprise messages).
 _MORNING = range(8, 11)    # 08:00–10:59
 _EVENING = range(22, 24)   # 22:00–23:59
+_CURIOSITY = range(12, 21)  # 12:00–20:59 — one get-to-know-you question per day
 
 _CHECK_EVERY = 60  # seconds
 
@@ -194,6 +196,21 @@ async def tick(bot, gemini, memory, default_tz: str, default_city: str = ""):
             await memory.set_meta(uid, marker, today_key)
             if sent:
                 logger.info(f"Sent {slot} briefing to {uid}")
+
+        # Curiosity: one get-to-know-you question per day, daytime only, never
+        # while a previous one is still unanswered, and only if not paused.
+        if (now.hour in _CURIOSITY
+                and await memory.get_meta(uid, "curio_day") != today_key
+                and await memory.get_meta(uid, "curio_off") != "1"
+                and not await memory.get_meta(uid, "curio_pending")):
+            await memory.set_meta(uid, "curio_day", today_key)
+            q = await curiosity.pose(memory, uid)
+            if q:
+                try:
+                    await bot.send_message(chat_id=uid, text=f"💭 {q}")
+                    logger.info(f"Sent curiosity question to {uid}")
+                except Exception as e:
+                    logger.warning(f"curiosity send to {uid}: {e}")
 
 
 async def loop(bot, gemini, memory, default_tz: str = "Asia/Almaty", default_city: str = ""):
