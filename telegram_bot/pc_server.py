@@ -220,19 +220,22 @@ def _launch_jarvis() -> dict:
     except Exception:
         pass
     try:
-        exe = sys.executable
+        # Use python.exe (NOT pythonw — it dies when the app writes to a missing
+        # stdout) and redirect output to a log so a missing console can't crash it.
+        # CREATE_NO_WINDOW hides the console; the Qt GUI window still shows.
+        log_path = base / "logs"
+        log_path.mkdir(exist_ok=True)
+        logf = open(log_path / "desktop_jarvis.log", "a", encoding="utf-8")
+        kwargs = {"cwd": str(base), "stdout": logf, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL}
         if os.name == "nt":
-            pyw = Path(exe).with_name("pythonw.exe")  # GUI, no console window
-            if pyw.exists():
-                exe = str(pyw)
-        kwargs = {"cwd": str(base)}
-        if os.name == "nt":
-            kwargs["creationflags"] = (
-                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-            )
-        subprocess.Popen([exe, str(main_py)], **kwargs)
+            # DETACHED_PROCESS = fully independent of pc_server (survives its restart)
+            # and no console; stdout is redirected so a missing console can't crash it.
+            kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        subprocess.Popen([sys.executable, str(main_py)], **kwargs)
+        logger.info("Launched desktop JARVIS (main.py)")
         return _r("🤖 Запускаю десктопного JARVIS на ПК — окно сейчас откроется.")
     except Exception as e:
+        logger.error(f"launch jarvis failed: {e}")
         return _r(f"❌ Не смог запустить JARVIS: {e}")
 
 
