@@ -43,17 +43,22 @@ class MemoryStore:
             self._pool = await asyncpg.create_pool(self._url, min_size=1, max_size=3)
             await self._exec_pg(_SCHEMA_PG)
             await self._exec_pg("ALTER TABLE profile ADD COLUMN IF NOT EXISTS mode TEXT DEFAULT ''")
+            await self._exec_pg("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS note TEXT DEFAULT ''")
             logger.info("Memory: Postgres connected (durable) ✅")
         else:
             import aiosqlite
             _SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
             self._sqlite = await aiosqlite.connect(_SQLITE_PATH)
             await self._sqlite.executescript(_SCHEMA_SQLITE)
-            try:
-                await self._sqlite.execute("ALTER TABLE profile ADD COLUMN mode TEXT DEFAULT ''")
-                await self._sqlite.commit()
-            except Exception:
-                pass  # column already exists
+            for _mig in (
+                "ALTER TABLE profile ADD COLUMN mode TEXT DEFAULT ''",
+                "ALTER TABLE contacts ADD COLUMN note TEXT DEFAULT ''",
+            ):
+                try:
+                    await self._sqlite.execute(_mig)
+                    await self._sqlite.commit()
+                except Exception:
+                    pass  # column already exists
             await self._sqlite.commit()
             logger.warning(
                 "Memory: SQLite fallback (ephemeral on Render free). "
@@ -110,7 +115,7 @@ class MemoryStore:
         projects = await self.list_projects(uid)
         self._cache[uid] = {
             "profile": profile, "facts": facts, "tasks": tasks,
-            "contacts": [c["alias"] for c in contacts],
+            "contacts": contacts,
             "schedule": schedule,
             "projects": projects,
         }
@@ -390,24 +395,24 @@ class MemoryStore:
 
     # ── contacts whitelist (JARVIS Outbound) ─────────────────────────────────────
 
-    async def add_contact(self, uid: int, alias: str, target: str):
+    async def add_contact(self, uid: int, alias: str, target: str, note: str = ""):
         await self._exec(
-            "INSERT INTO contacts(user_id, alias, target, created_at) VALUES(?,?,?,?) "
-            "ON CONFLICT(user_id, alias) DO UPDATE SET target=excluded.target",
-            (uid, alias.strip().lower(), target.strip(), datetime.now().isoformat(timespec="seconds")),
+            "INSERT INTO contacts(user_id, alias, target, note, created_at) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(user_id, alias) DO UPDATE SET target=excluded.target, note=excluded.note",
+            (uid, alias.strip().lower(), target.strip(), (note or "").strip(),
+             datetime.now().isoformat(timespec="seconds")),
         )
         await self._refresh_contacts_cache(uid)
 
     async def _refresh_contacts_cache(self, uid: int):
         if uid in self._cache:
-            rows = await self.list_contacts(uid)
-            self._cache[uid]["contacts"] = [c["alias"] for c in rows]
+            self._cache[uid]["contacts"] = await self.list_contacts(uid)
 
     async def list_contacts(self, uid: int) -> list:
         rows = await self._fetchall(
-            "SELECT alias, target FROM contacts WHERE user_id=? ORDER BY alias", (uid,)
+            "SELECT alias, target, note FROM contacts WHERE user_id=? ORDER BY alias", (uid,)
         )
-        return [{"alias": r[0], "target": r[1]} for r in rows]
+        return [{"alias": r[0], "target": r[1], "note": r[2] or ""} for r in rows]
 
     async def del_contact(self, uid: int, alias: str) -> bool:
         a = alias.strip().lower()
@@ -436,6 +441,32 @@ class MemoryStore:
             if n in alias or alias in n:
                 return target
         return None
+
+    # ── outbox (очередь Outbound: отправить, когда ПК онлайн) ────────────────────
+
+    async def queue_outbound(self, uid: int, target: str, alias: str, message: str, as_voice: bool):
+        await self._exec(
+            "INSERT INTO outbox(user_id, target, alias, message, as_voice, created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (uid, target, alias, message, 1 if as_voice else 0,
+             datetime.now().isoformat(timespec="seconds")),
+        )
+
+    async def pending_outbound(self, uid: Optional[int] = None) -> list:
+        if uid is None:
+            rows = await self._fetchall(
+                "SELECT id, user_id, target, alias, message, as_voice FROM outbox ORDER BY id", ()
+            )
+        else:
+            rows = await self._fetchall(
+                "SELECT id, user_id, target, alias, message, as_voice FROM outbox WHERE user_id=? ORDER BY id",
+                (uid,),
+            )
+        return [{"id": r[0], "user_id": r[1], "target": r[2], "alias": r[3],
+                 "message": r[4], "as_voice": bool(r[5])} for r in rows]
+
+    async def delete_outbound(self, item_id: int):
+        await self._exec("DELETE FROM outbox WHERE id=?", (item_id,))
 
     # ── notes (единая входящая: свободные мысли/идеи) ────────────────────────────
 
@@ -673,8 +704,18 @@ CREATE TABLE IF NOT EXISTS contacts (
     user_id    INTEGER NOT NULL,
     alias      TEXT NOT NULL,
     target     TEXT NOT NULL,
+    note       TEXT DEFAULT '',
     created_at TEXT,
     PRIMARY KEY (user_id, alias)
+);
+CREATE TABLE IF NOT EXISTS outbox (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    target     TEXT NOT NULL,
+    alias      TEXT NOT NULL,
+    message    TEXT NOT NULL,
+    as_voice   INTEGER DEFAULT 0,
+    created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS notes (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -757,8 +798,18 @@ CREATE TABLE IF NOT EXISTS contacts (
     user_id    BIGINT NOT NULL,
     alias      TEXT NOT NULL,
     target     TEXT NOT NULL,
+    note       TEXT DEFAULT '',
     created_at TEXT,
     PRIMARY KEY (user_id, alias)
+);
+CREATE TABLE IF NOT EXISTS outbox (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    target     TEXT NOT NULL,
+    alias      TEXT NOT NULL,
+    message    TEXT NOT NULL,
+    as_voice   INTEGER DEFAULT 0,
+    created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS notes (
     id         BIGSERIAL PRIMARY KEY,

@@ -80,7 +80,9 @@ def _build_context(uid: int) -> str:
         parts.append(persona)
     contacts = memory.cached_contacts(uid)
     if contacts:
-        parts.append("КОМУ можно писать (контакты для отправки сообщений): " + ", ".join(contacts) + ".")
+        parts.append("КОМУ можно писать (имя — кто это, для верного тона): " + "; ".join(
+            (c["alias"] + (f" — {c['note']}" if c.get("note") else "")) for c in contacts
+        ) + ".")
     else:
         parts.append("Контактов для отправки пока нет (пользователь добавляет их через /addcontact).")
     sched = _schedule_today_str(uid)
@@ -217,13 +219,16 @@ async def _apply_send_directives(update: Update, user_id: int, reply: str) -> st
             )
             failed += 1
             continue
-        if not bridge.connected:
-            await update.effective_message.reply_text(
-                "❌ ПК офлайн — userbot не сможет отправить. Включи ПК и повтори."
-            )
-            failed += 1
-            continue
         as_voice = any(w in mode for w in ("voice", "голос", "audio", "аудио"))
+        if not bridge.connected:
+            await memory.queue_outbound(user_id, target, alias_raw, message, as_voice)
+            kind = "🎤 голосом" if as_voice else "текстом"
+            await update.effective_message.reply_text(
+                f"📭 ПК офлайн — поставил в очередь для {alias_raw} ({kind}).\n"
+                f"Отправлю автоматически, как только ПК включится."
+            )
+            failed += 1     # suppress JARVIS's optimistic "передаю" text
+            continue
         global _ub_counter
         _ub_counter += 1
         token = f"{user_id}_{_ub_counter}"
@@ -783,22 +788,25 @@ async def cmd_addcontact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     uid = update.effective_user.id
-    parts = (update.effective_message.text or "").split(maxsplit=2)
+    parts = (update.effective_message.text or "").split(maxsplit=3)
     if len(parts) < 3:
         await update.effective_message.reply_text(
-            "Формат: `/addcontact <имя> <@username или +телефон>`\n"
-            "Пример: `/addcontact айгуль @aigul_k`\n"
-            "(телефон работает, если контакт уже в твоей адресной книге Telegram)",
+            "Формат: `/addcontact <имя> <@username или +телефон> [кто это]`\n"
+            "Примеры:\n"
+            "`/addcontact айгуль @aigul_k`\n"
+            "`/addcontact брат @sanjar младший брат, неформально`\n"
+            "(заметка «кто это» помогает JARVIS подобрать тон)",
             parse_mode="Markdown",
         )
         return
     alias, target = parts[1], parts[2].strip()
-    await memory.add_contact(uid, alias, target)
-    await update.effective_message.reply_text(
-        f"✅ Добавлен: *{alias.lower()}* → `{target}`\n"
-        f"Теперь можно: «отправь {alias.lower()} голосом, …»",
-        parse_mode="Markdown",
-    )
+    note = parts[3].strip() if len(parts) > 3 else ""
+    await memory.add_contact(uid, alias, target, note)
+    msg = f"✅ Добавлен: *{alias.lower()}* → `{target}`"
+    if note:
+        msg += f"\n👤 кто это: {note}"
+    msg += f"\nТеперь можно: «отправь {alias.lower()} голосом, …»"
+    await update.effective_message.reply_text(msg, parse_mode="Markdown")
 
 
 async def cmd_delcontact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
