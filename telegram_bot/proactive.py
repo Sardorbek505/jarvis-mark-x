@@ -43,7 +43,30 @@ def _tasks_text(tasks: list) -> str:
     return "\n".join(lines)
 
 
-def _morning_prompt(name: str, today: list, all_open: list, weather_line: str = "") -> str:
+def _classes_text(classes: list) -> str:
+    if not classes:
+        return ""
+    items = "; ".join(
+        ((f"{c['time']} " if c.get('time') else "") + c['subject']
+         + (f" ({c['location']})" if c.get('location') else "")) for c in classes
+    )
+    return f"Пары/занятия сегодня: {items}\n\n"
+
+
+def _habits_text(undone: list) -> str:
+    if not undone:
+        return ""
+    return "Привычки, ещё не отмеченные сегодня: " + ", ".join(h['title'] for h in undone) + "\n\n"
+
+
+def _reminders_text(reminders: list) -> str:
+    if not reminders:
+        return ""
+    return "Ближайшие напоминания: " + "; ".join(r['text'] for r in reminders[:3]) + "\n\n"
+
+
+def _morning_prompt(name: str, today: list, all_open: list, weather_line: str = "",
+                    classes: list = None, undone_habits: list = None, reminders: list = None) -> str:
     who = f" Пользователя зовут {name}." if name else ""
     wx = f"Погода сегодня: {weather_line}.\n\n" if weather_line else ""
     return (
@@ -51,11 +74,15 @@ def _morning_prompt(name: str, today: list, all_open: list, weather_line: str = 
         "в своём текущем стиле (учитывай режим личности и что ты о нём знаешь)."
         f"{who}\n\n"
         f"{wx}"
+        f"{_classes_text(classes or [])}"
         f"Задачи и события на сегодня:\n{_tasks_text(today)}\n\n"
+        f"{_reminders_text(reminders or [])}"
+        f"{_habits_text(undone_habits or [])}"
         f"Всего открытых задач: {len(all_open)}.\n\n"
-        "Поздоровайся по-человечески, упомяни погоду если она есть, кратко "
-        "проговори план на день (если задач нет — мягко предложи задать цель), "
-        "добавь одну искреннюю мотивирующую мысль. Без воды, 3–6 строк, эмодзи ок."
+        "Поздоровайся по-человечески; если есть пары — назови их, упомяни погоду, "
+        "кратко проговори план дня, мягко напомни про непройденные привычки и "
+        "ближайшие напоминания (если есть), добавь одну искреннюю мотивирующую мысль. "
+        "Без воды, 4–8 строк, эмодзи ок."
     )
 
 
@@ -82,7 +109,13 @@ async def _send_briefing(bot, gemini, memory, uid: int, slot: str,
     if slot == "morning":
         city = user_context.get_city(uid, default_city)
         weather_line = await weather.for_city(city) if city else None
-        prompt = _morning_prompt(name, today, tasks, weather_line or "")
+        now = user_context.local_now(uid, default_tz)
+        classes = await memory.schedule_for_day(uid, now.weekday())
+        habits = await memory.get_habits(uid, now.date().isoformat())
+        undone_habits = [h for h in habits if not h.get("done_today")]
+        reminders = await memory.list_reminders(uid)
+        prompt = _morning_prompt(name, today, tasks, weather_line or "",
+                                 classes, undone_habits, reminders)
         header = "☀️"
     else:
         prompt = _evening_prompt(name, today, tasks)
