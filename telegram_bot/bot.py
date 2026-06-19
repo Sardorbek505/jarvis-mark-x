@@ -173,6 +173,47 @@ async def _dispatch_outbound(token, target, alias, message, as_voice, user_id, s
         logger.debug(f"outbound edit: {e}")
 
 
+# ── Action chains: one bounded FETCH step ───────────────────────────────────
+# JARVIS may need a real PC result BEFORE finishing a task. It emits a [[FETCH]]
+# block; we run ONE safe read-only command, feed the result back, and let it
+# complete. Bounded to a single round — loop-safe and quota-safe (max +1 call).
+_RE_FETCH = re.compile(r"\[\[FETCH\]\](.*?)\[\[/FETCH\]\]", re.S | re.I)
+_FETCH_UNSAFE = ("выключ", "выруб", "shutdown", "перезагруз", "reboot",
+                 "заблокир", "lock", "удал", "delete", "снеси",
+                 "громкост", "volume", "заверши процесс", "kill")
+
+
+def _fetch_is_safe(cmd: str) -> bool:
+    """Only read/info commands may auto-run in a chain — destructive ones must
+    go through the normal explicit path."""
+    low = cmd.lower()
+    return not any(w in low for w in _FETCH_UNSAFE)
+
+
+async def _resolve_fetch(user_id: int, reply: str) -> str:
+    """If JARVIS asked for a PC result via [[FETCH]], run ONE safe command and
+    re-prompt once with the result so it can finish. Returns the final reply."""
+    m = _RE_FETCH.search(reply)
+    if not m:
+        return reply
+    cmd = m.group(1).strip().lstrip("-•*").strip()
+    clean = _RE_FETCH.sub("", reply).strip()
+    if not cmd:
+        return clean
+    if not bridge.connected:
+        return clean or "ПК сейчас офлайн — не смог выполнить шаг на компьютере."
+    if not _fetch_is_safe(cmd):
+        logger.warning(f"FETCH blocked unsafe command: {cmd!r}")
+        return clean or "Этот шаг я не выполняю автоматически — сделай его обычной командой."
+    pc_result = await bridge.send_command(cmd, user_id)
+    followup = (
+        f"Результат шага на ПК для команды «{cmd}»:\n{pc_result or '(нет ответа от ПК)'}\n\n"
+        "Заверши задачу пользователя, опираясь на этот результат. "
+        "НЕ используй блок [[FETCH]] снова."
+    )
+    return await gemini.chat(user_id, followup)
+
+
 _RE_SEND = re.compile(r"\[\[SEND\]\](.*?)\[\[/SEND\]\]", re.S | re.I)
 
 
@@ -1112,6 +1153,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         #    handled via hidden [[...]] directive blocks it composes itself.
         await memory.ensure_loaded(user_id)
         reply = await gemini.chat(user_id, text)
+        reply = await _resolve_fetch(user_id, reply)          # bounded 1-step action chain
         reply, summary = await _apply_reminder_directives(user_id, reply)
         reply = await _apply_send_directives(update, user_id, reply)
         if summary:
