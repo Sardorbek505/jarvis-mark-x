@@ -106,6 +106,15 @@ async def _execute(text: str) -> dict:
     tl = text.lower().strip()
 
     try:
+        # Launch the desktop JARVIS app (main.py) on this PC. Must be checked
+        # BEFORE the open_app block, otherwise "запусти ..." is caught there.
+        if any(k in tl for k in (
+            "запусти джарвис", "запусти jarvis", "открой джарвис", "открой jarvis",
+            "включи джарвис", "launch jarvis", "джарвис на пк", "десктоп джарвис",
+            "запусти ассистент", "open jarvis",
+        )):
+            return _launch_jarvis()
+
         # Camera first — "снимок с камеры" must not be caught by screenshot
         if any(k in tl for k in _KW["camera"]):
             return await _do_camera()
@@ -192,6 +201,39 @@ async def _execute(text: str) -> dict:
 
 def _r(text: str, image_b64: str = None) -> dict:
     return {"text": text, "image_b64": image_b64}
+
+
+def _launch_jarvis() -> dict:
+    """Start the desktop JARVIS GUI (main.py) on this PC, in the user's session."""
+    import subprocess
+    base = Path(__file__).resolve().parent.parent
+    main_py = base / "main.py"
+    if not main_py.exists():
+        return _r("❌ main.py не найден на ПК — не могу запустить десктопного JARVIS.")
+    # Don't launch a second copy if it's already running.
+    try:
+        import psutil
+        for p in psutil.process_iter(["cmdline"]):
+            cl = p.info.get("cmdline") or []
+            if any("main.py" in str(x) for x in cl):
+                return _r("🤖 Десктопный JARVIS уже запущен на ПК.")
+    except Exception:
+        pass
+    try:
+        exe = sys.executable
+        if os.name == "nt":
+            pyw = Path(exe).with_name("pythonw.exe")  # GUI, no console window
+            if pyw.exists():
+                exe = str(pyw)
+        kwargs = {"cwd": str(base)}
+        if os.name == "nt":
+            kwargs["creationflags"] = (
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+            )
+        subprocess.Popen([exe, str(main_py)], **kwargs)
+        return _r("🤖 Запускаю десктопного JARVIS на ПК — окно сейчас откроется.")
+    except Exception as e:
+        return _r(f"❌ Не смог запустить JARVIS: {e}")
 
 
 async def _do_screenshot() -> dict:
