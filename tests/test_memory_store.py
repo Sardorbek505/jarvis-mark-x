@@ -120,6 +120,43 @@ async def test_facts_dedup(mem):
 
 
 @pytest.mark.asyncio
+async def test_message_log_persist_and_recent(mem):
+    await mem.add_message(UID, "user", "привет")
+    await mem.add_message(UID, "model", "здарова!")
+    await mem.add_message(UID, "user", "как дела")
+    assert await mem.message_count(UID) == 3
+    recent = await mem.recent_messages(UID, limit=2)
+    # oldest→newest, limited to last 2
+    assert [m["text"] for m in recent] == ["здарова!", "как дела"]
+    assert recent[0]["role"] == "model"
+
+
+@pytest.mark.asyncio
+async def test_message_log_empty_text_ignored(mem):
+    await mem.add_message(UID, "user", "   ")
+    assert await mem.message_count(UID) == 0
+
+
+@pytest.mark.asyncio
+async def test_stats_reports_counts(mem):
+    await mem.add_message(UID, "user", "hi")
+    await mem.add_fact(UID, "любит кофе")
+    await mem.add_note(UID, "заметка")
+    s = await mem.stats(UID)
+    assert s["backend"] == "SQLite"
+    assert s["counts"]["messages"] == 1
+    assert s["counts"]["facts"] == 1
+    assert s["facts_total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_wipes_message_log(mem):
+    await mem.add_message(UID, "user", "запомни это")
+    await mem.clear(UID)
+    assert await mem.message_count(UID) == 0
+
+
+@pytest.mark.asyncio
 async def test_outbox_queue_and_consume(mem):
     await mem.queue_outbound(UID, "@bro", "брат", "привет", False)
     pending = await mem.pending_outbound(UID)

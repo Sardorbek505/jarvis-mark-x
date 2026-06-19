@@ -117,6 +117,7 @@ _BOT_COMMANDS = [
     BotCommand("delcontact", "Удалить контакт: /delcontact имя"),
     BotCommand("mode",       "Режим личности (ментор/друг/бизнес)"),
     BotCommand("profile",    "Что JARVIS обо мне знает"),
+    BotCommand("memstats",   "Состояние памяти"),
     BotCommand("remember",   "Запомнить факт обо мне"),
     BotCommand("forget",     "Стереть всё обо мне"),
     BotCommand("clear",      "Очистить историю диалога"),
@@ -178,6 +179,17 @@ async def _dispatch_outbound(token, target, alias, message, as_voice, user_id, s
 # JARVIS may need a real PC result BEFORE finishing a task. It emits a [[FETCH]]
 # block; we run ONE safe read-only command, feed the result back, and let it
 # complete. Bounded to a single round — loop-safe and quota-safe (max +1 call).
+async def _persist_exchange(uid: int, user_text: str, reply: str):
+    """Log the raw user+assistant exchange to the durable message log. Fire-and-
+    forget — must never block or break the reply path."""
+    try:
+        await memory.add_message(uid, "user", user_text)
+        if reply and reply.strip():
+            await memory.add_message(uid, "model", reply)
+    except Exception as e:
+        logger.debug(f"persist exchange: {e}")
+
+
 _RE_FETCH = re.compile(r"\[\[FETCH\]\](.*?)\[\[/FETCH\]\]", re.S | re.I)
 _FETCH_UNSAFE = ("выключ", "выруб", "shutdown", "перезагруз", "reboot",
                  "заблокир", "lock", "удал", "delete", "снеси",
@@ -428,6 +440,35 @@ async def cmd_profile(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(lines) == 1:
         lines.append("Пока ничего. Просто общайся со мной — я запоминаю сам. "
                      "Или напиши `/remember <факт>`.")
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_memstats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Read-only memory audit: what JARVIS actually has stored about you."""
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    s = await memory.stats(uid)
+    c = s["counts"]
+    lines = [
+        "📊 *Состояние памяти*\n",
+        f"💾 Хранилище: *{s['backend']}*"
+        + ("" if s["backend"] == "Postgres" else " ⚠️ (эфемерно — задай DATABASE_URL!)"),
+        f"💬 Сообщений в логе: *{c.get('messages', 0)}*",
+        f"🧠 Фактов: *{s['facts_total']}*"
+        + (f" (в контекст идёт {s['facts_in_context']})"
+           if s['facts_total'] > s['facts_in_context'] else ""),
+        f"📝 Заметок: {c.get('notes', 0)}   ✅ Задач: {c.get('tasks', 0)}   "
+        f"🔁 Привычек: {c.get('habits', 0)}",
+        f"📚 Пар: {c.get('schedule', 0)}   💻 Проектов: {c.get('projects', 0)}   "
+        f"👥 Контактов: {c.get('contacts', 0)}   🔔 Напоминаний: {c.get('reminders', 0)}",
+    ]
+    if s["profile_filled"]:
+        lines.append(f"\n👤 Профиль заполнен: {', '.join(s['profile_filled'])}")
+    if s["facts_total"] > s["facts_in_context"]:
+        lines.append(
+            f"\n⚠️ {s['facts_total'] - s['facts_in_context']} старых фактов хранятся, "
+            "но НЕ попадают в контекст (лимит). Фаза 2 это исправит.")
     await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -1158,6 +1199,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         #    create reminders/tasks/habits or send a message to a contact —
         #    handled via hidden [[...]] directive blocks it composes itself.
         await memory.ensure_loaded(user_id)
+        # Re-seed the chat window from the durable log after a restart so the
+        # conversation stays continuous (the RAM window is otherwise lost).
+        if not gemini.has_history(user_id):
+            gemini.seed_history(user_id, await memory.recent_messages(user_id, 40))
         reply = await gemini.chat(user_id, text)
         reply = await _resolve_fetch(user_id, reply)          # bounded 1-step action chain
         reply, summary = await _apply_reminder_directives(user_id, reply)
@@ -1166,8 +1211,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply += "\n\n✅ Добавил — " + ", ".join(summary)
         if reply.strip():
             await update.effective_message.reply_text(reply)
-        # Learn durable facts in the background — never blocks the reply
+        # Background, never blocks the reply: learn durable facts + log the raw
+        # exchange forever (foundation for full recall).
         asyncio.create_task(memory.observe(user_id, gemini, text, reply))
+        asyncio.create_task(_persist_exchange(user_id, text, reply))
     except Exception as e:
         logger.error(f"handle_text error: {e}")
         await update.effective_message.reply_text("❌ Что-то пошло не так. Попробуй ещё раз.")
@@ -1222,6 +1269,8 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # Otherwise — normal voice conversation. Voice in → voice out (mirror).
             # JARVIS may also send to a contact via a [[SEND]] block it composes.
             await memory.ensure_loaded(user_id)
+            if not gemini.has_history(user_id):
+                gemini.seed_history(user_id, await memory.recent_messages(user_id, 40))
             reply = await gemini.chat_with_audio(user_id, audio, recall_text=transcript or "")
             reply, summary = await _apply_reminder_directives(user_id, reply)
             reply = await _apply_send_directives(update, user_id, reply)
@@ -1237,6 +1286,7 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text(reply)
             if transcript:
                 asyncio.create_task(memory.observe(user_id, gemini, transcript, reply))
+                asyncio.create_task(_persist_exchange(user_id, transcript, reply))
     except Exception as e:
         logger.error(f"handle_voice error: {e}")
         await msg.reply_text("❌ Не смог обработать голосовое.")
@@ -1354,6 +1404,7 @@ def main():
     app.add_handler(CommandHandler("clear",      cmd_clear))
     app.add_handler(CommandHandler("mode",       cmd_mode))
     app.add_handler(CommandHandler("profile",    cmd_profile))
+    app.add_handler(CommandHandler("memstats",   cmd_memstats))
     app.add_handler(CommandHandler("remember",   cmd_remember))
     app.add_handler(CommandHandler("forget",     cmd_forget))
     app.add_handler(CommandHandler("pc",         cmd_pc))
