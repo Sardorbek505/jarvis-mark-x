@@ -21,11 +21,19 @@ const WS_URL  = `${wsProto}//${location.host}/ws?user_id=${USER_ID}`;
 // DOM refs
 const orb       = document.getElementById('orb');
 const orbLabel  = document.getElementById('orb-label');
+const micBtn    = document.getElementById('mic-btn');
 const msgs      = document.getElementById('messages');
 const textIn    = document.getElementById('text-in');
 const sendBtn   = document.getElementById('send-btn');
 const pcBadge   = document.getElementById('pc-badge');
 const connBadge = document.getElementById('conn-badge');
+
+// Toggle a voice-state class on BOTH the hero orb and the input-bar mic button,
+// so whichever is visible reflects listening/recording/hands-free state.
+function voiceClass(name, on) {
+  orb.classList.toggle(name, on);
+  micBtn?.classList.toggle(name, on);
+}
 
 // ── State machine ─────────────────────────────────────────────────────────────
 const S = {
@@ -39,6 +47,7 @@ function setState(name) {
   const s = S[name] ?? S.idle;
   orbLabel.textContent = s.label;
   orb.className = s.cls;
+  if (micBtn) micBtn.className = s.cls;   // mic button mirrors state (red when listening)
 }
 
 // ── Message rendering ─────────────────────────────────────────────────────────
@@ -257,14 +266,17 @@ const VAD_THRESH = 0.016;   // speech energy threshold
 const VAD_HANG_MS = 1100;   // silence after speech that ends an utterance
 let vadSpoke = false, vadSilence = 0;
 
-orb.addEventListener('pointerdown', onOrbDown);
-orb.addEventListener('pointerup', onOrbUp);
-orb.addEventListener('pointercancel', onOrbUp);
+for (const el of [orb, micBtn]) {
+  if (!el) continue;
+  el.addEventListener('pointerdown', onOrbDown);
+  el.addEventListener('pointerup', onOrbUp);
+  el.addEventListener('pointercancel', onOrbUp);
+}
 
 async function onOrbDown(e) {
   e.preventDefault();
   if (ws?.readyState !== WebSocket.OPEN) { addMsg('sys', '⚠ Нет соединения'); return; }
-  try { orb.setPointerCapture(e.pointerId); } catch {}
+  try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
   haptic('medium');
   pressTs = Date.now();
   if (continuous) return;          // already hands-free; release decides whether to stop
@@ -282,8 +294,8 @@ function onOrbUp(e) {
   if (!micOpen) return;
   if (dt < TAP_MS) {
     continuous = true;             // quick tap → hands-free (mic already running)
-    orb.classList.add('hands-free');
     setState('listening');
+    voiceClass('hands-free', true);
   } else {
     endSegment();                  // hold release → send this take, then stop
     closeMic();
@@ -295,11 +307,11 @@ function stopAll() { endSegment(); closeMic(); }
 function beginSegment() {
   vadSpoke = false; vadSilence = 0;
   setState('listening');
-  orb.classList.add('rec');
+  voiceClass('rec', true);
   send({ type: 'start_voice' });
 }
 function endSegment() {
-  orb.classList.remove('rec');
+  voiceClass('rec', false);
   setState('processing');
   send({ type: 'stop_voice', tts: voiceEnabled });
 }
@@ -375,7 +387,8 @@ function closeMic() {
   micStream = workletNode = null;
   micOpen = false;
   continuous = false;
-  orb.classList.remove('rec', 'hands-free');
+  voiceClass('rec', false);
+  voiceClass('hands-free', false);
   setState('idle');
 }
 
@@ -392,7 +405,7 @@ function onAudioChunk(buf) {
   const i16 = new Int16Array(buf);
   let sum = 0; for (let i = 0; i < i16.length; i++) { const v = i16[i] / 32768; sum += v * v; }
   const rms = Math.sqrt(sum / i16.length);
-  if (rms > VAD_THRESH) { vadSpoke = true; vadSilence = 0; orb.classList.add('rec'); }
+  if (rms > VAD_THRESH) { vadSpoke = true; vadSilence = 0; voiceClass('rec', true); }
   else if (vadSpoke) {
     vadSilence += 100;                          // worklet chunk ≈ 100ms
     if (vadSilence >= VAD_HANG_MS) {            // end of utterance
@@ -503,7 +516,7 @@ const voiceBtn = document.getElementById('voice-toggle');
 if (voiceBtn) {
   voiceBtn.addEventListener('click', () => {
     voiceEnabled = !voiceEnabled;
-    voiceBtn.textContent = voiceEnabled ? '🔊' : '🔇';
+    voiceBtn.classList.toggle('muted', !voiceEnabled);
     voiceBtn.title = voiceEnabled ? 'Голос включён' : 'Голос выключен';
     if (!voiceEnabled) { clearVoiceWait(); window.speechSynthesis?.cancel(); }
   });
