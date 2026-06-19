@@ -61,7 +61,9 @@ def _build_context(uid: int) -> str:
         parts.append(persona)
     contacts = memory.cached_contacts(uid)
     if contacts:
-        parts.append("КОМУ можно писать (контакты для отправки сообщений): " + ", ".join(contacts) + ".")
+        parts.append("КОМУ можно писать (имя — кто это, для верного тона): " + "; ".join(
+            (c["alias"] + (f" — {c['note']}" if c.get("note") else "")) for c in contacts
+        ) + ".")
     else:
         parts.append("Контактов для отправки пока нет (пользователь добавляет их через /addcontact).")
     sched = memory.cached_schedule(uid)
@@ -105,6 +107,30 @@ async def _notify_users(text: str):
             logger.debug(f"notify {uid}: {e}")
 
 
+async def _flush_outbox():
+    """PC just came online — deliver any messages queued while it was off."""
+    if _tg_app is None:
+        return
+    try:
+        pending = await memory.pending_outbound()
+    except Exception as e:
+        logger.debug(f"outbox read: {e}")
+        return
+    for item in pending:
+        res = await bridge.send_userbot(item["target"], item["message"], item["as_voice"], item["user_id"])
+        if res and "Отправлено" in (res.get("text", "")):
+            await memory.delete_outbound(item["id"])
+            try:
+                await _tg_app.bot.send_message(
+                    chat_id=item["user_id"], text=f"📤 Из очереди отправлено {item['alias']}."
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(1)   # gentle pacing, avoid spammy bursts
+        else:
+            break   # PC dropped again — leave the rest queued for next time
+
+
 async def _on_pc_status(online: bool):
     await miniapp_server.broadcast_pc_status(online)   # Mini App badge
     global _pc_online_notified, _pc_offline_task
@@ -115,6 +141,7 @@ async def _on_pc_status(online: bool):
         if not _pc_online_notified:
             _pc_online_notified = True
             await _notify_users("🖥 ПК онлайн — можно управлять компьютером.")
+        asyncio.create_task(_flush_outbox())   # deliver anything queued while offline
     else:
         # Debounce: brief reconnects flap online/offline. Only announce offline
         # after 20s without a reconnect, so we don't spam on network blips.
