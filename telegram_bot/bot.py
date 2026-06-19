@@ -93,6 +93,10 @@ def _build_context(uid: int) -> str:
         parts.append("Проекты пользователя: " + "; ".join(
             (f"{p['name']} — {p['status']}" if p.get('status') else p['name']) for p in projects[:10]
         ) + ".")
+    notes = memory.cached_notes(uid)
+    if notes:
+        parts.append("Недавние заметки пользователя (можешь ссылаться на них): "
+                     + "; ".join(n["text"] for n in notes[:12]) + ".")
     return "\n".join(parts)
 
 
@@ -128,6 +132,7 @@ _BOT_COMMANDS = [
     BotCommand("notes",      "Мои заметки (входящая)"),
     BotCommand("note",       "Записать заметку: /note текст"),
     BotCommand("delnote",    "Удалить заметку: /delnote номер"),
+    BotCommand("findnote",   "Найти в заметках: /findnote слово"),
     BotCommand("contacts",   "Кому можно писать (белый список)"),
     BotCommand("addcontact", "Добавить контакт: /addcontact имя @user"),
     BotCommand("delcontact", "Удалить контакт: /delcontact имя"),
@@ -866,6 +871,22 @@ async def cmd_delnote(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await memory.delete_note(uid, notes[idx - 1]["id"])
     await update.effective_message.reply_text(f"🗑 Удалил заметку #{idx}.")
+
+
+async def cmd_findnote(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    parts = (update.effective_message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await update.effective_message.reply_text("Формат: `/findnote <слово>`", parse_mode="Markdown")
+        return
+    q = parts[1].strip()
+    rows = await memory.search_notes(update.effective_user.id, q)
+    if not rows:
+        await update.effective_message.reply_text(f"🔍 По «{q}» в заметках ничего не нашёл.")
+        return
+    lines = [f"🔍 Нашёл по «{q}»:"] + [f"• {r['text']}" for r in rows]
+    await update.effective_message.reply_text("\n".join(lines))
 
 
 async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

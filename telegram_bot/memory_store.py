@@ -113,12 +113,32 @@ class MemoryStore:
         contacts = await self.list_contacts(uid)
         schedule = await self.list_schedule(uid)
         projects = await self.list_projects(uid)
+        notes = await self.list_notes(uid, limit=12)
         self._cache[uid] = {
             "profile": profile, "facts": facts, "tasks": tasks,
             "contacts": contacts,
             "schedule": schedule,
             "projects": projects,
+            "notes": notes,
         }
+
+    def cached_notes(self, uid: int) -> list:
+        """Recent notes from cache (for the system prompt → JARVIS can recall them)."""
+        d = self._cache.get(uid)
+        return d.get("notes", []) if d else []
+
+    async def _refresh_notes_cache(self, uid: int):
+        if uid in self._cache:
+            self._cache[uid]["notes"] = await self.list_notes(uid, limit=12)
+
+    async def search_notes(self, uid: int, query: str) -> list:
+        q = f"%{query.strip().lower()}%"
+        rows = await self._fetchall(
+            "SELECT id, text, created_at FROM notes WHERE user_id=? AND lower(text) LIKE ? "
+            "ORDER BY id DESC LIMIT 20",
+            (uid, q),
+        )
+        return [{"id": r[0], "text": r[1], "created_at": r[2]} for r in rows]
 
     def cached_contacts(self, uid: int) -> list:
         """Whitelisted contact aliases from cache (for the system prompt)."""
@@ -479,6 +499,7 @@ class MemoryStore:
         row = await self._fetchone(
             "SELECT id FROM notes WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)
         )
+        await self._refresh_notes_cache(uid)
         return {"id": row[0] if row else None, "text": text}
 
     async def list_notes(self, uid: int, limit: int = 50) -> list:
@@ -495,6 +516,7 @@ class MemoryStore:
         if not owner:
             return False
         await self._exec("DELETE FROM notes WHERE id=? AND user_id=?", (note_id, uid))
+        await self._refresh_notes_cache(uid)
         return True
 
     # ── schedule (расписание пар) ────────────────────────────────────────────────
