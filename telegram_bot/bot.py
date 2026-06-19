@@ -49,6 +49,27 @@ bridge = PCBridge()
 memory = MemoryStore()
 
 
+_WD_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+
+def _fmt_class(c: dict) -> str:
+    s = (f"{c['time']} " if c.get("time") else "") + c["subject"]
+    if c.get("location"):
+        s += f" ({c['location']})"
+    return s
+
+
+def _schedule_today_str(uid: int) -> str:
+    sched = memory.cached_schedule(uid)
+    if not sched:
+        return ""
+    wd = user_context.local_now(uid, cfg.timezone).weekday()
+    today = [c for c in sched if c["weekday"] == wd]
+    if not today:
+        return ""
+    return "Сегодня по расписанию: " + "; ".join(_fmt_class(c) for c in today) + "."
+
+
 def _build_context(uid: int) -> str:
     parts = [user_context.describe(uid, cfg.default_city, cfg.timezone)]
     mem = memory.cached_block(uid)
@@ -62,6 +83,9 @@ def _build_context(uid: int) -> str:
         parts.append("КОМУ можно писать (контакты для отправки сообщений): " + ", ".join(contacts) + ".")
     else:
         parts.append("Контактов для отправки пока нет (пользователь добавляет их через /addcontact).")
+    sched = _schedule_today_str(uid)
+    if sched:
+        parts.append(sched)
     return "\n".join(parts)
 
 
@@ -83,7 +107,9 @@ _BOT_COMMANDS = [
     BotCommand("reminders",  "Мои напоминания"),
     BotCommand("task",       "Добавить задачу/событие"),
     BotCommand("tasks",      "Список задач"),
-    BotCommand("today",      "Задачи на сегодня"),
+    BotCommand("today",      "Сегодня: пары + задачи"),
+    BotCommand("schedule",   "Расписание пар на неделю"),
+    BotCommand("clearschedule", "Очистить расписание"),
     BotCommand("done",       "Закрыть задачу по номеру"),
     BotCommand("habit",      "Добавить привычку"),
     BotCommand("habits",     "Мои привычки и серии"),
@@ -587,11 +613,50 @@ async def cmd_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    tasks = [t for t in await memory.get_tasks(update.effective_user.id)
+    uid = update.effective_user.id
+    wd = user_context.local_now(uid, cfg.timezone).weekday()
+    classes = await memory.schedule_for_day(uid, wd)
+    tasks = [t for t in await memory.get_tasks(uid)
              if t.get("due") and agenda.is_today(t["due"])]
-    await update.effective_message.reply_text(
-        agenda.render_list(tasks, "🗓 *На сегодня*"), parse_mode="Markdown"
-    )
+    lines = [f"🗓 *Сегодня ({_WD_NAMES[wd]})*"]
+    if classes:
+        lines.append("\n📚 *Пары:*")
+        lines += [f"• {_fmt_class(c)}" for c in classes]
+    if tasks:
+        lines.append("\n✅ *Задачи:*")
+        lines += [f"• {t['title']}" for t in tasks]
+    if not classes and not tasks:
+        lines.append("\nПусто — отдыхай 🙂")
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_schedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    sched = await memory.list_schedule(update.effective_user.id)
+    if not sched:
+        await update.effective_message.reply_text(
+            "📚 Расписание пустое.\nПродиктуй обычным сообщением, например:\n"
+            "«по понедельникам в 9 матан в 305, по средам в 11 физика» — я добавлю.",
+        )
+        return
+    by_day: dict = {}
+    for c in sched:
+        by_day.setdefault(c["weekday"], []).append(c)
+    lines = ["📚 *Расписание:*"]
+    for wd in range(7):
+        if wd in by_day:
+            lines.append(f"\n*{_WD_NAMES[wd]}:*")
+            lines += [f"• {_fmt_class(c)}" for c in by_day[wd]]
+    lines.append("\nОчистить и продиктовать заново: /clearschedule")
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_clearschedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    await memory.clear_schedule(update.effective_user.id)
+    await update.effective_message.reply_text("📚 Расписание очищено. Продиктуй новое одним сообщением.")
 
 
 async def cmd_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
