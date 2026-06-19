@@ -614,11 +614,9 @@ class MemoryStore:
         rows = await self._fetchall("SELECT id FROM habits WHERE user_id=?", (uid,))
         for (hid,) in rows:
             await self._exec("DELETE FROM habit_checks WHERE habit_id=?", (hid,))
-        await self._exec("DELETE FROM facts WHERE user_id=?", (uid,))
-        await self._exec("DELETE FROM profile WHERE user_id=?", (uid,))
-        await self._exec("DELETE FROM tasks WHERE user_id=?", (uid,))
-        await self._exec("DELETE FROM habits WHERE user_id=?", (uid,))
-        await self._exec("DELETE FROM reminders WHERE user_id=?", (uid,))
+        for tbl in ("facts", "profile", "tasks", "habits", "reminders",
+                    "notes", "schedule", "projects", "outbox", "contacts", "meta"):
+            await self._exec(f"DELETE FROM {tbl} WHERE user_id=?", (uid,))
         self._cache.pop(uid, None)
 
     async def observe(self, uid: int, gemini, user_text: str, reply_text: str = ""):
