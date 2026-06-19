@@ -304,30 +304,73 @@ function endSegment() {
   send({ type: 'stop_voice', tts: voiceEnabled });
 }
 
+let _spNode = null;   // ScriptProcessor fallback node (iOS / no AudioWorklet)
+
 async function openMic() {
   if (micOpen) return;
   try {
-    recCtx = new AudioContext();
+    const AC = window.AudioContext || window.webkitAudioContext;
+    recCtx = new AC();
     if (recCtx.state === 'suspended') await recCtx.resume();
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }
     });
-    const workletURL = new URL('./worklet.js', location.href).href;
-    await recCtx.audioWorklet.addModule(workletURL);
     const srcNode = recCtx.createMediaStreamSource(micStream);
-    workletNode = new AudioWorkletNode(recCtx, 'pcm-processor');
-    workletNode.port.onmessage = ({ data }) => onAudioChunk(data.pcm);
-    srcNode.connect(workletNode);
+
+    // Preferred path: AudioWorklet. Telegram's iOS webview often lacks it
+    // (recCtx.audioWorklet is undefined) — fall back to ScriptProcessorNode.
+    let useWorklet = !!(recCtx.audioWorklet && recCtx.audioWorklet.addModule);
+    if (useWorklet) {
+      try {
+        await recCtx.audioWorklet.addModule(new URL('./worklet.js', location.href).href);
+        workletNode = new AudioWorkletNode(recCtx, 'pcm-processor');
+        workletNode.port.onmessage = ({ data }) => onAudioChunk(data.pcm);
+        srcNode.connect(workletNode);
+      } catch { useWorklet = false; }
+    }
+    if (!useWorklet) _startScriptProcessor(srcNode);
+
     micOpen = true;
   } catch (e) {
-    addMsg('sys', `⚠ Микрофон: ${e.message}`);
+    addMsg('sys', '⚠ Нет доступа к микрофону. Разреши доступ или печатай текстом.');
     closeMic();
   }
+}
+
+// Fallback PCM capture for browsers without AudioWorklet (iOS Telegram webview).
+// Mirrors worklet.js: downsample to 16kHz int16, emit 100ms (1600-sample) chunks.
+function _startScriptProcessor(srcNode) {
+  const ratio = recCtx.sampleRate / 16000;
+  const CHUNK = 1600;
+  let acc = [];
+  _spNode = recCtx.createScriptProcessor(4096, 1, 1);
+  _spNode.onaudioprocess = (e) => {
+    const ch = e.inputBuffer.getChannelData(0);
+    for (let i = 0; i < ch.length; i += ratio) {
+      const lo = ch[Math.floor(i)] ?? 0;
+      const hi = ch[Math.min(Math.ceil(i), ch.length - 1)] ?? lo;
+      acc.push(lo + (hi - lo) * (i % 1));
+    }
+    while (acc.length >= CHUNK) {
+      const s = acc.splice(0, CHUNK);
+      const pcm = new Int16Array(s.length);
+      for (let i = 0; i < s.length; i++) pcm[i] = Math.max(-32768, Math.min(32767, s[i] * 32767));
+      onAudioChunk(pcm.buffer);
+    }
+  };
+  // ScriptProcessor only fires while connected to a destination; route through a
+  // silent gain so the mic isn't echoed to the speakers.
+  const sink = recCtx.createGain();
+  sink.gain.value = 0;
+  srcNode.connect(_spNode);
+  _spNode.connect(sink);
+  sink.connect(recCtx.destination);
 }
 
 function closeMic() {
   micStream?.getTracks().forEach(t => t.stop());
   workletNode?.disconnect();
+  if (_spNode) { _spNode.onaudioprocess = null; _spNode.disconnect(); _spNode = null; }
   if (recCtx) { recCtx.close().catch(() => {}); recCtx = null; }
   micStream = workletNode = null;
   micOpen = false;
