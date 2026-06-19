@@ -6,6 +6,7 @@ deploys. Telegram POSTs updates to /telegram-webhook with a secret header;
 FastAPI feeds them into the Application's update queue.
 """
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -27,6 +28,7 @@ from telegram_bot import miniapp_server
 from telegram_bot import user_context
 from telegram_bot import personas
 from telegram_bot import proactive
+from telegram_bot import context_builder
 from telegram_bot.memory_store import MemoryStore
 
 logging.basicConfig(
@@ -52,40 +54,8 @@ memory = MemoryStore()
 
 
 def _build_context(uid: int) -> str:
-    parts = [user_context.describe(uid, cfg.default_city, cfg.timezone)]
-    mem = memory.cached_block(uid)
-    if mem:
-        parts.append(mem)
-    persona = personas.overlay(memory.cached_mode(uid))
-    if persona:
-        parts.append(persona)
-    contacts = memory.cached_contacts(uid)
-    if contacts:
-        parts.append("КОМУ можно писать (имя — кто это, для верного тона): " + "; ".join(
-            (c["alias"] + (f" — {c['note']}" if c.get("note") else "")) for c in contacts
-        ) + ".")
-    else:
-        parts.append("Контактов для отправки пока нет (пользователь добавляет их через /addcontact).")
-    sched = memory.cached_schedule(uid)
-    if sched:
-        wd = user_context.local_now(uid, cfg.timezone).weekday()
-        today = [c for c in sched if c["weekday"] == wd]
-        if today:
-            items = "; ".join(
-                ((f"{c['time']} " if c['time'] else "") + c['subject']
-                 + (f" ({c['location']})" if c['location'] else "")) for c in today
-            )
-            parts.append("Сегодня по расписанию: " + items + ".")
-    projects = memory.cached_projects(uid)
-    if projects:
-        parts.append("Проекты пользователя: " + "; ".join(
-            (f"{p['name']} — {p['status']}" if p.get('status') else p['name']) for p in projects[:10]
-        ) + ".")
-    notes = memory.cached_notes(uid)
-    if notes:
-        parts.append("Недавние заметки пользователя (можешь ссылаться на них): "
-                     + "; ".join(n["text"] for n in notes[:12]) + ".")
-    return "\n".join(parts)
+    # Single source of truth — shared with bot.py (see context_builder.py).
+    return context_builder.build_context(memory, cfg, uid)
 
 
 gemini.set_context_provider(_build_context)
@@ -263,10 +233,31 @@ async def _build_tg_app():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_error_handler(_on_error)
 
     bridge.on_notification(lambda t, uid: _on_notification(t, uid, app.bot))
 
     return app, _BOT_COMMANDS
+
+
+async def _on_error(update, context) -> None:
+    """Last line of defence: never let a handler crash silently. Log full
+    traceback server-side and tell the user something broke (item #3)."""
+    logger.exception("Unhandled handler error: %s", context.error)
+    chat_id = None
+    try:
+        if update is not None and getattr(update, "effective_chat", None):
+            chat_id = update.effective_chat.id
+    except Exception:
+        chat_id = None
+    if chat_id is None:
+        return
+    with contextlib.suppress(Exception):
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ Что-то сломалось на моей стороне — я уже записал ошибку. "
+                 "Попробуй ещё раз через минуту или переформулируй.",
+        )
 
 
 # ── Reminder loop ─────────────────────────────────────────────────────────────

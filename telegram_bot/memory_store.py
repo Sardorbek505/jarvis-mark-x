@@ -25,6 +25,15 @@ _SQLITE_PATH = Path(__file__).resolve().parent.parent / "config" / "jarvis_memor
 
 _MAX_FACTS = 60  # keep the newest N facts per user in context
 
+# Every table keyed by a `user_id` column. SINGLE SOURCE for clear()/GDPR wipe —
+# when you add a new per-user table, add it here so /forget can never leave data
+# behind (this list prevents the clear()-drift bug class). `habit_checks` is keyed
+# by habit_id, not user_id, so it is wiped separately in clear().
+USER_TABLES = (
+    "facts", "profile", "tasks", "habits", "reminders",
+    "notes", "schedule", "projects", "outbox", "contacts", "meta",
+)
+
 
 class MemoryStore:
     def __init__(self):
@@ -614,8 +623,7 @@ class MemoryStore:
         rows = await self._fetchall("SELECT id FROM habits WHERE user_id=?", (uid,))
         for (hid,) in rows:
             await self._exec("DELETE FROM habit_checks WHERE habit_id=?", (hid,))
-        for tbl in ("facts", "profile", "tasks", "habits", "reminders",
-                    "notes", "schedule", "projects", "outbox", "contacts", "meta"):
+        for tbl in USER_TABLES:
             await self._exec(f"DELETE FROM {tbl} WHERE user_id=?", (uid,))
         self._cache.pop(uid, None)
 
