@@ -64,6 +64,16 @@ def _build_context(uid: int) -> str:
         parts.append("КОМУ можно писать (контакты для отправки сообщений): " + ", ".join(contacts) + ".")
     else:
         parts.append("Контактов для отправки пока нет (пользователь добавляет их через /addcontact).")
+    sched = memory.cached_schedule(uid)
+    if sched:
+        wd = user_context.local_now(uid, cfg.timezone).weekday()
+        today = [c for c in sched if c["weekday"] == wd]
+        if today:
+            items = "; ".join(
+                ((f"{c['time']} " if c['time'] else "") + c['subject']
+                 + (f" ({c['location']})" if c['location'] else "")) for c in today
+            )
+            parts.append("Сегодня по расписанию: " + items + ".")
     return "\n".join(parts)
 
 
@@ -142,6 +152,7 @@ async def _build_tg_app():
         cmd_start, cmd_help, cmd_app, cmd_status, cmd_clear,
         cmd_contacts, cmd_addcontact, cmd_delcontact,
         cmd_notes, cmd_note, cmd_delnote,
+        cmd_schedule, cmd_clearschedule,
         cmd_pc, cmd_screenshot, cmd_camera, cmd_vol, cmd_lock, cmd_sysinfo, cmd_briefing,
         cmd_remind, cmd_reminders, cmd_task, cmd_tasks, cmd_today, cmd_done,
         cmd_habit, cmd_habits, cmd_check,
@@ -201,6 +212,8 @@ async def _build_tg_app():
     app.add_handler(CommandHandler("task",       cmd_task))
     app.add_handler(CommandHandler("tasks",      cmd_tasks))
     app.add_handler(CommandHandler("today",      cmd_today))
+    app.add_handler(CommandHandler("schedule",   cmd_schedule))
+    app.add_handler(CommandHandler("clearschedule", cmd_clearschedule))
     app.add_handler(CommandHandler("done",       cmd_done))
     app.add_handler(CommandHandler("habit",      cmd_habit))
     app.add_handler(CommandHandler("habits",     cmd_habits))

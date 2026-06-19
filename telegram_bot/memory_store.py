@@ -106,15 +106,26 @@ class MemoryStore:
         facts = await self._load_facts(uid)
         tasks = await self._load_tasks(uid)
         contacts = await self.list_contacts(uid)
+        schedule = await self.list_schedule(uid)
         self._cache[uid] = {
             "profile": profile, "facts": facts, "tasks": tasks,
             "contacts": [c["alias"] for c in contacts],
+            "schedule": schedule,
         }
 
     def cached_contacts(self, uid: int) -> list:
         """Whitelisted contact aliases from cache (for the system prompt)."""
         d = self._cache.get(uid)
         return d.get("contacts", []) if d else []
+
+    def cached_schedule(self, uid: int) -> list:
+        """Full weekly schedule from cache (for the system prompt)."""
+        d = self._cache.get(uid)
+        return d.get("schedule", []) if d else []
+
+    async def _refresh_schedule_cache(self, uid: int):
+        if uid in self._cache:
+            self._cache[uid]["schedule"] = await self.list_schedule(uid)
 
     def cached_block(self, uid: int) -> str:
         """Synchronous context string for the system prompt (from RAM cache)."""
@@ -453,6 +464,49 @@ class MemoryStore:
         await self._exec("DELETE FROM notes WHERE id=? AND user_id=?", (note_id, uid))
         return True
 
+    # ── schedule (расписание пар) ────────────────────────────────────────────────
+
+    async def add_class(self, uid: int, weekday: int, time: str, subject: str, location: str = "") -> dict:
+        await self._exec(
+            "INSERT INTO schedule(user_id, weekday, time, subject, location, created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (uid, int(weekday), (time or "").strip(), subject.strip(), (location or "").strip(),
+             datetime.now().isoformat(timespec="seconds")),
+        )
+        row = await self._fetchone(
+            "SELECT id FROM schedule WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)
+        )
+        await self._refresh_schedule_cache(uid)
+        return {"id": row[0] if row else None}
+
+    async def list_schedule(self, uid: int) -> list:
+        rows = await self._fetchall(
+            "SELECT id, weekday, time, subject, location FROM schedule WHERE user_id=? "
+            "ORDER BY weekday, time", (uid,)
+        )
+        return [{"id": r[0], "weekday": r[1], "time": r[2], "subject": r[3], "location": r[4]} for r in rows]
+
+    async def schedule_for_day(self, uid: int, weekday: int) -> list:
+        rows = await self._fetchall(
+            "SELECT id, weekday, time, subject, location FROM schedule WHERE user_id=? AND weekday=? "
+            "ORDER BY time", (uid, int(weekday))
+        )
+        return [{"id": r[0], "weekday": r[1], "time": r[2], "subject": r[3], "location": r[4]} for r in rows]
+
+    async def delete_class(self, uid: int, class_id: int) -> bool:
+        owner = await self._fetchone(
+            "SELECT 1 FROM schedule WHERE id=? AND user_id=?", (class_id, uid)
+        )
+        if not owner:
+            return False
+        await self._exec("DELETE FROM schedule WHERE id=? AND user_id=?", (class_id, uid))
+        await self._refresh_schedule_cache(uid)
+        return True
+
+    async def clear_schedule(self, uid: int):
+        await self._exec("DELETE FROM schedule WHERE user_id=?", (uid,))
+        await self._refresh_schedule_cache(uid)
+
     async def all_user_ids(self) -> list:
         """Every user the bot knows — to deliver proactive briefings to."""
         rows = await self._fetchall(
@@ -588,6 +642,15 @@ CREATE TABLE IF NOT EXISTS notes (
     text       TEXT NOT NULL,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS schedule (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    weekday    INTEGER NOT NULL,
+    time       TEXT,
+    subject    TEXT NOT NULL,
+    location   TEXT,
+    created_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
@@ -654,6 +717,15 @@ CREATE TABLE IF NOT EXISTS notes (
     id         BIGSERIAL PRIMARY KEY,
     user_id    BIGINT NOT NULL,
     text       TEXT NOT NULL,
+    created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS schedule (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    weekday    INTEGER NOT NULL,
+    time       TEXT,
+    subject    TEXT NOT NULL,
+    location   TEXT,
     created_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);

@@ -19,9 +19,25 @@ _RE_REMINDERS = re.compile(r"\[\[REMINDERS\]\](.*?)\[\[/REMINDERS\]\]", re.S | r
 _RE_HABITS = re.compile(r"\[\[HABITS\]\](.*?)\[\[/HABITS\]\]", re.S | re.I)
 _RE_TASKS = re.compile(r"\[\[TASKS\]\](.*?)\[\[/TASKS\]\]", re.S | re.I)
 _RE_NOTES = re.compile(r"\[\[NOTES\]\](.*?)\[\[/NOTES\]\]", re.S | re.I)
+_RE_SCHEDULE = re.compile(r"\[\[SCHEDULE\]\](.*?)\[\[/SCHEDULE\]\]", re.S | re.I)
 _REM_LINE = re.compile(r"(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2})[:.](\d{2})\s*\|\s*(.+)")
 
-_ALL = (_RE_REMINDERS, _RE_HABITS, _RE_TASKS, _RE_NOTES)
+_ALL = (_RE_REMINDERS, _RE_HABITS, _RE_TASKS, _RE_NOTES, _RE_SCHEDULE)
+
+_WEEKDAYS = {
+    "пн": 0, "вт": 1, "ср": 2, "чт": 3, "пт": 4, "сб": 5, "вс": 6,
+    "понедельник": 0, "вторник": 1, "среда": 2, "четверг": 3,
+    "пятница": 4, "суббота": 5, "воскресенье": 6,
+    "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6,
+}
+
+
+def _parse_weekday(s: str):
+    s = s.strip().lower()
+    for key, val in _WEEKDAYS.items():
+        if s.startswith(key):
+            return val
+    return None
 
 
 def _clean_line(line: str) -> str:
@@ -85,6 +101,28 @@ async def apply(memory, user_id: int, reply: str, tz) -> tuple[str, list]:
                 n += 1
         if n:
             summary.append(f"📝 заметок: {n}")
+
+    block = _RE_SCHEDULE.search(reply)
+    if block and hasattr(memory, "add_class"):
+        n = 0
+        for line in block.group(1).splitlines():
+            parts = [p.strip() for p in _clean_line(line).split("|")]
+            if len(parts) < 2:
+                continue
+            wd = _parse_weekday(parts[0])
+            if wd is None:
+                continue
+            time = parts[1] if len(parts) > 1 else ""
+            subject = parts[2] if len(parts) > 2 else ""
+            location = parts[3] if len(parts) > 3 else ""
+            if not subject:
+                # format may be "день | предмет" without time
+                subject, time = time, ""
+            if subject:
+                await memory.add_class(user_id, wd, time, subject, location)
+                n += 1
+        if n:
+            summary.append(f"📚 пар: {n}")
 
     clean = reply
     for rx in _ALL:
