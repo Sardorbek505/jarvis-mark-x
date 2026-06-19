@@ -393,6 +393,16 @@ header {
 .section-label { font-size: 11px; color: var(--dim); letter-spacing: 1px; text-transform: uppercase; margin: 6px 2px 0; }
 
 /* PC tiles */
+/* Prominent "launch desktop JARVIS" button */
+.pc-launch {
+  width: 100%; border: none; border-radius: 16px; padding: 16px;
+  margin-bottom: 14px; font-size: 16px; font-weight: 700; color: #001018;
+  cursor: pointer; background: linear-gradient(135deg, var(--cyan), #0099c0);
+  box-shadow: 0 8px 24px rgba(0,180,255,.28);
+  transition: transform .1s, box-shadow .2s;
+}
+.pc-launch:active { transform: scale(.97); box-shadow: 0 4px 14px rgba(0,180,255,.22); }
+
 .pc-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
 .pc-tile {
   display: flex; flex-direction: column; align-items: center; gap: 5px;
