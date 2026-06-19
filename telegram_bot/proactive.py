@@ -11,7 +11,7 @@ restart won't double-send.
 """
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from telegram_bot import user_context
 from telegram_bot import agenda
@@ -86,17 +86,39 @@ def _morning_prompt(name: str, today: list, all_open: list, weather_line: str = 
     )
 
 
-def _evening_prompt(name: str, today: list, all_open: list) -> str:
+def _tomorrow_classes_text(classes: list) -> str:
+    if not classes:
+        return ""
+    items = []
+    for c in classes:
+        s = (f"{c['time']} " if c.get("time") else "") + c["subject"]
+        if c.get("location"):
+            s += f" ({c['location']})"
+        items.append(s)
+    return "Завтра по расписанию: " + "; ".join(items) + "\n\n"
+
+
+def _evening_prompt(name: str, today: list, all_open: list,
+                    tomorrow_classes: list = None, undone_habits: list = None,
+                    tomorrow_reminders: list = None) -> str:
     who = f" Пользователя зовут {name}." if name else ""
+    tr = ""
+    if tomorrow_reminders:
+        tr = "Напоминания на завтра: " + "; ".join(r['text'] for r in tomorrow_reminders[:3]) + "\n\n"
     return (
-        "Сейчас вечер. Составь короткий вечерний разбор дня для пользователя "
-        "в своём текущем стиле."
+        "Сейчас вечер. Составь короткий, но содержательный вечерний разбор дня "
+        "для пользователя в своём текущем стиле."
         f"{who}\n\n"
         f"Что было запланировано на сегодня:\n{_tasks_text(today)}\n\n"
         f"Открытых задач сейчас: {len(all_open)}.\n\n"
-        "Спроси по-доброму, как прошёл день, отметь, что можно закрыть, "
-        "и предложи коротко наметить 1–3 главные задачи на завтра. "
-        "Тепло и по делу, 3–6 строк, можно эмодзи."
+        f"{_tomorrow_classes_text(tomorrow_classes or [])}"
+        f"{tr}"
+        f"{_habits_text(undone_habits or [])}"
+        "Спроси по-доброму, как прошёл день, отметь что можно закрыть. "
+        "Если есть непройденные сегодня привычки — мягко спроси, удалось ли. "
+        "Если на завтра есть пары/напоминания — кратко проговори их, чтобы человек "
+        "подготовился. Предложи наметить 1–3 главные задачи на завтра. "
+        "Тепло и по делу, 4–7 строк, можно эмодзи."
     )
 
 
@@ -118,7 +140,16 @@ async def _send_briefing(bot, gemini, memory, uid: int, slot: str,
                                  classes, undone_habits, reminders)
         header = "☀️"
     else:
-        prompt = _evening_prompt(name, today, tasks)
+        now = user_context.local_now(uid, default_tz)
+        tomorrow_wd = (now.weekday() + 1) % 7
+        tomorrow_classes = await memory.schedule_for_day(uid, tomorrow_wd)
+        habits = await memory.get_habits(uid, now.date().isoformat())
+        undone_habits = [h for h in habits if not h.get("done_today")]
+        tomorrow_str = (now.date() + timedelta(days=1)).isoformat()
+        reminders = await memory.list_reminders(uid)
+        tomorrow_reminders = [r for r in reminders if str(r.get("due", "")).startswith(tomorrow_str)]
+        prompt = _evening_prompt(name, today, tasks, tomorrow_classes,
+                                 undone_habits, tomorrow_reminders)
         header = "🌙"
     try:
         text = await gemini.generate_once(uid, prompt)
