@@ -32,7 +32,7 @@ _MAX_FACTS = 60  # keep the newest N facts per user in context
 USER_TABLES = (
     "facts", "profile", "tasks", "habits", "reminders",
     "notes", "schedule", "projects", "outbox", "contacts", "meta", "messages",
-    "embeddings",
+    "embeddings", "journal",
 )
 
 
@@ -700,6 +700,26 @@ class MemoryStore:
         )
         return [r[0] for r in rows]
 
+    # ── daily journal (life-log) ─────────────────────────────────────────────────
+
+    async def add_journal(self, uid: int, day: str, text: str):
+        text = (text or "").strip()
+        if not text:
+            return
+        # one entry per day — replace if it already exists
+        await self._exec("DELETE FROM journal WHERE user_id=? AND day=?", (uid, day))
+        await self._exec(
+            "INSERT INTO journal(user_id, day, text, created_at) VALUES(?,?,?,?)",
+            (uid, day, text, datetime.now().isoformat()),
+        )
+
+    async def list_journal(self, uid: int, limit: int = 14) -> list:
+        rows = await self._fetchall(
+            "SELECT day, text FROM journal WHERE user_id=? ORDER BY day DESC LIMIT ?",
+            (uid, limit),
+        )
+        return [{"day": r[0], "text": r[1]} for r in rows]
+
     async def stats(self, uid: int) -> dict:
         """Counts across every per-user table + profile fields, for /memstats."""
         await self.ensure_loaded(uid)
@@ -876,6 +896,13 @@ CREATE TABLE IF NOT EXISTS embeddings (
     vec        TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS journal (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    day        TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
@@ -984,6 +1011,13 @@ CREATE TABLE IF NOT EXISTS embeddings (
     kind       TEXT NOT NULL,
     text       TEXT NOT NULL,
     vec        TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS journal (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    day        TEXT NOT NULL,
+    text       TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);

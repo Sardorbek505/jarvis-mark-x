@@ -11,6 +11,7 @@ restart won't double-send.
 """
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta
 
 from telegram_bot import user_context
@@ -126,8 +127,34 @@ def _evening_prompt(name: str, today: list, all_open: list,
         "Если есть непройденные сегодня привычки — мягко спроси, удалось ли. "
         "Если на завтра есть пары/напоминания — кратко проговори их, чтобы человек "
         "подготовился. Предложи наметить 1–3 главные задачи на завтра. "
-        "Тепло и по делу, 4–7 строк, можно эмодзи."
+        "Тепло и по делу, 4–7 строк, можно эмодзи.\n\n"
+        "В САМОМ КОНЦЕ добавь СКРЫТЫЙ блок (пользователь его НЕ увидит, я вырежу) — "
+        "запись в дневник о сегодняшнем дне пользователя, от первого лица, "
+        "1–2 предложения, по сути что было/как настрой:\n"
+        "[[JOURNAL]]\nкороткая запись дня\n[[/JOURNAL]]"
     )
+
+
+_RE_JOURNAL = re.compile(r"\[\[JOURNAL\]\](.*?)\[\[/JOURNAL\]\]", re.S | re.I)
+
+
+async def _extract_journal(memory, gemini, uid: int, text: str, default_tz: str) -> str:
+    """Pull the hidden [[JOURNAL]] block from the evening message, persist it as a
+    dated life-log entry (+ index for recall), and return the cleaned message."""
+    m = _RE_JOURNAL.search(text)
+    clean = _RE_JOURNAL.sub("", text).strip()
+    if not m:
+        return clean
+    entry = m.group(1).strip()
+    if entry and hasattr(memory, "add_journal"):
+        day = user_context.local_now(uid, default_tz).strftime("%Y-%m-%d")
+        try:
+            await memory.add_journal(uid, day, entry)
+            from telegram_bot import memory_rag
+            await memory_rag.index(memory, gemini, uid, "journal", f"[{day}] {entry}")
+        except Exception as e:
+            logger.debug(f"journal save: {e}")
+    return clean
 
 
 async def _send_briefing(bot, gemini, memory, uid: int, slot: str,
@@ -166,6 +193,8 @@ async def _send_briefing(bot, gemini, memory, uid: int, slot: str,
     except Exception as e:
         logger.error(f"briefing gen for {uid}: {e}")
         return False
+    if slot == "evening":
+        text = await _extract_journal(memory, gemini, uid, text, default_tz)
     try:
         await bot.send_message(chat_id=uid, text=f"{header} {text}")
         return True

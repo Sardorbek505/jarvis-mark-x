@@ -150,6 +150,25 @@ async def test_stats_reports_counts(mem):
 
 
 @pytest.mark.asyncio
+async def test_journal_one_per_day_and_list(mem):
+    await mem.add_journal(UID, "2026-06-19", "Хороший день, сдал отчёт")
+    await mem.add_journal(UID, "2026-06-19", "Переписал — день был продуктивный")  # same day → replace
+    await mem.add_journal(UID, "2026-06-20", "Отдыхал")
+    entries = await mem.list_journal(UID)
+    assert len(entries) == 2                       # one per day
+    assert entries[0]["day"] == "2026-06-20"       # newest first
+    j19 = [e for e in entries if e["day"] == "2026-06-19"][0]
+    assert "продуктивный" in j19["text"]           # replaced, not duplicated
+
+
+@pytest.mark.asyncio
+async def test_clear_wipes_journal(mem):
+    await mem.add_journal(UID, "2026-06-20", "запись")
+    await mem.clear(UID)
+    assert await mem.list_journal(UID) == []
+
+
+@pytest.mark.asyncio
 async def test_clear_wipes_message_log(mem):
     await mem.add_message(UID, "user", "запомни это")
     await mem.clear(UID)
