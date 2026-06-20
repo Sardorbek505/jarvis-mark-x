@@ -106,6 +106,14 @@ async def _execute(text: str) -> dict:
     tl = text.lower().strip()
 
     try:
+        # Keyboard buttons (checked early so "разблокируй" isn't caught by the
+        # lock/"заблокируй" block). Enter / unlock-sequence.
+        if any(k in tl for k in ("разблокир", "unlock", "открой блокировку", "сними блокировку")):
+            return _do_unlock()
+        if tl in ("enter", "ввод", "интер") or any(
+                k in tl for k in ("нажми enter", "нажать enter", "нажми интер", "клавиша enter")):
+            return _do_press_enter()
+
         # Launch the desktop JARVIS app (main.py) on this PC. Must be checked
         # BEFORE the open_app block, otherwise "запусти ..." is caught there.
         if any(k in tl for k in (
@@ -201,6 +209,85 @@ async def _execute(text: str) -> dict:
 
 def _r(text: str, image_b64: str = None) -> dict:
     return {"text": text, "image_b64": image_b64}
+
+
+# ── Keyboard input (Windows SendInput) ───────────────────────────────────────
+# NOTE: input from this user-session process reaches the ACTIVE desktop only.
+# Windows isolates the secure lock screen (Winlogon desktop), so these keystrokes
+# CANNOT type into a real password lock screen — that needs RustDesk (its service
+# operates at the secure desktop). They work fine on the awake/unlocked desktop.
+
+_VK_ENTER = 0x0D
+_VK_SPACE = 0x20
+_UNLOCK_FILE = Path(__file__).resolve().parent.parent / "config" / "unlock_secret.txt"
+
+
+def _read_unlock_password() -> str:
+    try:
+        if _UNLOCK_FILE.exists():
+            return _UNLOCK_FILE.read_text(encoding="utf-8").strip() or "э"
+    except Exception:
+        pass
+    return "э"
+
+
+def _send_input(wVk: int = 0, wScan: int = 0, flags: int = 0):
+    import ctypes
+    PUL = ctypes.POINTER(ctypes.c_ulong)
+
+    class _KBD(ctypes.Structure):
+        _fields_ = [("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort),
+                    ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong),
+                    ("dwExtraInfo", PUL)]
+
+    class _U(ctypes.Union):
+        _fields_ = [("ki", _KBD)]
+
+    class _INPUT(ctypes.Structure):
+        _fields_ = [("type", ctypes.c_ulong), ("u", _U)]
+
+    extra = ctypes.c_ulong(0)
+    ki = _KBD(wVk, wScan, flags, 0, ctypes.pointer(extra))
+    inp = _INPUT(1, _U(ki=ki))  # type 1 = INPUT_KEYBOARD
+    ctypes.windll.user32.SendInput(1, ctypes.pointer(inp), ctypes.sizeof(inp))
+
+
+def _press_vk(vk: int):
+    _send_input(wVk=vk)                 # key down
+    _send_input(wVk=vk, flags=0x0002)   # key up (KEYEVENTF_KEYUP)
+
+
+def _type_char(ch: str):
+    code = ord(ch)
+    _send_input(wScan=code, flags=0x0004)          # KEYEVENTF_UNICODE down
+    _send_input(wScan=code, flags=0x0004 | 0x0002)  # up
+
+
+def _do_press_enter() -> dict:
+    try:
+        _press_vk(_VK_ENTER)
+        return _r("⏎ Enter нажат.")
+    except Exception as e:
+        return _r(f"❌ Не смог нажать Enter: {e}")
+
+
+def _do_unlock() -> dict:
+    """Wake the screen (Space) → type the unlock password → Enter.
+    Works only if the screen is NOT on the secure Windows lock (see note above)."""
+    import time
+    try:
+        pw = _read_unlock_password()
+        _press_vk(_VK_SPACE)
+        time.sleep(0.4)
+        for ch in pw:
+            _type_char(ch)
+            time.sleep(0.03)
+        time.sleep(0.2)
+        _press_vk(_VK_ENTER)
+        return _r("🔓 Отправил: пробел → пароль → Enter. Если это был защищённый "
+                  "локскрин Windows — ввод туда не проходит (используй RustDesk).")
+    except Exception as e:
+        return _r(f"❌ Не смог отправить разблокировку: {e}")
 
 
 def _launch_jarvis() -> dict:
