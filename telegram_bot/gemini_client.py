@@ -355,6 +355,35 @@ class GeminiClient:
         ]
         return await self._generate(contents, user_id=user_id)
 
+    async def summarize_document(self, data: bytes, mime: str = "", filename: str = "",
+                                 caption: str = "") -> str:
+        """Summarize an uploaded document. PDFs go to Gemini multimodal directly
+        (no PDF lib needed); text-like files are decoded and summarized."""
+        is_pdf = (mime or "").lower().endswith("pdf") or filename.lower().endswith(".pdf")
+        extra = f"\nПодпись пользователя: {caption}" if caption else ""
+        prompt = (f"Это документ «{filename or 'файл'}». На русском: 1) краткое содержание "
+                  f"в 5–8 пунктах, 2) ключевые факты/выводы, которые стоит запомнить.{extra}")
+        if is_pdf:
+            contents = [types.Content(role="user", parts=[
+                types.Part(inline_data=types.Blob(mime_type="application/pdf", data=data)),
+                types.Part(text=prompt),
+            ])]
+        else:
+            try:
+                text = data.decode("utf-8", errors="ignore")[:20000]
+            except Exception:
+                return "Извини, не смог прочитать этот формат файла."
+            if not text.strip():
+                return "Извини, файл пустой или формат не текстовый."
+            contents = [{"role": "user", "parts": [{"text": prompt + "\n\nТекст:\n" + text}]}]
+        return await self._generate(contents, user_id=None)
+
+    async def summarize_source(self, user_id: int, text: str, source: str = "") -> str:
+        """Summarize fetched web/article text into a recallable digest."""
+        prompt = (f"Сделай на русском краткий конспект этого материала ({source}): "
+                  "5–8 пунктов + ключевые мысли, которые стоит запомнить.\n\n" + (text or "")[:20000])
+        return await self._generate([{"role": "user", "parts": [{"text": prompt}]}], user_id=user_id)
+
     # TTS models tried in order (preview names can change per region/account)
     _TTS_MODELS = ["gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"]
 

@@ -1276,6 +1276,69 @@ async def _busy(chat, action: str = "typing"):
             await task
 
 
+# ── Document & link ingestion (summarize → memory) ──────────────────────────
+_RE_URL = re.compile(r"https?://[^\s]+")
+
+
+async def _fetch_url(url: str) -> str:
+    """Fetch a page and crudely strip it to text (no extra deps)."""
+    def _get():
+        import urllib.request
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (JARVIS)"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            html = r.read(2_000_000).decode("utf-8", errors="ignore")
+        html = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", html)
+        txt = re.sub(r"(?s)<[^>]+>", " ", html)
+        return re.sub(r"\s+", " ", txt).strip()[:20000]
+    try:
+        return await asyncio.to_thread(_get)
+    except Exception as e:
+        logger.debug(f"fetch_url: {e}")
+        return ""
+
+
+async def _handle_link(update: Update, user_id: int, url: str):
+    msg = update.effective_message
+    await msg.reply_text("🔗 Открываю и делаю конспект…")
+    text = await _fetch_url(url)
+    if not text or len(text) < 80:
+        await msg.reply_text("❌ Не смог прочитать страницу (закрыта/пустая).")
+        return
+    summary = await gemini.summarize_source(user_id, text, url)
+    await msg.reply_text(f"🔗 Конспект:\n\n{summary}")
+    note = f"[Ссылка {url}] {summary[:600]}"
+    await memory.add_note(user_id, note)
+    asyncio.create_task(memory_rag.index(memory, gemini, user_id, "link", note))
+
+
+async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    msg = update.effective_message
+    doc = msg.document
+    user_id = update.effective_user.id
+    await msg.chat.send_action("typing")
+    try:
+        if doc.file_size and doc.file_size > 15 * 1024 * 1024:
+            await msg.reply_text("📄 Файл большой (>15 МБ) — пришли поменьше.")
+            return
+        f = await ctx.bot.get_file(doc.file_id)
+        data = bytes(await f.download_as_bytearray())
+        summary = await gemini.summarize_document(
+            data, doc.mime_type or "", doc.file_name or "файл", msg.caption or "")
+        if not summary or summary.startswith("Извини"):
+            await msg.reply_text(summary or "❌ Не смог разобрать документ.")
+            return
+        await msg.reply_text(f"📄 *{doc.file_name or 'документ'}*\n\n{summary}",
+                             parse_mode="Markdown")
+        note = f"[Документ {doc.file_name or ''}] {summary[:600]}"
+        await memory.add_note(user_id, note)
+        asyncio.create_task(memory_rag.index(memory, gemini, user_id, "document", note))
+    except Exception as e:
+        logger.error(f"handle_document error: {e}")
+        await msg.reply_text("❌ Не смог обработать документ.")
+
+
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
@@ -1295,6 +1358,12 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         #     (still falls through so JARVIS also replies naturally).
         await memory.ensure_loaded(user_id)
         await curiosity.save_answer(memory, user_id, text)
+
+        # 0.6 A bare link? Fetch + summarize + remember it.
+        _u = _RE_URL.search(text or "")
+        if _u and len((text or "").strip()) < 300 and (text or "").strip().startswith("http"):
+            await _handle_link(update, user_id, _u.group(0))
+            return
 
         # 1. Clean single reminder ("напомни …")? Fast-path it. If it doesn't
         #    parse, fall through to Gemini's unified inbox instead of a dead-end
@@ -1563,6 +1632,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
     logger.info("Starting JARVIS Telegram Bot...")
     app.run_polling(drop_pending_updates=True)

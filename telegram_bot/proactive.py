@@ -75,6 +75,12 @@ def _morning_prompt(name: str, today: list, all_open: list, weather_line: str = 
     who = f" Пользователя зовут {name}." if name else ""
     wx = f"Погода сегодня: {weather_line}.\n\n" if weather_line else ""
     cal = f"События календаря на сегодня: {calendar_text}\n\n" if calendar_text else ""
+    # Lingering open tasks (not just today's) — material for a proactive follow-up.
+    lingering = ""
+    open_titles = [t.get("title", "") for t in (all_open or []) if t.get("title")]
+    if open_titles:
+        lingering = "Открытые задачи (могут висеть не первый день): " \
+                    + "; ".join(open_titles[:6]) + "\n\n"
     return (
         "Сейчас утро. Составь короткий тёплый утренний брифинг для пользователя "
         "в своём текущем стиле (учитывай режим личности и что ты о нём знаешь)."
@@ -83,12 +89,17 @@ def _morning_prompt(name: str, today: list, all_open: list, weather_line: str = 
         f"{cal}"
         f"{_classes_text(classes or [])}"
         f"Задачи и события на сегодня:\n{_tasks_text(today)}\n\n"
+        f"{lingering}"
         f"{_reminders_text(reminders or [])}"
         f"{_habits_text(undone_habits or [])}"
         f"Всего открытых задач: {len(all_open)}.\n\n"
         "Поздоровайся по-человечески; если есть пары — назови их, упомяни погоду, "
         "кратко проговори план дня, мягко напомни про непройденные привычки и "
         "ближайшие напоминания (если есть), добавь одну искреннюю мотивирующую мысль. "
+        "ВАЖНО (follow-up): если есть задача/дело, которое явно висит, ИЛИ привычка, "
+        "которую забросили — по-дружески спроси про ОДНО такое: не застряло ли, нужна "
+        "ли помощь, чем помочь сдвинуть. Не вываливай всё списком — как близкий человек, "
+        "который реально следит за твоими делами. "
         "Без воды, 4–8 строк, эмодзи ок."
     )
 
