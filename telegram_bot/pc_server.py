@@ -114,6 +114,14 @@ async def _execute(text: str) -> dict:
                 k in tl for k in ("нажми enter", "нажать enter", "нажми интер", "клавиша enter")):
             return _do_press_enter()
 
+        # System volume via media keys (reliable, independent of the music player).
+        if tl in ("громче", "погромче", "сделай громче", "сделай погромче",
+                  "прибавь громкость", "volume up"):
+            return _do_volume(+1)
+        if tl in ("тише", "потише", "сделай тише", "сделай потише",
+                  "убавь громкость", "volume down"):
+            return _do_volume(-1)
+
         # Launch the desktop JARVIS app (main.py) on this PC. Must be checked
         # BEFORE the open_app block, otherwise "запусти ..." is caught there.
         if any(k in tl for k in (
@@ -269,6 +277,17 @@ def _do_press_enter() -> dict:
         return _r("⏎ Enter нажат.")
     except Exception as e:
         return _r(f"❌ Не смог нажать Enter: {e}")
+
+
+def _do_volume(direction: int, steps: int = 3) -> dict:
+    """System volume via media keys — always works (unlike player-only volume)."""
+    vk = 0xAF if direction > 0 else 0xAE  # VK_VOLUME_UP / VK_VOLUME_DOWN
+    try:
+        for _ in range(steps):
+            _press_vk(vk)
+        return _r("🔊 Громче" if direction > 0 else "🔉 Тише")
+    except Exception as e:
+        return _r(f"❌ Громкость: {e}")
 
 
 def _do_unlock() -> dict:
