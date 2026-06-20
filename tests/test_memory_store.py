@@ -162,6 +162,17 @@ async def test_journal_one_per_day_and_list(mem):
 
 
 @pytest.mark.asyncio
+async def test_mood_log_and_clear(mem):
+    await mem.add_mood(UID, "2026-06-19", 4, "устал но доволен")
+    await mem.add_mood(UID, "2026-06-20", 2, "тяжёлый день")
+    entries = await mem.list_mood(UID)
+    assert len(entries) == 2
+    assert entries[0]["day"] == "2026-06-20" and entries[0]["score"] == 2  # newest first
+    await mem.clear(UID)
+    assert await mem.list_mood(UID) == []
+
+
+@pytest.mark.asyncio
 async def test_clear_wipes_journal(mem):
     await mem.add_journal(UID, "2026-06-20", "запись")
     await mem.clear(UID)

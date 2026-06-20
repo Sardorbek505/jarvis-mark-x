@@ -121,6 +121,7 @@ _BOT_COMMANDS = [
     BotCommand("profile",    "Что JARVIS обо мне знает"),
     BotCommand("memstats",   "Состояние памяти"),
     BotCommand("journal",    "Дневник дня"),
+    BotCommand("mood",       "Отметить/посмотреть настроение"),
     BotCommand("reindex",    "Проиндексировать историю (поиск)"),
     BotCommand("ask",        "Пусть JARVIS спросит обо мне"),
     BotCommand("curiosity",  "Вкл/выкл вопросы обо мне"),
@@ -481,6 +482,48 @@ async def cmd_memstats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append(
             f"\n⚠️ {s['facts_total'] - s['facts_in_context']} старых фактов хранятся, "
             "но НЕ попадают в контекст (лимит). Фаза 2 это исправит.")
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+_MOOD_EMOJI = {1: "😞", 2: "😕", 3: "😐", 4: "🙂", 5: "😄"}
+
+
+async def cmd_mood(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Log how you feel (`/mood 4 устал но доволен`) or show the recent trend (`/mood`)."""
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    args = ctx.args
+    if args:
+        score = None
+        note_parts = list(args)
+        if args[0].isdigit() and 1 <= int(args[0]) <= 5:
+            score = int(args[0])
+            note_parts = list(args[1:])
+        note = " ".join(note_parts).strip()
+        day = user_context.local_now(uid, cfg.timezone).strftime("%Y-%m-%d")
+        await memory.add_mood(uid, day, score, note)
+        if note:
+            asyncio.create_task(memory_rag.index(memory, gemini, uid, "mood", f"Настроение: {note}"))
+        face = _MOOD_EMOJI.get(score, "📝")
+        await update.effective_message.reply_text(
+            f"{face} Записал настроение." + (f" Оценка {score}/5." if score else "")
+            + " Загляну в это вечером 🌙")
+        return
+    # No args → show the log + a simple trend
+    entries = await memory.list_mood(uid, limit=14)
+    if not entries:
+        await update.effective_message.reply_text(
+            "🙂 Отметь настроение: `/mood 4 норм, продуктивный день` "
+            "(оценка 1–5 необязательна). Я буду следить за динамикой.",
+            parse_mode="Markdown")
+        return
+    scored = [e["score"] for e in entries if e["score"]]
+    avg = f"  ср. {sum(scored)/len(scored):.1f}/5" if scored else ""
+    lines = [f"🧭 *Настроение*{avg}\n"]
+    for e in entries[:10]:
+        face = _MOOD_EMOJI.get(e["score"], "•")
+        lines.append(f"{e['day']} {face} {e['note'] or ''}".rstrip())
     await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -1492,6 +1535,7 @@ def main():
     app.add_handler(CommandHandler("profile",    cmd_profile))
     app.add_handler(CommandHandler("memstats",   cmd_memstats))
     app.add_handler(CommandHandler("journal",    cmd_journal))
+    app.add_handler(CommandHandler("mood",       cmd_mood))
     app.add_handler(CommandHandler("reindex",    cmd_reindex))
     app.add_handler(CommandHandler("ask",        cmd_ask))
     app.add_handler(CommandHandler("curiosity",  cmd_curiosity))
