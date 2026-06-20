@@ -344,6 +344,7 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(5)
     await _tg_app.start()
     await _tg_app.bot.set_my_commands(bot_commands)
+    miniapp_server._bot = _tg_app.bot   # let the Mini App push photos to the TG chat
 
     if cfg.miniapp_url:
         webhook_url = f"{cfg.miniapp_url.rstrip('/')}{_WEBHOOK_PATH}"

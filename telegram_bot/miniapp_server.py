@@ -42,6 +42,7 @@ _PC_KEYWORDS = [
     "переключи", "отключи", "громче", "тише", "дальше", "громкость",
     "камер", "вебкам", "webcam", "сфоткай", "что рядом", "что вокруг", "что там происходит",
     "брифинг", "briefing", "батарея", "calendar", "календарь",
+    "разблокир", "нажми enter", "нажать enter", "нажми интер",
 ]
 
 
@@ -71,6 +72,7 @@ app = FastAPI(title="JARVIS Mini App")
 _gemini = None
 _bridge = None
 _memory = None
+_bot = None      # PTB bot — lets the Mini App push screenshots/photos into the TG chat
 _audio_buffers: Dict[int, bytes] = {}
 _miniapp_clients: Set[WebSocket] = set()
 
@@ -368,7 +370,42 @@ async def _send_text(ws: WebSocket, text: str, want_audio: bool):
             await ws.send_text(json.dumps({"type": "tts_failed"}))
 
 
+async def _send_media_to_tg(ws: WebSocket, user_id: int, pc_cmd: str, label: str):
+    """Grab a screenshot/camera shot from the PC and push it to the user's
+    Telegram chat via the bot (works on HF — bot uses the Cloudflare proxy)."""
+    if not (_bridge and _bridge.connected):
+        await _send_text(ws, "❌ ПК офлайн — нечего отправлять.", want_audio=False)
+        return
+    if _bot is None:
+        await _send_text(ws, "❌ Отправка в Telegram недоступна.", want_audio=False)
+        return
+    await _send_text(ws, f"📸 Делаю {label} и отправляю в Telegram…", want_audio=False)
+    rich = await _bridge.send_command_full(pc_cmd, user_id)
+    img = (rich or {}).get("image_b64")
+    if not img:
+        await _send_text(ws, "❌ Не получил изображение с ПК.", want_audio=False)
+        return
+    try:
+        from io import BytesIO
+        data = base64.b64decode(img)
+        await _bot.send_photo(chat_id=user_id, photo=BytesIO(data),
+                              caption=(rich.get("text") or label))
+        await _send_text(ws, "📤 Отправил в Telegram-чат ✅", want_audio=False)
+    except Exception as e:
+        logger.error(f"send media to tg: {e}")
+        await _send_text(ws, f"❌ Не смог отправить в Telegram: {e}", want_audio=False)
+
+
 async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool = True):
+    low = text.lower()
+    # "Скачать в Telegram" buttons: send the screenshot / camera shot to the chat.
+    if ("в телеграм" in low or "в тг" in low or "to tg" in low or "→ telegram" in low):
+        if any(k in low for k in ("камер", "фото", "camera")):
+            await _send_media_to_tg(ws, user_id, "снимок с камеры", "снимок с камеры")
+        else:
+            await _send_media_to_tg(ws, user_id, "скриншот", "скриншот")
+        return
+
     is_pc_cmd = _looks_like_pc_command(text)
 
     if _bridge and _bridge.connected and is_pc_cmd:
