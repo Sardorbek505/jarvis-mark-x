@@ -45,6 +45,7 @@ from telegram_bot import context_builder
 from telegram_bot import recall
 from telegram_bot import gcal
 from telegram_bot import curiosity
+from telegram_bot import memory_rag
 from telegram_bot.memory_store import MemoryStore
 
 cfg = load_config()
@@ -80,7 +81,7 @@ def _build_context(uid: int) -> str:
 
 
 gemini.set_context_provider(_build_context)
-gemini.set_recall_provider(lambda uid, text: recall.search(memory, uid, text))
+gemini.set_recall_provider(memory_rag.make_recall_provider(memory, gemini, recall))
 
 _BOT_COMMANDS = [
     BotCommand("start",      "Запустить JARVIS"),
@@ -119,6 +120,7 @@ _BOT_COMMANDS = [
     BotCommand("mode",       "Режим личности (ментор/друг/бизнес)"),
     BotCommand("profile",    "Что JARVIS обо мне знает"),
     BotCommand("memstats",   "Состояние памяти"),
+    BotCommand("reindex",    "Проиндексировать историю (поиск)"),
     BotCommand("ask",        "Пусть JARVIS спросит обо мне"),
     BotCommand("curiosity",  "Вкл/выкл вопросы обо мне"),
     BotCommand("remember",   "Запомнить факт обо мне"),
@@ -185,12 +187,14 @@ async def _dispatch_outbound(token, target, alias, message, as_voice, user_id, s
 # block; we run ONE safe read-only command, feed the result back, and let it
 # complete. Bounded to a single round — loop-safe and quota-safe (max +1 call).
 async def _persist_exchange(uid: int, user_text: str, reply: str):
-    """Log the raw user+assistant exchange to the durable message log. Fire-and-
-    forget — must never block or break the reply path."""
+    """Log the raw user+assistant exchange to the durable message log, and index
+    the user's message for semantic recall. Fire-and-forget — never blocks the
+    reply path."""
     try:
         await memory.add_message(uid, "user", user_text)
         if reply and reply.strip():
             await memory.add_message(uid, "model", reply)
+        await memory_rag.index(memory, gemini, uid, "message", user_text)
     except Exception as e:
         logger.debug(f"persist exchange: {e}")
 
@@ -460,6 +464,8 @@ async def cmd_memstats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"💾 Хранилище: *{s['backend']}*"
         + ("" if s["backend"] == "Postgres" else " ⚠️ (эфемерно — задай DATABASE_URL!)"),
         f"💬 Сообщений в логе: *{c.get('messages', 0)}*",
+        f"🧠 В семантической памяти: *{c.get('embeddings', 0)}* "
+        + ("(/reindex чтобы доиндексировать историю)" if c.get('embeddings', 0) < c.get('messages', 0) else "✓"),
         f"🧠 Фактов: *{s['facts_total']}*"
         + (f" (в контекст идёт {s['facts_in_context']})"
            if s['facts_total'] > s['facts_in_context'] else ""),
@@ -475,6 +481,27 @@ async def cmd_memstats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"\n⚠️ {s['facts_total'] - s['facts_in_context']} старых фактов хранятся, "
             "но НЕ попадают в контекст (лимит). Фаза 2 это исправит.")
     await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_reindex(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Backfill semantic embeddings for the existing message/fact history."""
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    await update.effective_message.reply_text(
+        "🧠 Индексирую твою историю для семантического поиска… это в фоне, пришлю итог.")
+
+    async def _run():
+        try:
+            n = await memory_rag.backfill(memory, gemini, uid, limit=600)
+            total = await memory.embedding_count(uid)
+            await ctx.bot.send_message(
+                uid, f"✅ Готово. Новых проиндексировано: {n}. "
+                     f"Всего в семантической памяти: {total}.")
+        except Exception as e:
+            await ctx.bot.send_message(uid, f"❌ Индексация прервалась: {e}")
+
+    asyncio.create_task(_run())
 
 
 async def cmd_ask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1447,6 +1474,7 @@ def main():
     app.add_handler(CommandHandler("mode",       cmd_mode))
     app.add_handler(CommandHandler("profile",    cmd_profile))
     app.add_handler(CommandHandler("memstats",   cmd_memstats))
+    app.add_handler(CommandHandler("reindex",    cmd_reindex))
     app.add_handler(CommandHandler("ask",        cmd_ask))
     app.add_handler(CommandHandler("curiosity",  cmd_curiosity))
     app.add_handler(CommandHandler("remember",   cmd_remember))

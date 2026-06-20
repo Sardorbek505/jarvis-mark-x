@@ -240,6 +240,28 @@ class GeminiClient:
         logger.error(f"All Gemini models failed. Last error: {last_err}")
         return "Извини, ИИ сейчас недоступен (проблема с моделью Gemini). Проверь API-ключ и квоту."
 
+    _EMBED_MODEL = "gemini-embedding-001"
+    EMBED_DIM = 768
+
+    async def embed(self, text: str):
+        """Embed text for semantic memory (RAG). Returns a list[float] or None.
+        Uses a SEPARATE embedding model — its quota is independent of chat, so
+        indexing every message doesn't eat the gemini-2.5-flash limit."""
+        text = (text or "").strip()
+        if not text:
+            return None
+        loop = asyncio.get_event_loop()
+        try:
+            r = await loop.run_in_executor(None, lambda: self._client.models.embed_content(
+                model=self._EMBED_MODEL,
+                contents=text[:8000],
+                config=types.EmbedContentConfig(output_dimensionality=self.EMBED_DIM),
+            ))
+            return list(r.embeddings[0].values)
+        except Exception as e:
+            logger.debug(f"embed failed: {e}")
+            return None
+
     async def generate_once(self, user_id: int, prompt: str) -> str:
         """One-shot generation using the user's full context (memory, tasks,
         persona) but WITHOUT touching conversation history. For proactive
