@@ -32,7 +32,7 @@ _MAX_FACTS = 60  # keep the newest N facts per user in context
 USER_TABLES = (
     "facts", "profile", "tasks", "habits", "reminders",
     "notes", "schedule", "projects", "outbox", "contacts", "meta", "messages",
-    "embeddings", "journal", "mood",
+    "embeddings", "journal", "mood", "expenses",
 )
 
 
@@ -735,6 +735,25 @@ class MemoryStore:
         )
         return [{"day": r[0], "score": r[1], "note": r[2]} for r in rows]
 
+    # ── expenses ─────────────────────────────────────────────────────────────────
+
+    async def add_expense(self, uid: int, amount: float, note: str, day: str):
+        await self._exec(
+            "INSERT INTO expenses(user_id, amount, note, day, created_at) VALUES(?,?,?,?,?)",
+            (uid, float(amount), (note or "").strip(), day, datetime.now().isoformat()),
+        )
+
+    async def list_expenses(self, uid: int, since_day: str = None, limit: int = 200) -> list:
+        if since_day:
+            rows = await self._fetchall(
+                "SELECT amount, note, day FROM expenses WHERE user_id=? AND day>=? "
+                "ORDER BY id DESC LIMIT ?", (uid, since_day, limit))
+        else:
+            rows = await self._fetchall(
+                "SELECT amount, note, day FROM expenses WHERE user_id=? "
+                "ORDER BY id DESC LIMIT ?", (uid, limit))
+        return [{"amount": r[0], "note": r[1], "day": r[2]} for r in rows]
+
     async def stats(self, uid: int) -> dict:
         """Counts across every per-user table + profile fields, for /memstats."""
         await self.ensure_loaded(uid)
@@ -926,6 +945,14 @@ CREATE TABLE IF NOT EXISTS mood (
     note       TEXT,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS expenses (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    amount     REAL NOT NULL,
+    note       TEXT,
+    day        TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
@@ -1049,6 +1076,14 @@ CREATE TABLE IF NOT EXISTS mood (
     day        TEXT NOT NULL,
     score      INTEGER,
     note       TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS expenses (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    amount     DOUBLE PRECISION NOT NULL,
+    note       TEXT,
+    day        TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
