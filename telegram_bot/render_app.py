@@ -30,6 +30,7 @@ from telegram_bot import personas
 from telegram_bot import proactive
 from telegram_bot import context_builder
 from telegram_bot import recall
+from telegram_bot import memory_rag
 from telegram_bot.memory_store import MemoryStore
 
 logging.basicConfig(
@@ -60,7 +61,7 @@ def _build_context(uid: int) -> str:
 
 
 gemini.set_context_provider(_build_context)
-gemini.set_recall_provider(lambda uid, text: recall.search(memory, uid, text))
+gemini.set_recall_provider(memory_rag.make_recall_provider(memory, gemini, recall))
 
 # Wire into miniapp_server
 miniapp_server._gemini = gemini
@@ -164,7 +165,7 @@ async def _build_tg_app():
         cmd_pc, cmd_screenshot, cmd_camera, cmd_vol, cmd_lock, cmd_sysinfo, cmd_briefing,
         cmd_remind, cmd_reminders, cmd_task, cmd_tasks, cmd_today, cmd_done,
         cmd_habit, cmd_habits, cmd_check,
-        cmd_morning, cmd_evening, cmd_mode, cmd_profile, cmd_memstats,
+        cmd_morning, cmd_evening, cmd_mode, cmd_profile, cmd_memstats, cmd_reindex,
         cmd_ask, cmd_curiosity, cmd_remember, cmd_forget,
         on_callback,
         handle_text, handle_voice, handle_photo,
@@ -209,6 +210,7 @@ async def _build_tg_app():
     app.add_handler(CommandHandler("mode",       cmd_mode))
     app.add_handler(CommandHandler("profile",    cmd_profile))
     app.add_handler(CommandHandler("memstats",   cmd_memstats))
+    app.add_handler(CommandHandler("reindex",    cmd_reindex))
     app.add_handler(CommandHandler("ask",        cmd_ask))
     app.add_handler(CommandHandler("curiosity",  cmd_curiosity))
     app.add_handler(CommandHandler("remember",   cmd_remember))

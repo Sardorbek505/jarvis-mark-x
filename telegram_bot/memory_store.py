@@ -32,6 +32,7 @@ _MAX_FACTS = 60  # keep the newest N facts per user in context
 USER_TABLES = (
     "facts", "profile", "tasks", "habits", "reminders",
     "notes", "schedule", "projects", "outbox", "contacts", "meta", "messages",
+    "embeddings",
 )
 
 
@@ -659,6 +660,46 @@ class MemoryStore:
         row = await self._fetchone("SELECT COUNT(*) FROM messages WHERE user_id=?", (uid,))
         return int(row[0]) if row else 0
 
+    # ── semantic memory (RAG embeddings) ────────────────────────────────────────
+
+    async def has_embedding(self, uid: int, text: str) -> bool:
+        row = await self._fetchone(
+            "SELECT 1 FROM embeddings WHERE user_id=? AND text=? LIMIT 1", (uid, text))
+        return row is not None
+
+    async def add_embedding(self, uid: int, kind: str, text: str, vec: list):
+        await self._exec(
+            "INSERT INTO embeddings(user_id, kind, text, vec, created_at) VALUES(?,?,?,?,?)",
+            (uid, kind, text, json.dumps(vec), datetime.now().isoformat()),
+        )
+
+    async def all_embeddings(self, uid: int) -> list:
+        rows = await self._fetchall(
+            "SELECT kind, text, vec FROM embeddings WHERE user_id=?", (uid,))
+        out = []
+        for kind, text, vec in rows:
+            try:
+                out.append({"kind": kind, "text": text, "vec": json.loads(vec)})
+            except Exception:
+                continue
+        return out
+
+    async def embedding_count(self, uid: int) -> int:
+        row = await self._fetchone("SELECT COUNT(*) FROM embeddings WHERE user_id=?", (uid,))
+        return int(row[0]) if row else 0
+
+    async def unembedded_texts(self, uid: int, limit: int = 400) -> list:
+        """User messages + facts not yet embedded (for backfill). Newest first."""
+        rows = await self._fetchall(
+            "SELECT text FROM ("
+            "  SELECT id, text FROM messages WHERE user_id=? AND role='user' "
+            "  UNION ALL SELECT id, fact AS text FROM facts WHERE user_id=?"
+            ") q WHERE text NOT IN (SELECT text FROM embeddings WHERE user_id=?) "
+            "ORDER BY id DESC LIMIT ?",
+            (uid, uid, uid, limit),
+        )
+        return [r[0] for r in rows]
+
     async def stats(self, uid: int) -> dict:
         """Counts across every per-user table + profile fields, for /memstats."""
         await self.ensure_loaded(uid)
@@ -683,10 +724,12 @@ class MemoryStore:
         them. Safe to fire-and-forget (asyncio.create_task)."""
         try:
             facts = await gemini.extract_facts(user_text, reply_text)
+            from telegram_bot import memory_rag
             for f in facts:
                 added = await self.add_fact(uid, f)
                 if added:
                     logger.info(f"Learned about {uid}: {f}")
+                    await memory_rag.index(self, gemini, uid, "fact", f)
         except Exception as e:
             logger.debug(f"observe: {e}")
 
@@ -825,6 +868,14 @@ CREATE TABLE IF NOT EXISTS messages (
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS embeddings (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    vec        TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
@@ -925,6 +976,14 @@ CREATE TABLE IF NOT EXISTS messages (
     user_id    BIGINT NOT NULL,
     role       TEXT NOT NULL,
     text       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS embeddings (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    kind       TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    vec        TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
