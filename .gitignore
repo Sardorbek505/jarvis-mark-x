@@ -52,3 +52,5 @@ config/credentials.json
 config/token.json
 
 config/gcal_auth_url.txt
+
+config/unlock_secret.txt
