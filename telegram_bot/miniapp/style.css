@@ -713,3 +713,11 @@ header {
 #voice-toggle.muted { color: var(--dim); }
 #voice-toggle.muted .wave { display: none; }
 #voice-toggle.muted .slash { display: inline; }
+
+/* "Обо мне" dashboard chips */
+.dash-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dash-chips .chip {
+  font-size: 12px; padding: 5px 10px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  color: var(--text); white-space: nowrap;
+}

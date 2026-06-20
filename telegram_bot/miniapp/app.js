@@ -616,6 +616,27 @@ function renderDashboard(p) {
     </div>
     <div class="card wide"><h3>🔔 Ближайшее напоминание</h3>
       <div class="sub" style="color:var(--text);font-size:14px">${p.next_reminder ? esc(p.next_reminder) : 'Напоминаний нет'}</div>
+    </div>
+    ${renderAboutMe(p)}`;
+}
+
+function renderAboutMe(p) {
+  const a = p.about || {};
+  const facts = (a.facts || []);
+  const mem = p.mem || {};
+  const chips = [];
+  if (p.mood_avg) chips.push(`🙂 настроение ${p.mood_avg}/5`);
+  if (p.spent_week) chips.push(`💸 за неделю ${Number(p.spent_week).toLocaleString('ru-RU')}`);
+  if (mem.semantic) chips.push(`🧠 память ${mem.semantic}`);
+  const hasContent = a.about || a.goals || facts.length || p.journal_last || chips.length;
+  if (!hasContent) return '';
+  return `
+    <div class="card wide"><h3>🧠 Обо мне</h3>
+      ${a.about ? `<div class="sub" style="color:var(--text);font-size:14px;margin-bottom:6px">${esc(a.about)}</div>` : ''}
+      ${a.goals ? `<div class="sub" style="margin-bottom:8px">🎯 ${esc(a.goals)}</div>` : ''}
+      ${chips.length ? `<div class="dash-chips">${chips.map(c => `<span class="chip">${esc(c)}</span>`).join('')}</div>` : ''}
+      ${facts.length ? `<div class="dash-list" style="margin-top:8px">${facts.map(f => `<div>• ${esc(f)}</div>`).join('')}</div>` : ''}
+      ${p.journal_last ? `<div class="sub" style="margin-top:8px;font-style:italic">📔 ${esc(p.journal_last)}</div>` : ''}
     </div>`;
 }
 
