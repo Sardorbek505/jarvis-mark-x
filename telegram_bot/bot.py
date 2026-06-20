@@ -120,6 +120,7 @@ _BOT_COMMANDS = [
     BotCommand("mode",       "Режим личности (ментор/друг/бизнес)"),
     BotCommand("profile",    "Что JARVIS обо мне знает"),
     BotCommand("memstats",   "Состояние памяти"),
+    BotCommand("journal",    "Дневник дня"),
     BotCommand("reindex",    "Проиндексировать историю (поиск)"),
     BotCommand("ask",        "Пусть JARVIS спросит обо мне"),
     BotCommand("curiosity",  "Вкл/выкл вопросы обо мне"),
@@ -480,6 +481,22 @@ async def cmd_memstats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append(
             f"\n⚠️ {s['facts_total'] - s['facts_in_context']} старых фактов хранятся, "
             "но НЕ попадают в контекст (лимит). Фаза 2 это исправит.")
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_journal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show the recent daily journal (life-log) entries JARVIS wrote."""
+    if not _is_authorized(update):
+        return
+    entries = await memory.list_journal(update.effective_user.id, limit=14)
+    if not entries:
+        await update.effective_message.reply_text(
+            "📔 Дневник пока пуст. Я пишу короткую запись каждый вечер — "
+            "появится после вечернего разбора (или вызови /evening).")
+        return
+    lines = ["📔 *Твой дневник*\n"]
+    for e in entries:
+        lines.append(f"*{e['day']}*\n{e['text']}\n")
     await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -1474,6 +1491,7 @@ def main():
     app.add_handler(CommandHandler("mode",       cmd_mode))
     app.add_handler(CommandHandler("profile",    cmd_profile))
     app.add_handler(CommandHandler("memstats",   cmd_memstats))
+    app.add_handler(CommandHandler("journal",    cmd_journal))
     app.add_handler(CommandHandler("reindex",    cmd_reindex))
     app.add_handler(CommandHandler("ask",        cmd_ask))
     app.add_handler(CommandHandler("curiosity",  cmd_curiosity))

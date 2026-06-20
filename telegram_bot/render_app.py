@@ -166,7 +166,7 @@ async def _build_tg_app():
         cmd_remind, cmd_reminders, cmd_task, cmd_tasks, cmd_today, cmd_done,
         cmd_habit, cmd_habits, cmd_check,
         cmd_morning, cmd_evening, cmd_mode, cmd_profile, cmd_memstats, cmd_reindex,
-        cmd_ask, cmd_curiosity, cmd_remember, cmd_forget,
+        cmd_journal, cmd_ask, cmd_curiosity, cmd_remember, cmd_forget,
         on_callback,
         handle_text, handle_voice, handle_photo,
         _on_notification, _BOT_COMMANDS,
@@ -210,6 +210,7 @@ async def _build_tg_app():
     app.add_handler(CommandHandler("mode",       cmd_mode))
     app.add_handler(CommandHandler("profile",    cmd_profile))
     app.add_handler(CommandHandler("memstats",   cmd_memstats))
+    app.add_handler(CommandHandler("journal",    cmd_journal))
     app.add_handler(CommandHandler("reindex",    cmd_reindex))
     app.add_handler(CommandHandler("ask",        cmd_ask))
     app.add_handler(CommandHandler("curiosity",  cmd_curiosity))
