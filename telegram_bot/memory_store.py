@@ -32,7 +32,7 @@ _MAX_FACTS = 60  # keep the newest N facts per user in context
 USER_TABLES = (
     "facts", "profile", "tasks", "habits", "reminders",
     "notes", "schedule", "projects", "outbox", "contacts", "meta", "messages",
-    "embeddings", "journal",
+    "embeddings", "journal", "mood",
 )
 
 
@@ -720,6 +720,21 @@ class MemoryStore:
         )
         return [{"day": r[0], "text": r[1]} for r in rows]
 
+    # ── mood tracking ────────────────────────────────────────────────────────────
+
+    async def add_mood(self, uid: int, day: str, score, note: str = ""):
+        await self._exec(
+            "INSERT INTO mood(user_id, day, score, note, created_at) VALUES(?,?,?,?,?)",
+            (uid, day, score, (note or "").strip(), datetime.now().isoformat()),
+        )
+
+    async def list_mood(self, uid: int, limit: int = 14) -> list:
+        rows = await self._fetchall(
+            "SELECT day, score, note FROM mood WHERE user_id=? ORDER BY id DESC LIMIT ?",
+            (uid, limit),
+        )
+        return [{"day": r[0], "score": r[1], "note": r[2]} for r in rows]
+
     async def stats(self, uid: int) -> dict:
         """Counts across every per-user table + profile fields, for /memstats."""
         await self.ensure_loaded(uid)
@@ -903,6 +918,14 @@ CREATE TABLE IF NOT EXISTS journal (
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS mood (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    day        TEXT NOT NULL,
+    score      INTEGER,
+    note       TEXT,
+    created_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_habits_user ON habits(user_id);
@@ -1018,6 +1041,14 @@ CREATE TABLE IF NOT EXISTS journal (
     user_id    BIGINT NOT NULL,
     day        TEXT NOT NULL,
     text       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mood (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    day        TEXT NOT NULL,
+    score      INTEGER,
+    note       TEXT,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_facts_user ON facts(user_id);
