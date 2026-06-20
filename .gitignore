@@ -54,3 +54,6 @@ config/token.json
 config/gcal_auth_url.txt
 
 config/unlock_secret.txt
+
+jarvis_watchdog.log
+jarvis_pc_server.log
