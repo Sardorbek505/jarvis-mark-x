@@ -168,7 +168,7 @@ async def _build_tg_app():
         cmd_morning, cmd_evening, cmd_mode, cmd_profile, cmd_memstats, cmd_reindex,
         cmd_journal, cmd_mood, cmd_ask, cmd_curiosity, cmd_remember, cmd_forget,
         on_callback,
-        handle_text, handle_voice, handle_photo,
+        handle_text, handle_voice, handle_photo, handle_document,
         _on_notification, _BOT_COMMANDS,
     )
 
@@ -243,6 +243,7 @@ async def _build_tg_app():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_error_handler(_on_error)
 
     bridge.on_notification(lambda t, uid: _on_notification(t, uid, app.bot))
