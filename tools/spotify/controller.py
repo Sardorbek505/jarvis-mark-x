@@ -284,21 +284,24 @@ class SpotifyController:
                         self.last_uri = uri
                         return f"Открываю плейлист '{best_playlist['name']}', сэр."
             
-            # Search in all playlists
-            playlists = self.search.search_playlists(query, limit=5)
-            if playlists:
-                uri = playlists[0]['uri']
-                if self.play_context(uri):
-                    self.last_query = query
-                    self.last_uri = uri
-                    return f"Открываю плейлист '{playlists[0]['name']}', сэр."
-        
         # Search for track
         if not self.search:
             return "Spotify недоступен, сэр."
-        
+
         track = self.search.search_track(query)
         if not track:
+            # Трека нет — только теперь пробуем чужие плейлисты. Раньше этот
+            # поиск стоял ПЕРЕД поиском трека и включал первый попавшийся
+            # результат: на просьбу поставить песню находился похоже названный
+            # плейлист незнакомого человека, а до трека дело не доходило.
+            if self.search:
+                playlists = self.search.search_playlists(query, limit=5)
+                if playlists:
+                    uri = playlists[0]['uri']
+                    if self.play_context(uri):
+                        self.last_query = query
+                        self.last_uri = uri
+                        return f"Открываю плейлист '{playlists[0]['name']}', сэр."
             return "Не нашёл этот трек или плейлист, сэр. Попробуйте уточнить название, сэр."
         
         uri = track['uri']

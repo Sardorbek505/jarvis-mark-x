@@ -11,6 +11,9 @@ from typing import Optional
 import json
 import os
 
+# Обновляем токен заранее, чтобы он не истёк посреди запроса
+_REFRESH_MARGIN_SEC = 30
+
 
 class SpotifyAuth:
     """
@@ -153,18 +156,18 @@ class SpotifyAuth:
         Returns:
             Access token or None if unavailable
         """
-        # If we have refresh token but no access token, refresh it
-        if self.refresh_token and not self.access_token:
+        if not self.refresh_token:
+            return self.access_token
+
+        # Неизвестный срок жизни считаем истёкшим. Раньше условие требовало
+        # непустой token_expiry — а файл токенов приходит с expiry=null, и
+        # обновление не срабатывало НИКОГДА: наружу вечно уходил мёртвый токен.
+        expired = self.token_expiry is None or time.time() >= self.token_expiry - _REFRESH_MARGIN_SEC
+
+        if not self.access_token or expired:
             if not self.refresh_access_token():
                 return None
-        
-        # Check if token needs refresh
-        if self.access_token and self.token_expiry:
-            # Refresh 30 seconds before expiry
-            if time.time() >= self.token_expiry - 30:
-                if not self.refresh_access_token():
-                    return None
-        
+
         return self.access_token
     
     def is_authenticated(self) -> bool:
