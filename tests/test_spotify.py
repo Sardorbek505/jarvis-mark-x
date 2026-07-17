@@ -75,13 +75,18 @@ def test_no_refresh_token_means_no_token(auth):
 
 
 # ─── 2. Ранжирование треков ───────────────────────────────────────────────────
-def _track(name, artist, popularity):
+def _track(name, artist):
+    """Трек ровно в той форме, в какой его отдаёт /search.
+
+    Поля popularity здесь НЕТ намеренно: живой ответ Spotify его не содержит,
+    а /tracks отдаёт 403 для наших ключей. Первая версия этих тестов выдумывала
+    popularity — и фикс «прошёл» тесты, но на реальном API включал кавер.
+    """
     return {
         "id": f"{name}-{artist}",
         "name": name,
         "uri": f"spotify:track:{name}",
         "artists": [{"name": artist}],
-        "popularity": popularity,
         "explicit": False,
     }
 
@@ -93,31 +98,37 @@ def search(monkeypatch):
 
 
 def test_original_beats_cover(search):
-    """Оригинал с суффиксом Remastered должен побеждать одноимённый кавер."""
-    original = _track("Bohemian Rhapsody - Remastered 2011", "Queen", 82)
-    cover = _track("Bohemian Rhapsody", "Kids Karaoke Band", 3)
+    """Живые данные: на «Bohemian Rhapsody» Spotify отдаёт Queen первым, кавер —
+    третьим. Самодельная пересортировка поднимала кавер наверх; теперь её нет."""
+    items = [
+        _track("Bohemian Rhapsody", "Queen"),                     # позиция 0
+        _track("Bohemian Rhapsody / Radio Ga Ga - Live", "Queen"),
+        _track("Bohemian Rhapsody", "Angelina Jordan"),           # кавер
+    ]
+    search._api_request = lambda path, params=None: {"tracks": {"items": items}}
 
-    s_orig = search._fuzzy_match_score("Bohemian Rhapsody", original)
-    s_cover = search._fuzzy_match_score("Bohemian Rhapsody", cover)
+    best = search.search_track("Bohemian Rhapsody")
 
-    assert s_orig > s_cover, f"оригинал {s_orig} <= кавер {s_cover}"
-
-
-def test_popularity_breaks_the_tie(search):
-    """При равных названиях выигрывает популярный, а не случайный."""
-    hit = _track("Group Blood", "Kino", 70)
-    obscure = _track("Group Blood", "Unknown Cover", 1)
-
-    assert search._fuzzy_match_score("Group Blood", hit) > \
-           search._fuzzy_match_score("Group Blood", obscure)
+    assert best["artists"][0]["name"] == "Queen"
 
 
-def test_right_artist_beats_wrong_one(search):
-    asked = _track("Group Blood", "Kino", 50)
-    other = _track("Group Blood", "Some Band", 50)
+def test_named_artist_is_respected(search):
+    """Живые данные: «Miyagi love me» — Spotify ставит MiyaGi первым, хотя
+    название трека на латиницу не похоже. Пересортировка выбирала Lil Wayne."""
+    items = [
+        _track("Родной", "MiyaGi & Endspiel"),   # позиция 0, название не совпадает
+        _track("Love Me", "Lil Wayne"),          # название совпадает точнее
+    ]
+    search._api_request = lambda path, params=None: {"tracks": {"items": items}}
 
-    assert search._fuzzy_match_score("Kino Group Blood", asked) > \
-           search._fuzzy_match_score("Kino Group Blood", other)
+    best = search.search_track("Miyagi love me")
+
+    assert best["artists"][0]["name"] == "MiyaGi & Endspiel"
+
+
+def test_no_results_returns_none(search):
+    search._api_request = lambda path, params=None: {"tracks": {"items": []}}
+    assert search.search_track("абырвалг несуществующий") is None
 
 
 def test_query_is_not_mangled_into_typos(search):

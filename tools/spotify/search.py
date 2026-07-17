@@ -1,26 +1,17 @@
 """
 Spotify Search Module
 
-Handles track/artist/album search with fuzzy matching and ranking.
+Handles track/artist/album search. Порядок выдачи берём у Spotify: своя
+пересортировка проверялась на живом API и проигрывала родной 8:0.
 """
 
-import re
 import requests
 from typing import Optional, List, Dict, Any
-from rapidfuzz import fuzz
-
-# Хвосты вида «- Remastered 2011», «(Live)», «- Radio Edit» у оригиналов
-_TITLE_SUFFIX_RE = re.compile(
-    r"\s*[-(\[].*?(remaster|live|radio edit|mono|stereo|version|mix|edit|deluxe).*$",
-    re.IGNORECASE,
-)
-# Вклад популярности в итоговый балл: 100 популярности = +15
-_POPULARITY_WEIGHT = 0.15
 
 
 class SpotifySearch:
     """
-    Spotify search with intelligent ranking and fuzzy matching.
+    Spotify search. Ранжирование — на стороне Spotify.
     """
     
     API_BASE = "https://api.spotify.com/v1"
@@ -70,114 +61,31 @@ class SpotifySearch:
         
         return None
     
-    def _fuzzy_match_score(self, query: str, track: Dict[str, Any]) -> float:
+    def search_track(self, query: str, limit: int = 5) -> Optional[Dict[str, Any]]:
         """
-        Calculate fuzzy match score for a track.
-        
+        Найти трек по запросу. Доверяем порядку выдачи Spotify.
+
+        Здесь была самодельная пересортировка: 20 «вариантов опечаток» (з→с,
+        к→х, п→б), которые калечили запрос («Кино» → «Хино») и жгли 20 запросов
+        к API на песню, плюс нечёткий балл поверх выдачи. Проверка на живом API
+        по 8 запросам: позиция 0 от Spotify была верной 8 раз из 8, а
+        пересортировка расходилась с ней дважды и оба раза ошибалась (Lil Wayne
+        вместо MiyaGi, концертная версия вместо студийной). Она не помогала —
+        только портила, поэтому её больше нет.
+
         Args:
-            query: Search query
-            track: Track data from API
-            
+            query: Поисковый запрос
+            limit: Сколько результатов запросить у API
+
         Returns:
-            Match score (0-100)
+            Лучший трек или None
         """
-        query_lower = query.lower()
-
-        # Title matching
-        title = track.get('name', '').lower()
-        title_score = fuzz.partial_ratio(query_lower, title)
-        # Оригиналы в Spotify часто зовутся «Song - Remastered 2011»; сравниваем
-        # и с очищенным названием, иначе одноимённый кавер выглядит точнее оригинала.
-        core_title = _TITLE_SUFFIX_RE.sub("", title).strip()
-        
-        # Artist matching
-        artists = track.get('artists', [])
-        artist_scores = []
-        for artist in artists:
-            artist_name = artist.get('name', '').lower()
-            artist_score = fuzz.partial_ratio(query_lower, artist_name)
-            artist_scores.append(artist_score)
-        
-        artist_score = max(artist_scores) if artist_scores else 0
-        
-        # Combined score (60% title, 40% artist)
-        combined_score = title_score * 0.6 + artist_score * 0.4
-
-        # Boost for exact matches — по очищенному названию, чтобы оригинал с
-        # суффиксом ремастера не проигрывал одноимённому каверу.
-        if query_lower in (title, core_title):
-            combined_score += 20
-        if any(query_lower == artist.get('name', '').lower() for artist in artists):
-            combined_score += 15
-
-        # Prefer non-explicit if scores are equal
-        if not track.get('explicit', True):
-            combined_score += 5
-
-        # Популярность Spotify (0-100) — решающий довод при похожих названиях:
-        # у хита она под 80, у случайного кавера единицы. Без неё каверы выигрывали.
-        combined_score += track.get('popularity', 0) * _POPULARITY_WEIGHT
-
-        return combined_score
-    
-    def search_track(
-        self,
-        query: str,
-        limit: int = 5,
-        use_fuzzy: bool = True
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Search for a track with intelligent ranking.
-        
-        Args:
-            query: Search query
-            limit: Number of results to return
-            use_fuzzy: Whether to use fuzzy matching
-            
-        Returns:
-            Best matching track or None
-        """
-        # Раньше здесь было 20 «вариантов опечаток» (з→с, к→х, п→б): они не
-        # исправляли ошибки, а калечили запрос («Кино» → «Хино»), сваливали
-        # мусор в общий котёл и жгли 20 запросов к API на одну песню — отсюда
-        # и чужие каверы в выдаче, и упор в лимиты Spotify.
-        # Оставляем только безобидную нормализацию ё→е.
-        query_variants = list(dict.fromkeys([query, query.replace('ё', 'е')]))
-
-        all_tracks = []
-        
-        for variant in query_variants:
-            params = {
-                'type': 'track',
-                'q': variant,
-                'limit': limit
-            }
-            
-            result = self._api_request('/search', params)
-            if result and 'tracks' in result and 'items' in result['tracks']:
-                for track in result['tracks']['items']:
-                    # Avoid duplicates
-                    if not any(t['id'] == track['id'] for t in all_tracks):
-                        all_tracks.append(track)
-        
-        if not all_tracks:
+        result = self._api_request('/search', {'type': 'track', 'q': query, 'limit': limit})
+        if not result:
             return None
-        
-        if use_fuzzy:
-            # Rank by fuzzy matching
-            ranked_tracks = []
-            for track in all_tracks:
-                score = self._fuzzy_match_score(query, track)
-                ranked_tracks.append((score, track))
-            
-            # Sort by score descending
-            ranked_tracks.sort(key=lambda x: x[0], reverse=True)
-            
-            # Return best match
-            return ranked_tracks[0][1]
-        else:
-            # Return first result (API default ranking)
-            return all_tracks[0]
+
+        items = result.get('tracks', {}).get('items', [])
+        return items[0] if items else None
     
     def search_artist(self, query: str, limit: int = 5) -> Optional[Dict[str, Any]]:
         """
