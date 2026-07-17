@@ -190,20 +190,12 @@ async def _build_view(user_id: int, view: str) -> dict:
         wx = await weather.for_city(city) if city else None
 
         # "About me" section — the digital-twin snapshot.
-        from datetime import timedelta
-        now = user_context.local_now(user_id, _DEFAULT_TZ)
         facts = await _memory.get_facts(user_id) if hasattr(_memory, "get_facts") else []
         about = {"about": profile.get("about", ""), "goals": profile.get("goals", ""),
                  "facts": facts[-7:]}
-        mood_avg = spent_week = 0
         journal_last = ""
         mem = {}
         try:
-            mood = await _memory.list_mood(user_id, limit=7)
-            ms = [m["score"] for m in mood if m["score"]]
-            mood_avg = round(sum(ms) / len(ms), 1) if ms else 0
-            wk = (now - timedelta(days=6)).strftime("%Y-%m-%d")
-            spent_week = sum(e["amount"] for e in await _memory.list_expenses(user_id, since_day=wk, limit=500))
             jr = await _memory.list_journal(user_id, limit=1)
             journal_last = jr[0]["text"] if jr else ""
             counts = (await _memory.stats(user_id)).get("counts", {})
@@ -226,8 +218,6 @@ async def _build_view(user_id: int, view: str) -> dict:
                 if reminders else ""
             ),
             "about": about,
-            "mood_avg": mood_avg,
-            "spent_week": spent_week,
             "journal_last": journal_last,
             "mem": mem,
         }
