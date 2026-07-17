@@ -270,7 +270,6 @@ class ProactiveEngine:
         # Контекстные предложения
         current_activity = context.get("current_activity")
         current_mode = context.get("mode", "normal")
-        last_emotion = context.get("last_emotion")
 
         # Если долгое бездействие
         if not current_activity and current_mode == "normal":

@@ -229,10 +229,6 @@ class EmotionalReminderAdapter:
         if event_priority == "critical":
             return base_text
         
-        # Адаптируем тон
-        tone_options = self.tone_mapping.get(emotion, ["нейтральный"])
-        tone = random.choice(tone_options)
-        
         # Добавляем эмоциональный контекст
         emotion_prefixes = {
             "happy": ["Отлично! ", "Замечательно! "],
@@ -467,8 +463,8 @@ class SmartReminderEngine:
         location = event.get("location", "")
         
         # Формируем текст
-        text_parts = [f"Напоминаю: {title}"]
-        
+        text_parts = [f"Напоминаю: {title} в {start_time.strftime('%H:%M')}"]
+
         if description:
             text_parts.append(f"({description})")
         

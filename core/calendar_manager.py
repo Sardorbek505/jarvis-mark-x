@@ -373,7 +373,6 @@ def update_event(
         if new_datetime:
             new_time = _parse_datetime(new_datetime)
             if new_time:
-                old_start = datetime.fromisoformat(event["start"])
                 duration = event.get("duration_minutes", 60)
                 event["start"] = new_time.isoformat()
                 event["end"] = (new_time + timedelta(minutes=duration)).isoformat()
