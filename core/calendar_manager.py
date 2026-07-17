@@ -475,6 +475,39 @@ def get_upcoming_reminders(minutes_ahead: int = 15) -> List[Dict[str, Any]]:
         return []
 
 
+def get_upcoming_events(minutes_ahead: int = 60) -> List[Dict[str, Any]]:
+    """
+    Возвращает события, начинающиеся в ближайшие X минут, отсортированные по времени.
+
+    В отличие от get_events(), отдаёт структуру, а не текст для озвучки —
+    её потребляет движок умных напоминаний.
+
+    Args:
+        minutes_ahead: Сколько минут вперёд смотреть
+
+    Returns:
+        Список событий (пустой, если календаря нет или он пуст)
+    """
+    calendar = _load_calendar()
+    now = datetime.now()
+    cutoff = now + timedelta(minutes=minutes_ahead)
+
+    upcoming = []
+    for event in calendar.get("events", []):
+        try:
+            start = datetime.fromisoformat(event["start"])
+        except (KeyError, TypeError, ValueError) as e:
+            # Битое событие не должно уносить с собой остальные
+            _logger.warning("Пропускаю событие с некорректным началом (%s): %s", e, event)
+            continue
+
+        if now <= start <= cutoff:
+            upcoming.append(event)
+
+    upcoming.sort(key=lambda e: e["start"])
+    return upcoming
+
+
 def get_todays_schedule() -> str:
     """
     Возвращает расписание на сегодня (события + напоминания).

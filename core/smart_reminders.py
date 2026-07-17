@@ -364,9 +364,11 @@ class SmartReminderEngine:
             event_type, event_time
         )
         
-        # Проверяем стоит ли напоминать сейчас
+        # Проверяем стоит ли напоминать сейчас.
+        # Приоритет кладём в контекст явно: should_remind_now читает его оттуда,
+        # и без этого критичные события молча душились стрессом и режимом фильма.
         should_remind = self.pattern_tracker.should_remind_now(
-            event_time, current_context
+            event_time, {**current_context, "event_priority": event_priority}
         )
         
         # Эмоциональная адаптация
