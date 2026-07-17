@@ -535,7 +535,6 @@ async def run(port: int = 8000, gemini=None, bridge=None):
 
 
 if __name__ == "__main__":
-    import uvicorn
     logging.basicConfig(
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         level=logging.INFO,

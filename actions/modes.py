@@ -19,9 +19,7 @@
 import json
 import os
 import sys
-import urllib.parse
 from pathlib import Path
-from typing import Optional
 
 from actions.open_app import open_app
 from actions.browser_control import browser_control

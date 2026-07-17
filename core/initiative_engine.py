@@ -4,7 +4,7 @@
 """
 
 import random
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from datetime import datetime
 
 

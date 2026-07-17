@@ -6,7 +6,6 @@ import contextlib
 import logging
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo

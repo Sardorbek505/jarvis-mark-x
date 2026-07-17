@@ -4,11 +4,9 @@
 import json
 import feedparser
 import requests
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import re
-from urllib.parse import urlparse
 
 # Таймаут на RSS-фид: без него зависший сервер блокирует всё.
 _RSS_TIMEOUT = 5  # секунд

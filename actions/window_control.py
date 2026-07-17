@@ -10,7 +10,6 @@
 import platform
 import subprocess
 import time
-from typing import Optional
 
 _OS = platform.system()
 

@@ -3,8 +3,7 @@
 Определяет эмоциональное состояние по тексту и контексту
 """
 
-import re
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 
 
 class EmotionAnalyzer:

@@ -10,8 +10,6 @@ import os
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from tools.spotify.search import SpotifySearch
-from tools.spotify.controller import SpotifyController
 
 
 def test_typo_handling():

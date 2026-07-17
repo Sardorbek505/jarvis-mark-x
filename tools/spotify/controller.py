@@ -5,8 +5,7 @@ Main controller for Spotify integration.
 Combines auth, search, devices, and moods into unified interface.
 """
 
-import time
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 import requests
 
 from .auth import SpotifyAuth

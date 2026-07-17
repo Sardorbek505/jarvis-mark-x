@@ -7,7 +7,7 @@ Never requires login every launch - uses stored refresh token.
 
 import requests
 import time
-from typing import Optional, Dict, Any
+from typing import Optional
 import json
 import os
 

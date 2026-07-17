@@ -5,7 +5,6 @@
 import urllib.request
 import urllib.parse
 import json
-import re
 
 
 def web_search(parameters: dict, player=None) -> str:

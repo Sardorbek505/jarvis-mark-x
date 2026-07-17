@@ -75,5 +75,5 @@ def weather_action(parameters: dict, player=None) -> str:
             player.write_log(f"SYS: Погода — {city}: {temp_c}°C, {desc_ru}")
         return result
 
-    except Exception as e:
+    except Exception:
         return f"Не удалось получить погоду для {city}. Проверьте подключение к интернету."

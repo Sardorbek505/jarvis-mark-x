@@ -6,7 +6,6 @@ file in pytest's tmp dir. No Gemini, Telegram, Neon or network.
 import sys
 from pathlib import Path
 
-import pytest
 import pytest_asyncio
 
 ROOT = Path(__file__).resolve().parent.parent

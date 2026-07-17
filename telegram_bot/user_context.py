@@ -5,7 +5,7 @@ The Render server runs in UTC and has no idea where the user is. The phone
 local time and where the user currently is — wherever they travel.
 """
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Optional
+from typing import Dict
 
 try:
     from zoneinfo import ZoneInfo
