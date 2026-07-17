@@ -100,7 +100,7 @@ class VoiceSession:
                 try:
                     await self._session.send(end_of_turn=True)
                 except Exception as exc:
-                    _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+                    logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
             elif t == "text":
                 text = msg.get("text", "").strip()
@@ -155,7 +155,7 @@ class VoiceSession:
         try:
             await self._ws.send_text(json.dumps({"type": msg_type, **kwargs}))
         except Exception as exc:
-            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+            logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
     async def cleanup(self):
         await self._mem.close()
