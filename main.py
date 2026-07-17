@@ -17,7 +17,6 @@ import re
 import threading
 import json
 import random
-import numpy as np
 from pathlib import Path
 from datetime import datetime
 import logging
@@ -53,6 +52,7 @@ from actions.movie_player import movie_player
 from actions.spotify_controller import spotify_player
 from actions.window_control import window_control
 from actions.calendar import calendar
+from actions.obsidian import obsidian_action
 
 from core import (
     translate_text,
@@ -259,6 +259,30 @@ TOOLS = [
                 "value": {"type": "STRING", "description": "Значение (на английском)"},
             },
             "required": ["category", "key", "value"]
+        }
+    },
+    {
+        "name": "obsidian",
+        "description": (
+            "Личная база знаний пользователя в Obsidian (markdown-заметки). "
+            "Вызывай, когда пользователь просит: запиши/сохрани заметку, добавь в дневник, "
+            "«что я записывал про…», найди заметку, прочитай заметку, покажи список заметок. "
+            "action=write — новая заметка (title + content); "
+            "append_daily — дописать строку в дневник за сегодня (content); "
+            "search — найти по базе (query); "
+            "read — прочитать заметку по заголовку (title); "
+            "list — список заметок (folder — опционально)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":  {"type": "STRING", "description": "write | append_daily | search | read | list"},
+                "title":   {"type": "STRING", "description": "Заголовок заметки (для write / read)"},
+                "content": {"type": "STRING", "description": "Текст заметки (для write / append_daily)"},
+                "query":   {"type": "STRING", "description": "Поисковый запрос (для search)"},
+                "folder":  {"type": "STRING", "description": "Папка внутри vault (опционально)"},
+            },
+            "required": ["action"]
         }
     },
     {
@@ -861,6 +885,13 @@ class Jarvis:
                 )
                 result = r or "Готово."
 
+            # ── Инструмент: база знаний Obsidian ─────────────────────
+            elif name == "obsidian":
+                r = await loop.run_in_executor(
+                    None, lambda: obsidian_action(parameters=args, player=self.ui)
+                )
+                result = r or "Готово."
+
             # ── Инструмент: управление компьютером ───────────────────
             elif name == "computer_control":
                 # Маппинг action → параметры
@@ -1022,7 +1053,6 @@ class Jarvis:
                     lang = args.get("language", "english")
                     # Загрузка настроек
                     import json
-                    from pathlib import Path
                     pref_path = BASE_DIR / "config" / "translation_preferences.json"
                     try:
                         with open(pref_path, "r", encoding="utf-8") as f:
@@ -1037,7 +1067,6 @@ class Jarvis:
                 
                 elif action == "disable_learning":
                     import json
-                    from pathlib import Path
                     pref_path = BASE_DIR / "config" / "translation_preferences.json"
                     try:
                         with open(pref_path, "r", encoding="utf-8") as f:
@@ -1052,7 +1081,6 @@ class Jarvis:
                 elif action == "set_default_language":
                     lang = args.get("language", "english")
                     import json
-                    from pathlib import Path
                     pref_path = BASE_DIR / "config" / "translation_preferences.json"
                     try:
                         with open(pref_path, "r", encoding="utf-8") as f:
@@ -1067,7 +1095,6 @@ class Jarvis:
                 elif action == "enable_language":
                     lang = args.get("language", "english")
                     import json
-                    from pathlib import Path
                     pref_path = BASE_DIR / "config" / "translation_preferences.json"
                     try:
                         with open(pref_path, "r", encoding="utf-8") as f:
@@ -1083,7 +1110,6 @@ class Jarvis:
                 elif action == "disable_language":
                     lang = args.get("language", "english")
                     import json
-                    from pathlib import Path
                     pref_path = BASE_DIR / "config" / "translation_preferences.json"
                     try:
                         with open(pref_path, "r", encoding="utf-8") as f:

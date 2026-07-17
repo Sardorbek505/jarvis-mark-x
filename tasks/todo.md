@@ -59,3 +59,19 @@ context_provider и _system_for), без костылей, миграции бе
 - [x] Inline-кнопки (режимы/задачи/привычки, callback-хендлер)
 - [x] Трекер привычек (/habit, /habits, /check, серии 🔥)
 - [ ] «Напиши маме» — голосовое контакту (бот представляется ассистентом), нужен канал доставки
+
+---
+
+## Obsidian «мозг» (голосовой Джарвис, 2026-07-15)
+- [x] Vault `C:/Users/User/Documents/JarvisVault` (00-Inbox/Daily/Knowledge/Projects + README)
+- [x] Путь в `config/obsidian.json` (не хардкод)
+- [x] `actions/obsidian.py` → `obsidian_action`: write / append_daily / search / read / list
+- [x] Инструмент `obsidian` в TOOLS + ветка в `_execute_tool` + импорт (main.py)
+- [x] `test_obsidian.py` — все 5 действий зелёные, файлы в UTF-8
+- [ ] (опц.) Проактивная подгрузка последних заметок в system prompt
+- [ ] (опц.) Obsidian Local REST API + MCP — доступ к vault вне сессии Джарвиса
+
+**Ревью:** минимальное воздействие — добавлен один экшен по существующему паттерну
+(сигнатура `x_action(parameters, player)`), атомарная запись .md, переиспользован
+`core.storage.safe_read_json`. Голосом: «запиши…», «добавь в дневник…»,
+«что я записывал про…», «прочитай заметку…», «покажи заметки».
