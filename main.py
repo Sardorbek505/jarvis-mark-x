@@ -40,6 +40,7 @@ from core.user_profile import UserProfile
 from core.initiative_engine import InitiativeEngine
 from core.proactive_engine import ProactiveEngine
 from core.team_collaboration import TeamCollaborationEngine
+from core.onboarding import ensure_gemini_key
 from actions.open_app import open_app
 from actions.weather import weather_action
 from actions.web_search import web_search
@@ -84,18 +85,10 @@ _CTRL_RE = re.compile(r"<ctrl\d+>", re.IGNORECASE)
 
 # ─── Вспомогательные функции ──────────────────────────────────────────────────
 def _get_api_key() -> str:
-    try:
-        with open(API_CONFIG, "r", encoding="utf-8") as f:
-            return json.load(f)["gemini_api_key"]
-    except FileNotFoundError:
-        print(f"[JARVIS] ERROR: API key file not found at {API_CONFIG}")
-        print(f"[JARVIS] Please get a new key at: https://aistudio.google.com/apikey")
-        print(f"[JARVIS] And save it to: {API_CONFIG} with format: {{\"gemini_api_key\": \"your_key_here\"}}")
+    key = ensure_gemini_key(API_CONFIG)
+    if not key:
         sys.exit(1)
-    except KeyError:
-        print(f"[JARVIS] ERROR: Invalid API key file format at {API_CONFIG}")
-        print(f"[JARVIS] Expected format: {{\"gemini_api_key\": \"your_key_here\"}}")
-        sys.exit(1)
+    return key
 
 
 def _load_system_prompt() -> str:
@@ -1052,7 +1045,6 @@ class Jarvis:
                 elif action == "enable_learning":
                     lang = args.get("language", "english")
                     # Загрузка настроек
-                    import json
                     pref_path = BASE_DIR / "config" / "translation_preferences.json"
                     try:
                         with open(pref_path, "r", encoding="utf-8") as f:
@@ -1066,7 +1058,6 @@ class Jarvis:
                         result = f"Ошибка включения режима изучения: {e}"
                 
                 elif action == "disable_learning":
-                    import json
                     pref_path = BASE_DIR / "config" / "translation_preferences.json"
                     try:
                         with open(pref_path, "r", encoding="utf-8") as f:
@@ -1080,7 +1071,6 @@ class Jarvis:
                 
                 elif action == "set_default_language":
                     lang = args.get("language", "english")
-                    import json
                     pref_path = BASE_DIR / "config" / "translation_preferences.json"
                     try:
                         with open(pref_path, "r", encoding="utf-8") as f:
@@ -1094,7 +1084,6 @@ class Jarvis:
                 
                 elif action == "enable_language":
                     lang = args.get("language", "english")
-                    import json
                     pref_path = BASE_DIR / "config" / "translation_preferences.json"
                     try:
                         with open(pref_path, "r", encoding="utf-8") as f:
@@ -1109,7 +1098,6 @@ class Jarvis:
                 
                 elif action == "disable_language":
                     lang = args.get("language", "english")
-                    import json
                     pref_path = BASE_DIR / "config" / "translation_preferences.json"
                     try:
                         with open(pref_path, "r", encoding="utf-8") as f:
