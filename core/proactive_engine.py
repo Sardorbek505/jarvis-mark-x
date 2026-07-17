@@ -33,6 +33,11 @@ try:
 except ImportError:
     HEALTH_REMINDERS_AVAILABLE = False
 
+# Насколько вперёд смотреть, подбирая события для напоминания
+_REMINDER_HORIZON_MIN = 60
+# Больше трёх напоминаний за раз — это уже не помощь, а шум
+_MAX_REMINDERS = 3
+
 
 class ProactiveEngine:
     """
@@ -338,35 +343,30 @@ class ProactiveEngine:
             Список умных напоминаний
         """
         suggestions = []
-        
+
         try:
-            from actions.calendar import get_events
-            
-            # Получаем события на сегодня
-            events_data = get_events("today")
-            if not events_data or "событий" in events_data.lower():
+            from core.calendar_manager import get_upcoming_events
+
+            events = get_upcoming_events(minutes_ahead=_REMINDER_HORIZON_MIN)
+            if not events:
                 return suggestions
-            
-            # Парсим события (простой парсинг из строки)
-            # В реальной реализации нужно улучшить парсинг
+
             current_context = {
                 "emotion": context.get("last_emotion", "neutral"),
                 "lifestyle_mode": context.get("mode", "normal"),
                 "activity": context.get("current_activity", ""),
-                "event_priority": "normal"
             }
-            
-            # Для каждого события генерируем умное напоминание
-            # (упрощённая реализация - в реальности нужно парсить события из JSON)
-            # Здесь просто добавим одно предложение для демонстрации
-            if current_context["emotion"] in ["stressed", "overwhelmed"]:
-                suggestions.append("Сэр, я вижу вы напряжены. Хотите отложить некоторые напоминания?")
-            elif current_context["lifestyle_mode"] == "movie":
-                suggestions.append("Сэр, у вас есть запланированные события. Приостановить фильм когда придёт время?")
-            
+
+            for event in events[:_MAX_REMINDERS]:
+                reminder = generate_smart_reminder(event, current_context)
+                # Движок сам решает, уместно ли сейчас дёргать: стресс, режим
+                # фильма и приоритет события уже учтены внутри.
+                if reminder.get("should_remind"):
+                    suggestions.append(reminder["text"])
+
         except Exception as exc:
             _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
-        
+
         return suggestions
     
     def _get_health_suggestions(self, context: Dict) -> List[str]:
