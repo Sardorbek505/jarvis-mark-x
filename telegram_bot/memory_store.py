@@ -68,7 +68,7 @@ class MemoryStore:
                     await self._sqlite.execute(_mig)
                     await self._sqlite.commit()
                 except Exception as exc:
-                    _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
+                    logger.warning("Подавлено исключение: %s", exc, exc_info=True)
             await self._sqlite.commit()
             logger.warning(
                 "Memory: SQLite fallback (ephemeral on Render free). "
@@ -200,7 +200,7 @@ class MemoryStore:
                         when = (" — " + d.strftime("%d.%m %H:%M")) if (d.hour or d.minute) \
                             else (" — " + d.strftime("%d.%m"))
                     except Exception as exc:
-                        _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
+                        logger.warning("Подавлено исключение: %s", exc, exc_info=True)
                 tlines.append(f"{t['title']}{when}")
             parts.append("Его актуальные задачи/планы: " + "; ".join(tlines))
         if not parts:
@@ -681,7 +681,7 @@ class MemoryStore:
             try:
                 out.append({"kind": kind, "text": text, "vec": json.loads(vec)})
             except Exception as exc:
-                _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
+                logger.warning("Подавлено исключение: %s", exc, exc_info=True)
                 continue
         return out
 

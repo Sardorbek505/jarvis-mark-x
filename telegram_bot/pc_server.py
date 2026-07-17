@@ -235,7 +235,7 @@ def _read_unlock_password() -> str:
         if _UNLOCK_FILE.exists():
             return _UNLOCK_FILE.read_text(encoding="utf-8").strip() or "э"
     except Exception as exc:
-        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+        logger.debug("Подавлено исключение: %s", exc, exc_info=True)
     return "э"
 
 
@@ -324,7 +324,7 @@ def _launch_jarvis() -> dict:
             if any("main.py" in str(x) for x in cl):
                 return _r("🤖 Десктопный JARVIS уже запущен на ПК.")
     except Exception as exc:
-        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+        logger.debug("Подавлено исключение: %s", exc, exc_info=True)
     try:
         # Use python.exe (NOT pythonw — it dies when the app writes to a missing
         # stdout) and redirect output to a log so a missing console can't crash it.
@@ -408,7 +408,7 @@ def _get_sysinfo() -> str:
                 plug = "⚡ Зарядка" if bat.power_plugged else "🔋"
                 lines.append(f"Батарея: {bat.percent:.0f}% {plug}")
         except Exception as exc:
-            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+            logger.debug("Подавлено исключение: %s", exc, exc_info=True)
         return "\n".join(lines)
     except ImportError:
         return "psutil не установлен. Запустите: pip install psutil"

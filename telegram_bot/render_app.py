@@ -100,7 +100,7 @@ async def _flush_outbox():
                     chat_id=item["user_id"], text=f"📤 Из очереди отправлено {item['alias']}."
                 )
             except Exception as exc:
-                _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+                logger.debug("Подавлено исключение: %s", exc, exc_info=True)
             await asyncio.sleep(1)   # gentle pacing, avoid spammy bursts
         else:
             break   # PC dropped again — leave the rest queued for next time
@@ -382,7 +382,7 @@ async def lifespan(app: FastAPI):
         try:
             await _tg_app.bot.delete_webhook()
         except Exception as exc:
-            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+            logger.debug("Подавлено исключение: %s", exc, exc_info=True)
     await _tg_app.stop()
     await _tg_app.shutdown()
     logger.info("Render app stopped.")

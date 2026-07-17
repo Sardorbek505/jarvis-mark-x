@@ -34,7 +34,7 @@ async def for_city(city: str) -> str | None:
     try:
         import httpx
     except Exception as exc:
-        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+        logger.debug("Подавлено исключение: %s", exc, exc_info=True)
         return None
     try:
         async with httpx.AsyncClient(timeout=8) as cl:
