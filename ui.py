@@ -636,7 +636,7 @@ class FileDropZone(QWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(rect, 6, 6)
 
-        cx, cy = W / 2, H / 2
+        cy = H / 2
 
         if self._current_file:
             path = Path(self._current_file)

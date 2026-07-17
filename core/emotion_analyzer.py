@@ -173,9 +173,13 @@ class EmotionAnalyzer:
                 return "Сэр, вам скучно. Может, посмотреть фильм или включить музыку?"
 
         elif emotion == "stressed":
+            if favorite_music:
+                return f"Сэр, я вижу вы в стрессе. Может, сделать перерыв и включить {favorite_music}?"
             return "Сэр, я вижу вы в стрессе. Может, сделать перерыв и включить расслабляющую музыку?"
 
         elif emotion == "tired":
+            if favorite_music:
+                return f"Сэр, вы выглядите уставшим. Может, отдохнуть под {favorite_music}?"
             return "Сэр, вы выглядите уставшим. Может, отдохнуть и включить что-то спокойное?"
 
         return None
