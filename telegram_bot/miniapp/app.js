@@ -625,8 +625,6 @@ function renderAboutMe(p) {
   const facts = (a.facts || []);
   const mem = p.mem || {};
   const chips = [];
-  if (p.mood_avg) chips.push(`🙂 настроение ${p.mood_avg}/5`);
-  if (p.spent_week) chips.push(`💸 за неделю ${Number(p.spent_week).toLocaleString('ru-RU')}`);
   if (mem.semantic) chips.push(`🧠 память ${mem.semantic}`);
   const hasContent = a.about || a.goals || facts.length || p.journal_last || chips.length;
   if (!hasContent) return '';

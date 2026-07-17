@@ -721,40 +721,6 @@ class MemoryStore:
         )
         return [{"day": r[0], "text": r[1]} for r in rows]
 
-    # ── mood tracking ────────────────────────────────────────────────────────────
-
-    async def add_mood(self, uid: int, day: str, score, note: str = ""):
-        await self._exec(
-            "INSERT INTO mood(user_id, day, score, note, created_at) VALUES(?,?,?,?,?)",
-            (uid, day, score, (note or "").strip(), datetime.now().isoformat()),
-        )
-
-    async def list_mood(self, uid: int, limit: int = 14) -> list:
-        rows = await self._fetchall(
-            "SELECT day, score, note FROM mood WHERE user_id=? ORDER BY id DESC LIMIT ?",
-            (uid, limit),
-        )
-        return [{"day": r[0], "score": r[1], "note": r[2]} for r in rows]
-
-    # ── expenses ─────────────────────────────────────────────────────────────────
-
-    async def add_expense(self, uid: int, amount: float, note: str, day: str):
-        await self._exec(
-            "INSERT INTO expenses(user_id, amount, note, day, created_at) VALUES(?,?,?,?,?)",
-            (uid, float(amount), (note or "").strip(), day, datetime.now().isoformat()),
-        )
-
-    async def list_expenses(self, uid: int, since_day: str = None, limit: int = 200) -> list:
-        if since_day:
-            rows = await self._fetchall(
-                "SELECT amount, note, day FROM expenses WHERE user_id=? AND day>=? "
-                "ORDER BY id DESC LIMIT ?", (uid, since_day, limit))
-        else:
-            rows = await self._fetchall(
-                "SELECT amount, note, day FROM expenses WHERE user_id=? "
-                "ORDER BY id DESC LIMIT ?", (uid, limit))
-        return [{"amount": r[0], "note": r[1], "day": r[2]} for r in rows]
-
     async def stats(self, uid: int) -> dict:
         """Counts across every per-user table + profile fields, for /memstats."""
         await self.ensure_loaded(uid)
