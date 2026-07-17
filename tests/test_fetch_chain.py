@@ -49,7 +49,6 @@ def test_bot_module_matches_this_contract():
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    import importlib.util
 
     bot_path = Path(__file__).resolve().parent.parent / "telegram_bot" / "bot.py"
     src = bot_path.read_text(encoding="utf-8")

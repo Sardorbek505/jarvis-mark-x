@@ -25,8 +25,6 @@ from telegram_bot.config import load as load_config
 from telegram_bot.gemini_client import GeminiClient
 from telegram_bot.pc_bridge import PCBridge
 from telegram_bot import miniapp_server
-from telegram_bot import user_context
-from telegram_bot import personas
 from telegram_bot import proactive
 from telegram_bot import context_builder
 from telegram_bot import recall

@@ -6,7 +6,7 @@
 import json
 from pathlib import Path
 from typing import Dict, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Импорт календаря для проактивных уведомлений
 try:

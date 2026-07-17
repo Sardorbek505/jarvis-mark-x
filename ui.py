@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import platform
 import random
-import subprocess
 import sys
 import threading
 import time
@@ -19,17 +17,16 @@ from pathlib import Path
 
 import psutil
 from PyQt6.QtCore import (
-    QObject, QPointF, QRectF, QSize, Qt,
-    QTimer, QUrl, pyqtSignal,
+    QPointF, QRectF, Qt,
+    QTimer, pyqtSignal,
 )
 from PyQt6.QtGui import (
-    QBrush, QColor, QDragEnterEvent, QDropEvent, QFont, QFontDatabase,
-    QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
-    QRadialGradient, QShortcut,
+    QBrush, QColor, QDragEnterEvent, QDropEvent, QFont, QKeySequence, QPainter, QPen, QPixmap,
+    QShortcut,
 )
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QPushButton, QScrollArea, QSizePolicy, QTextEdit,
+    QMainWindow, QPushButton, QSizePolicy, QTextEdit,
     QVBoxLayout, QWidget,
 )
 

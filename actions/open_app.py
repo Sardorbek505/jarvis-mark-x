@@ -64,7 +64,7 @@ def open_app(parameters: dict, response=None, player=None) -> str:
                 if player:
                     player.write_log(f"SYS: Открыто — {display}")
                 return f"Открываю {display}."
-            except Exception as e:
+            except Exception:
                 pass
 
     # Последняя попытка — через xdg-open или start

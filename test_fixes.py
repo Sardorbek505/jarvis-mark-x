@@ -1,5 +1,4 @@
 """Test script to verify the fixes"""
-import os
 import sys
 from pathlib import Path
 

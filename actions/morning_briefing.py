@@ -4,7 +4,7 @@
 """
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import json
 
 _BASE = Path(__file__).parent.parent
@@ -59,7 +59,7 @@ def _get_weather(city: str) -> str:
         from actions.weather import weather_action
         result = weather_action({"city": city})
         return result
-    except Exception as e:
+    except Exception:
         return f"Данные о погоде временно недоступны, сэр."
 
 
@@ -83,7 +83,7 @@ def _get_calendar() -> str:
                 event_list.append(title)
         
         return ". ".join(event_list)
-    except Exception as e:
+    except Exception:
         return "Расписание временно недоступно."
 
 
@@ -110,7 +110,7 @@ def _get_news() -> str:
             return ". ".join(headlines)
         else:
             return "Новостная лента пуста."
-    except Exception as e:
+    except Exception:
         return "Новостная лента недоступна."
 
 
