@@ -31,7 +31,7 @@ def _load_credentials():
     )
 
     if not client_id or not client_secret:
-        print("❌ Не найдены spotify_client_id / spotify_client_secret.")
+        print("[!] Не найдены spotify_client_id / spotify_client_secret.")
         print("   Заполните config/api_keys.json или задайте переменные окружения")
         print("   SPOTIFY_CLIENT_ID и SPOTIFY_CLIENT_SECRET.")
         sys.exit(1)
@@ -68,6 +68,25 @@ def get_auth_url():
     auth_url = f"https://accounts.spotify.com/authorize?{urlencode(params)}"
     return auth_url
 
+def _save_refresh_token(refresh_token: str) -> None:
+    """Кладёт refresh token в config/api_keys.json, не трогая остальные ключи.
+
+    Раньше скрипт печатал токен на экран и просил вставить его руками: секрет
+    оседал в истории консоли, а любая опечатка при вставке ломала Spotify молча.
+    """
+    config = {}
+    if CONFIG_FILE.exists():
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            config = json.load(f)
+
+    config["spotify_refresh_token"] = refresh_token
+
+    tmp = CONFIG_FILE.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    tmp.replace(CONFIG_FILE)
+
+
 def get_refresh_token(auth_code: str):
     """Получить refresh token по authorization code."""
     
@@ -93,13 +112,13 @@ def get_refresh_token(auth_code: str):
 
 def main():
     print("=" * 60)
-    print("🎵 Получение Spotify Refresh Token для JARVIS")
+    print("Получение Spotify Refresh Token для JARVIS")
     print("=" * 60)
     print()
     
     # Шаг 1: Показать URL для авторизации
     auth_url = get_auth_url()
-    print("📋 ШАГ 1: Авторизация")
+    print("ШАГ 1: Авторизация")
     print("-" * 60)
     print("1. Откройте эту ссылку в браузере:")
     print()
@@ -112,39 +131,28 @@ def main():
     print()
     
     # Шаг 2: Получить authorization code
-    auth_code = input("📝 Вставьте code из URL (после ?code=): ").strip()
+    auth_code = input("Вставьте code из URL (после ?code=): ").strip()
     
     if not auth_code:
-        print("❌ Не введён код авторизации")
+        print("[!] Не введён код авторизации")
         return
     
     print()
-    print("🔄 ШАГ 2: Получение токена...")
+    print("ШАГ 2: Получение токена...")
     print("-" * 60)
     
     # Шаг 3: Получить refresh token
     token_data = get_refresh_token(auth_code)
     
     if token_data:
-        print("✅ Success!")
+        _save_refresh_token(token_data["refresh_token"])
+        print("[OK] Токен получен и сохранён в config/api_keys.json")
         print()
-        print("=" * 60)
-        print("🔑 REFRESH TOKEN (скопируй в config/api_keys.json):")
-        print("=" * 60)
-        print()
-        print(token_data["refresh_token"])
-        print()
-        print("=" * 60)
-        print("📝 Инструкция:")
-        print("=" * 60)
-        print("1. Открой файл: config/api_keys.json")
-        print("2. Замени значение 'spotify_refresh_token' на токен выше")
-        print("3. Сохрани файл")
-        print("4. Запусти JARVIS: python main.py")
-        print("5. Протестируй: 'Jarvis play Miyagi love me'")
+        print("Дальше: запусти JARVIS (python main.py) и попроси музыку.")
+        print("Обновляться токен будет сам.")
         print()
     else:
-        print("❌ Не удалось получить токен")
+        print("[!] Не удалось получить токен")
         print("Убедитесь что:")
         print("- Введён правильный authorization code")
         print("- Redirect URI совпадает с настройками в Spotify Dashboard")
