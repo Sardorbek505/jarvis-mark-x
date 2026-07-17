@@ -7,6 +7,10 @@ import sys
 import os
 import shutil
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 
 _ALIASES = {
     # Браузеры
@@ -64,8 +68,8 @@ def open_app(parameters: dict, response=None, player=None) -> str:
                 if player:
                     player.write_log(f"SYS: Открыто — {display}")
                 return f"Открываю {display}."
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
     # Последняя попытка — через xdg-open или start
     try:

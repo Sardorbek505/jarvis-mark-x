@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Dict, Any
 import json
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 _BASE = Path(__file__).parent.parent
 
 
@@ -47,8 +51,8 @@ def _load_memory() -> Dict[str, Any]:
         if memory_file.exists():
             with open(memory_file, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
     
     return {"name": "сэр", "city": "Москва"}
 

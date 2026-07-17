@@ -8,6 +8,10 @@ from typing import Optional
 
 from PIL import Image
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 # Опционально: mss для быстрого захвата
 try:
     import mss
@@ -28,14 +32,15 @@ def capture_full_screen() -> Optional[Image.Image]:
                 monitor = sct.monitors[1]  # Основной монитор
                 shot = sct.grab(monitor)
                 return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
     # Fallback на PIL ImageGrab
     try:
         from PIL import ImageGrab
         return ImageGrab.grab()
-    except Exception:
+    except Exception as exc:
+        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
         return None
 
 
@@ -63,15 +68,15 @@ def capture_active_window() -> Optional[Image.Image]:
                         return Image.frombytes(
                             "RGB", shot.size, shot.bgra, "raw", "BGRX"
                         )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
             # Fallback PIL
             from PIL import ImageGrab
             bbox = (left, top, left + width, top + height)
             return ImageGrab.grab(bbox=bbox)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
     # Если активное окно не определилось — полный экран
     return capture_full_screen()

@@ -14,6 +14,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 
 def atomic_write_json(path: Path, data: Any, *, indent: int = 2) -> None:
     """
@@ -36,8 +40,8 @@ def atomic_write_json(path: Path, data: Any, *, indent: int = 2) -> None:
         try:
             if tmp.exists():
                 tmp.unlink()
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
         raise
 
 
@@ -45,7 +49,7 @@ def safe_read_json(path: Path, default: Any = None) -> Any:
     """
     Читает JSON. При corrupt файле:
       1. Делает backup в `<path>.broken-<ts>`
-      2. Логирует через print (logging framework пока нет)
+      2. Логирует ошибку
       3. Возвращает `default`
 
     НЕ возвращает молча default при ошибке — это маскировка data loss.
@@ -63,10 +67,12 @@ def safe_read_json(path: Path, default: Any = None) -> Any:
         backup = path.with_suffix(path.suffix + f".broken-{ts}")
         try:
             path.replace(backup)
-            print(f"[storage] ⚠️ Повреждён {path}: {e}. Backup → {backup.name}")
-        except Exception as backup_err:
-            print(f"[storage] ⚠️ Повреждён {path}: {e}. Не удалось сделать backup: {backup_err}")
+            _logger.error("Повреждён %s: %s. Backup: %s", path, e, backup.name)
+        except OSError as backup_err:
+            _logger.error(
+                "Повреждён %s: %s. Не удалось сделать backup: %s", path, e, backup_err
+            )
         return default if default is not None else {}
     except OSError as e:
-        print(f"[storage] ⚠️ Ошибка чтения {path}: {e}")
+        _logger.error("Ошибка чтения %s: %s", path, e)
         return default if default is not None else {}

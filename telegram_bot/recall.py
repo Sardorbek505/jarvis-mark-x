@@ -8,6 +8,10 @@ query, no extra Gemini call.
 """
 import re
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 # Phrases that signal the user is asking JARVIS to remember/look something up.
 _TRIGGERS = (
     "где я", "где это", "что я", "что мы", "помнишь", "напомни что",
@@ -64,7 +68,8 @@ async def search(memory, uid: int, text: str) -> str:
                 if t and t.lower() not in seen:
                     seen.add(t.lower())
                     hits.append(t)
-        except Exception:
+        except Exception as exc:
+            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
             continue
 
     # also scan facts already in the RAM cache (free, synchronous)

@@ -8,6 +8,10 @@ import os
 import urllib.parse
 import shutil
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 
 _BROWSERS = {
     "chrome": ["google-chrome", "chrome", "chromium"],
@@ -58,8 +62,8 @@ def _open_url(url: str, browser: str | None = None):
         try:
             os.startfile(url)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
         # Метод 2: cmd.exe через список аргументов (shell=False) —
         # безопасно, поскольку URL передаётся как отдельный аргумент,
         # а не интерполируется в shell-строку.
@@ -71,8 +75,8 @@ def _open_url(url: str, browser: str | None = None):
                 stderr=subprocess.DEVNULL,
             )
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
     elif sys.platform == "darwin":
         subprocess.Popen(["open", url])
     else:

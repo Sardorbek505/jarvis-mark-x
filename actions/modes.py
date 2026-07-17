@@ -24,6 +24,10 @@ from pathlib import Path
 from actions.open_app import open_app
 from actions.browser_control import browser_control
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 # ─── Пути ─────────────────────────────────────────────────────────────────────
 _BASE        = Path(__file__).resolve().parent.parent
 _CONFIG_PATH = _BASE / "config" / "modes.json"
@@ -37,8 +41,8 @@ def _load_config() -> dict:
         if _CONFIG_PATH.exists():
             with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
     return _DEFAULT_CONFIG
 
 
@@ -48,8 +52,8 @@ def _save_state(mode: str, preference: str = "") -> None:
         _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(_STATE_PATH, "w", encoding="utf-8") as f:
             json.dump({"mode": mode, "preference": preference}, f, ensure_ascii=False)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
 
 
 def get_current_mode() -> dict:
@@ -58,8 +62,8 @@ def get_current_mode() -> dict:
         if _STATE_PATH.exists():
             with open(_STATE_PATH, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
     return {"mode": "normal", "preference": ""}
 
 
@@ -107,8 +111,8 @@ def _try_open_apps(app_names: list, player=None) -> list:
             result = open_app({"app_name": name}, player=player)
             if result and "не удалось" not in result.lower():
                 opened.append(name)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
     return opened
 
 

@@ -30,6 +30,10 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 # Fix Windows DPI awareness issue
 if platform.system() == "Windows":
     import ctypes
@@ -101,8 +105,8 @@ class _SysMetrics:
         while self._running:
             try:
                 self._update()
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
             time.sleep(1.5)
 
     def _update(self):
@@ -1047,8 +1051,8 @@ class MainWindow(QMainWindow):
         if API_FILE.exists():
             try:
                 data = json.loads(API_FILE.read_text())
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
         data["gemini_api_key"] = key
         data["os"] = os_name
         API_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))

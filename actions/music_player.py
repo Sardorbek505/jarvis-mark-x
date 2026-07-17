@@ -30,6 +30,10 @@ from typing import Optional
 from actions.computer_settings import computer_settings
 from actions.browser_control import browser_control
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 _OS = platform.system()
 
 # ─── Пути ─────────────────────────────────────────────────────────────────────
@@ -91,8 +95,8 @@ def _send_media_key(action: str) -> bool:
             try:
                 pyautogui.press(py_key)
                 return True
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
     # Уровень 2: Windows Win32 API (без зависимостей)
     if _OS == "Windows":
@@ -123,8 +127,8 @@ def _is_spotify_installed() -> bool:
                 )
                 winreg.CloseKey(key)
                 return True
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
             # Проверяем общий путь установки
             spotify_paths = [
                 r"C:\Program Files\Spotify\Spotify.exe",
@@ -142,8 +146,8 @@ def _is_spotify_installed() -> bool:
             for path in ["/usr/bin/spotify", "/usr/local/bin/spotify"]:
                 if os.path.exists(path):
                     return True
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
     return False
 
 
@@ -175,8 +179,8 @@ def _open_spotify_uri(uri: str) -> bool:
             try:
                 os.startfile(uri)
                 return True
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
             # Метод 2: cmd.exe через список аргументов (shell=False).
             # URI идёт как отдельный аргумент — нет shell-injection.
             try:
@@ -187,8 +191,8 @@ def _open_spotify_uri(uri: str) -> bool:
                     stderr=subprocess.DEVNULL,
                 )
                 return True
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
         elif _OS == "Darwin":
             subprocess.Popen(["open", uri])
             return True
@@ -222,8 +226,8 @@ def _https_to_spotify_uri(url: str) -> Optional[str]:
         if "/artist/" in url:
             arid = url.split("/artist/")[-1].split("?")[0].split("/")[0]
             return f"spotify:artist:{arid}"
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
     return None
 
 
@@ -243,10 +247,10 @@ def _focus_spotify_window() -> bool:
                         time.sleep(0.1)
                         win.restore()
                         return True
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+                    except Exception as exc:
+                        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+    except Exception as exc:
+        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
     return False
 
 
@@ -260,8 +264,8 @@ def _get_spotify_credentials() -> Optional[tuple]:
         secret = cfg.get("spotify_client_secret", "").strip()
         if cid and secret:
             return (cid, secret)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
     return None
 
 
@@ -302,8 +306,8 @@ def _get_spotify_token() -> Optional[str]:
             # Токен живёт 3600 сек, обновим чуть раньше для надёжности
             _SPOTIFY_TOKEN_EXPIRES = time.time() + data.get("expires_in", 3600) - 60
             return token
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
     return None
 
 
@@ -345,7 +349,8 @@ def _spotify_search_track_uri(query: str) -> Optional[str]:
                         return item.get("uri")  # формат: spotify:track:ID
                 # Если точного совпадения нет, возвращаем первый результат
                 return items[0].get("uri")
-        except Exception:
+        except Exception as exc:
+            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
             continue
 
     return None
@@ -491,8 +496,8 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
             try:
                 browser_control({"action": "go_to", "url": playlist_url}, player=player)
                 spotify_opened = True
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
         if not spotify_opened:
             return "Не удалось открыть плейлист, сэр."
@@ -542,8 +547,8 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
                 player=player,
             )
             spotify_opened = True
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
     if not spotify_opened:
         return "Не удалось открыть Spotify, сэр."
