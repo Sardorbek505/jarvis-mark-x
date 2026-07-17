@@ -28,6 +28,10 @@ from typing import Optional
 from actions.browser_control import browser_control
 from actions.computer_settings import computer_settings
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 _OS = platform.system()
 
 # ─── Опциональная зависимость pyautogui ───────────────────────────────────────
@@ -66,8 +70,8 @@ def _send_key(key: str) -> bool:
         try:
             pyautogui.press(py_key)
             return True
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
     # Попытка 2: PowerShell SendKeys (только Windows)
     if _OS == "Windows":
@@ -78,8 +82,8 @@ def _send_key(key: str) -> bool:
                 capture_output=True, timeout=3
             )
             return result.returncode == 0
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
     return False
 
@@ -90,8 +94,8 @@ def _send_hotkey_ctrl_w() -> bool:
         try:
             pyautogui.hotkey("ctrl", "w")
             return True
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
     if _OS == "Windows":
         try:
@@ -101,8 +105,8 @@ def _send_hotkey_ctrl_w() -> bool:
                 capture_output=True, timeout=3
             )
             return result.returncode == 0
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
     return False
 
@@ -135,8 +139,8 @@ def _scrape_first_youtube_video(query: str) -> Optional[str]:
         if match:
             video_id = match.group(1)
             return f"https://www.youtube.com/watch?v={video_id}"
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
     return None
 
 
@@ -170,8 +174,8 @@ def _scrape_first_kinogo_video(query: str) -> Optional[str]:
                 if not video_url.startswith("http"):
                     video_url = f"https://lim.kinogo.mu{video_url}"
                 return video_url
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
     return None
 
 
@@ -413,8 +417,8 @@ def _selenium_select_first_video(search_url: str, player=None) -> Optional[str]:
         if driver is not None:
             try:
                 driver.quit()
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
 
 def _pause_resume(player=None) -> str:

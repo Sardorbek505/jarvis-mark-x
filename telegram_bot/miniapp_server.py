@@ -209,8 +209,8 @@ async def _build_view(user_id: int, view: str) -> dict:
             counts = (await _memory.stats(user_id)).get("counts", {})
             mem = {"messages": counts.get("messages", 0), "facts": counts.get("facts", 0),
                    "semantic": counts.get("embeddings", 0)}
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
         return {
             "name": profile.get("name", ""),

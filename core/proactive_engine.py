@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Dict, Optional, List
 from datetime import datetime
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 # Импорт календаря для проактивных уведомлений
 try:
     from actions.calendar import get_upcoming_reminders, get_todays_schedule
@@ -47,8 +51,8 @@ class ProactiveEngine:
             try:
                 with open(self.patterns_path, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
 
         # Паттерны по умолчанию
         return {
@@ -318,8 +322,8 @@ class ProactiveEngine:
                 if schedule and "расписание на сегодня" in schedule.lower():
                     suggestions.append("Сэр, показать расписание на сегодня?")
 
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
 
         return suggestions
     
@@ -360,8 +364,8 @@ class ProactiveEngine:
             elif current_context["lifestyle_mode"] == "movie":
                 suggestions.append("Сэр, у вас есть запланированные события. Приостановить фильм когда придёт время?")
             
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
         
         return suggestions
     
@@ -382,8 +386,8 @@ class ProactiveEngine:
             health_reminder = check_health_needs(context)
             if health_reminder:
                 suggestions.append(health_reminder)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
         
         return suggestions
 

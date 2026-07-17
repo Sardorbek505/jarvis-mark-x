@@ -11,6 +11,10 @@ import platform
 import subprocess
 import time
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 _OS = platform.system()
 
 # ─── pyautogui (опционально) ──────────────────────────────────────────────────
@@ -221,8 +225,8 @@ def _open_explorer(player=None) -> str:
             else:
                 subprocess.Popen(["xdg-open", "."])
             ok = True
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
     if ok:
         if player:
@@ -289,8 +293,8 @@ def _activate_window_by_title(title_part: str, player=None) -> str:
                         time.sleep(0.1)
                         win.restore()
                         return f"Открыл {title_part}, сэр."
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
         return f"Окно «{title_part}» не найдено, сэр."
     except ImportError:
         return "Модуль pygetwindow не установлен, сэр."

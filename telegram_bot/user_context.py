@@ -7,6 +7,10 @@ local time and where the user currently is — wherever they travel.
 from datetime import datetime, timezone, timedelta
 from typing import Dict
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:  # pragma: no cover
@@ -46,8 +50,8 @@ def _resolve_tz(name: str):
     if name and ZoneInfo is not None:
         try:
             return ZoneInfo(name)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
     # Fallback: UTC+5 (Shymkent / Kazakhstan)
     return timezone(timedelta(hours=5))
 

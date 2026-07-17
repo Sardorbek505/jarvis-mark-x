@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import re
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 
 # ─── Пути ─────────────────────────────────────────────────────────────────────
 def _get_base_dir() -> Path:
@@ -149,8 +153,8 @@ def _load_calendar() -> Dict[str, Any]:
         if CALENDAR_FILE.exists():
             with open(CALENDAR_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
     
     # Структура по умолчанию
     return {

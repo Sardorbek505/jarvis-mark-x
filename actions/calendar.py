@@ -20,6 +20,10 @@ from core.calendar_manager import (
     get_todays_schedule
 )
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 
 # ─── Пути ─────────────────────────────────────────────────────────────────────
 def _get_base_dir() -> Path:
@@ -85,7 +89,8 @@ def _get_google_calendar_service():
         _GOOGLE_CALENDAR_SERVICE = build('calendar', 'v3', credentials=creds)
         return _GOOGLE_CALENDAR_SERVICE
     
-    except Exception:
+    except Exception as exc:
+        _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
         return None
 
 
@@ -192,8 +197,8 @@ def calendar(parameters: dict, player=None) -> str:
                     last_event = events[-1]
                     if _sync_to_google_calendar(last_event):
                         result += " Синхронизировано с Google Calendar."
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
         
         return result
     

@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Dict, Optional, List
 from datetime import datetime
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 
 class TeamCollaborationEngine:
     """
@@ -25,8 +29,8 @@ class TeamCollaborationEngine:
             try:
                 with open(self.team_path, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
         # Данные по умолчанию
         return {
@@ -183,8 +187,8 @@ class TeamCollaborationEngine:
                         suggestions.append(f"Сэр, проект '{project['name']}' дедлайн через {days_left} дней. Нужно ускорить работу?")
                     elif days_left <= 0:
                         suggestions.append(f"Сэр, проект '{project['name']}' просрочен! Срочно!")
-                except:
-                    pass
+                except Exception as exc:
+                    _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
         # Проверяем незавершённые задачи
         for project in self.team_data["projects"]:
