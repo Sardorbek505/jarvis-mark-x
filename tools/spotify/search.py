@@ -4,9 +4,18 @@ Spotify Search Module
 Handles track/artist/album search with fuzzy matching and ranking.
 """
 
+import re
 import requests
 from typing import Optional, List, Dict, Any
 from rapidfuzz import fuzz
+
+# Хвосты вида «- Remastered 2011», «(Live)», «- Radio Edit» у оригиналов
+_TITLE_SUFFIX_RE = re.compile(
+    r"\s*[-(\[].*?(remaster|live|radio edit|mono|stereo|version|mix|edit|deluxe).*$",
+    re.IGNORECASE,
+)
+# Вклад популярности в итоговый балл: 100 популярности = +15
+_POPULARITY_WEIGHT = 0.15
 
 
 class SpotifySearch:
@@ -73,10 +82,13 @@ class SpotifySearch:
             Match score (0-100)
         """
         query_lower = query.lower()
-        
+
         # Title matching
         title = track.get('name', '').lower()
         title_score = fuzz.partial_ratio(query_lower, title)
+        # Оригиналы в Spotify часто зовутся «Song - Remastered 2011»; сравниваем
+        # и с очищенным названием, иначе одноимённый кавер выглядит точнее оригинала.
+        core_title = _TITLE_SUFFIX_RE.sub("", title).strip()
         
         # Artist matching
         artists = track.get('artists', [])
@@ -90,18 +102,23 @@ class SpotifySearch:
         
         # Combined score (60% title, 40% artist)
         combined_score = title_score * 0.6 + artist_score * 0.4
-        
-        # Boost for exact matches
-        if query_lower == title:
+
+        # Boost for exact matches — по очищенному названию, чтобы оригинал с
+        # суффиксом ремастера не проигрывал одноимённому каверу.
+        if query_lower in (title, core_title):
             combined_score += 20
         if any(query_lower == artist.get('name', '').lower() for artist in artists):
             combined_score += 15
-        
+
         # Prefer non-explicit if scores are equal
         if not track.get('explicit', True):
             combined_score += 5
-        
-        return min(combined_score, 100)
+
+        # Популярность Spotify (0-100) — решающий довод при похожих названиях:
+        # у хита она под 80, у случайного кавера единицы. Без неё каверы выигрывали.
+        combined_score += track.get('popularity', 0) * _POPULARITY_WEIGHT
+
+        return combined_score
     
     def search_track(
         self,
@@ -120,30 +137,13 @@ class SpotifySearch:
         Returns:
             Best matching track or None
         """
-        # Try multiple query variants for better matching
-        query_variants = [
-            query,
-            query.replace('ё', 'е'),  # Cyrillic yo → e
-            query.replace('й', 'i'),   # Cyrillic short i → i
-            query.replace('ъ', ''),  # Remove hard sign
-            query.replace('ь', ''),  # Remove soft sign
-            query.replace('з', 'с'),   # Common typo z → s
-            query.replace('с', 'з'),   # Common typo s → z
-            query.replace('ш', 'щ'),   # Common typo sh → sch
-            query.replace('щ', 'ш'),   # Common typo sch → sh
-            query.replace('ч', 'ц'),   # Common typo ch → ts
-            query.replace('ц', 'ч'),   # Common typo ts → ch
-            query.replace('к', 'х'),   # Common typo k → kh
-            query.replace('х', 'к'),   # Common typo kh → k
-            query.replace('п', 'б'),   # Common typo p → b
-            query.replace('б', 'п'),   # Common typo b → p
-            query.replace('т', 'д'),   # Common typo t → d
-            query.replace('д', 'т'),   # Common typo d → t
-            query.replace('ф', 'в'),   # Common typo f → v
-            query.replace('в', 'ф'),   # Common typo v → f
-            query.split()[0] if ' ' in query else query,  # First word only
-        ]
-        
+        # Раньше здесь было 20 «вариантов опечаток» (з→с, к→х, п→б): они не
+        # исправляли ошибки, а калечили запрос («Кино» → «Хино»), сваливали
+        # мусор в общий котёл и жгли 20 запросов к API на одну песню — отсюда
+        # и чужие каверы в выдаче, и упор в лимиты Spotify.
+        # Оставляем только безобидную нормализацию ё→е.
+        query_variants = list(dict.fromkeys([query, query.replace('ё', 'е')]))
+
         all_tracks = []
         
         for variant in query_variants:
