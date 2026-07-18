@@ -476,6 +476,11 @@ class SmartReminderEngine:
         return ". ".join(text_parts)
 
 
+# Дольше этого «сессия» — не марафон, а незакрытый счётчик: приложение
+# закрыли, не завершив активность, и открыли позже. Такую сессию сбрасываем.
+_MAX_PLAUSIBLE_SESSION_MIN = 8 * 60
+
+
 # ─── Отслеживание активности ──────────────────────────────────────────────────────
 class ActivityTracker:
     """Отслеживает время активности для health напоминаний."""
@@ -584,6 +589,12 @@ class ActivityTracker:
         
         start_time = datetime.fromisoformat(self.activities["current_session"]["start_time"])
         duration = (datetime.now() - start_time).total_seconds() / 60
+        # Залипшая сессия (закрыли приложение, не завершив просмотр) — сбрасываем,
+        # иначе Джарвис заявит «вы смотрите фильм уже 714 часов».
+        if duration > _MAX_PLAUSIBLE_SESSION_MIN:
+            self.activities["current_session"] = None
+            self._save_activities()
+            return 0.0
         return duration
     
     def get_activity_type(self) -> Optional[str]:

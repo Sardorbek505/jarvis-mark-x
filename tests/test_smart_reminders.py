@@ -132,3 +132,48 @@ def test_movie_mode_does_not_interrupt(calendar, engine):
     out = engine._get_smart_reminder_suggestions({"last_emotion": "neutral", "mode": "movie"})
 
     assert out == []
+
+
+# ─── Health: залипшая сессия не даёт «714 часов» ──────────────────────────────
+def test_stale_activity_session_resets(tmp_path, monkeypatch):
+    """Незакрытая сессия месячной давности не должна считаться марафоном."""
+    import json
+    from datetime import datetime, timedelta
+
+    from core import smart_reminders
+
+    path = tmp_path / "activity_tracking.json"
+    old_start = (datetime.now() - timedelta(days=30)).isoformat()
+    path.write_text(json.dumps({
+        "current_session": {"activity_type": "movie", "start_time": old_start},
+        "sessions": [], "health_alerts": [],
+    }), encoding="utf-8")
+    monkeypatch.setattr(smart_reminders.ActivityTracker, "activity_file", path, raising=False)
+
+    tracker = smart_reminders.ActivityTracker()
+    tracker.activity_file = path
+    tracker.activities = tracker._load_activities()
+
+    assert tracker.get_current_duration() == 0.0        # не 43000 минут
+    assert tracker.activities["current_session"] is None  # залипшая сброшена
+
+
+def test_fresh_movie_session_still_counts(tmp_path):
+    """Свежая сессия (полтора часа) считается нормально."""
+    import json
+    from datetime import datetime, timedelta
+
+    from core import smart_reminders
+
+    path = tmp_path / "activity_tracking.json"
+    start = (datetime.now() - timedelta(minutes=90)).isoformat()
+    path.write_text(json.dumps({
+        "current_session": {"activity_type": "movie", "start_time": start},
+        "sessions": [], "health_alerts": [],
+    }), encoding="utf-8")
+
+    tracker = smart_reminders.ActivityTracker()
+    tracker.activity_file = path
+    tracker.activities = tracker._load_activities()
+
+    assert 85 <= tracker.get_current_duration() <= 95   # ~90 минут, не сброшено
