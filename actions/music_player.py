@@ -522,7 +522,11 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
                     player.write_log("SYS: ✓ URI открыт")
                 time.sleep(2.0)
                 _focus_spotify_window()
-                return f"Открыл «{query}» в Spotify, сэр."
+                # Открытие spotify:track: URI переходит на трек, но НЕ играет его.
+                # Жмём play, как в ветках плейлиста и пустого запроса, иначе
+                # Джарвис говорит «включил», а музыка стоит.
+                _send_media_key("playpause")
+                return f"Включаю «{query}» в Spotify, сэр."
             else:
                 if player:
                     player.write_log("SYS: ✗ Не удалось открыть URI")
