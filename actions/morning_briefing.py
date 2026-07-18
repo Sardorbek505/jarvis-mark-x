@@ -4,7 +4,7 @@
 """
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import json
 
 import logging
@@ -29,8 +29,9 @@ def morning_briefing(parameters: Dict[str, Any], player=None) -> str:
     # Загрузка памяти пользователя
     user_data = _load_memory()
     user_name = user_data.get("name", "сэр")
-    # Город из параметров (определяется по геолокации) важнее памяти
-    city = (parameters or {}).get("city") or user_data.get("city") or "Москва"
+    # Город: явный параметр → память → автоопределение по IP. «Москва» —
+    # только если геолокация недоступна, чтобы не выдумывать чужой город.
+    city = (parameters or {}).get("city") or user_data.get("city") or _detect_city() or "Москва"
     
     # Сбор компонентов брифинга
     weather_part = _get_weather(city)
@@ -41,6 +42,27 @@ def morning_briefing(parameters: Dict[str, Any], player=None) -> str:
     briefing = _assemble_briefing(user_name, weather_part, calendar_part, news_part)
     
     return briefing
+
+
+_city_cache: Optional[str] = None
+
+
+def _detect_city() -> Optional[str]:
+    """Определяет город пользователя по IP (кэшируется на сессию)."""
+    global _city_cache
+    if _city_cache is not None:
+        return _city_cache or None
+    try:
+        import urllib.request
+        with urllib.request.urlopen(
+            "http://ip-api.com/json/?fields=status,city", timeout=8
+        ) as r:
+            data = json.loads(r.read().decode())
+        _city_cache = data.get("city", "") if data.get("status") == "success" else ""
+    except Exception as exc:
+        _logger.warning("Геолокация недоступна: %s", exc)
+        _city_cache = ""
+    return _city_cache or None
 
 
 def _load_memory() -> Dict[str, Any]:
@@ -54,7 +76,8 @@ def _load_memory() -> Dict[str, Any]:
     except Exception as exc:
         _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
     
-    return {"name": "сэр", "city": "Москва"}
+    # Без города — чтобы сработало автоопределение по IP, а не Москва
+    return {"name": "сэр"}
 
 
 def _get_weather(city: str) -> str:
