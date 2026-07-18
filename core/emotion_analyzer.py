@@ -5,6 +5,14 @@
 
 from typing import Dict, Optional
 
+# Выключатель анализа эмоций. False = Джарвис не угадывает настроение и не
+# комментирует его; всё, что зависит от эмоций (инициативные реплики,
+# адаптация напоминаний), работает в нейтральном режиме. Чтобы вернуть —
+# поставь True. Отключено по решению владельца (2026-07): мешало, не помогало.
+_EMOTION_ENABLED = False
+
+_NEUTRAL = {"emotion": "neutral", "confidence": 0.0, "detected_emotions": {}, "suggested_actions": []}
+
 
 class EmotionAnalyzer:
     """Анализирует эмоции пользователя для инициативных действий"""
@@ -103,6 +111,9 @@ class EmotionAnalyzer:
             - detected_emotions: список всех найденных эмоций с уверенностью
             - suggested_actions: список инициативных действий
         """
+        if not _EMOTION_ENABLED:
+            return dict(_NEUTRAL)
+
         text_lower = text.lower()
 
         detected = {}
