@@ -181,154 +181,27 @@ def _scrape_first_kinogo_video(query: str) -> Optional[str]:
 
 def _play(title: str, player=None) -> str:
     """
-    Открыть фильм только через kinogo.mu.
+    Открыть фильм через vkvideo.ru.
 
-    Стратегия:
-      1. kinogo.mu scraping (прямой URL, если сработало)
-      2. kinogo.mu с Selenium (автоматический выбор первого результата)
-      3. Fallback: обычное открытие поиска kinogo.mu
+    Открывает страницу поиска vkvideo.ru по названию прямо в браузере.
+    Автозапуск первого результата у VK ненадёжен (JS + вход в аккаунт),
+    поэтому открываем поиск — с активной VK-сессией видео в один клик.
     """
     title = (title or "").strip()
     if not title:
         return "Назовите фильм, сэр."
 
     if player:
-        player.write_log(f"SYS: 🎬 Поиск «{title}»...")
+        player.write_log(f"SYS: vkvideo.ru — поиск «{title}»")
 
-    # ── Шаг 1: kinogo.mu scraping (пробуем автоплей) ────────────────────────
-    if player:
-        player.write_log("SYS: → kinogo.mu scraping")
-    video_url = _scrape_first_kinogo_video(title)
-
-    if video_url:
-        try:
-            if player:
-                player.write_log(f"SYS: → Открываю kinogo.mu: {video_url}")
-            browser_control({"action": "go_to", "url": video_url}, player=player)
-            if player:
-                player.write_log(f"SYS: ▶ kinogo.mu открыт")
-            # Полноэкранный режим
-            time.sleep(2)  # Ждём загрузки видео
-            _send_key("f")
-            return f"Включаю «{title}» на kinogo.mu, сэр. Во весь экран."
-        except Exception as e:
-            if player:
-                player.write_log(f"SYS: ✗ Ошибка открытия: {e}")
-            pass
-
-    # ── Шаг 2: Selenium автоматический выбор первого результата ───────────────
+    encoded = urllib.parse.quote(title)
+    url = f"https://vkvideo.ru/?q={encoded}&section=search"
     try:
-        encoded = urllib.parse.quote(title)
-        search_url = f"https://lim.kinogo.mu/search/{encoded}"
-
-        if player:
-            player.write_log(f"SYS: → Selenium: открываю поиск: {search_url}")
-
-        # Используем Selenium для автоматического клика и получения URL фильма
-        film_url = _selenium_select_first_video(search_url, player)
-
-        if film_url:
-            if player:
-                player.write_log(f"SYS: ▶ Фильм найден: {film_url}")
-            
-            # Открываем URL фильма в обычном браузере
-            browser_control({"action": "go_to", "url": film_url}, player=player)
-            
-            if player:
-                player.write_log("SYS: → Жду загрузки страницы фильма (3 сек)")
-            time.sleep(3)
-            
-            # Ищем и нажимаем кнопку play с помощью pyautogui
-            try:
-                import pyautogui
-                import os
-                if player:
-                    player.write_log("SYS: → Ищу кнопку play")
-                
-                # Сначала пробуем найти кнопку play по изображению
-                play_button_image = "assets/play_button.png"
-                play_clicked = False
-                
-                if os.path.exists(play_button_image):
-                    if player:
-                        player.write_log(f"SYS: → Поиск кнопки по изображению: {play_button_image}")
-                    try:
-                        play_location = pyautogui.locateOnScreen(play_button_image, confidence=0.8)
-                        if play_location:
-                            play_center = pyautogui.center(play_location)
-                            if player:
-                                player.write_log(f"SYS: ▶ Кнопка найдена: {play_center}")
-                            pyautogui.click(play_center)
-                            play_clicked = True
-                        else:
-                            if player:
-                                player.write_log("SYS: ✗ Кнопка по изображению не найдена")
-                    except Exception as e:
-                        if player:
-                            player.write_log(f"SYS: ✗ Ошибка поиска по изображению: {e}")
-                
-                # Если не нашли по изображению, пробуем клик по координатам
-                if not play_clicked:
-                    screen_width, screen_height = pyautogui.size()
-                    
-                    # Стратегия: несколько попыток клика в разных местах где может быть кнопка play
-                    # На kinogo.mu плеер обычно в центре-верхней части страницы
-                    play_positions = [
-                        (screen_width // 2, screen_height // 2),  # Центр экрана
-                        (screen_width // 2, screen_height // 2 - 50),  # Чуть выше центра
-                        (screen_width // 2, screen_height // 2 + 50),  # Чуть ниже центра
-                        (screen_width // 2 - 100, screen_height // 2),  # Чуть левее центра
-                        (screen_width // 2 + 100, screen_height // 2),  # Чуть правее центра
-                    ]
-                    
-                    for x, y in play_positions:
-                        if player:
-                            player.write_log(f"SYS: → Пробую клик: {x}, {y}")
-                        pyautogui.click(x, y)
-                        time.sleep(0.5)
-                        
-                        # Для простоты просто продолжаем после первого клика
-                        play_clicked = True
-                        break
-                
-                if play_clicked:
-                    time.sleep(1)  # Ждём начала воспроизведения
-                    
-                    # Полноэкранный режим
-                    if player:
-                        player.write_log("SYS: → Включаю полноэкранный режим")
-                    _send_key("f")
-                    
-                    return f"Включаю «{title}» на kinogo.mu, сэр. Нажал play, во весь экран."
-                else:
-                    # Если не удалось нажать play, просто открываем во весь экран
-                    _send_key("f")
-                    return f"Открыл «{title}» на kinogo.mu, сэр. Нажмите play вручную, во весь экран."
-                
-            except Exception as e:
-                if player:
-                    player.write_log(f"SYS: ✗ Ошибка нажатия play: {e}")
-                # Fallback - просто полноэкранный режим
-                _send_key("f")
-                return f"Открыл «{title}» на kinogo.mu, сэр. Нажмите play вручную, во весь экран."
-        else:
-            # Fallback на обычное открытие если Selenium не сработал
-            if player:
-                player.write_log(f"SYS: → Fallback: обычное открытие поиска")
-            browser_control({"action": "go_to", "url": search_url}, player=player)
-            return f"Открыл поиск «{title}» на kinogo.mu, сэр. Нажмите на первый результат."
-
+        browser_control({"action": "go_to", "url": url}, player=player)
+        return f"Открыл «{title}» на vkvideo.ru, сэр."
     except Exception as e:
-        if player:
-            player.write_log(f"SYS: ✗ Ошибка Selenium: {e}")
-        # Fallback
-        try:
-            encoded = urllib.parse.quote(title)
-            search_url = f"https://lim.kinogo.mu/search/{encoded}"
-            browser_control({"action": "go_to", "url": search_url}, player=player)
-            return f"Открыл поиск «{title}» на kinogo.mu, сэр. Нажмите на первый результат."
-        except:
-            return "Не удалось открыть фильм на kinogo.mu, сэр."
+        _logger.error("vkvideo.ru open failed: %s", e)
+        return "Не удалось открыть vkvideo.ru, сэр."
 
 
 def _selenium_select_first_video(search_url: str, player=None) -> Optional[str]:
