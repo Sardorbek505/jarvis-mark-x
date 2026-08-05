@@ -56,10 +56,12 @@ def _key() -> str:
 
 
 def _voice_id() -> str:
-    # По умолчанию — Jarvis (MCU), самый популярный голос в библиотеке Fish.
+    # Русскоязычный Jarvis. Владелец послушал оба и выбрал его, а не
+    # киношный MCU-голос (тот в библиотеке помечен как англоязычный и на
+    # русском звучит хуже, несмотря на 92k использований).
     return (os.getenv("FISH_VOICE_ID")
             or _from_config().get("fish_voice_id", "")
-            or "612b878b113047d9a770c069c8b4fdfe").strip()
+            or "680d74fbef69419f87cfc70f092a1451").strip()
 
 
 def is_configured() -> bool:
