@@ -346,12 +346,22 @@ async def _reply_pc_result(message, result: dict | None) -> None:
     if result.get("image_b64"):
         try:
             await message.reply_photo(
-                base64.b64decode(result["image_b64"]), caption=f"📸 {text}"
+                base64.b64decode(result["image_b64"]), caption=_prefixed(text, "📸")
             )
             return
         except Exception as e:
             logger.warning("Не смог отправить снимок с ПК: %s", e)
-    await message.reply_text(f"🖥 {text}")
+    await message.reply_text(_prefixed(text, "🖥"))
+
+
+def _prefixed(text: str, icon: str) -> str:
+    """Значок в начале — только если ПК не поставил свой.
+
+    Иначе выходило «📸 📷 Снимок с камеры» и «🖥 🖥 Состояние системы»:
+    ответы с ПК приходят уже со своим значком.
+    """
+    first = text.lstrip()[:1]
+    return text if first and not first.isalnum() and not first.isspace() else f"{icon} {text}"
 
 
 def _app_keyboard() -> InlineKeyboardMarkup | None:
