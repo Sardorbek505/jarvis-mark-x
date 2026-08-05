@@ -15,6 +15,28 @@ logger = logging.getLogger("jarvis-rag")
 _MIN_LEN = 3       # skip trivially short texts
 _MIN_SIM = 0.55    # similarity floor for a hit to be worth injecting
 
+# Векторы в РАМ, а не из базы на каждом ходу.
+#
+# Раньше retrieve() на КАЖДОЕ сообщение выгружал все эмбеддинги пользователя
+# (SELECT по всей таблице), разбирал JSON каждого вектора по 768 чисел и только
+# потом считал косинус. При 73 записях это уже сотни миллисекунд и полмегабайта
+# трафика из Neon на ровном месте, а растёт линейно: к тысяче записей ход стал
+# бы секундным. Данные при этом между ходами не меняются — только дописываются.
+_VECS: dict[int, list] = {}
+
+
+def forget_cached(uid: int) -> None:
+    """Сбросить кэш векторов — после /forget, иначе стёртое всплывёт в поиске."""
+    _VECS.pop(uid, None)
+
+
+async def _vectors(memory, uid: int) -> list:
+    cached = _VECS.get(uid)
+    if cached is None:
+        cached = await memory.all_embeddings(uid)
+        _VECS[uid] = cached
+    return cached
+
 
 def _cosine(a: list, b: list) -> float:
     if not a or not b or len(a) != len(b):
@@ -42,6 +64,9 @@ async def index(memory, gemini, uid: int, kind: str, text: str) -> bool:
         if not vec:
             return False
         await memory.add_embedding(uid, kind, text, vec)
+        cached = _VECS.get(uid)
+        if cached is not None:          # держим кэш в согласии с базой
+            cached.append({"kind": kind, "text": text, "vec": vec})
         return True
     except Exception as e:
         logger.debug(f"index: {e}")
@@ -54,11 +79,16 @@ async def retrieve(memory, gemini, uid: int, query: str, k: int = 6) -> list:
     query = (query or "").strip()
     if len(query) < _MIN_LEN:
         return []
+    # Искать воспоминания по «ок» и «спасибо» нечего, а вызов эмбеддинга это
+    # стоит — он был четвёртым обращением к модели на каждое сообщение.
+    from telegram_bot.memory_store import worth_learning
+    if not worth_learning(query):
+        return []
     try:
         qv = await gemini.embed(query)
         if not qv:
             return []
-        rows = await memory.all_embeddings(uid)
+        rows = await _vectors(memory, uid)
         if not rows:
             return []
         scored = [(_cosine(qv, r["vec"]), r["text"]) for r in rows]
