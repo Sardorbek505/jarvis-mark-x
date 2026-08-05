@@ -58,22 +58,8 @@ memory = MemoryStore()
 _WD_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
-def _fmt_class(c: dict) -> str:
-    s = (f"{c['time']} " if c.get("time") else "") + c["subject"]
-    if c.get("location"):
-        s += f" ({c['location']})"
-    return s
-
-
-def _schedule_today_str(uid: int) -> str:
-    sched = memory.cached_schedule(uid)
-    if not sched:
-        return ""
-    wd = user_context.local_now(uid, cfg.timezone).weekday()
-    today = [c for c in sched if c["weekday"] == wd]
-    if not today:
-        return ""
-    return "Сегодня по расписанию: " + "; ".join(_fmt_class(c) for c in today) + "."
+# Формат записи пары — общий с context_builder, чтобы копии не разошлись.
+_fmt_class = context_builder.fmt_class
 
 
 def _build_context(uid: int) -> str:

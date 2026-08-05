@@ -417,33 +417,6 @@ def _ui_automation_search(query: str, player=None) -> bool:
         return False
 
 
-def _keyboard_play_first_result() -> bool:
-    """
-    После открытия spotify:search:X пытается запустить первый трек
-    через клавиатурную навигацию: Tab → Down → Enter.
-
-    Улучшенная версия с pyautogui для надёжности.
-    """
-    if not _HAS_PYAUTOGUI:
-        return False
-    
-    try:
-        # Ждём загрузки страницы поиска
-        time.sleep(2.5)
-        
-        # Навигация: Tab (первый элемент) → Down (выбор первого результата) → Enter
-        pyautogui.press('tab')
-        time.sleep(0.3)
-        pyautogui.press('down')
-        time.sleep(0.3)
-        pyautogui.press('enter')
-        
-        return True
-    except Exception as e:
-        print(f"[Music] Keyboard navigation error: {e}")
-        return False
-
-
 # ─── Действия плеера ──────────────────────────────────────────────────────────
 def _play(query: str = "", playlist_url: str = "", player=None) -> str:
     """

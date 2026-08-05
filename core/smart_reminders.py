@@ -785,28 +785,6 @@ def end_activity_tracking() -> Dict[str, Any]:
     return tracker.end_activity()
 
 
-def get_current_activity_duration() -> float:
-    """
-    Возвращает длительность текущей активности в минутах.
-    
-    Returns:
-    Длительность в минутах
-    """
-    tracker = ActivityTracker()
-    return tracker.get_current_duration()
-
-
-def get_current_activity_type() -> Optional[str]:
-    """
-    Возвращает тип текущей активности.
-    
-    Returns:
-    Тип активности или None
-    """
-    tracker = ActivityTracker()
-    return tracker.get_activity_type()
-
-
 # ─── Удобные функции для health напоминаний ─────────────────────────────────────────
 def check_health_needs(current_context: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
