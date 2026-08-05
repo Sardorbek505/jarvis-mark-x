@@ -12,6 +12,10 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+# Окно, в течение которого оборвавшийся ПК считается переподключающимся.
+# Замер 05.08.2026: сессии живут 4.8-27.7 мин, возврат занимает ~7 с.
+_RELINK_GRACE_SEC = 20.0
+
 
 class PCBridge:
     def __init__(self, *_args, **_kwargs):
@@ -20,10 +24,37 @@ class PCBridge:
         self._pending: dict = {}   # req_id -> Future
         self._notify_cb: Optional[Callable] = None
         self._on_change: Optional[Callable] = None
+        self._unlinked_at: Optional[float] = None   # monotonic, когда ушёл последний ПК
+        self._linked_evt = asyncio.Event()          # взводится при подключении ПК
 
     @property
     def connected(self) -> bool:
-        return len(self._clients) > 0
+        """ПК считается на связи и в короткое окно после обрыва.
+
+        Инфраструктура HF рвёт WebSocket без close-фрейма в среднем раз в
+        10 минут, клиент возвращается за ~7 секунд. Без этого окна каждый
+        обрыв был виден пользователю: команды отвечали «ПК офлайн», а
+        `bot.py` вообще переставал распознавать их как команды ПК и
+        отправлял «сделай скриншот» в Gemini — тот отвечал болтовнёй."""
+        return bool(self._clients) or self._relinking
+
+    @property
+    def _relinking(self) -> bool:
+        return (self._unlinked_at is not None
+                and time.monotonic() - self._unlinked_at < _RELINK_GRACE_SEC)
+
+    async def _await_client(self, timeout: float) -> bool:
+        """Ждёт возвращения ПК, но только если он именно переподключается."""
+        if self._clients:
+            return True
+        if not self._relinking:
+            return False       # ПК действительно выключен — не томим пользователя
+        left = _RELINK_GRACE_SEC - (time.monotonic() - self._unlinked_at)
+        try:
+            await asyncio.wait_for(self._linked_evt.wait(), min(timeout, max(left, 0.0)))
+            return bool(self._clients)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            return False
 
     def on_notification(self, callback: Callable):
         self._notify_cb = callback
@@ -37,12 +68,17 @@ class PCBridge:
     async def register(self, ws) -> int:
         cid = id(ws)
         self._clients[cid] = ws
+        self._unlinked_at = None
+        self._linked_evt.set()
         logger.info(f"PC linked (total={len(self._clients)})")
         await self._fire_change(True)
         return cid
 
     async def unregister(self, cid: int):
         self._clients.pop(cid, None)
+        if not self._clients:
+            self._linked_evt.clear()
+            self._unlinked_at = time.monotonic()
         logger.info(f"PC unlinked (total={len(self._clients)})")
         await self._fire_change(self.connected)
 
@@ -70,7 +106,7 @@ class PCBridge:
     # ── Sending commands to the PC ─────────────────────────────────────────────
 
     async def _send(self, text: str, user_id: int, timeout: float) -> Optional[dict]:
-        if not self._clients:
+        if not await self._await_client(timeout):
             return None
         ws = next(iter(self._clients.values()))  # single PC for now
         req_id = f"{user_id}_{int(time.monotonic() * 1000)}"
@@ -101,7 +137,7 @@ class PCBridge:
                            user_id: int, timeout: float = 30.0) -> Optional[dict]:
         """Ask the home PC's Telethon userbot to deliver an outbound message.
         Returns the PC's {"text": ...} response, or None if no PC / timeout."""
-        if not self._clients:
+        if not await self._await_client(timeout):
             return None
         ws = next(iter(self._clients.values()))
         req_id = f"ub_{user_id}_{int(time.monotonic() * 1000)}"
