@@ -5,6 +5,7 @@ raised → FastAPI lifespan crashed → the whole Space exited (code 3) → the 
 client retried every 5s for two weeks and wrote 46k identical log lines.
 """
 import asyncio
+import json
 
 import pytest
 
@@ -213,3 +214,72 @@ def test_decommissioned_host_is_recognised():
     assert config.is_decommissioned("https://jarvis-mark-x.onrender.com") is True
     assert config.is_decommissioned("https://atabekovch-jarvis-mark-x.hf.space") is False
     assert config.is_decommissioned("") is False
+
+
+# ── короткий обрыв ПК не должен быть виден пользователю ──────────────────────
+
+@pytest.mark.asyncio
+async def test_pc_counts_as_online_while_relinking(monkeypatch):
+    # Arrange — ПК был на связи и только что оборвался
+    from telegram_bot import pc_bridge
+    b = pc_bridge.PCBridge()
+    assert b.connected is False           # никогда не подключался
+    cid = await b.register(object())
+    assert b.connected is True
+    await b.unregister(cid)
+
+    # Assert — в окне переподключения всё ещё «онлайн», иначе bot.py уводит
+    # команду ПК в Gemini и Джарвис отвечает болтовнёй вместо действия
+    assert b.connected is True
+    monkeypatch.setattr(pc_bridge, "_RELINK_GRACE_SEC", 0.0)
+    assert b.connected is False           # окно вышло — честно офлайн
+
+
+@pytest.mark.asyncio
+async def test_send_waits_for_a_reconnecting_pc():
+    # Arrange — ПК оборвался и возвращается через мгновение
+    from telegram_bot import pc_bridge
+    sent = []
+
+    class _Ws:
+        async def send_text(self, payload): sent.append(payload)
+
+    b = pc_bridge.PCBridge()
+    cid = await b.register(_Ws())
+    await b.unregister(cid)
+
+    async def comes_back():
+        await asyncio.sleep(0.05)
+        await b.register(_Ws())
+
+    async def answer():
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if b._pending:
+                rid = next(iter(b._pending))
+                await b.handle_message({"type": "response", "req_id": rid, "text": "готово"})
+                return
+
+    # Act
+    asyncio.create_task(comes_back())
+    asyncio.create_task(answer())
+    result = await b.send_command("скриншот", user_id=1, timeout=5)
+
+    # Assert — команда дождалась ПК, а не упала в «ПК офлайн»
+    assert result == "готово"
+    assert sent and json.loads(sent[0])["text"] == "скриншот"
+
+
+@pytest.mark.asyncio
+async def test_send_fails_fast_when_pc_is_really_off():
+    # Arrange — ПК никогда не подключался: ждать нечего
+    from telegram_bot import pc_bridge
+    b = pc_bridge.PCBridge()
+
+    # Act
+    started = asyncio.get_event_loop().time()
+    result = await b.send_command("скриншот", user_id=1, timeout=5)
+
+    # Assert — мгновенный честный отказ, без томления пользователя
+    assert result is None
+    assert asyncio.get_event_loop().time() - started < 0.5

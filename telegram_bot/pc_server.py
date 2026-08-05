@@ -593,7 +593,12 @@ async def run_client(url: str, token: str):
             # The server can be down for weeks (dead deploy, quota). Back off so
             # we neither hammer it nor write 46k identical lines into the log:
             # report a new reason at once, a repeated one every _LOG_EVERY tries.
-            sleep_for = delay * (1 + random.uniform(-_RECONNECT_JITTER, _RECONNECT_JITTER))
+            # Первый обрыв живой сессии — почти всегда не авария, а разрыв со
+            # стороны инфраструктуры (HF рвёт WebSocket раз в ~10 минут).
+            # Возвращаемся немедленно: каждая секунда здесь — секунда, когда
+            # команда с телефона не доедет до компьютера.
+            sleep_for = 0.0 if fails == 1 else \
+                delay * (1 + random.uniform(-_RECONNECT_JITTER, _RECONNECT_JITTER))
             if reason != last_reason or fails % _LOG_EVERY == 0:
                 last_reason = reason
                 logger.warning(
