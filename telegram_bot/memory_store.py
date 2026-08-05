@@ -264,13 +264,18 @@ class MemoryStore:
         """Load this user's dossier + facts + open tasks into the RAM cache (once)."""
         if uid in self._cache:
             return
-        profile = await self._load_profile(uid)
-        facts = await self._load_facts(uid)
-        tasks = await self._load_tasks(uid)
-        contacts = await self.list_contacts(uid)
-        schedule = await self.list_schedule(uid)
-        projects = await self.list_projects(uid)
-        notes = await self.list_notes(uid, limit=12)
+        # Семь независимых запросов — параллельно, а не в очередь. Последовательно
+        # это семь round-trip до Neon подряд, и всё это на ПЕРВОМ сообщении после
+        # каждого рестарта: заметная пауза там, где человек ждёт ответа.
+        profile, facts, tasks, contacts, schedule, projects, notes = await asyncio.gather(
+            self._load_profile(uid),
+            self._load_facts(uid),
+            self._load_tasks(uid),
+            self.list_contacts(uid),
+            self.list_schedule(uid),
+            self.list_projects(uid),
+            self.list_notes(uid, limit=12),
+        )
         self._cache[uid] = {
             "profile": profile, "facts": facts, "tasks": tasks,
             "contacts": contacts,

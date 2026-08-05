@@ -72,3 +72,45 @@ async def test_acknowledgement_costs_no_embedding_call():
     mem, gem = _Memory(), _Gemini()
     assert await memory_rag.retrieve(mem, gem, 1, "спасибо") == []
     assert gem.embeds == 0
+
+
+# ── загрузка досье пользователя ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_user_dossier_loads_in_parallel(monkeypatch):
+    """Семь запросов к базе должны идти параллельно, а не в очередь.
+
+    Последовательно это семь round-trip до Neon подряд — и всё на первом
+    сообщении после рестарта, где человек ждёт ответа.
+    """
+    import asyncio as aio
+    from telegram_bot.memory_store import MemoryStore
+
+    store = MemoryStore()
+    running, peak = 0, 0
+
+    def slow(result):
+        async def fn(*a, **kw):
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await aio.sleep(0.02)
+            running -= 1
+            return result
+        return fn
+
+    monkeypatch.setattr(store, "_load_profile", slow({}))
+    monkeypatch.setattr(store, "_load_facts", slow([]))
+    monkeypatch.setattr(store, "_load_tasks", slow([]))
+    monkeypatch.setattr(store, "list_contacts", slow([]))
+    monkeypatch.setattr(store, "list_schedule", slow([]))
+    monkeypatch.setattr(store, "list_projects", slow([]))
+    monkeypatch.setattr(store, "list_notes", slow([]))
+
+    started = aio.get_event_loop().time()
+    await store.ensure_loaded(7)
+    elapsed = aio.get_event_loop().time() - started
+
+    assert peak == 7                      # все семь в воздухе одновременно
+    assert elapsed < 0.10                 # последовательно было бы ~0.14
+    assert 7 in store._cache
