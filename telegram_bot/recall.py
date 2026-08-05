@@ -75,7 +75,8 @@ async def search(memory, uid: int, text: str) -> str:
     # also scan facts already in the RAM cache (free, synchronous)
     try:
         facts = memory.cached_facts(uid) if hasattr(memory, "cached_facts") else []
-    except Exception:
+    except Exception as exc:
+        _logger.warning("Факты из кэша недоступны для %s: %s", uid, exc)
         facts = []
     for f in facts:
         fl = f.lower()

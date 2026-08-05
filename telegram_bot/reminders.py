@@ -7,8 +7,11 @@ respecting the user's timezone, plus small helpers to move between local time
 and the UTC strings we store/compare against.
 """
 import re
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def now_utc_iso() -> str:
@@ -41,7 +44,10 @@ def fmt_local(due_utc_iso: str, tz) -> str:
     try:
         dt = datetime.fromisoformat(due_utc_iso).replace(tzinfo=timezone.utc)
         return dt.astimezone(tz).strftime("%d.%m в %H:%M")
-    except Exception:
+    except Exception as exc:
+        # Пользователь увидит сырое «2026-08-05T14:30:00+00:00» вместо
+        # «05.08 в 19:30» — выглядит как поломка, поэтому пишем в лог.
+        logger.warning("Не смог перевести время напоминания %r: %s", due_utc_iso, exc)
         return due_utc_iso
 
 
