@@ -206,6 +206,10 @@ class MemoryStore:
             # Promoted. The SQLite handle stays open on purpose: in-flight calls
             # that already picked it must not blow up mid-query.
             self._cache.clear()
+            # Векторы тоже: они прочитаны из ВРЕМЕННОГО хранилища, и после
+            # возврата на основную базу всплывали бы в поиске как настоящие.
+            from telegram_bot import memory_rag
+            memory_rag._VECS.clear()
             logger.warning(
                 "Memory: Postgres вернулся — снова на постоянной памяти ✅. "
                 "Данные, записанные во время сбоя, остались в %s.", _SQLITE_PATH.name,
@@ -775,6 +779,10 @@ class MemoryStore:
         for tbl in USER_TABLES:
             await self._exec(f"DELETE FROM {tbl} WHERE user_id=?", (uid,))
         self._cache.pop(uid, None)
+        # Иначе стёртые воспоминания продолжат всплывать в семантическом поиске
+        # из РАМ-кэша векторов — /forget должен забывать по-настоящему.
+        from telegram_bot import memory_rag
+        memory_rag.forget_cached(uid)
 
     # ── conversation log (every message, durable) ───────────────────────────────
 
