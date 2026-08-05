@@ -120,6 +120,12 @@ _SYSTEM_PROMPT = """Ты — JARVIS, личный ИИ-ассистент. Не 
 _MAX_HISTORY = 40  # messages per user
 
 
+def _is_quota_error(exc: Exception) -> bool:
+    """429 / RESOURCE_EXHAUSTED — это кончившийся лимит, а не поломка."""
+    s = str(exc)
+    return "429" in s or "RESOURCE_EXHAUSTED" in s or "quota" in s.lower()
+
+
 class GeminiClient:
     def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
         self._client = genai.Client(
@@ -306,7 +312,14 @@ class GeminiClient:
 
     async def transcribe(self, audio_bytes: bytes, mime_type: str = "audio/wav") -> str:
         """Transcribe audio to plain text ONLY (no JARVIS reply). Used to route voice
-        through the same command pipeline as typed text."""
+        through the same command pipeline as typed text.
+
+        Пустая строка означала и «в записи тишина», и «квота кончилась», и
+        «модель упала» — вызывающий код не мог их различить и говорил
+        пользователю «голосовое пришло пустым», хотя виновата была квота.
+        Причина последнего провала теперь лежит в last_error.
+        """
+        self.last_error = ""
         loop = asyncio.get_event_loop()
         contents = [
             types.Content(
@@ -337,6 +350,7 @@ class GeminiClient:
                     return text
             except Exception as e:
                 logger.error(f"Transcribe model '{model}' failed: {e}")
+                self.last_error = "quota" if _is_quota_error(e) else "error"
                 continue
         return ""
 

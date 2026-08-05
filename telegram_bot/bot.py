@@ -318,6 +318,17 @@ def _looks_like_reminder(text: str) -> bool:
     return any(low.startswith(k) for k in _REMINDER_TRIGGERS)
 
 
+_VOICE_REQUEST = (
+    "голосом", "вслух", "озвучь", "скажи голосом", "ответь голосом",
+    "голосовым", "войсом", "voice",
+)
+
+
+def _wants_voice_reply(text: str) -> bool:
+    """Просил ли пользователь ответить голосом прямо в этом сообщении."""
+    return keywords.matches(text, _VOICE_REQUEST)
+
+
 async def _reply_pc_result(message, result: dict | None) -> None:
     """Ответ на команду ПК — с картинкой, если ПК её прислал.
 
@@ -1391,7 +1402,18 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if summary:
             reply += "\n\n✅ Добавил — " + ", ".join(summary)
         if reply.strip():
-            await update.effective_message.reply_text(reply)
+            # Голосом на текстовую просьбу. Раньше голос был только в ответ на
+            # голосовое, поэтому на «отвечай мне голосом» модель отвечала, что
+            # не умеет, — хотя синтез рядом и работает.
+            if _wants_voice_reply(text):
+                ogg = await voice.speak_ogg(reply, gemini)
+                if ogg:
+                    cap = reply if len(reply) <= 1000 else reply[:997] + "…"
+                    await update.effective_message.reply_voice(voice=ogg, caption=cap)
+                else:
+                    await update.effective_message.reply_text(reply)
+            else:
+                await update.effective_message.reply_text(reply)
         # Background, never blocks the reply: learn durable facts + log the raw
         # exchange forever (foundation for full recall).
         asyncio.create_task(memory.observe(user_id, gemini, text, reply))
@@ -1443,6 +1465,17 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     return
                 pc_result = await bridge.send_command_full(transcript, user_id)
                 await _reply_pc_result(msg, pc_result)
+                return
+
+            # Расшифровка не удалась из-за лимита — говорим правду. Иначе
+            # пустой текст уходил в модель, и та сочиняла «голосовое пришло
+            # пустым или не записалось», сваливая вину на микрофон владельца.
+            if not transcript and getattr(gemini, "last_error", "") == "quota":
+                await msg.reply_text(
+                    "🎙 Не могу распознать голос: исчерпан бесплатный лимит Gemini "
+                    "на распознавание речи. Напиши текстом — на текст лимит "
+                    "отдельный, — или попробуй голосом позже."
+                )
                 return
 
             # Otherwise — normal voice conversation. Voice in → voice out (mirror).

@@ -94,3 +94,20 @@ def test_no_answer_from_pc_is_reported():
     msg = _Msg()
     asyncio.run(reply(msg, None))
     assert msg.texts and "не ответил" in msg.texts[0]
+
+
+# ── просьба ответить голосом ─────────────────────────────────────────────────
+
+VOICE_WORDS = ["голосом", "вслух", "озвучь", "войсом", "voice"]
+
+
+def test_voice_request_is_recognised():
+    for text in ("отвечай мне голосом", "скажи это вслух", "озвучь ответ",
+                 "ответь войсом", "reply with voice"):
+        assert keywords.matches(text, VOICE_WORDS) is True, text
+
+
+def test_ordinary_message_is_not_a_voice_request():
+    for text in ("какая погода", "запиши голосовые связки в заметки",
+                 "что такое голография"):
+        assert keywords.matches(text, VOICE_WORDS) is False, text
