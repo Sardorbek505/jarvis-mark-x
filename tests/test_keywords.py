@@ -66,12 +66,14 @@ def _load_reply_helper():
     import ast
     src = open("telegram_bot/bot.py", encoding="utf-8").read()
     tree = ast.parse(src)
-    node = next(n for n in tree.body
-                if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
-                and n.name == "_reply_pc_result")
     mod = types.ModuleType("_helper")
     mod.__dict__.update({"base64": base64, "logger": types.SimpleNamespace(warning=lambda *a: None)})
-    exec(compile(ast.get_source_segment(src, node), "bot_helper", "exec"), mod.__dict__)
+    # Забираем функцию вместе с её помощниками: одну штуку тащить нельзя —
+    # _reply_pc_result зовёт _prefixed, и без него получаем NameError.
+    wanted = {"_reply_pc_result", "_prefixed"}
+    for node in tree.body:
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)) and node.name in wanted:
+            exec(compile(ast.get_source_segment(src, node), "bot_helper", "exec"), mod.__dict__)
     return mod._reply_pc_result
 
 
@@ -119,3 +121,18 @@ def test_ordinary_message_is_not_a_voice_request():
     for text in ("какая погода", "запиши голосовые связки в заметки",
                  "что такое голография"):
         assert keywords.matches(text, VOICE_WORDS) is False, text
+
+
+def test_pc_icon_is_not_doubled():
+    # Arrange — ПК уже прислал свой значок
+    reply = _load_reply_helper()
+    msg = _Msg()
+    asyncio.run(reply(msg, {"text": "🖥 Состояние системы: CPU 39%"}))
+    assert msg.texts == ["🖥 Состояние системы: CPU 39%"]   # без второго 🖥
+
+
+def test_plain_text_still_gets_an_icon():
+    reply = _load_reply_helper()
+    msg = _Msg()
+    asyncio.run(reply(msg, {"text": "Громкость 50"}))
+    assert msg.texts == ["🖥 Громкость 50"]
