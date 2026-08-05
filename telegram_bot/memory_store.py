@@ -7,11 +7,18 @@ Storage backends (chosen automatically):
     Render restarts/redeploys → true long-term memory.
   • SQLite    — fallback. Works locally and on the PC, but on Render's free
     tier the file is wiped on restart (use DATABASE_URL for real persistence).
+  • off       — last resort. Reads return nothing, writes are dropped.
+
+Memory NEVER takes JARVIS down with it. If Postgres is unreachable (quota,
+outage, bad URL) the store degrades to SQLite — or to `off` — logs loudly, and
+`watch()` keeps re-trying Postgres in the background, promoting itself back the
+moment the DB returns. A dead database costs memory, not the whole assistant.
 
 Holds a per-user dossier (name / about / goals / preferences) and a list of
 durable facts. Keeps an in-RAM cache so the system prompt can be built
 synchronously while DB access stays async.
 """
+import asyncio
 import json
 import logging
 import os
@@ -24,6 +31,13 @@ logger = logging.getLogger("jarvis-memory")
 _SQLITE_PATH = Path(__file__).resolve().parent.parent / "config" / "jarvis_memory.db"
 
 _MAX_FACTS = 60  # keep the newest N facts per user in context
+
+_PG_RETRY_SEC = 300     # how often a degraded store re-tries Postgres
+# A permanently-open pool connection keeps a serverless Postgres (Neon) awake
+# 24/7 and eats the whole free compute quota in ~8 days. Idle connections must
+# die so the DB can auto-suspend.
+_PG_IDLE_CLOSE_SEC = 60.0
+_PG_MAX_SIZE = 3
 
 # Every table keyed by a `user_id` column. SINGLE SOURCE for clear()/GDPR wipe —
 # when you add a new per-user table, add it here so /forget can never leave data
@@ -39,40 +53,111 @@ USER_TABLES = (
 class MemoryStore:
     def __init__(self):
         self._url = os.getenv("DATABASE_URL", "").strip()
-        self._pg = self._url.startswith(("postgres://", "postgresql://"))
+        self._wants_pg = self._url.startswith(("postgres://", "postgresql://"))
+        self._backend = "off"      # "pg" | "sqlite" | "off"
         self._pool = None          # asyncpg pool
         self._sqlite = None        # aiosqlite connection
         self._cache: dict = {}     # uid -> {"profile": {...}, "facts": [str]}
+        self.degraded_reason = ""  # why Postgres is unavailable (for /memstats)
+
+    @property
+    def _pg(self) -> bool:
+        return self._backend == "pg"
+
+    @property
+    def degraded(self) -> bool:
+        """Postgres was configured but we are running on a fallback backend."""
+        return self._wants_pg and self._backend != "pg"
 
     # ── lifecycle ──────────────────────────────────────────────────────────────
 
     async def init(self):
-        if self._pg:
-            import asyncpg
-            # Neon and most managed PGs require SSL
-            self._pool = await asyncpg.create_pool(self._url, min_size=1, max_size=3)
+        """Bring up the best available backend. Never raises — a broken database
+        must not stop JARVIS from starting."""
+        if self._wants_pg:
+            try:
+                await self._connect_pg()
+                return
+            except Exception as e:
+                self.degraded_reason = _first_line(e)
+                logger.critical(
+                    "Memory: Postgres НЕДОСТУПЕН (%s). Джарвис стартует на временной "
+                    "SQLite-памяти; записи этого периода в основную базу не попадут. "
+                    "Повторяю попытку каждые %d с.",
+                    self.degraded_reason, _PG_RETRY_SEC,
+                )
+        try:
+            await self._connect_sqlite()
+        except Exception as e:
+            self._backend = "off"
+            logger.critical(
+                "Memory: SQLite тоже недоступен (%s) — работаю БЕЗ памяти.", _first_line(e)
+            )
+
+    async def _connect_pg(self):
+        import asyncpg
+        pool = await asyncpg.create_pool(
+            self._url,
+            min_size=0,                      # см. _PG_IDLE_CLOSE_SEC
+            max_size=_PG_MAX_SIZE,
+            max_inactive_connection_lifetime=_PG_IDLE_CLOSE_SEC,
+            **_pg_pool_kwargs(self._url),
+        )
+        self._pool = pool
+        try:
             await self._exec_pg(_SCHEMA_PG)
             await self._exec_pg("ALTER TABLE profile ADD COLUMN IF NOT EXISTS mode TEXT DEFAULT ''")
             await self._exec_pg("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS note TEXT DEFAULT ''")
-            logger.info("Memory: Postgres connected (durable) ✅")
-        else:
-            import aiosqlite
-            _SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            self._sqlite = await aiosqlite.connect(_SQLITE_PATH)
-            await self._sqlite.executescript(_SCHEMA_SQLITE)
-            for _mig in (
-                "ALTER TABLE profile ADD COLUMN mode TEXT DEFAULT ''",
-                "ALTER TABLE contacts ADD COLUMN note TEXT DEFAULT ''",
-            ):
-                try:
-                    await self._sqlite.execute(_mig)
-                    await self._sqlite.commit()
-                except Exception as exc:
-                    logger.warning("Подавлено исключение: %s", exc, exc_info=True)
-            await self._sqlite.commit()
+        except Exception:
+            self._pool = None
+            await pool.close()
+            raise
+        self._backend = "pg"
+        self.degraded_reason = ""
+        logger.info("Memory: Postgres connected (durable) ✅")
+
+    async def _connect_sqlite(self):
+        import aiosqlite
+        _SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self._sqlite = await aiosqlite.connect(_SQLITE_PATH)
+        await self._sqlite.executescript(_SCHEMA_SQLITE)
+        for _mig in (
+            "ALTER TABLE profile ADD COLUMN mode TEXT DEFAULT ''",
+            "ALTER TABLE contacts ADD COLUMN note TEXT DEFAULT ''",
+        ):
+            try:
+                await self._sqlite.execute(_mig)
+                await self._sqlite.commit()
+            except Exception as exc:
+                logger.warning("Подавлено исключение: %s", exc, exc_info=True)
+        await self._sqlite.commit()
+        self._backend = "sqlite"
+        logger.warning(
+            "Memory: SQLite fallback (ephemeral on Render free). "
+            "Set DATABASE_URL to a free Postgres for permanent memory."
+        )
+
+    async def watch(self):
+        """Background self-healing: while degraded, keep dialling Postgres and
+        promote back to it the moment it answers. Run as a task; cancel-safe."""
+        while True:
+            await asyncio.sleep(_PG_RETRY_SEC)
+            if not self.degraded:
+                continue
+            try:
+                await self._connect_pg()
+            except Exception as e:
+                reason = _first_line(e)
+                if reason != self.degraded_reason:   # only log when it changes
+                    self.degraded_reason = reason
+                    logger.warning("Memory: Postgres всё ещё недоступен (%s)", reason)
+                continue
+            # Promoted. The SQLite handle stays open on purpose: in-flight calls
+            # that already picked it must not blow up mid-query.
+            self._cache.clear()
             logger.warning(
-                "Memory: SQLite fallback (ephemeral on Render free). "
-                "Set DATABASE_URL to a free Neon Postgres for permanent memory."
+                "Memory: Postgres вернулся — снова на постоянной памяти ✅. "
+                "Данные, записанные во время сбоя, остались в %s.", _SQLITE_PATH.name,
             )
 
     async def close(self):
@@ -80,6 +165,7 @@ class MemoryStore:
             await self._pool.close()
         if self._sqlite:
             await self._sqlite.close()
+        self._backend = "off"
 
     # ── low-level helpers ──────────────────────────────────────────────────────
 
@@ -88,6 +174,8 @@ class MemoryStore:
             return await con.execute(sql, *args)
 
     async def _exec(self, sql: str, args: tuple = ()):
+        if self._backend == "off":
+            return
         if self._pg:
             async with self._pool.acquire() as con:
                 await con.execute(_pg(sql), *args)
@@ -96,6 +184,8 @@ class MemoryStore:
             await self._sqlite.commit()
 
     async def _fetchone(self, sql: str, args: tuple = ()):
+        if self._backend == "off":
+            return None
         if self._pg:
             async with self._pool.acquire() as con:
                 row = await con.fetchrow(_pg(sql), *args)
@@ -104,6 +194,8 @@ class MemoryStore:
             return await cur.fetchone()
 
     async def _fetchall(self, sql: str, args: tuple = ()):
+        if self._backend == "off":
+            return []
         if self._pg:
             async with self._pool.acquire() as con:
                 rows = await con.fetch(_pg(sql), *args)
@@ -733,7 +825,9 @@ class MemoryStore:
         profile = await self.get_profile(uid)
         filled = [k for k in _PROFILE_FIELDS if (profile.get(k) or "").strip()]
         return {
-            "backend": "Postgres" if self._pg else "SQLite",
+            "backend": _BACKEND_LABELS[self._backend],
+            "degraded": self.degraded,
+            "degraded_reason": self.degraded_reason,
             "counts": counts,
             "facts_total": counts.get("facts", 0),
             "facts_in_context": min(counts.get("facts", 0), _MAX_FACTS),
@@ -753,6 +847,23 @@ class MemoryStore:
                     await memory_rag.index(self, gemini, uid, "fact", f)
         except Exception as e:
             logger.debug(f"observe: {e}")
+
+
+_BACKEND_LABELS = {"pg": "Postgres", "sqlite": "SQLite", "off": "нет памяти"}
+
+
+def _first_line(exc: Exception) -> str:
+    """Short, log-friendly reason (asyncpg tracebacks are multi-line novels)."""
+    text = str(exc).strip()
+    return text.splitlines()[0] if text else exc.__class__.__name__
+
+
+def _pg_pool_kwargs(url: str) -> dict:
+    """Transaction-mode poolers (Supabase :6543, PgBouncer) reuse server-side
+    sessions, so asyncpg must not cache prepared statements."""
+    if "pooler" in url or ":6543/" in url or "pgbouncer=true" in url:
+        return {"statement_cache_size": 0}
+    return {}
 
 
 def _streak(days: set, today: str) -> int:
