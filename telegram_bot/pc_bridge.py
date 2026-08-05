@@ -80,7 +80,13 @@ class PCBridge:
             self._linked_evt.clear()
             self._unlinked_at = time.monotonic()
         logger.info(f"PC unlinked (total={len(self._clients)})")
-        await self._fire_change(self.connected)
+        # ВАЖНО: сюда идёт СЫРОЕ состояние, а не `self.connected` с окном
+        # переподключения. Иначе подписчик получает «онлайн» на разрыве, не
+        # запускает свой отсчёт офлайна — и при реально выключенном ПК
+        # уведомление «ПК офлайн» не приходит никогда, а бейдж в Mini App
+        # остаётся зелёным. Гашение мигания — задача подписчика (там уже есть
+        # дебаунс 20 с), окно здесь нужно только для маршрутизации команд.
+        await self._fire_change(bool(self._clients))
 
     async def _fire_change(self, online: bool):
         if self._on_change:
