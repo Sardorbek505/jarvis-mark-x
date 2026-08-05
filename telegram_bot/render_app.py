@@ -407,8 +407,6 @@ async def _telegram_boot():
             raise
         except Exception as e:
             _tg_app = None      # webhook route answers 503 until we are up
-            if attempt == 1 and os.getenv("DIAG_EGRESS", "").strip():
-                await _probe_egress()
             logger.error(
                 f"Telegram недоступен (попытка №{attempt}): {type(e).__name__}: {e}. "
                 f"Повтор через {round(delay)} с. ПК-линк и Mini App работают."
@@ -433,6 +431,8 @@ async def lifespan(app: FastAPI):
     # (blocked egress, dead proxy) the PC link and the Mini App must still
     # serve. Previously 5 failed attempts re-raised -> Exit code 3 -> the whole
     # Space died, taking down parts that never needed Telegram at all.
+    if os.getenv("DIAG_EGRESS", "").strip():
+        _tasks.append(asyncio.create_task(_probe_egress()))
     _tasks.append(asyncio.create_task(_telegram_boot()))
     logger.info("Render app started ✅ (Telegram connects in background)")
 
