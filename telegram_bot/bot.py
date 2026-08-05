@@ -42,6 +42,7 @@ from telegram_bot import onboarding
 from telegram_bot import directives
 from telegram_bot import context_builder
 from telegram_bot import keywords
+from telegram_bot import voice
 from telegram_bot import recall
 from telegram_bot import gcal
 from telegram_bot import curiosity
@@ -1424,7 +1425,7 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await msg.reply_text("Не расслышал, повтори голосом или напиши текстом 🙏")
                     return
                 reply = await onboarding.handle(memory, user_id, transcript)
-                ogg = await gemini.speak_ogg(reply)
+                ogg = await voice.speak_ogg(reply, gemini)
                 if ogg:
                     cap = reply if len(reply) <= 1000 else reply[:997] + "…"
                     await msg.reply_voice(voice=ogg, caption=cap, parse_mode="Markdown")
@@ -1456,7 +1457,7 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply += "\n\n✅ Добавил — " + ", ".join(summary)
             if not reply.strip():
                 return                      # only a send directive — preview already shown
-            ogg = await gemini.speak_ogg(reply)
+            ogg = await voice.speak_ogg(reply, gemini)
             if ogg:
                 caption = reply if len(reply) <= 1000 else reply[:997] + "…"
                 await msg.reply_voice(voice=ogg, caption=caption)

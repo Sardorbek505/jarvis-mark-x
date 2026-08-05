@@ -12,6 +12,7 @@ Desktop userbot (Telethon) — отправляет сообщения Telegram 
 import asyncio
 import json
 import logging
+from telegram_bot import voice
 import os
 import subprocess
 import tempfile
@@ -89,7 +90,7 @@ async def send_message(target: str, text: str, as_voice: bool = False, gemini=No
 
     try:
         if as_voice and gemini is not None:
-            ogg = await gemini.speak_ogg(text)
+            ogg = await voice.speak_ogg(text, gemini)
             if not ogg:
                 await client.send_message(entity, text)   # синтез не вышел → текстом
                 return {"ok": True, "error": "голос недоступен — отправил текстом"}
