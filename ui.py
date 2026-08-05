@@ -143,7 +143,9 @@ class HudCanvas(QWidget):
         self.setMinimumSize(300, 300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        self.muted    = False
+        # Пока нет активационного слова — стартуем молча, иначе Джарвис
+        # отвечает на музыку и разговоры в комнате. Ctrl+M включает.
+        self.muted    = True
         self.speaking = False
         self.state    = "ИНИЦИАЛИЗАЦИЯ"
 
@@ -839,7 +841,7 @@ class MainWindow(QMainWindow):
             QSplitter::handle {{ background: {C.BORDER}; }}
         """)
 
-        self.muted = False
+        self.muted = True
         self.current_file: str | None = None
         self.on_text_command = None
 

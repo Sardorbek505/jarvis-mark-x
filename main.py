@@ -12,6 +12,7 @@ if sys.platform == "win32":
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 import asyncio
+import os
 import traceback
 import re
 import threading
@@ -79,6 +80,12 @@ CHANNELS          = 1
 SEND_SAMPLE_RATE  = 16000
 RECV_SAMPLE_RATE  = 24000
 CHUNK_SIZE        = 1024
+
+# Порог тишины для микрофона (RMS по int16). Ниже него кадры в облако не
+# уходят вовсе. Речь в метре от ноутбука даёт ~1000-5000, тишина — десятки.
+MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "250"))
+# Кадр = 64 мс, поэтому 10 кадров ≈ 0.6 с «хвоста» после последнего громкого.
+MIC_HANGOVER_FRAMES = int(os.getenv("MIC_HANGOVER_FRAMES", "10"))
 
 _CTRL_RE = re.compile(r"<ctrl\d+>", re.IGNORECASE)
 
@@ -1182,6 +1189,29 @@ class Jarvis:
             await self.session.send_realtime_input(media=msg)
 
     # ── Захват микрофона ──────────────────────────────────────────────────────
+
+    def _is_loud_enough(self, indata) -> bool:
+        """Пропускать ли кадр в облако.
+
+        Раньше в Gemini Live уходил КАЖДЫЙ кадр с микрофона, пока Джарвис не
+        говорит сам: тишина, шум вентилятора, разговоры в комнате — всё
+        непрерывным потоком. Это и квоту жгло, и в облако уезжало то, что туда
+        никто не отправлял осознанно.
+
+        Порог с «хвостом»: после громкого кадра ещё несколько тихих проходят,
+        иначе обрезаются окончания слов.
+        """
+        try:
+            import numpy as np
+            rms = float(np.sqrt(np.mean(np.square(indata.astype(np.float32)))))
+        except Exception:
+            return True          # не смогли посчитать — лучше пропустить, чем оглохнуть
+        if rms >= MIC_RMS_THRESHOLD:
+            self._quiet_frames = 0
+            return True
+        self._quiet_frames = getattr(self, "_quiet_frames", MIC_HANGOVER_FRAMES) + 1
+        return self._quiet_frames <= MIC_HANGOVER_FRAMES
+
     async def _listen_audio(self):
         print("[ДЖАРВИС] 🎤 Микрофон запущен")
         loop = asyncio.get_event_loop()
@@ -1195,11 +1225,14 @@ class Jarvis:
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
-            if not jarvis_speaking and not self.ui.muted:
-                loop.call_soon_threadsafe(
-                    _put_nowait_safe,
-                    {"data": indata.tobytes(), "mime_type": "audio/pcm"},
-                )
+            if jarvis_speaking or self.ui.muted:
+                return
+            if not self._is_loud_enough(indata):
+                return
+            loop.call_soon_threadsafe(
+                _put_nowait_safe,
+                {"data": indata.tobytes(), "mime_type": "audio/pcm"},
+            )
 
         try:
             with sd.InputStream(
