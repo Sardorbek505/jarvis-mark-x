@@ -38,6 +38,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("jarvis-render")
 
+# httpx логирует полный URL каждого запроса, а в путях Telegram API токен бота
+# идёт прямо в URL (/bot<TOKEN>/setWebhook) — на INFO он утекал в логи Space
+# при каждом вызове. Ошибки транспорта поднимает сам telegram-пакет.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 cfg = load_config()
 
 # Webhook secret (Telegram sends it back in the X-Telegram-Bot-Api-Secret-Token
