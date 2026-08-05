@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from telegram import Update
 
-from telegram_bot.config import load as load_config
+from telegram_bot.config import is_decommissioned, load as load_config
 from telegram_bot.gemini_client import GeminiClient
 from telegram_bot.pc_bridge import PCBridge
 from telegram_bot import miniapp_server
@@ -331,6 +331,10 @@ async def _webhook_keeper(bot, webhook_url: str):
 _TG_BOOT_MIN_SEC = 30.0
 _TG_BOOT_MAX_SEC = 300.0
 
+# Выключатель для дубля на Render едет через тот же git, из которого дубль и
+# деплоится (в дашборд Render доступа нет). Предикат — в config.py, чтобы его
+# можно было тестировать без fastapi/telegram/genai.
+
 # Hosting platforms block outbound traffic differently and change the rules
 # without notice (HF started dropping both api.telegram.org and *.workers.dev).
 # When Telegram will not connect, `DIAG_EGRESS=1` answers the only question that
@@ -361,6 +365,14 @@ async def _telegram_boot():
     """Bring Telegram up, retrying forever. Everything that needs the bot lives
     here, so an unreachable Telegram API costs the bot — not the whole app."""
     global _tg_app
+    if is_decommissioned(cfg.miniapp_url):
+        logger.error(
+            "Этот деплой выведен из эксплуатации (%s). Боевой — Hugging Face Space. "
+            "К Telegram не подключаюсь и вебхук не трогаю, чтобы не отбирать "
+            "апдейты у рабочего инстанса. Погаси этот сервис в дашборде.",
+            cfg.miniapp_url,
+        )
+        return
     delay = _TG_BOOT_MIN_SEC
     attempt = 0
     while True:

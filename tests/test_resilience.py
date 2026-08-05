@@ -203,3 +203,13 @@ async def test_reconnect_delay_resets_after_success(monkeypatch):
 
 def _ceiling(base: float) -> float:
     return base * (1 + pc_server._RECONNECT_JITTER) + 1e-9
+
+
+# ── дубль деплоя не должен отбирать вебхук ────────────────────────────────────
+
+def test_decommissioned_host_is_recognised():
+    # Arrange / Act / Assert — инстанс на Render обязан молчать, на HF работать
+    from telegram_bot import config
+    assert config.is_decommissioned("https://jarvis-mark-x.onrender.com") is True
+    assert config.is_decommissioned("https://atabekovch-jarvis-mark-x.hf.space") is False
+    assert config.is_decommissioned("") is False
