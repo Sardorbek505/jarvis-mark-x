@@ -38,6 +38,11 @@ _PG_RETRY_SEC = 300     # how often a degraded store re-tries Postgres
 # die so the DB can auto-suspend.
 _PG_IDLE_CLOSE_SEC = 60.0
 _PG_MAX_SIZE = 3
+# A suspended serverless DB does not refuse connections — it accepts and never
+# answers. Without a hard cap the app hangs in startup forever, which on a
+# health-checked platform is worse than crashing. Degrade fast instead.
+_PG_CONNECT_TIMEOUT = 10.0   # per TCP/auth attempt
+_PG_INIT_TIMEOUT = 25.0      # whole connect + schema step
 
 # Every table keyed by a `user_id` column. SINGLE SOURCE for clear()/GDPR wipe —
 # when you add a new per-user table, add it here so /forget can never leave data
@@ -76,7 +81,7 @@ class MemoryStore:
         must not stop JARVIS from starting."""
         if self._wants_pg:
             try:
-                await self._connect_pg()
+                await asyncio.wait_for(self._connect_pg(), _PG_INIT_TIMEOUT)
                 return
             except Exception as e:
                 self.degraded_reason = _first_line(e)
@@ -101,6 +106,7 @@ class MemoryStore:
             min_size=0,                      # см. _PG_IDLE_CLOSE_SEC
             max_size=_PG_MAX_SIZE,
             max_inactive_connection_lifetime=_PG_IDLE_CLOSE_SEC,
+            timeout=_PG_CONNECT_TIMEOUT,
             **_pg_pool_kwargs(self._url),
         )
         self._pool = pool
@@ -145,7 +151,7 @@ class MemoryStore:
             if not self.degraded:
                 continue
             try:
-                await self._connect_pg()
+                await asyncio.wait_for(self._connect_pg(), _PG_INIT_TIMEOUT)
             except Exception as e:
                 reason = _first_line(e)
                 if reason != self.degraded_reason:   # only log when it changes

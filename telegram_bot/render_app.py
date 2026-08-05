@@ -323,6 +323,54 @@ async def _webhook_keeper(bot, webhook_url: str):
             logger.debug(f"Webhook keeper: {e}")
 
 
+_TG_BOOT_MIN_SEC = 30.0
+_TG_BOOT_MAX_SEC = 300.0
+
+
+async def _telegram_boot():
+    """Bring Telegram up, retrying forever. Everything that needs the bot lives
+    here, so an unreachable Telegram API costs the bot — not the whole app."""
+    global _tg_app
+    delay = _TG_BOOT_MIN_SEC
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            _tg_app, bot_commands = await _build_tg_app()
+            await _tg_app.initialize()
+            await _tg_app.start()
+            await _tg_app.bot.set_my_commands(bot_commands)
+            miniapp_server._bot = _tg_app.bot   # Mini App pushes photos to the chat
+
+            if cfg.miniapp_url:
+                webhook_url = f"{cfg.miniapp_url.rstrip('/')}{_WEBHOOK_PATH}"
+                await _set_webhook(_tg_app.bot, webhook_url, drop_pending=True)
+                logger.info(f"Webhook registered: {webhook_url}")
+                _tasks.append(asyncio.create_task(_webhook_keeper(_tg_app.bot, webhook_url)))
+            else:
+                logger.warning(
+                    "MINIAPP_URL not set — webhook NOT registered. "
+                    "Set MINIAPP_URL to https://<your-app>.hf.space"
+                )
+
+            _tasks.append(asyncio.create_task(_reminder_loop(_tg_app.bot)))
+            _tasks.append(asyncio.create_task(
+                proactive.loop(_tg_app.bot, gemini, memory, cfg.timezone, cfg.default_city)
+            ))
+            logger.info(f"JARVIS started ✅ (webhook mode, попытка №{attempt})")
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _tg_app = None      # webhook route answers 503 until we are up
+            logger.error(
+                f"Telegram недоступен (попытка №{attempt}): {type(e).__name__}: {e}. "
+                f"Повтор через {round(delay)} с. ПК-линк и Mini App работают."
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, _TG_BOOT_MAX_SEC)
+
+
 # ── FastAPI lifespan ──────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -335,39 +383,12 @@ async def lifespan(app: FastAPI):
     await memory.init()
     _tasks.append(asyncio.create_task(memory.watch()))
 
-    _tg_app, bot_commands = await _build_tg_app()
-
-    # Retry init: a single slow/timed-out first call to Telegram on a cold free
-    # host must not crash the app (was: telegram.error.TimedOut -> Exit code 3).
-    for attempt in range(1, 6):
-        try:
-            await _tg_app.initialize()
-            break
-        except Exception as e:
-            logger.warning(f"Telegram init attempt {attempt}/5 failed: {e}")
-            if attempt == 5:
-                raise
-            await asyncio.sleep(5)
-    await _tg_app.start()
-    await _tg_app.bot.set_my_commands(bot_commands)
-    miniapp_server._bot = _tg_app.bot   # let the Mini App push photos to the TG chat
-
-    if cfg.miniapp_url:
-        webhook_url = f"{cfg.miniapp_url.rstrip('/')}{_WEBHOOK_PATH}"
-        await _set_webhook(_tg_app.bot, webhook_url, drop_pending=True)
-        logger.info(f"Webhook registered: {webhook_url}")
-        _tasks.append(asyncio.create_task(_webhook_keeper(_tg_app.bot, webhook_url)))
-    else:
-        logger.warning(
-            "MINIAPP_URL not set — webhook NOT registered. "
-            "Set MINIAPP_URL in Render env to https://<your-app>.onrender.com"
-        )
-
-    _tasks.append(asyncio.create_task(_reminder_loop(_tg_app.bot)))
-    _tasks.append(asyncio.create_task(
-        proactive.loop(_tg_app.bot, gemini, memory, cfg.timezone, cfg.default_city)
-    ))
-    logger.info("JARVIS started ✅ (webhook mode)")
+    # Telegram is brought up in the background: when its API is unreachable
+    # (blocked egress, dead proxy) the PC link and the Mini App must still
+    # serve. Previously 5 failed attempts re-raised -> Exit code 3 -> the whole
+    # Space died, taking down parts that never needed Telegram at all.
+    _tasks.append(asyncio.create_task(_telegram_boot()))
+    logger.info("Render app started ✅ (Telegram connects in background)")
 
     yield
 
@@ -378,13 +399,16 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
-    if cfg.miniapp_url:
-        try:
-            await _tg_app.bot.delete_webhook()
-        except Exception as exc:
-            logger.debug("Подавлено исключение: %s", exc, exc_info=True)
-    await _tg_app.stop()
-    await _tg_app.shutdown()
+    # _tg_app stays None while Telegram is unreachable — shutdown must cope.
+    if _tg_app is not None:
+        if cfg.miniapp_url:
+            try:
+                await _tg_app.bot.delete_webhook()
+            except Exception as exc:
+                logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+        await _tg_app.stop()
+        await _tg_app.shutdown()
+    await memory.close()
     logger.info("Render app stopped.")
 
 
