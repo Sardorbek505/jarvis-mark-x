@@ -22,20 +22,23 @@ Egress закрыт не целиком — заблокированы имен�
 Проверить это в любой момент заново: выставить у Space переменную
 `DIAG_EGRESS=1` и посмотреть строки `[egress]` в логах при следующем старте.
 
-## Деплой
+## Развёрнут
+
+**https://jarvis-tg-proxy.vercel.app** (проект Vercel `jarvis-tg-proxy`,
+аккаунт sardorbek505, задеплоен 05.08.2026). Прописан в Space секретом
+`TELEGRAM_API_BASE`.
+
+Передеплой после правок:
 
 ```bash
 cd vercel-proxy
-vercel login          # если ещё не залогинен
-vercel deploy --prod  # проект назвать, напр. jarvis-tg-proxy
+npx vercel deploy --prod
 ```
 
-Получится URL вида `https://jarvis-tg-proxy.vercel.app`.
+## Подключение к Space (если поднимаешь заново)
 
-## Подключение к Space
-
-Space → Settings → Variables and secrets → секрет `TELEGRAM_API_BASE` =
-полученный URL (**без** завершающего слэша). Space перезапустится сам.
+Space → Settings → Variables and secrets → секрет `TELEGRAM_API_BASE` = URL
+прокси (**без** завершающего слэша). Space перезапустится сам.
 
 Проверка в логах Space:
 
