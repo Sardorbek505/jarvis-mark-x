@@ -41,6 +41,7 @@ from telegram_bot import proactive
 from telegram_bot import onboarding
 from telegram_bot import directives
 from telegram_bot import context_builder
+from telegram_bot import keywords
 from telegram_bot import recall
 from telegram_bot import gcal
 from telegram_bot import curiosity
@@ -303,8 +304,9 @@ def _is_authorized(update: Update) -> bool:
 
 
 def _looks_like_pc_command(text: str) -> bool:
-    low = text.lower()
-    return any(k in low for k in _PC_KEYWORDS)
+    # По началу слова, а не подстрокой: «чистоплотный» содержит «стоп»
+    # и однажды увёл личное сообщение на компьютер (см. keywords.py).
+    return keywords.matches(text, _PC_KEYWORDS)
 
 
 def _looks_like_reminder(text: str) -> bool:

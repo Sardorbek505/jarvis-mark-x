@@ -24,6 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import websockets
 
+from telegram_bot import keywords
+
 logger = logging.getLogger(__name__)
 
 # ── Reconnect policy ───────────────────────────────────────────────────────────
@@ -147,10 +149,10 @@ async def _execute(text: str) -> dict:
             return _launch_jarvis()
 
         # Camera first — "снимок с камеры" must not be caught by screenshot
-        if any(k in tl for k in _KW["camera"]):
+        if keywords.matches(tl, _KW["camera"]):
             return await _do_camera()
 
-        if any(k in tl for k in _KW["system"]):
+        if keywords.matches(tl, _KW["system"]):
             if any(k in tl for k in ["скриншот", "screenshot", "снимок"]):
                 return await _do_screenshot()
             if any(k in tl for k in ["заблокируй", "заблокировать", "lock screen", "lock pc"]):
@@ -170,7 +172,7 @@ async def _execute(text: str) -> dict:
             if any(k in tl for k in ["системная информация", "sysinfo", "батарея", "battery", "заряд"]):
                 return _r(_get_sysinfo())
 
-        if any(k in tl for k in _KW["music"]):
+        if keywords.matches(tl, _KW["music"]):
             params = _parse_music(tl)
             # play/pause/next/prev/stop/volume работают БЕЗ Spotify Web API —
             # через media-клавиши (Win32 keybd_event) и Spotify URI. Web API
@@ -181,26 +183,26 @@ async def _execute(text: str) -> dict:
             from actions.music_player import music_player
             return _r(await asyncio.to_thread(music_player, params) or "Выполнено")
 
-        if any(k in tl for k in _KW["weather"]):
+        if keywords.matches(tl, _KW["weather"]):
             from actions.weather import weather_action
             city = _extract_after(tl, ["в ", "in ", "погода ", "погоду в "]) or _default_city()
             return _r(await asyncio.to_thread(weather_action, {"city": city}) or "Погода получена")
 
-        if any(k in tl for k in _KW["app"]):
+        if keywords.matches(tl, _KW["app"]):
             from actions.open_app import open_app
             app_name = _extract_after(tl, ["открой ", "запусти ", "open ", "закрой ", "close "])
             return _r(await asyncio.to_thread(open_app, {"app_name": app_name or text}) or "Выполнено")
 
-        if any(k in tl for k in _KW["search"]):
+        if keywords.matches(tl, _KW["search"]):
             from actions.web_search import web_search
             query = _extract_after(tl, ["найди ", "поищи ", "search ", "find ", "найти "]) or text
             return _r(await asyncio.to_thread(web_search, {"query": query}) or "Поиск запущен")
 
-        if any(k in tl for k in _KW["window"]):
+        if keywords.matches(tl, _KW["window"]):
             from actions.window_control import window_control
             return _r(await asyncio.to_thread(window_control, _parse_window(tl)) or "Выполнено")
 
-        if any(k in tl for k in _KW["calendar"]):
+        if keywords.matches(tl, _KW["calendar"]):
             try:
                 from actions.calendar import calendar_action
                 return _r(await asyncio.to_thread(calendar_action, _parse_calendar(tl)) or "Готово")
