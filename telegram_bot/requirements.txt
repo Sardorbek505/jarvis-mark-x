@@ -25,3 +25,11 @@ imageio-ffmpeg>=0.5.1
 
 # Погода в утреннем брифинге (Open-Meteo, без API-ключа)
 httpx>=0.27.0
+
+# Google Calendar (telegram_bot/gcal.py). Лежали только в корневом
+# requirements.txt, который в образ не попадает: Dockerfile ставит ЭТОТ файл,
+# поэтому календарь молча падал в проде с 19.06.2026 —
+# «list_events failed: No module named 'googleapiclient'».
+google-api-python-client>=2.100.0
+google-auth>=2.23.0
+google-auth-oauthlib>=1.0.0
