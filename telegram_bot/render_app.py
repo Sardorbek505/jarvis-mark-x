@@ -345,6 +345,8 @@ _EGRESS_PROBES = (
     "https://vercel.com",
     "https://deno.com",
     "https://api.render.com",
+    "https://api.groq.com",
+    "https://api.fish.audio",
     "https://pypi.org",
 )
 
