@@ -282,30 +282,3 @@ def _load_calendar():
     return _load_calendar()
 
 
-def get_calendar_context() -> str:
-    """
-    Возвращает контекст календаря для proactive engine.
-    
-    Используется для:
-    - Утреннего брифинга
-    - Напоминаний перед встречами
-    - Проверки конфликтов
-    """
-    try:
-        schedule = get_todays_schedule()
-        upcoming = get_upcoming_reminders(minutes_ahead=60)
-        
-        context = f"📅 {schedule}\n"
-        
-        if upcoming:
-            context += "\n🔔 Ближайшие напоминания:\n"
-            for reminder in upcoming:
-                from datetime import datetime
-                reminder_time = datetime.fromisoformat(reminder["datetime"])
-                time_str = reminder_time.strftime("%H:%M")
-                context += f"  {time_str} — {reminder['text']}\n"
-        
-        return context
-    
-    except Exception:
-        return ""

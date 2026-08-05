@@ -59,17 +59,6 @@ def _key_up(vk: int) -> None:
     ctypes.windll.user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
 
 
-def _press(vk: int) -> bool:
-    """Кратко нажать клавишу."""
-    try:
-        _key_down(vk)
-        time.sleep(0.05)
-        _key_up(vk)
-        return True
-    except Exception:
-        return False
-
-
 def _combo(*vks: int) -> bool:
     """
     Нажать комбинацию клавиш (например Ctrl+Alt+Del).

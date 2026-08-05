@@ -10,7 +10,12 @@ from telegram_bot import personas
 _WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
-def _fmt_class(c: dict) -> str:
+def fmt_class(c: dict) -> str:
+    """«09:00 Матан (305)» — одна форма записи пары на весь проект.
+
+    Была в двух копиях: здесь и в bot.py. Тот же класс расползания, из-за
+    которого разошлись пути скриншота, — просто ещё не успевший навредить.
+    """
     s = (f"{c['time']} " if c.get("time") else "") + c["subject"]
     if c.get("location"):
         s += f" ({c['location']})"
@@ -42,7 +47,7 @@ def build_context(memory, cfg, uid: int) -> str:
         wd = user_context.local_now(uid, cfg.timezone).weekday()
         today = [c for c in sched if c["weekday"] == wd]
         if today:
-            parts.append("Сегодня по расписанию: " + "; ".join(_fmt_class(c) for c in today) + ".")
+            parts.append("Сегодня по расписанию: " + "; ".join(fmt_class(c) for c in today) + ".")
 
     projects = memory.cached_projects(uid)
     if projects:
