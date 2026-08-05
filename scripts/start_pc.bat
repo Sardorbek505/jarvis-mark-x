@@ -4,9 +4,16 @@ REM Self-logs (so we never depend on the Task Scheduler redirection, which
 REM mangles quotes), waits for the network at logon, then runs pc_server in a
 REM restart loop. NOTE: `timeout` fails in non-interactive task sessions, so we
 REM sleep with `ping 127.0.0.1` (the classic, console-free delay trick).
+REM NOTE: pc_server.py writes jarvis_pc_server.log itself (with rotation), so we
+REM must NOT redirect into that file — an open handle blocks rotation on Windows.
+REM This launcher keeps its own small boot log instead.
 title JARVIS PC Server
 cd /d "%~dp0\.."
-set "LOG=%~dp0..\jarvis_pc_server.log"
+set "LOG=%~dp0..\logs\pc_boot.log"
+if not exist "%~dp0..\logs" mkdir "%~dp0..\logs"
+
+REM --- Keep the boot log bounded (roll over past ~1 MB) ---
+for %%F in ("%LOG%") do if %%~zF GTR 1048576 move /y "%LOG%" "%LOG%.1" >nul
 
 >>"%LOG%" echo.
 >>"%LOG%" echo =========================================

@@ -14,8 +14,10 @@ import json
 import logging
 import os
 import platform
+import random
 import re
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -23,6 +25,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import websockets
 
 logger = logging.getLogger(__name__)
+
+# ── Reconnect policy ───────────────────────────────────────────────────────────
+# The cloud side can be down for weeks. Fixed 5s retries produced 46k identical
+# log lines (7 MB) during one such outage — hence backoff + repeat suppression.
+_RECONNECT_MIN_SEC = 5.0
+_RECONNECT_MAX_SEC = 300.0
+_RECONNECT_FACTOR = 1.6
+_RECONNECT_JITTER = 0.2      # ±20%, so restarts don't sync up on the server
+_LOG_EVERY = 20              # repeat an unchanged reason only every Nth try
+
+_LOG_PATH = Path(__file__).resolve().parent.parent / "jarvis_pc_server.log"
+_LOG_MAX_BYTES = 2 * 1024 * 1024
+_LOG_BACKUPS = 3
 
 # ── Keyword tables ─────────────────────────────────────────────────────────────
 
@@ -550,11 +565,18 @@ async def run_client(url: str, token: str):
     safe_uri = uri.split("token=")[0] + "token=***"
     logger.info(f"Подключаюсь к JARVIS: {safe_uri}")
 
+    delay = _RECONNECT_MIN_SEC
+    fails = 0          # consecutive failures
+    last_reason = ""   # to avoid logging the same line thousands of times
+
     while True:
         try:
             async with websockets.connect(
                 uri, ping_interval=20, ping_timeout=20, max_size=8 * 1024 * 1024
             ) as ws:
+                if fails:
+                    logger.info(f"Связь восстановлена после {fails} неудачных попыток.")
+                delay, fails, last_reason = _RECONNECT_MIN_SEC, 0, ""
                 logger.info("✅ Подключено. Жду команды с телефона/Telegram…")
                 async for raw in ws:
                     try:
@@ -566,14 +588,35 @@ async def run_client(url: str, token: str):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.warning(f"Отключено: {e}. Переподключение через 5 секунд…")
-            await asyncio.sleep(5)
+            fails += 1
+            reason = str(e)
+            # The server can be down for weeks (dead deploy, quota). Back off so
+            # we neither hammer it nor write 46k identical lines into the log:
+            # report a new reason at once, a repeated one every _LOG_EVERY tries.
+            sleep_for = delay * (1 + random.uniform(-_RECONNECT_JITTER, _RECONNECT_JITTER))
+            if reason != last_reason or fails % _LOG_EVERY == 0:
+                last_reason = reason
+                logger.warning(
+                    f"Отключено: {reason}. Попытка №{fails}, "
+                    f"следующая через {round(sleep_for)} с…"
+                )
+            await asyncio.sleep(sleep_for)
+            delay = min(delay * _RECONNECT_FACTOR, _RECONNECT_MAX_SEC)
 
 
 if __name__ == "__main__":
+    # Python owns the log file so it can rotate it (start_pc.bat must NOT
+    # redirect here too — an open handle blocks rotation on Windows).
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            RotatingFileHandler(
+                _LOG_PATH, maxBytes=_LOG_MAX_BYTES, backupCount=_LOG_BACKUPS,
+                encoding="utf-8",
+            ),
+        ],
     )
     from telegram_bot.config import load as load_config
     cfg = load_config(require_bot=False)

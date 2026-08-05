@@ -330,7 +330,10 @@ async def lifespan(app: FastAPI):
     global _tg_app
     logger.info("Render app starting…")
 
+    # init() never raises: a dead DB degrades memory, it must not kill the app
+    # (was: asyncpg quota error -> lifespan crash -> Exit code 3 -> Space down).
     await memory.init()
+    _tasks.append(asyncio.create_task(memory.watch()))
 
     _tg_app, bot_commands = await _build_tg_app()
 

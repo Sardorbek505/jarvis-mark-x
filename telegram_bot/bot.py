@@ -462,7 +462,11 @@ async def cmd_memstats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines = [
         "📊 *Состояние памяти*\n",
         f"💾 Хранилище: *{s['backend']}*"
-        + ("" if s["backend"] == "Postgres" else " ⚠️ (эфемерно — задай DATABASE_URL!)"),
+        + (f" ⚠️ АВАРИЙНЫЙ РЕЖИМ: основная база не отвечает ({s['degraded_reason']}). "
+           "Записи этого периода в неё не попадут."
+           if s["degraded"]
+           else "" if s["backend"] == "Postgres"
+           else " ⚠️ (эфемерно — задай DATABASE_URL!)"),
         f"💬 Сообщений в логе: *{c.get('messages', 0)}*",
         f"🧠 В семантической памяти: *{c.get('embeddings', 0)}* "
         + ("(/reindex чтобы доиндексировать историю)" if c.get('embeddings', 0) < c.get('messages', 0) else "✓"),
@@ -1502,17 +1506,21 @@ _bridge_task: asyncio.Task | None = None
 _reminder_task: asyncio.Task | None = None
 _miniapp_task: asyncio.Task | None = None
 _proactive_task: asyncio.Task | None = None
+_memory_task: asyncio.Task | None = None
 
 
 def main():
     async def post_init(application: Application) -> None:
         global _bridge_task, _reminder_task, _miniapp_task, _proactive_task
+        global _memory_task
         await application.bot.set_my_commands(_BOT_COMMANDS)
+        # init() never raises — a dead DB degrades memory, it must not stop the bot
         await memory.init()
         bridge.on_notification(
             lambda t, uid: _on_notification(t, uid, application.bot)
         )
         loop = asyncio.get_event_loop()
+        _memory_task    = loop.create_task(memory.watch())
         _bridge_task    = loop.create_task(bridge.connect_loop())
         _reminder_task  = loop.create_task(_reminder_loop(application.bot))
         _proactive_task = loop.create_task(
@@ -1535,7 +1543,8 @@ def main():
         logger.info("JARVIS Bot initialized ✅")
 
     async def post_shutdown(application: Application) -> None:
-        for task in (_bridge_task, _reminder_task, _miniapp_task, _proactive_task):
+        for task in (_bridge_task, _reminder_task, _miniapp_task, _proactive_task,
+                     _memory_task):
             if task and not task.done():
                 task.cancel()
                 try:
