@@ -112,7 +112,9 @@ def _default_city() -> str:
     try:
         from telegram_bot.config import load as load_config
         _CITY_CACHE = load_config(require_bot=False).default_city or "Шымкент"
-    except Exception:
+    except Exception as exc:
+        # Молчаливая подмена города = «погода не та» без объяснения причины.
+        logger.warning("Город из конфига не прочитался (%s) — беру Шымкент", exc)
         _CITY_CACHE = "Шымкент"
     return _CITY_CACHE
 
@@ -400,6 +402,9 @@ def _encode_image(path: str):
                 img.convert("RGB").save(buf, "JPEG", quality=75)
                 return base64.b64encode(buf.getvalue()).decode()
         except ImportError:
+            # Без Pillow снимок уедет исходным PNG — в разы тяжелее, дольше
+            # грузится в Telegram и может упереться в лимит размера.
+            logger.warning("Pillow не установлен — отправляю снимок без сжатия")
             with open(path, "rb") as f:
                 return base64.b64encode(f.read()).decode()
     except Exception as e:
