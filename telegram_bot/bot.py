@@ -47,6 +47,7 @@ from telegram_bot import recall
 from telegram_bot import gcal
 from telegram_bot import curiosity
 from telegram_bot import memory_rag
+from telegram_bot import memory_store as memory_store_mod
 from telegram_bot.memory_store import MemoryStore
 
 cfg = load_config()
@@ -182,7 +183,10 @@ async def _persist_exchange(uid: int, user_text: str, reply: str):
         await memory.add_message(uid, "user", user_text)
         if reply and reply.strip():
             await memory.add_message(uid, "model", reply)
-        await memory_rag.index(memory, gemini, uid, "message", user_text)
+        # Эмбеддинг «ок» не только жжёт квоту, но и засоряет семантический
+        # поиск: потом такие обрывки всплывают вместо настоящих воспоминаний.
+        if memory_store_mod.worth_learning(user_text):
+            await memory_rag.index(memory, gemini, uid, "message", user_text)
     except Exception as e:
         logger.debug(f"persist exchange: {e}")
 

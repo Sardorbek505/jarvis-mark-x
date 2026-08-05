@@ -84,3 +84,33 @@ def test_single_oversized_fact_is_not_dropped_entirely():
     """Один факт длиннее бюджета лучше отдать целиком, чем не отдать ничего."""
     from telegram_bot.memory_store import _facts_for_context, _FACTS_CHAR_BUDGET
     assert _facts_for_context(["y" * (_FACTS_CHAR_BUDGET + 100)])
+
+
+# ── не тратить вызовы модели на поддакивания ─────────────────────────────────
+
+def test_acknowledgements_do_not_cost_model_calls():
+    from telegram_bot.memory_store import worth_learning
+    for t in ("ок", "Спасибо!", "да", "понял.", "👍", "хорошо", "ага"):
+        assert worth_learning(t) is False, t
+
+
+def test_real_messages_are_still_learned():
+    from telegram_bot.memory_store import worth_learning
+    for t in ("меня зовут Сардорбек", "мне 20 лет", "я живу в Шымкенте",
+              "работаю в магазине ковров до сентября"):
+        assert worth_learning(t) is True, t
+
+
+@pytest.mark.asyncio
+async def test_observe_skips_model_call_for_acknowledgement():
+    from telegram_bot.memory_store import MemoryStore
+
+    class _Gemini:
+        called = False
+        async def extract_facts(self, a, b=""):
+            _Gemini.called = True
+            return []
+
+    store = MemoryStore()
+    await store.observe(1, _Gemini(), "спасибо", "пожалуйста")
+    assert _Gemini.called is False

@@ -42,6 +42,29 @@ _FACTS_CHAR_BUDGET = 12000
 _MAX_FACTS = 60  # оставлено для совместимости; отбор ниже идёт по объёму
 
 
+# Каждое сообщение стоило ТРЁХ вызовов Gemini: ответ, извлечение фактов и
+# эмбеддинг. Голосовое — пяти. На бесплатной квоте это прямой путь к 429, а
+# платили мы её даже за «ок» и «спасибо». Вдобавок такие реплики попадали в
+# семантическую память и засоряли поиск — то есть делали Джарвиса тупее.
+#
+# Список намеренно короткий: пропустить лишний факт не страшно, потерять
+# настоящий — страшно. Поэтому отсекаем только явные поддакивания.
+_ACKS = {
+    "ок", "окей", "ok", "окей.", "ага", "угу", "да", "нет", "неа", "ясно",
+    "понял", "понятно", "хорошо", "ладно", "спасибо", "спс", "благодарю",
+    "привет", "здравствуй", "пока", "давай", "+", "👍", "❤️", "супер",
+    "класс", "отлично", "принял", "готово", "ок спасибо", "хорошо спасибо",
+}
+
+
+def worth_learning(text: str) -> bool:
+    """Стоит ли тратить на это вызовы модели (факты и эмбеддинг)."""
+    t = (text or "").strip().lower().rstrip("!.,)?…")
+    if not t or len(t) < 4:
+        return False
+    return t not in _ACKS
+
+
 def _facts_for_context(facts: list) -> list:
     """Факты, влезающие в бюджет. Новые важнее старых только при переполнении."""
     out, used = [], 0
@@ -865,6 +888,8 @@ class MemoryStore:
     async def observe(self, uid: int, gemini, user_text: str, reply_text: str = ""):
         """Background learning: extract durable facts from an exchange and store
         them. Safe to fire-and-forget (asyncio.create_task)."""
+        if not worth_learning(user_text):
+            return                       # «ок»/«спасибо» — не тратим вызов модели
         try:
             facts = await gemini.extract_facts(user_text, reply_text)
             from telegram_bot import memory_rag
