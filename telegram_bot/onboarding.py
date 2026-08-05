@@ -37,8 +37,13 @@ def start(uid: int) -> str:
 async def already_onboarded(memory, uid: int) -> bool:
     try:
         return (await memory.get_meta(uid, "onboarded")) == "1"
-    except Exception:
-        return False
+    except Exception as exc:
+        # Новичок отличается от знакомого тем, что get_meta вернёт None — БЕЗ
+        # исключения. Сюда попадаем только когда память сломалась, и тогда
+        # честнее считать человека знакомым: иначе бот заново спрашивает имя,
+        # и со стороны это выглядит как «он меня забыл».
+        logger.warning("Не смог проверить онбординг для %s (%s) — считаю знакомым", uid, exc)
+        return True
 
 
 async def _save(memory, uid: int, key: str, value: str):

@@ -81,7 +81,10 @@ def make_recall_provider(memory, gemini, recall_module):
                          "используй, если уместно): " + "; ".join(sem))
         try:
             kw = await recall_module.search(memory, uid, text)
-        except Exception:
+        except Exception as exc:
+            # Тихо выключенный поиск по памяти выглядит как «Джарвис забыл»,
+            # причём ответ приходит уверенный — просто без фактов.
+            logger.warning("Поиск по памяти не отработал для %s: %s", uid, exc)
             kw = ""
         if kw:
             parts.append(kw)
