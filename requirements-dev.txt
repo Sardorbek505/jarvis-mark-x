@@ -3,3 +3,10 @@
 pytest>=8.0
 pytest-asyncio>=0.23
 aiosqlite>=0.19.0
+
+# Imported at module level by code the curated suite exercises. Without them
+# collection dies with ModuleNotFoundError — none of them touch the network
+# during the tests themselves.
+websockets>=12.0    # telegram_bot.pc_server  (tests/test_resilience.py)
+feedparser>=6.0.0   # core.news_manager       (tests/test_smart_reminders.py)
+requests>=2.31.0    # tools.spotify           (tests/test_spotify.py)
