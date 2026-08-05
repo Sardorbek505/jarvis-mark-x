@@ -105,6 +105,25 @@ async def test_watch_promotes_back_to_postgres(unreachable_pg, monkeypatch):
     await store.close()   # aiosqlite holds a non-daemon thread — always close
 
 
+@pytest.mark.asyncio
+async def test_init_gives_up_on_a_hanging_postgres(unreachable_pg, monkeypatch):
+    # Arrange — a suspended serverless DB accepts the socket and never answers,
+    # so init() must time out instead of hanging the whole startup.
+    async def never_answers(self):
+        await asyncio.sleep(3600)
+    monkeypatch.setattr(memory_store.MemoryStore, "_connect_pg", never_answers)
+    monkeypatch.setattr(memory_store, "_PG_INIT_TIMEOUT", 0.05)
+    store = memory_store.MemoryStore()
+
+    # Act
+    await asyncio.wait_for(store.init(), timeout=5)
+
+    # Assert
+    assert store._backend == "sqlite"
+    assert store.degraded is True
+    await store.close()
+
+
 def test_pooler_urls_disable_statement_cache():
     # Arrange / Act / Assert — Supabase transaction pooler needs this or asyncpg
     # breaks with "prepared statement already exists" under PgBouncer.
