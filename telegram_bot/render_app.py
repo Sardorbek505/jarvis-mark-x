@@ -326,6 +326,31 @@ async def _webhook_keeper(bot, webhook_url: str):
 _TG_BOOT_MIN_SEC = 30.0
 _TG_BOOT_MAX_SEC = 300.0
 
+# Hosting platforms block outbound traffic differently and change the rules
+# without notice (HF started dropping both api.telegram.org and *.workers.dev).
+# When Telegram will not connect, `DIAG_EGRESS=1` answers the only question that
+# matters: which host can this container still reach, i.e. where to put a proxy.
+_EGRESS_PROBES = (
+    "https://api.telegram.org",
+    "https://jarvis-tg-proxy.060910501297.workers.dev",
+    "https://vercel.com",
+    "https://deno.com",
+    "https://api.render.com",
+    "https://pypi.org",
+)
+
+
+async def _probe_egress():
+    """Log which hosts are reachable. Runs once, only when DIAG_EGRESS is set."""
+    import httpx
+    async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
+        for url in _EGRESS_PROBES:
+            try:
+                r = await client.head(url)
+                logger.info(f"[egress] OK   {url} -> HTTP {r.status_code}")
+            except Exception as e:
+                logger.info(f"[egress] FAIL {url} -> {type(e).__name__}: {e}")
+
 
 async def _telegram_boot():
     """Bring Telegram up, retrying forever. Everything that needs the bot lives
@@ -363,6 +388,8 @@ async def _telegram_boot():
             raise
         except Exception as e:
             _tg_app = None      # webhook route answers 503 until we are up
+            if attempt == 1 and os.getenv("DIAG_EGRESS", "").strip():
+                await _probe_egress()
             logger.error(
                 f"Telegram недоступен (попытка №{attempt}): {type(e).__name__}: {e}. "
                 f"Повтор через {round(delay)} с. ПК-линк и Mini App работают."
