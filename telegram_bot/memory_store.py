@@ -30,7 +30,29 @@ logger = logging.getLogger("jarvis-memory")
 
 _SQLITE_PATH = Path(__file__).resolve().parent.parent / "config" / "jarvis_memory.db"
 
-_MAX_FACTS = 60  # keep the newest N facts per user in context
+# Сколько фактов доходит до модели. Раньше стояло «последние 60 штук», и при
+# 88 накопленных 28 просто не попадали в контекст — причём самые СТАРЫЕ, то
+# есть узнанные первыми: семья, кто человек, базовые предпочтения. Снаружи это
+# и выглядит как «Джарвис тупой, он этого не знает».
+#
+# Считать штуками неправильно: важен объём. У Gemini контекст на миллион
+# токенов, а 88 фактов — пара килобайт. Поэтому режем по символам и только
+# когда их действительно много.
+_FACTS_CHAR_BUDGET = 12000
+_MAX_FACTS = 60  # оставлено для совместимости; отбор ниже идёт по объёму
+
+
+def _facts_for_context(facts: list) -> list:
+    """Факты, влезающие в бюджет. Новые важнее старых только при переполнении."""
+    out, used = [], 0
+    for fact in reversed(facts):                 # с конца — новые приоритетнее
+        cost = len(fact) + 2                     # «; » между фактами
+        if used + cost > _FACTS_CHAR_BUDGET and out:
+            break
+        out.append(fact)
+        used += cost
+    out.reverse()                                # вернуть хронологический порядок
+    return out
 
 _PG_RETRY_SEC = 300     # how often a degraded store re-tries Postgres
 # A permanently-open pool connection keeps a serverless Postgres (Neon) awake
@@ -284,7 +306,7 @@ class MemoryStore:
         if p.get("preferences"):
             parts.append(f"Предпочтения: {p['preferences']}")
         if facts:
-            joined = "; ".join(facts[-_MAX_FACTS:])
+            joined = "; ".join(_facts_for_context(facts))
             parts.append(f"Что я о нём помню: {joined}")
         tasks = data.get("tasks", [])
         if tasks:
@@ -836,7 +858,7 @@ class MemoryStore:
             "degraded_reason": self.degraded_reason,
             "counts": counts,
             "facts_total": counts.get("facts", 0),
-            "facts_in_context": min(counts.get("facts", 0), _MAX_FACTS),
+            "facts_in_context": len(_facts_for_context(self._cache[uid]["facts"])),
             "profile_filled": filled,
         }
 

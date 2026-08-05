@@ -53,3 +53,34 @@ def test_valid_reminder_time_is_converted():
     from datetime import timezone, timedelta
     tz = timezone(timedelta(hours=5))
     assert reminders.fmt_local("2026-08-05T14:30:00", tz) == "05.08 в 19:30"
+
+
+# ── факты обязаны доходить до модели ─────────────────────────────────────────
+
+def test_all_normal_facts_reach_the_model():
+    """88 фактов пользователя — это пара килобайт. Резать нечего."""
+    from telegram_bot.memory_store import _facts_for_context
+    facts = [f"факт номер {i} про пользователя" for i in range(88)]
+    assert len(_facts_for_context(facts)) == 88
+
+
+def test_budget_cuts_only_when_really_huge():
+    from telegram_bot.memory_store import _facts_for_context, _FACTS_CHAR_BUDGET
+    huge = ["x" * 500 for _ in range(50)]          # 25 КБ
+    got = _facts_for_context(huge)
+    assert 0 < len(got) < 50
+    assert sum(len(f) + 2 for f in got) <= _FACTS_CHAR_BUDGET
+
+
+def test_overflow_keeps_the_freshest_and_chronological_order():
+    from telegram_bot.memory_store import _facts_for_context
+    huge = [f"{i}:" + "x" * 500 for i in range(50)]
+    got = _facts_for_context(huge)
+    assert got[-1] == huge[-1]                     # самый свежий на месте
+    assert got == sorted(got, key=lambda f: int(f.split(":")[0]))
+
+
+def test_single_oversized_fact_is_not_dropped_entirely():
+    """Один факт длиннее бюджета лучше отдать целиком, чем не отдать ничего."""
+    from telegram_bot.memory_store import _facts_for_context, _FACTS_CHAR_BUDGET
+    assert _facts_for_context(["y" * (_FACTS_CHAR_BUDGET + 100)])
