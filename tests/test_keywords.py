@@ -34,3 +34,63 @@ def test_other_inner_matches_are_rejected():
 
 def test_empty_text_is_not_a_command():
     assert keywords.matches("", PC_WORDS) is False
+
+
+# ── снимок с ПК должен доезжать картинкой ────────────────────────────────────
+
+import asyncio
+import base64
+import sys
+import types
+
+
+class _Msg:
+    """Минимальный двойник telegram.Message — фиксирует, чем ответили."""
+    def __init__(self):
+        self.photos, self.texts = [], []
+
+    async def reply_photo(self, photo, caption=""):
+        self.photos.append((photo, caption))
+
+    async def reply_text(self, text, **kw):
+        self.texts.append(text)
+
+
+def _load_reply_helper():
+    """Достаёт _reply_pc_result из bot.py без импорта тяжёлых зависимостей."""
+    src = open("telegram_bot/bot.py", encoding="utf-8").read()
+    start = src.index("async def _reply_pc_result")
+    end = src.index("async def _try_pc")
+    mod = types.ModuleType("_helper")
+    mod.__dict__.update({"base64": base64, "logger": types.SimpleNamespace(warning=lambda *a: None)})
+    exec(compile(src[start:end], "bot_helper", "exec"), mod.__dict__)
+    return mod._reply_pc_result
+
+
+def test_screenshot_comes_back_as_a_picture():
+    # Arrange — ПК прислал снимок вместе с текстом
+    reply = _load_reply_helper()
+    msg = _Msg()
+    png = base64.b64encode(b"\x89PNG_fake").decode()
+
+    # Act
+    asyncio.run(reply(msg, {"text": "Скриншот ✅", "image_b64": png}))
+
+    # Assert — картинка, а не только «🖥 Скриншот ✅»
+    assert len(msg.photos) == 1
+    assert msg.photos[0][0] == b"\x89PNG_fake"
+    assert not msg.texts
+
+
+def test_plain_answer_stays_text():
+    reply = _load_reply_helper()
+    msg = _Msg()
+    asyncio.run(reply(msg, {"text": "Громкость 50"}))
+    assert msg.texts == ["🖥 Громкость 50"] and not msg.photos
+
+
+def test_no_answer_from_pc_is_reported():
+    reply = _load_reply_helper()
+    msg = _Msg()
+    asyncio.run(reply(msg, None))
+    assert msg.texts and "не ответил" in msg.texts[0]
