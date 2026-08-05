@@ -283,3 +283,22 @@ async def test_send_fails_fast_when_pc_is_really_off():
     # Assert — мгновенный честный отказ, без томления пользователя
     assert result is None
     assert asyncio.get_event_loop().time() - started < 0.5
+
+
+@pytest.mark.asyncio
+async def test_status_callback_reports_raw_state_on_disconnect():
+    # Arrange — подписчик (render_app._on_pc_status) сам гасит мигание дебаунсом
+    from telegram_bot import pc_bridge
+    seen = []
+    b = pc_bridge.PCBridge()
+    b.on_status_change(lambda online: asyncio.sleep(0, result=seen.append(online)))
+
+    # Act
+    cid = await b.register(object())
+    await b.unregister(cid)
+
+    # Assert — на разрыве подписчик обязан узнать правду, иначе при реально
+    # выключенном ПК «🌙 ПК офлайн» не придёт никогда, а бейдж останется зелёным
+    assert seen == [True, False]
+    # …при этом маршрутизация команд всё ещё считает ПК на связи
+    assert b.connected is True
