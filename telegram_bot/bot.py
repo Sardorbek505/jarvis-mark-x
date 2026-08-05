@@ -317,6 +317,31 @@ def _looks_like_reminder(text: str) -> bool:
     return any(low.startswith(k) for k in _REMINDER_TRIGGERS)
 
 
+async def _reply_pc_result(message, result: dict | None) -> None:
+    """Ответ на команду ПК — с картинкой, если ПК её прислал.
+
+    Раньше естественные формулировки («сделай скриншот», «покажи камеру») шли
+    через send_command, который отдаёт только текст: снимок делался, приходило
+    «🖥 Скриншот ✅», а само изображение молча выбрасывалось. Картинку видели
+    только слэш-команды /screenshot и /camera.
+    """
+    if result is None:
+        await message.reply_text(
+            "❌ ПК не ответил. Убедись что pc_server запущен и попробуй ещё раз."
+        )
+        return
+    text = result.get("text") or "Готово"
+    if result.get("image_b64"):
+        try:
+            await message.reply_photo(
+                base64.b64decode(result["image_b64"]), caption=f"📸 {text}"
+            )
+            return
+        except Exception as e:
+            logger.warning("Не смог отправить снимок с ПК: %s", e)
+    await message.reply_text(f"🖥 {text}")
+
+
 async def _try_pc(text: str, user_id: int) -> str | None:
     if bridge.connected and _looks_like_pc_command(text):
         return await bridge.send_command(text, user_id)
@@ -1346,13 +1371,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown",
                 )
                 return
-            pc_result = await bridge.send_command(text, user_id)
-            if pc_result is not None:
-                await update.effective_message.reply_text(f"🖥 {pc_result}")
-            else:
-                await update.effective_message.reply_text(
-                    "❌ ПК не ответил. Убедись что pc_server запущен и попробуй ещё раз."
-                )
+            pc_result = await bridge.send_command_full(text, user_id)
+            await _reply_pc_result(update.effective_message, pc_result)
             return
 
         # 3. Gemini conversation (with long-term memory). JARVIS may decide to
@@ -1420,10 +1440,8 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         parse_mode="Markdown",
                     )
                     return
-                pc_result = await bridge.send_command(transcript, user_id)
-                await msg.reply_text(
-                    f"🖥 {pc_result}" if pc_result is not None else "❌ ПК не ответил."
-                )
+                pc_result = await bridge.send_command_full(transcript, user_id)
+                await _reply_pc_result(msg, pc_result)
                 return
 
             # Otherwise — normal voice conversation. Voice in → voice out (mirror).
