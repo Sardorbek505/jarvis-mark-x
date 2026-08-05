@@ -8,6 +8,19 @@ from typing import NamedTuple
 BASE_DIR = Path(__file__).resolve().parent.parent
 _CONFIG_FILE = BASE_DIR / "config" / "api_keys.json"
 
+# Боевой деплой ровно один — Hugging Face Space. На Render остался живой дубль
+# (05.08.2026), и два инстанса каждые 90 с перетягивали вебхук друг у друга:
+# часть апдейтов уходила в дубль, у которого нет связи с ПК. Отсюда хроническое
+# «бот то отвечает, то молчит».
+DECOMMISSIONED_HOSTS = ("onrender.com",)
+
+
+def is_decommissioned(miniapp_url: str) -> bool:
+    """Узнаёт выведенный из эксплуатации деплой по его собственному адресу.
+    Такой инстанс не должен трогать вебхук — иначе отбирает апдейты у рабочего."""
+    url = (miniapp_url or "").lower()
+    return any(host in url for host in DECOMMISSIONED_HOSTS)
+
 
 class Config(NamedTuple):
     gemini_api_key: str
