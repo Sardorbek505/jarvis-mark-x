@@ -18,6 +18,8 @@ config/spotify_tokens.json
 config/user_profile.json
 config/calendar.json
 config/translation_history.json
+config/translation_context.json
+config/usage_patterns.json
 config/activity_tracking.json
 
 # Память пользователя
