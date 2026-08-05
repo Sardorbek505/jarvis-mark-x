@@ -354,12 +354,6 @@ async def _reply_pc_result(message, result: dict | None) -> None:
     await message.reply_text(f"🖥 {text}")
 
 
-async def _try_pc(text: str, user_id: int) -> str | None:
-    if bridge.connected and _looks_like_pc_command(text):
-        return await bridge.send_command(text, user_id)
-    return None
-
-
 def _app_keyboard() -> InlineKeyboardMarkup | None:
     if not cfg.miniapp_url:
         return None
@@ -1078,6 +1072,33 @@ async def cmd_findnote(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text("\n".join(lines))
 
 
+_PC_OFFLINE = (
+    "❌ ПК офлайн.\n"
+    "Запусти на компьютере `scripts\\start_pc.bat` "
+    "(или `python -m telegram_bot.pc_server`)."
+)
+
+
+async def _run_pc(message, command: str, user_id: int, *,
+                  timeout: float = 25.0, action: str = "typing") -> None:
+    """Единственный путь «послать команду на ПК и ответить пользователю».
+
+    Раньше это делали шесть обработчиков, каждый по-своему: одни звали
+    send_command (только текст) и теряли снимок, другие send_command_full;
+    сообщение «ПК офлайн» жило в десяти формулировках. Отсюда и то, что
+    «сделай скриншот» присылал «✅» без картинки, а /pc — до сих пор.
+    """
+    if not bridge.connected:
+        await message.reply_text(_PC_OFFLINE, parse_mode="Markdown")
+        return
+    try:
+        await message.chat.send_action(action)
+    except Exception as exc:
+        logger.debug("Индикатор набора не показался: %s", exc)
+    result = await bridge.send_command_full(command, user_id, timeout=timeout)
+    await _reply_pc_result(message, result)
+
+
 async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
@@ -1087,58 +1108,21 @@ async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "Использование: /pc <команда>\nПример: /pc поставь believer"
         )
         return
-    if not bridge.connected:
-        await update.effective_message.reply_text(
-            "❌ ПК офлайн.\n"
-            "Запусти на своём компьютере:\n"
-            "`python -m telegram_bot.pc_server`\n"
-            "или дважды кликни `scripts\\start_pc.bat`",
-            parse_mode="Markdown",
-        )
-        return
-    await update.effective_message.chat.send_action("typing")
-    result = await bridge.send_command(command, update.effective_user.id)
-    await update.effective_message.reply_text(result or "❌ ПК не ответил вовремя.")
+    await _run_pc(update.effective_message, command, update.effective_user.id)
 
 
 async def cmd_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    if not bridge.connected:
-        await update.effective_message.reply_text("❌ ПК офлайн.")
-        return
-    await update.effective_message.chat.send_action("upload_photo")
-    result = await bridge.send_command_full("скриншот", update.effective_user.id)
-    if not result:
-        await update.effective_message.reply_text("❌ ПК не ответил вовремя.")
-        return
-    if result.get("image_b64"):
-        photo = base64.b64decode(result["image_b64"])
-        await update.effective_message.reply_photo(
-            photo, caption=f"📸 {result.get('text', 'Скриншот')}"
-        )
-    else:
-        await update.effective_message.reply_text(result.get("text") or "❌ Не удалось сделать скриншот")
+    await _run_pc(update.effective_message, "скриншот", update.effective_user.id,
+                  action="upload_photo")
 
 
 async def cmd_camera(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    if not bridge.connected:
-        await update.effective_message.reply_text("❌ ПК офлайн.")
-        return
-    await update.effective_message.chat.send_action("upload_photo")
-    result = await bridge.send_command_full("снимок с камеры", update.effective_user.id, timeout=30.0)
-    if not result:
-        await update.effective_message.reply_text("❌ ПК не ответил вовремя.")
-        return
-    if result.get("image_b64"):
-        photo = base64.b64decode(result["image_b64"])
-        await update.effective_message.reply_photo(
-            photo, caption=f"📷 {result.get('text', 'Снимок с камеры')}"
-        )
-    else:
-        await update.effective_message.reply_text(result.get("text") or "❌ Не удалось сделать снимок с камеры")
+    await _run_pc(update.effective_message, "снимок с камеры", update.effective_user.id,
+                  timeout=30.0, action="upload_photo")
 
 
 async def cmd_vol(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1150,47 +1134,26 @@ async def cmd_vol(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "Использование: /vol [0–100]\nПример: /vol 70"
         )
         return
-    if not bridge.connected:
-        await update.effective_message.reply_text("❌ ПК офлайн.")
-        return
-    result = await bridge.send_command(f"системная громкость {val}", update.effective_user.id)
-    await update.effective_message.reply_text(result or "❌ ПК не ответил.")
+    await _run_pc(update.effective_message, f"системная громкость {val}",
+                  update.effective_user.id)
 
 
 async def cmd_lock(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    if not bridge.connected:
-        await update.effective_message.reply_text("❌ ПК офлайн.")
-        return
-    result = await bridge.send_command("заблокируй экран", update.effective_user.id)
-    await update.effective_message.reply_text(result or "❌ ПК не ответил.")
+    await _run_pc(update.effective_message, "заблокируй экран", update.effective_user.id)
 
 
 async def cmd_sysinfo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    if not bridge.connected:
-        await update.effective_message.reply_text("❌ ПК офлайн.")
-        return
-    await update.effective_message.chat.send_action("typing")
-    result = await bridge.send_command("системная информация", update.effective_user.id)
-    await update.effective_message.reply_text(
-        result or "❌ ПК не ответил.", parse_mode="Markdown"
-    )
+    await _run_pc(update.effective_message, "системная информация", update.effective_user.id)
 
 
 async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    if not bridge.connected:
-        await update.effective_message.reply_text(
-            "❌ ПК офлайн. Запусти pc_server на компьютере."
-        )
-        return
-    await update.effective_message.chat.send_action("typing")
-    result = await bridge.send_command("брифинг", update.effective_user.id)
-    await update.effective_message.reply_text(result or "❌ ПК не ответил.")
+    await _run_pc(update.effective_message, "брифинг", update.effective_user.id)
 
 
 # ── Reminders ──────────────────────────────────────────────────────────────────
@@ -1376,15 +1339,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         # 2. PC command?
         if _looks_like_pc_command(text):
-            if not bridge.connected:
-                await update.effective_message.reply_text(
-                    "❌ ПК офлайн.\n"
-                    "Запусти `scripts\\start_pc.bat` на компьютере.",
-                    parse_mode="Markdown",
-                )
-                return
-            pc_result = await bridge.send_command_full(text, user_id)
-            await _reply_pc_result(update.effective_message, pc_result)
+            await _run_pc(update.effective_message, text, user_id)
             return
 
         # 3. Gemini conversation (with long-term memory). JARVIS may decide to
@@ -1457,14 +1412,7 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
             if transcript and _looks_like_pc_command(transcript):
                 await msg.reply_text(f"🎙 «{transcript}»")
-                if not bridge.connected:
-                    await msg.reply_text(
-                        "❌ ПК офлайн. Запусти `scripts\\start_pc.bat` на компьютере.",
-                        parse_mode="Markdown",
-                    )
-                    return
-                pc_result = await bridge.send_command_full(transcript, user_id)
-                await _reply_pc_result(msg, pc_result)
+                await _run_pc(msg, transcript, user_id)
                 return
 
             # Расшифровка не удалась из-за лимита — говорим правду. Иначе

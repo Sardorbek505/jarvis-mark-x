@@ -57,13 +57,21 @@ class _Msg:
 
 
 def _load_reply_helper():
-    """Достаёт _reply_pc_result из bot.py без импорта тяжёлых зависимостей."""
+    """Достаёт _reply_pc_result из bot.py без импорта тяжёлых зависимостей.
+
+    Через разбор синтаксиса, а не поиск по соседним именам: первая версия
+    вырезала кусок «от _reply_pc_result до _try_pc» и развалилась, как только
+    _try_pc удалили как мёртвый код.
+    """
+    import ast
     src = open("telegram_bot/bot.py", encoding="utf-8").read()
-    start = src.index("async def _reply_pc_result")
-    end = src.index("async def _try_pc")
+    tree = ast.parse(src)
+    node = next(n for n in tree.body
+                if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
+                and n.name == "_reply_pc_result")
     mod = types.ModuleType("_helper")
     mod.__dict__.update({"base64": base64, "logger": types.SimpleNamespace(warning=lambda *a: None)})
-    exec(compile(src[start:end], "bot_helper", "exec"), mod.__dict__)
+    exec(compile(ast.get_source_segment(src, node), "bot_helper", "exec"), mod.__dict__)
     return mod._reply_pc_result
 
 
