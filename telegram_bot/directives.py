@@ -45,6 +45,20 @@ def _clean_line(line: str) -> str:
     return line.strip().lstrip("-•*").strip()
 
 
+def _lines(rx: re.Pattern, reply: str):
+    """Строки из ВСЕХ блоков этого типа, а не только из первого.
+
+    Здесь стоял .search() — исполнялся один блок, — при том что вырезаются
+    блоки через .sub(), то есть все. На составную просьбу модель отвечает
+    несколькими блоками одного типа, и лишние молча пропадали: не выполнены,
+    но и из текста удалены, так что следа не оставалось ни у пользователя,
+    ни в логе. Ответ «Записал, сэр» при одной созданной задаче из трёх.
+    """
+    for block in rx.finditer(reply):
+        for line in block.group(1).splitlines():
+            yield line
+
+
 async def apply(memory, user_id: int, reply: str, tz) -> tuple[str, list]:
     """Execute any directive blocks in `reply`. Returns (clean_reply, summary)
     where summary is a list of short human strings like '🔁 привычек: 2'."""
@@ -52,50 +66,51 @@ async def apply(memory, user_id: int, reply: str, tz) -> tuple[str, list]:
         return reply, []
     summary = []
 
-    block = _RE_REMINDERS.search(reply)
-    if block:
-        n = 0
-        for line in block.group(1).splitlines():
-            lm = _REM_LINE.search(line.strip())
-            if not lm:
-                continue
-            y, mo, d, hh, mm, what = lm.groups()
-            try:
-                when = datetime(int(y), int(mo), int(d), int(hh), int(mm), tzinfo=tz)
-            except ValueError:
-                continue
-            await memory.add_reminder(user_id, what.strip(), rem.to_utc_iso(when))
+    n = 0
+    for line in _lines(_RE_REMINDERS, reply):
+        raw = line.strip()
+        if not raw:
+            continue
+        lm = _REM_LINE.search(raw)
+        if not lm:
+            # Обещанное вслух напоминание, которое не создалось, — худший исход
+            # из возможных. Раньше такая строка исчезала совсем; пусть хотя бы
+            # остаётся след, по которому это можно найти.
+            logger.warning("Строка напоминания не разобрана: %r", raw)
+            continue
+        y, mo, d, hh, mm, what = lm.groups()
+        try:
+            when = datetime(int(y), int(mo), int(d), int(hh), int(mm), tzinfo=tz)
+        except ValueError:
+            logger.warning("Несуществующая дата в напоминании: %r", raw)
+            continue
+        await memory.add_reminder(user_id, what.strip(), rem.to_utc_iso(when))
+        n += 1
+    if n:
+        summary.append(f"🔔 напоминаний: {n}")
+
+    n = 0
+    for line in _lines(_RE_HABITS, reply):
+        t = _clean_line(line)
+        if t:
+            await memory.add_habit(user_id, t)
             n += 1
-        if n:
-            summary.append(f"🔔 напоминаний: {n}")
+    if n:
+        summary.append(f"🔁 привычек: {n}")
 
-    block = _RE_HABITS.search(reply)
-    if block:
-        n = 0
-        for line in block.group(1).splitlines():
-            t = _clean_line(line)
-            if t:
-                await memory.add_habit(user_id, t)
-                n += 1
-        if n:
-            summary.append(f"🔁 привычек: {n}")
+    n = 0
+    for line in _lines(_RE_TASKS, reply):
+        t = _clean_line(line)
+        if t:
+            due, title = agenda.parse(t)
+            await memory.add_task(user_id, title, due)
+            n += 1
+    if n:
+        summary.append(f"✅ задач: {n}")
 
-    block = _RE_TASKS.search(reply)
-    if block:
+    if hasattr(memory, "add_note"):
         n = 0
-        for line in block.group(1).splitlines():
-            t = _clean_line(line)
-            if t:
-                due, title = agenda.parse(t)
-                await memory.add_task(user_id, title, due)
-                n += 1
-        if n:
-            summary.append(f"✅ задач: {n}")
-
-    block = _RE_NOTES.search(reply)
-    if block and hasattr(memory, "add_note"):
-        n = 0
-        for line in block.group(1).splitlines():
+        for line in _lines(_RE_NOTES, reply):
             t = _clean_line(line)
             if t:
                 await memory.add_note(user_id, t)
@@ -103,10 +118,9 @@ async def apply(memory, user_id: int, reply: str, tz) -> tuple[str, list]:
         if n:
             summary.append(f"📝 заметок: {n}")
 
-    block = _RE_SCHEDULE.search(reply)
-    if block and hasattr(memory, "add_class"):
+    if hasattr(memory, "add_class"):
         n = 0
-        for line in block.group(1).splitlines():
+        for line in _lines(_RE_SCHEDULE, reply):
             parts = [p.strip() for p in _clean_line(line).split("|")]
             if len(parts) < 2:
                 continue
@@ -125,10 +139,9 @@ async def apply(memory, user_id: int, reply: str, tz) -> tuple[str, list]:
         if n:
             summary.append(f"📚 пар: {n}")
 
-    block = _RE_PROJECTS.search(reply)
-    if block and hasattr(memory, "upsert_project"):
+    if hasattr(memory, "upsert_project"):
         n = 0
-        for line in block.group(1).splitlines():
+        for line in _lines(_RE_PROJECTS, reply):
             parts = [p.strip() for p in _clean_line(line).split("|", 1)]
             if not parts or not parts[0]:
                 continue
