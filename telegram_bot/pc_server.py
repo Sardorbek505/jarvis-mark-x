@@ -529,10 +529,14 @@ async def _handle_userbot(msg: dict) -> dict:
     res = await pc_userbot.send_message(
         target, text, as_voice, gemini=_get_gemini() if as_voice else None
     )
+    # "ok" — то, по чему сервер судит об успехе. Раньше отдавалась только фраза
+    # для человека, и обе стороны восстанавливали булево поиском слова
+    # «Отправлено» в тексте. Для очереди это опасно: не совпало слово — письмо
+    # не удаляется из очереди и уходит адресату заново при каждом коннекте ПК.
     if res.get("ok"):
         note = res.get("error")
-        return {"text": "✅ Отправлено" + (f" ({note})" if note else "")}
-    return {"text": f"❌ Не отправлено: {res.get('error')}"}
+        return {"ok": True, "text": "✅ Отправлено" + (f" ({note})" if note else "")}
+    return {"ok": False, "text": f"❌ Не отправлено: {res.get('error')}"}
 
 
 async def _handle(ws, msg: dict):

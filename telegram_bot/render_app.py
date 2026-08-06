@@ -98,7 +98,7 @@ async def _flush_outbox():
         return
     for item in pending:
         res = await bridge.send_userbot(item["target"], item["message"], item["as_voice"], item["user_id"])
-        if res and "Отправлено" in (res.get("text", "")):
+        if bridge.delivered(res):
             await memory.delete_outbound(item["id"])
             try:
                 await _tg_app.bot.send_message(

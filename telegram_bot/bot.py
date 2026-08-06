@@ -162,7 +162,7 @@ async def _dispatch_outbound(token, target, alias, message, as_voice, user_id, s
     res = await bridge.send_userbot(target, message, as_voice, user_id)
     txt = (res or {}).get("text", "")
     try:
-        if res and "Отправлено" in txt:
+        if bridge.delivered(res):
             kind = "🎤 голосом" if as_voice else "✍️ текстом"
             await sent_msg.edit_text(f"✅ Отправлено {alias} ({kind})")
         else:
