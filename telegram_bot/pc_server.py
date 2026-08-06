@@ -218,7 +218,13 @@ async def _execute(text: str) -> dict:
             except Exception as e:
                 return _r(f"Брифинг недоступен: {e}")
 
-        return _r(f"Не понял команду: «{text}». Напиши /help чтобы увидеть что я умею.")
+        # unknown=True — признак для сервера, что это не ответ, а промах.
+        # Шлюз на стороне бота решает по ключевым словам и иногда ошибается
+        # («громкость голоса у неё приятная» — не команда), а лексикой такое
+        # не различить. Пусть сервер поймёт это по признаку и продолжит
+        # обычный разговор, вместо того чтобы показать человеку «Не понял».
+        return _r(f"Не понял команду: «{text}». Напиши /help чтобы увидеть что я умею.",
+                  unknown=True)
 
     except ModuleNotFoundError as e:
         logger.error(f"PC execute missing module: {e}")
@@ -234,8 +240,11 @@ async def _execute(text: str) -> dict:
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _r(text: str, image_b64: str = None) -> dict:
-    return {"text": text, "image_b64": image_b64}
+def _r(text: str, image_b64: str = None, unknown: bool = False) -> dict:
+    out = {"text": text, "image_b64": image_b64}
+    if unknown:
+        out["unknown"] = True
+    return out
 
 
 # ── Keyboard input (Windows SendInput) ───────────────────────────────────────
