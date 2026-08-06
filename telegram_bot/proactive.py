@@ -243,14 +243,21 @@ async def tick(bot, gemini, memory, default_tz: str, default_city: str = ""):
                 and await memory.get_meta(uid, "curio_day") != today_key
                 and await memory.get_meta(uid, "curio_off") != "1"
                 and not await memory.get_meta(uid, "curio_pending")):
+            # День отмечаем в любом случае — иначе заблокированный чат будет
+            # долбиться раз в минуту до полуночи. А вот «вопрос задан» ставим
+            # только после доставки: иначе несостоявшаяся отправка сжигала
+            # вопрос из банка и подставляла следующую фразу пользователя как
+            # ответ на него.
             await memory.set_meta(uid, "curio_day", today_key)
-            q = await curiosity.pose(memory, uid)
+            q = await curiosity.next_question(memory, uid)
             if q:
                 try:
-                    await bot.send_message(chat_id=uid, text=f"💭 {q}")
-                    logger.info(f"Sent curiosity question to {uid}")
+                    await bot.send_message(chat_id=uid, text=f"💭 {q['q']}")
                 except Exception as e:
                     logger.warning(f"curiosity send to {uid}: {e}")
+                else:
+                    await curiosity.mark_asked(memory, uid, q)
+                    logger.info(f"Sent curiosity question to {uid}")
 
 
 async def loop(bot, gemini, memory, default_tz: str = "Asia/Almaty", default_city: str = ""):

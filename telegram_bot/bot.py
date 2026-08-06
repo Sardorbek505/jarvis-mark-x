@@ -563,9 +563,11 @@ async def cmd_ask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     uid = update.effective_user.id
     await memory.ensure_loaded(uid)
-    q = await curiosity.pose(memory, uid)
+    q = await curiosity.next_question(memory, uid)
     if q:
-        await update.effective_message.reply_text(f"💭 {q}")
+        # Сначала доставить, потом помечать заданным — см. curiosity.mark_asked.
+        await update.effective_message.reply_text(f"💭 {q['q']}")
+        await curiosity.mark_asked(memory, uid, q)
     else:
         done, total = await curiosity.progress(memory, uid)
         await update.effective_message.reply_text(
