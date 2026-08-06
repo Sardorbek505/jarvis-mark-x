@@ -281,21 +281,9 @@ _tasks: list[asyncio.Task] = []
 
 
 async def _reminder_loop(bot):
-    from telegram_bot.reminders import now_utc_iso
-    while True:
-        try:
-            await asyncio.sleep(30)
-            for r in await memory.get_due_reminders(now_utc_iso()):
-                try:
-                    await bot.send_message(chat_id=r["user_id"],
-                                           text=f"🔔 Напоминание: {r['text']}")
-                    await memory.mark_reminder_sent(r["id"])
-                except Exception as e:
-                    logger.error(f"Reminder send: {e}")
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error(f"Reminder loop: {e}")
+    # Одна доставка на оба входа — см. reminders.delivery_loop.
+    from telegram_bot import reminders as rem
+    await rem.delivery_loop(bot, memory, logger)
 
 
 async def _set_webhook(bot, webhook_url: str, drop_pending: bool = False):
