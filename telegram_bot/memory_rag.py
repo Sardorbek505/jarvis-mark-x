@@ -73,9 +73,8 @@ async def index(memory, gemini, uid: int, kind: str, text: str) -> bool:
         return False
 
 
-async def retrieve(memory, gemini, uid: int, query: str, k: int = 6) -> list:
-    """Top-k most relevant stored snippets for the query (semantic). [] on any
-    failure — retrieval is a nice-to-have, never breaks the reply."""
+async def _rank(memory, gemini, uid: int, query: str, k: int) -> list:
+    """Top-k релевантных записей как (kind, text). [] при любом сбое."""
     query = (query or "").strip()
     if len(query) < _MIN_LEN:
         return []
@@ -91,12 +90,34 @@ async def retrieve(memory, gemini, uid: int, query: str, k: int = 6) -> list:
         rows = await _vectors(memory, uid)
         if not rows:
             return []
-        scored = [(_cosine(qv, r["vec"]), r["text"]) for r in rows]
+        scored = [(_cosine(qv, r["vec"]), r.get("kind", ""), r["text"]) for r in rows]
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [t for s, t in scored[:k] if s >= _MIN_SIM]
+        return [(kind, t) for s, kind, t in scored[:k] if s >= _MIN_SIM]
     except Exception as e:
         logger.debug(f"retrieve: {e}")
         return []
+
+
+async def retrieve(memory, gemini, uid: int, query: str, k: int = 6) -> list:
+    """Top-k most relevant stored snippets for the query (semantic). [] on any
+    failure — retrieval is a nice-to-have, never breaks the reply."""
+    return [text for _, text in await _rank(memory, gemini, uid, query, k)]
+
+
+# Кто автор фрагмента. В индекс попадают РАЗНЫЕ вещи: сообщения пользователя,
+# но также конспекты ссылок, документов и записи дневника — их писала модель.
+# Одна общая подпись «это его слова» врала бы на трёх видах из шести, поэтому
+# каждый вид представляется сам.
+_KIND_INTRO = {
+    "message":  "ПОЛЬЗОВАТЕЛЬ ПИСАЛ РАНЬШЕ (его слова)",
+    "history":  "ПОЛЬЗОВАТЕЛЬ ПИСАЛ РАНЬШЕ (его слова)",
+    "msg":      "ПОЛЬЗОВАТЕЛЬ ПИСАЛ РАНЬШЕ (его слова)",
+    "fact":     "ИЗВЕСТНО О ПОЛЬЗОВАТЕЛЕ",
+    "link":     "КОНСПЕКТЫ ССЫЛОК, которые он сохранял (составлял ты, не он)",
+    "document": "КОНСПЕКТЫ ДОКУМЕНТОВ, которые он присылал (составлял ты, не он)",
+    "journal":  "ЗАПИСИ ДНЕВНИКА, которые вёл ты о его днях",
+}
+_KIND_FALLBACK = "ИЗ СОХРАНЁННОГО РАНЕЕ"
 
 
 def make_recall_provider(memory, gemini, recall_module):
@@ -105,14 +126,18 @@ def make_recall_provider(memory, gemini, recall_module):
     string. Bound to a specific memory/gemini pair."""
     async def provider(uid: int, text: str) -> str:
         parts = []
-        sem = await retrieve(memory, gemini, uid, text, k=6)
-        if sem:
-            # Индексируются ТОЛЬКО сообщения пользователя (см. _persist_exchange),
-            # а подпись гласила «ты говорил это раньше». В системном промпте «ты» —
-            # это сам ассистент, то есть чужие слова подавались ему как свои:
-            # реплика «мне 21 год» выглядела утверждением JARVIS о себе.
-            parts.append("ИЗ ПРОШЛЫХ СООБЩЕНИЙ ПОЛЬЗОВАТЕЛЯ (это его слова, не твои — "
-                         "используй, если уместно): " + "; ".join(sem))
+        # Каждый фрагмент подписан своим автором.
+        #
+        # Сначала подпись гласила «ты говорил это раньше», хотя «ты» в системном
+        # промпте — сам ассистент: слова пользователя приходили ему как свои
+        # собственные («мне 21 год» выглядело утверждением JARVIS о себе).
+        # Одной общей подписи тоже мало: рядом лежат конспекты ссылок и записи
+        # дневника, написанные моделью, а не пользователем.
+        groups: dict = {}
+        for kind, snippet in await _rank(memory, gemini, uid, text, 6):
+            groups.setdefault(_KIND_INTRO.get(kind, _KIND_FALLBACK), []).append(snippet)
+        for intro, items in groups.items():
+            parts.append(f"{intro}: " + "; ".join(items))
         try:
             kw = await recall_module.search(memory, uid, text)
         except Exception as exc:

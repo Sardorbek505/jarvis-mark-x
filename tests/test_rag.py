@@ -68,3 +68,62 @@ async def test_clear_wipes_embeddings(mem):
     await memory_rag.index(mem, g, UID, "fact", "факт о пользователе")
     await mem.clear(UID)
     assert await mem.embedding_count(UID) == 0
+
+
+# ── авторство фрагментов ─────────────────────────────────────────────────────
+class _Recall:
+    async def search(self, memory, uid, text):
+        return ""
+
+
+class _AllSame:
+    """Всё одинаково релевантно — в выдачу попадут все виды сразу."""
+    def __init__(self, rows):
+        self.rows = rows
+
+    async def all_embeddings(self, uid):
+        return self.rows
+
+
+class _OneVec:
+    async def embed(self, text):
+        return [1.0, 0.0]
+
+
+ROWS = [
+    {"kind": "message",  "text": "мне 21 год",                    "vec": [1.0, 0.0]},
+    {"kind": "link",     "text": "[Ссылка habr] статья про RAG",  "vec": [1.0, 0.0]},
+    {"kind": "journal",  "text": "[2026-08-05] день был тяжёлый", "vec": [1.0, 0.0]},
+    {"kind": "fact",     "text": "Живёт в Шымкенте",              "vec": [1.0, 0.0]},
+]
+
+
+@pytest.mark.asyncio
+async def test_каждый_вид_подписан_своим_автором():
+    """Рядом лежат слова пользователя и тексты, написанные моделью.
+
+    Одна общая подпись врала бы: конспекты ссылок и записи дневника
+    составляет ассистент, а не пользователь. Сначала подпись вообще
+    гласила «ты говорил это раньше» — то есть чужие слова приходили
+    модели как её собственные.
+    """
+    memory_rag.forget_cached(1)
+    prov = memory_rag.make_recall_provider(_AllSame(ROWS), _OneVec(), _Recall())
+    out = await prov(1, "расскажи, что знаешь обо мне")
+
+    assert "ПОЛЬЗОВАТЕЛЬ ПИСАЛ РАНЬШЕ" in out
+    assert "мне 21 год" in out
+    # то, что писала модель, помечено как её работа
+    assert "составлял ты, не он" in out
+    assert "вёл ты о его днях" in out
+    # и нигде слова пользователя не приписаны ассистенту
+    assert "ты говорил это раньше" not in out
+
+
+@pytest.mark.asyncio
+async def test_незнакомый_вид_не_приписывается_никому():
+    memory_rag.forget_cached(2)
+    rows = [{"kind": "нечто", "text": "непонятное", "vec": [1.0, 0.0]}]
+    prov = memory_rag.make_recall_provider(_AllSame(rows), _OneVec(), _Recall())
+    out = await prov(2, "что там было")
+    assert "ИЗ СОХРАНЁННОГО РАНЕЕ" in out
