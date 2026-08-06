@@ -478,24 +478,127 @@ def get_translation_history(date_range: str = "all") -> List[Dict[str, Any]]:
 def search_translations(query: str) -> List[Dict[str, Any]]:
     """
     Ищет переводы по запросу.
-    
+
     Args:
         query: Поисковый запрос
-        
+
     Returns:
         Список найденных переводов
     """
     import json
     from pathlib import Path
-    
+
     _BASE = Path(__file__).parent.parent
     api_key_file = _BASE / "config" / "api_keys.json"
-    
+
     try:
         with open(api_key_file, "r", encoding="utf-8") as f:
             api_key = json.load(f).get("gemini_api_key", "")
     except Exception:
         api_key = ""
-    
+
     manager = TranslationManager(api_key)
     return manager.history.search_translations(query)
+
+
+# ─── Настройки языков ──────────────────────────────────────────────────────────────
+#
+# Модели инструмент объявлен через НАЗВАНИЯ ("english", "french"), а файл настроек
+# ключуется кодами ISO ("en", "fr"). Эти две системы координат никто не связывал,
+# поэтому main.py правил JSON руками по несуществующим ключам: enable_language
+# падало с KeyError, а set_default_language писало ключ, который никто не читает,
+# и рапортовало об успехе. Разбор названия и все три операции живут здесь —
+# рядом со схемой, которой они управляют.
+_KNOWN_LANGUAGES = [
+    # (код, английское имя, родное имя, русские синонимы)
+    ("en", "English",    "English",    ("английский", "инглиш")),
+    ("ru", "Russian",    "Русский",    ("русский",)),
+    ("uz", "Uzbek",      "O'zbek",     ("узбекский",)),
+    ("fr", "French",     "Français",   ("французский",)),
+    ("de", "German",     "Deutsch",    ("немецкий",)),
+    ("es", "Spanish",    "Español",    ("испанский",)),
+    ("it", "Italian",    "Italiano",   ("итальянский",)),
+    ("pt", "Portuguese", "Português",  ("португальский",)),
+    ("zh", "Chinese",    "中文",        ("китайский",)),
+    ("ja", "Japanese",   "日本語",      ("японский",)),
+    ("ko", "Korean",     "한국어",      ("корейский",)),
+    ("tr", "Turkish",    "Türkçe",     ("турецкий",)),
+    ("ar", "Arabic",     "العربية",     ("арабский",)),
+    ("kk", "Kazakh",     "Қазақша",    ("казахский",)),
+]
+
+
+def resolve_language_code(value: str) -> Optional[str]:
+    """Название языка на любом из языков → код ISO. None, если не узнали.
+
+    Принимает «english», «English», «английский», «en» и то, что пользователь
+    сам дописал в target_languages. Сначала смотрим в настройки — там могут
+    быть свои языки, — потом в общий список.
+    """
+    needle = (value or "").strip().lower()
+    if not needle:
+        return None
+
+    prefs = TranslationPreferences().preferences.get("target_languages", [])
+    for lang in prefs:
+        variants = {
+            str(lang.get("code", "")).lower(),
+            str(lang.get("name", "")).lower(),
+            str(lang.get("native_name", "")).lower(),
+        }
+        if needle in variants - {""}:
+            return lang.get("code")
+
+    for code, name, native, aliases in _KNOWN_LANGUAGES:
+        if needle == code or needle == name.lower() or needle == native.lower():
+            return code
+        if needle in aliases:
+            return code
+    return None
+
+
+def _language_entry(code: str) -> Dict[str, Any]:
+    for c, name, native, _ in _KNOWN_LANGUAGES:
+        if c == code:
+            return {"code": c, "name": name, "native_name": native, "enabled": False}
+    return {"code": code, "name": code, "native_name": code, "enabled": False}
+
+
+def set_language_enabled(language: str, enabled: bool) -> Optional[str]:
+    """Включает/выключает язык. Возвращает код или None, если язык неизвестен.
+
+    Если язык известен, но в настройках его ещё нет (в объявлении инструмента
+    обещан english, а в файле его не было) — добавляем, а не молчим.
+    """
+    code = resolve_language_code(language)
+    if not code:
+        return None
+    prefs = TranslationPreferences()
+    known = {l.get("code") for l in prefs.preferences.get("target_languages", [])}
+    if code not in known:
+        prefs.preferences.setdefault("target_languages", []).append(_language_entry(code))
+    saved = prefs.enable_language(code) if enabled else prefs.disable_language(code)
+    return code if saved else None
+
+
+def set_default_language(language: str) -> Optional[str]:
+    """Язык перевода по умолчанию. Возвращает код или None, если не узнали язык."""
+    code = resolve_language_code(language)
+    if not code:
+        return None
+    prefs = TranslationPreferences()
+    return code if prefs.set_default_target_language(code) else None
+
+
+def set_learning_mode(enabled: bool, language: Optional[str] = None) -> Optional[str]:
+    """Режим изучения языка. Возвращает код языка ("" при выключении) или None."""
+    prefs = TranslationPreferences()
+    mode = prefs.preferences.setdefault("learning_mode", {})
+    code = ""
+    if enabled:
+        code = resolve_language_code(language or "")
+        if not code:
+            return None
+        mode["target_language"] = code
+    mode["enabled"] = enabled
+    return code if prefs.save_preferences() else None
