@@ -16,6 +16,7 @@ import os
 import traceback
 import re
 import threading
+import time
 import json
 import random
 from pathlib import Path
@@ -86,6 +87,30 @@ CHUNK_SIZE        = 1024
 MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "250"))
 # Кадр = 64 мс, поэтому 10 кадров ≈ 0.6 с «хвоста» после последнего громкого.
 MIC_HANGOVER_FRAMES = int(os.getenv("MIC_HANGOVER_FRAMES", "10"))
+
+# ── Необратимые действия ──────────────────────────────────────────────────────
+# Окно, в течение которого повторный вызов считается подтверждением.
+_CONFIRM_WINDOW_SEC = 90
+
+# Ключи ищем и по-английски (как объявлено модели), и по-русски: слой действий
+# сопоставляет русские подстроки, и «перезагрузи» доходит именно так.
+_DESTRUCTIVE = {
+    "computer_control": ("shutdown", "restart", "reboot", "выключ", "перезагруз"),
+    "files": ("delete", "remove", "удал"),
+}
+
+
+def _action_of(args: dict) -> str:
+    return str(args.get("action", "")).strip().lower()
+
+
+def _is_destructive(name: str, args: dict) -> bool:
+    keys = _DESTRUCTIVE.get(name)
+    if not keys:
+        return False
+    action = _action_of(args)
+    return any(k in action for k in keys)
+
 
 _CTRL_RE = re.compile(r"<ctrl\d+>", re.IGNORECASE)
 
@@ -840,17 +865,37 @@ class Jarvis:
         logger.info(f"🔧 Tool: {name} {args}")
         self.ui.set_state("THINKING")
 
-        # Critical actions that may require confirmation
-        critical_actions = {
-            "computer_control": ["shutdown", "restart", "lock"],
-            "files": ["delete", "remove"],
-        }
-        
-        # Log warning for critical actions
-        if name in critical_actions:
-            action = args.get("action", "")
-            if action in critical_actions[name]:
-                logger.warning(f"⚠️ Critical action: {name}/{action} - executing automatically")
+        # Необратимое — только после подтверждения.
+        #
+        # Здесь стоял словарь «критических действий», комментарий обещал
+        # подтверждение, а кода не было: выключение компьютера и удаление
+        # файлов выполнялись сразу, с одной строчкой в лог. И это не теория —
+        # микрофон отдавал в модель всё, что слышал в комнате, включая музыку,
+        # так что «выключи компьютер» могло родиться из ниоткуда, а
+        # computer_settings делает shutdown /s /t 5 по-настоящему.
+        #
+        # Блокировка экрана осталась без подтверждения: она безвредна и
+        # обратима, а спрашивать о ней каждый раз — раздражать зря.
+        if _is_destructive(name, args):
+            pending = self._pending_destructive
+            same = pending and pending[0] == name and pending[1] == _action_of(args)
+            fresh = same and (time.time() - pending[2]) < _CONFIRM_WINDOW_SEC
+            if not fresh:
+                self._pending_destructive = (name, _action_of(args), time.time())
+                logger.warning("Требую подтверждения: %s/%s", name, _action_of(args))
+                self.ui.write_log(f"SYS: жду подтверждения — {name}/{_action_of(args)}")
+                if not self.ui.muted:
+                    self.ui.set_state("LISTENING")
+                return types.FunctionResponse(
+                    id=fc.id, name=name,
+                    response={"result": (
+                        "НЕ ВЫПОЛНЕНО — нужно подтверждение. Переспроси пользователя вслух, "
+                        "точно ли он хочет это сделать, и вызови инструмент повторно "
+                        "ТОЛЬКО если он ответит утвердительно."
+                    )},
+                )
+            self._pending_destructive = None
+            logger.warning("Подтверждено, выполняю: %s/%s", name, _action_of(args))
 
         # Сохранение в память (без задержки)
         if name == "save_to_memory":
