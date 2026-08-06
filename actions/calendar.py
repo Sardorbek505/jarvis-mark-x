@@ -103,32 +103,46 @@ def _sync_to_google_calendar(event_data: dict) -> bool:
         
         # Формируем событие для Google Calendar
         from datetime import datetime
+        # Зона берётся с машины, а не зашивается.
+        #
+        # Здесь стояло 'Europe/Moscow' — единственное место в проекте с жёстко
+        # заданной зоной, и не той. Владелец в Шымкенте (UTC+5), Москва UTC+3,
+        # так что событие, названное «в 15:00», уходило в Google как 15:00 MSK
+        # и показывалось пользователю в 17:00 — стабильно на два часа позже.
+        #
+        # RFC3339 со смещением самодостаточен: когда в dateTime есть offset,
+        # поле timeZone не нужно вовсе. astimezone() у наивного времени берёт
+        # локальную зону — для настольного приложения это ровно то, что надо.
         start = datetime.fromisoformat(event_data["start"])
         end = datetime.fromisoformat(event_data["end"])
-        
+        if start.tzinfo is None:
+            start = start.astimezone()
+        if end.tzinfo is None:
+            end = end.astimezone()
+
         event = {
             'summary': event_data['title'],
             'description': event_data.get('description', ''),
             'location': event_data.get('location', ''),
-            'start': {
-                'dateTime': start.isoformat(),
-                'timeZone': 'Europe/Moscow',
-            },
-            'end': {
-                'dateTime': end.isoformat(),
-                'timeZone': 'Europe/Moscow',
-            },
+            'start': {'dateTime': start.isoformat()},
+            'end': {'dateTime': end.isoformat()},
         }
-        
+
         service.events().insert(calendarId='primary', body=event).execute()
         return True
-    
-    except Exception:
+
+    except Exception as exc:
+        _logger.error("Google Calendar: не удалось добавить событие: %s", exc)
         return False
 
 
-def _sync_from_google_calendar() -> list:
-    """Загружает события из Google Calendar."""
+def _sync_from_google_calendar():
+    """События из Google Calendar. [] — их правда нет, None — загрузить не вышло.
+
+    Раньше на любую ошибку возвращался пустой список, и «Google Calendar
+    недоступен» выглядело как «событий нет». Ровно так календарь и простоял
+    сломанным, не подав ни одного признака: ни в ответе, ни в логе.
+    """
     try:
         service = _get_google_calendar_service()
         if not service:
@@ -148,9 +162,10 @@ def _sync_from_google_calendar() -> list:
         ).execute()
         
         return events_result.get('items', [])
-    
-    except Exception:
-        return []
+
+    except Exception as exc:
+        _logger.error("Google Calendar: не удалось загрузить события: %s", exc)
+        return None
 
 
 # ─── Публичная точка входа ────────────────────────────────────────────────────
@@ -186,20 +201,29 @@ def calendar(parameters: dict, player=None) -> str:
         if not title or not datetime_str:
             return "Укажите название и дату/время события, сэр."
         
+        # Считаем события ДО, чтобы потом судить по факту, а не по формулировке.
+        #
+        # Здесь стояло `if "добавил" in result.lower()` — синхронизация с Google
+        # зависела от того, какое слово окажется во фразе для человека. Сейчас
+        # совпадает, но любая правка текста («Записал», «Готово») тихо выключила
+        # бы синхронизацию, и никто бы не заметил. Тот же приём, из-за которого
+        # «чистоплотный» когда-то сработал как «стоп».
+        try:
+            before = len(_load_calendar().get("events", []))
+        except Exception as exc:
+            _logger.warning("Не смог прочитать календарь до добавления: %s", exc)
+            before = None
+
         result = add_event(title, datetime_str, duration, description, location)
-        
-        # Если настроен Google Calendar, синхронизируем
-        if "добавил" in result.lower():
+
+        if before is not None:
             try:
-                calendar_data = _load_calendar()
-                events = calendar_data.get("events", [])
-                if events:
-                    last_event = events[-1]
-                    if _sync_to_google_calendar(last_event):
-                        result += " Синхронизировано с Google Calendar."
+                events = _load_calendar().get("events", [])
+                if len(events) > before and _sync_to_google_calendar(events[-1]):
+                    result += " Синхронизировано с Google Calendar."
             except Exception as exc:
-                _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
-        
+                _logger.warning("Синхронизация с Google Calendar не удалась: %s", exc)
+
         return result
     
     # ── Получение событий ─────────────────────────────────────────────────────
@@ -258,8 +282,11 @@ def calendar(parameters: dict, player=None) -> str:
             return "Google Calendar не настроен, сэр. Нужно установить google-api-python-client и создать credentials.json."
         
         google_events = _sync_from_google_calendar()
+        if google_events is None:
+            return ("Не смог связаться с Google Calendar, сэр — похоже, доступ "
+                    "истёк. Подробности в логе; нужна повторная авторизация.")
         if not google_events:
-            return "Google Calendar пуст или не удалось загрузить события, сэр."
+            return "В Google Calendar на ближайшую неделю событий нет, сэр."
         
         result = f"Загрузил {len(google_events)} событий из Google Calendar:\n"
         for event in google_events[:10]:  # Показываем первые 10
