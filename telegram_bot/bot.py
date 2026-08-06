@@ -421,8 +421,10 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"`/morning` · `/evening` — брифинг сейчас\n\n"
         f"*Память (я тебя помню)*\n"
         f"`/profile` — что я о тебе знаю\n"
+        f"`/facts` — досье по номерам\n"
         f"`/remember меня зовут Сардор`\n"
-        f"`/forget` — стереть всё обо мне\n\n"
+        f"`/forget 3` — убрать один неверный факт\n"
+        f"`/forget все` — стереть всё обо мне\n\n"
         f"*Личность*\n"
         f"`/mode друг` · `/mode ментор` · `/mode бизнес`\n"
         f"`/mode` — список и текущий режим\n\n"
@@ -938,15 +940,55 @@ async def cmd_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def cmd_forget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cmd_facts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Пронумерованное досье — чтобы неверный факт можно было назвать и убрать."""
     if not _is_authorized(update):
         return
     uid = update.effective_user.id
-    await memory.clear(uid)
-    gemini.clear_history(uid)
+    facts = await memory.get_facts(uid)
+    if not facts:
+        await update.effective_message.reply_text(
+            "Фактов о тебе пока нет. Общайся — я запоминаю сам, "
+            "или напиши `/remember <факт>`.", parse_mode="Markdown")
+        return
+    lines = "\n".join(f"{i}. {f}" for i, f in enumerate(facts, 1))
     await update.effective_message.reply_text(
-        "Стёр всё, что о тебе знал. Начинаем с чистого листа 🧹"
-    )
+        f"🧠 *Что я о тебе знаю* ({len(facts)}):\n{lines}\n\n"
+        "Что-то неверно? `/forget <номер>` — уберу только это.\n"
+        "`/forget все` — стереть всю память.",
+        parse_mode="Markdown")
+
+
+async def cmd_forget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Убрать один факт по номеру или (явным словом) всё досье целиком."""
+    if not _is_authorized(update):
+        return
+    uid = update.effective_user.id
+    arg = " ".join(ctx.args).strip().lower() if ctx.args else ""
+
+    if arg.isdigit():
+        gone = await memory.del_fact(uid, int(arg))
+        if gone:
+            await update.effective_message.reply_text(f"Забыл: «{gone}» 🧹")
+        else:
+            await update.effective_message.reply_text(
+                "Нет факта с таким номером. Посмотреть список: /facts")
+        return
+
+    # Полное стирание необратимо — раньше на это хватало голого /forget,
+    # набранного случайно. Теперь нужно сказать это словом.
+    if arg in ("все", "всё", "all"):
+        await memory.clear(uid)
+        gemini.clear_history(uid)
+        await update.effective_message.reply_text(
+            "Стёр всё, что о тебе знал. Начинаем с чистого листа 🧹")
+        return
+
+    await update.effective_message.reply_text(
+        "Что забыть?\n"
+        "`/forget <номер>` — один факт (номера: /facts)\n"
+        "`/forget все` — стереть всю память",
+        parse_mode="Markdown")
 
 
 # ── PC commands ────────────────────────────────────────────────────────────────

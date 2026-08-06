@@ -442,6 +442,27 @@ class MemoryStore:
         await self.ensure_loaded(uid)
         return list(self._cache[uid]["facts"])
 
+    async def del_fact(self, uid: int, index: int) -> str:
+        """Удалить ОДИН факт по его номеру в get_facts (с 1). Возвращает текст
+        удалённого или "" — если номера нет.
+
+        Досье пополняется автоматически, и ошибочный факт туда попасть может.
+        До этого единственным способом убрать один неверный факт было стереть
+        всю память целиком — за компанию с сотней верных.
+        """
+        facts = await self.get_facts(uid)
+        if not 1 <= index <= len(facts):
+            return ""
+        fact = facts[index - 1]
+        await self._exec("DELETE FROM facts WHERE user_id=? AND fact=?", (uid, fact))
+        # Текст факта лежит ещё и в эмбеддингах. Без этой строки удалённое
+        # вернулось бы обратно — через поиск по смыслу, прямо в промпт.
+        await self._exec("DELETE FROM embeddings WHERE user_id=? AND text=?", (uid, fact))
+        self._cache[uid]["facts"] = [f for f in self._cache[uid]["facts"] if f != fact]
+        from telegram_bot import memory_rag
+        memory_rag.forget_cached(uid)
+        return fact
+
     # ── tasks / calendar ─────────────────────────────────────────────────────────
 
     async def _load_tasks(self, uid: int) -> list:
