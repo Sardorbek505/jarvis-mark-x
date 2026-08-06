@@ -172,15 +172,21 @@ class MemoryStore:
         _SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._sqlite = await aiosqlite.connect(_SQLITE_PATH)
         await self._sqlite.executescript(_SCHEMA_SQLITE)
-        for _mig in (
-            "ALTER TABLE profile ADD COLUMN mode TEXT DEFAULT ''",
-            "ALTER TABLE contacts ADD COLUMN note TEXT DEFAULT ''",
+        # Досыпаем колонки, которых нет. Раньше ALTER выполнялся вслепую и на
+        # уже мигрированной базе падал ожидаемым "duplicate column name" —
+        # который логировался с полным трейсбеком. Такой шум при КАЖДОМ запуске
+        # фолбэка и прячет настоящие ошибки, ради которых лог и читают.
+        for table, column, ddl in (
+            ("profile", "mode", "ALTER TABLE profile ADD COLUMN mode TEXT DEFAULT ''"),
+            ("contacts", "note", "ALTER TABLE contacts ADD COLUMN note TEXT DEFAULT ''"),
         ):
             try:
-                await self._sqlite.execute(_mig)
-                await self._sqlite.commit()
+                cur = await self._sqlite.execute(f"PRAGMA table_info({table})")
+                have = {row[1] for row in await cur.fetchall()}
+                if column not in have:
+                    await self._sqlite.execute(ddl)
             except Exception as exc:
-                logger.warning("Подавлено исключение: %s", exc, exc_info=True)
+                logger.warning("Миграция %s.%s не прошла: %s", table, column, exc)
         await self._sqlite.commit()
         self._backend = "sqlite"
         logger.warning(

@@ -6,15 +6,21 @@ you"). The proactive loop poses ONE per day (daytime, never spammy); the answer
 is saved into the durable dossier as a fact.
 
 State (per user, in `meta`):
-  curio_asked   — JSON list of asked question ids (no repeats)
-  curio_pending — id of the question awaiting an answer (the user's next message)
-  curio_day     — date we last posed a question (one per day)
-  curio_off     — "1" if the user paused proactive questions
+  curio_asked      — JSON list of asked question ids (no repeats)
+  curio_pending    — id of the question awaiting an answer (the user's next message)
+  curio_pending_at — дата, когда вопрос РЕАЛЬНО ушёл пользователю
+  curio_day        — date we last posed a question (one per day)
+  curio_off        — "1" if the user paused proactive questions
 """
 import json
 import logging
+from datetime import date
 
 logger = logging.getLogger("jarvis-curiosity")
+
+
+def _today() -> str:
+    return date.today().isoformat()
 
 # Each: {"id", "q" (warm question), "fact" (prefix used when saving the answer)}.
 # Ordered roughly from light → deep so the relationship builds naturally.
@@ -91,17 +97,22 @@ async def next_question(memory, uid: int):
     return None
 
 
-async def pose(memory, uid: int):
-    """Pick the next unasked question, mark it asked, set it pending.
-    Returns the question text, or None if the bank is exhausted."""
-    q = await next_question(memory, uid)
-    if not q:
-        return None
+async def mark_asked(memory, uid: int, q: dict) -> None:
+    """Записать, что вопрос ЗАДАН. Вызывать только после успешной доставки.
+
+    Раньше это делалось до отправки (в pose): вопрос сгорал из банка и
+    помечался ожидающим ответа, а сообщение могло не уйти — 06.08 так и
+    случилось, DNS на хостинге моргнул. Последствия хуже самой потери:
+    вопрос про родителей числился заданным, и СЛЕДУЮЩАЯ фраза пользователя
+    («включи музыку») уходила в досье как «Родители: включи музыку» —
+    навсегда и в каждый будущий промпт. Плюс непустой curio_pending
+    насмерть глушил все дальнейшие вопросы.
+    """
     asked = await _asked(memory, uid)
     asked.add(q["id"])
     await memory.set_meta(uid, "curio_asked", json.dumps(sorted(asked)))
     await memory.set_meta(uid, "curio_pending", q["id"])
-    return q["q"]
+    await memory.set_meta(uid, "curio_pending_at", _today())
 
 
 async def save_answer(memory, uid: int, answer: str) -> bool:
@@ -110,7 +121,15 @@ async def save_answer(memory, uid: int, answer: str) -> bool:
     qid = await memory.get_meta(uid, "curio_pending")
     if not qid:
         return False
+    # Метка без даты осталась от старой версии, которая ставила её ДО отправки.
+    # Такой вопрос пользователь мог не увидеть — принимать за него «ответ»
+    # значит записать в память заведомую чушь. Молча снимаем.
+    if not await memory.get_meta(uid, "curio_pending_at"):
+        await memory.set_meta(uid, "curio_pending", "")
+        logger.info(f"curiosity: снял недоставленный вопрос {qid} для {uid}")
+        return False
     await memory.set_meta(uid, "curio_pending", "")
+    await memory.set_meta(uid, "curio_pending_at", "")
     q = _BY_ID.get(qid)
     answer = (answer or "").strip()
     if q and answer:
