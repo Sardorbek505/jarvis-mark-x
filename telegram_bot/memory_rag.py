@@ -107,7 +107,11 @@ def make_recall_provider(memory, gemini, recall_module):
         parts = []
         sem = await retrieve(memory, gemini, uid, text, k=6)
         if sem:
-            parts.append("РЕЛЕВАНТНОЕ ИЗ ТВОЕЙ ИСТОРИИ (ты говорил это раньше — "
+            # Индексируются ТОЛЬКО сообщения пользователя (см. _persist_exchange),
+            # а подпись гласила «ты говорил это раньше». В системном промпте «ты» —
+            # это сам ассистент, то есть чужие слова подавались ему как свои:
+            # реплика «мне 21 год» выглядела утверждением JARVIS о себе.
+            parts.append("ИЗ ПРОШЛЫХ СООБЩЕНИЙ ПОЛЬЗОВАТЕЛЯ (это его слова, не твои — "
                          "используй, если уместно): " + "; ".join(sem))
         try:
             kw = await recall_module.search(memory, uid, text)
