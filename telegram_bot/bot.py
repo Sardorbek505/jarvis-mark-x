@@ -1124,23 +1124,39 @@ _PC_OFFLINE = (
 
 
 async def _run_pc(message, command: str, user_id: int, *,
-                  timeout: float = 25.0, action: str = "typing") -> None:
+                  timeout: float = 25.0, action: str = "typing",
+                  quiet_if_unknown: bool = False) -> bool:
     """Единственный путь «послать команду на ПК и ответить пользователю».
 
     Раньше это делали шесть обработчиков, каждый по-своему: одни звали
     send_command (только текст) и теряли снимок, другие send_command_full;
     сообщение «ПК офлайн» жило в десяти формулировках. Отсюда и то, что
     «сделай скриншот» присылал «✅» без картинки, а /pc — до сих пор.
+
+    Возвращает False, если ПК команду не узнал и просили промолчать: тогда
+    вызывающий продолжает обычный разговор. Это нужно потому, что на ПК
+    сообщение отправляет эвристика по ключевым словам, а она ошибается —
+    «громкость голоса у неё приятная» не команда, но слово «громкость» в
+    ней есть. Промах эвристики должен быть незаметен, а не отвечать
+    человеку «Не понял команду».
     """
     if not bridge.connected:
+        # Про офлайн говорим всегда. Узнать, была ли это настоящая команда,
+        # можно только у самого ПК, а он недоступен; промолчать здесь значит
+        # оставить человека думать, что просьбу про скриншот просто
+        # проигнорировали.
         await message.reply_text(_PC_OFFLINE, parse_mode="Markdown")
-        return
+        return True
     try:
         await message.chat.send_action(action)
     except Exception as exc:
         logger.debug("Индикатор набора не показался: %s", exc)
     result = await bridge.send_command_full(command, user_id, timeout=timeout)
+    if quiet_if_unknown and (result or {}).get("unknown"):
+        logger.info("ПК не узнал «%s» — продолжаю разговором", command)
+        return False
     await _reply_pc_result(message, result)
+    return True
 
 
 async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1382,9 +1398,13 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # else: not a parseable single reminder → let the inbox sort it
 
         # 2. PC command?
+        # Сюда попадают и обычные фразы: шлюз ищет ключевые слова, а «громкость
+        # голоса у неё приятная» их содержит. Если ПК команду не узнал —
+        # продолжаем разговором, а не показываем человеку «Не понял команду».
         if _looks_like_pc_command(text):
-            await _run_pc(update.effective_message, text, user_id)
-            return
+            if await _run_pc(update.effective_message, text, user_id,
+                             quiet_if_unknown=True):
+                return
 
         # 3. Gemini conversation (with long-term memory). JARVIS may decide to
         #    create reminders/tasks/habits or send a message to a contact —
