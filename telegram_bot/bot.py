@@ -1528,22 +1528,8 @@ async def _on_notification(text: str, user_id: int = None, bot=None):
 # ── Reminder loop ──────────────────────────────────────────────────────────────
 
 async def _reminder_loop(bot):
-    while True:
-        try:
-            await asyncio.sleep(30)
-            for r in await memory.get_due_reminders(rem.now_utc_iso()):
-                try:
-                    await bot.send_message(
-                        chat_id=r["user_id"],
-                        text=f"🔔 Напоминание: {r['text']}"
-                    )
-                    await memory.mark_reminder_sent(r["id"])
-                except Exception as e:
-                    logger.error(f"Reminder send: {e}")
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error(f"Reminder loop: {e}")
+    # Сама доставка живёт в reminders.delivery_loop — общая с render_app.
+    await rem.delivery_loop(bot, memory, logger)
 
 
 # ── Startup ────────────────────────────────────────────────────────────────────

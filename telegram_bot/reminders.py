@@ -19,6 +19,40 @@ def now_utc_iso() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 
+async def delivery_loop(bot, memory, logger, every: float = 30.0):
+    """Одна доставка напоминаний на оба входа — бот и вебхук-сервер.
+
+    Копий было две: в bot.py и в render_app.py. Сейчас они совпадали строка
+    в строку, но именно так в этом проекте уже расходились пути (ради чего
+    появился context_builder), и чинить пришлось бы дважды.
+
+    Порядок важен: сначала отправка, отметка «доставлено» — после. Упавшая
+    отправка (сегодня на хостинге моргал DNS) оставит напоминание в очереди
+    и повторит через полминуты, а не потеряет молча.
+    """
+    import asyncio
+    while True:
+        try:
+            await asyncio.sleep(every)
+            for r in await memory.get_due_reminders(now_utc_iso()):
+                try:
+                    await bot.send_message(chat_id=r["user_id"],
+                                           text=f"🔔 Напоминание: {r['text']}")
+                except Exception as e:
+                    logger.error(f"Reminder send: {e}")
+                    continue
+                try:
+                    await memory.mark_reminder_sent(r["id"])
+                except Exception as e:
+                    # Доставлено, но не отмечено — иначе то же напоминание
+                    # придёт снова через полминуты, и так по кругу.
+                    logger.error(f"Reminder mark sent (id={r['id']}): {e}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Reminder loop: {e}")
+
+
 def to_utc_iso(when: datetime) -> str:
     """Convert a (possibly tz-aware) local datetime to a naive-UTC ISO string."""
     if when.tzinfo is not None:
