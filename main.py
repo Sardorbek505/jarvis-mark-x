@@ -60,7 +60,10 @@ from actions.obsidian import obsidian_action
 from core import (
     translate_text,
     get_translation_history,
-    search_translations
+    search_translations,
+    set_language_enabled,
+    set_default_language,
+    set_learning_mode
 )
 
 
@@ -535,6 +538,17 @@ TOOLS = [
                 "priority": {
                     "type": "STRING",
                     "description": "Приоритет: high | medium | low (для add_task)"
+                },
+                # Код читал эти два поля с самого начала, а модели их не объявили —
+                # значит проекты создавались без описания, а задачи без исполнителя,
+                # и повлиять на это было нельзя никакими словами.
+                "description": {
+                    "type": "STRING",
+                    "description": "Описание проекта (для add_project)"
+                },
+                "assignee": {
+                    "type": "STRING",
+                    "description": "Кому поручена задача (для add_task)"
                 }
             },
             "required": ["action"]
@@ -903,7 +917,8 @@ class Jarvis:
             key = args.get("key", "")
             val = args.get("value", "")
             if key and val:
-                update_memory({cat: {key: {"value": val}}})
+                # Запись на диск — в поток: этот же цикл гонит звук в Live API.
+                await asyncio.to_thread(update_memory, {cat: {key: {"value": val}}})
                 print(f"[Память] 💾 {cat}/{key} = {val}")
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
@@ -1071,104 +1086,82 @@ class Jarvis:
                 result = r or "Готово."
 
             # ── Инструмент: перевод ─────────────────────────────────
+            #
+            # Раньше все настройки языков правились здесь руками по ключам
+            # "enabled_languages" и "default_language", которых в файле нет:
+            # включение языка гарантированно падало с KeyError, а смена языка
+            # по умолчанию писала мимо схемы и бодро рапортовала об успехе.
+            # Схемой владеет translation_manager — операции живут там.
+            #
+            # Плюс сам перевод — это сетевой запрос к Gemini, а он выполнялся
+            # прямо в событийном цикле, который в это же время гонит микрофон
+            # в Live API. Всё, что лезет в сеть или на диск, уходит в поток.
             elif name == "translation":
                 action = args.get("action", "")
-                
+                lang = args.get("language") or args.get("target_language") or ""
+
                 if action == "translate":
                     text = args.get("text", "")
                     target_lang = args.get("target_language", "english")
                     if text:
-                        translated = translate_text(text, target_lang)
+                        translated = await loop.run_in_executor(
+                            None, lambda: translate_text(text, target_lang)
+                        )
                         result = f"Перевод на {target_lang}: {translated}"
                     else:
                         result = "Укажите текст для перевода."
-                
+
                 elif action == "history":
                     date_range = args.get("date_range", "all")
-                    history = get_translation_history(date_range)
+                    history = await loop.run_in_executor(
+                        None, lambda: get_translation_history(date_range)
+                    )
                     if history:
                         result = f"История переводов ({date_range}): {len(history)} записей. Последний: {history[0].get('translation', 'N/A')}"
                     else:
                         result = f"История переводов ({date_range}) пуста."
-                
+
                 elif action == "search":
                     query = args.get("query", "")
                     if query:
-                        results = search_translations(query)
+                        results = await loop.run_in_executor(
+                            None, lambda: search_translations(query)
+                        )
                         if results:
                             result = f"Найдено переводов: {len(results)}. Первый: {results[0].get('translation', 'N/A')}"
                         else:
                             result = f"Переводы по запросу '{query}' не найдены."
                     else:
                         result = "Укажите поисковый запрос."
-                
+
                 elif action == "enable_learning":
-                    lang = args.get("language", "english")
-                    # Загрузка настроек
-                    pref_path = BASE_DIR / "config" / "translation_preferences.json"
-                    try:
-                        with open(pref_path, "r", encoding="utf-8") as f:
-                            prefs = json.load(f)
-                        prefs["learning_mode"]["enabled"] = True
-                        prefs["learning_mode"]["target_language"] = lang
-                        with open(pref_path, "w", encoding="utf-8") as f:
-                            json.dump(prefs, f, ensure_ascii=False, indent=2)
-                        result = f"Включил режим изучения {lang}."
-                    except Exception as e:
-                        result = f"Ошибка включения режима изучения: {e}"
-                
+                    code = await loop.run_in_executor(
+                        None, lambda: set_learning_mode(True, lang or "english")
+                    )
+                    result = (f"Включил режим изучения: {code}." if code
+                              else f"Не знаю язык '{lang}' — назовите другой.")
+
                 elif action == "disable_learning":
-                    pref_path = BASE_DIR / "config" / "translation_preferences.json"
-                    try:
-                        with open(pref_path, "r", encoding="utf-8") as f:
-                            prefs = json.load(f)
-                        prefs["learning_mode"]["enabled"] = False
-                        with open(pref_path, "w", encoding="utf-8") as f:
-                            json.dump(prefs, f, ensure_ascii=False, indent=2)
-                        result = "Отключил режим изучения языков."
-                    except Exception as e:
-                        result = f"Ошибка отключения режима изучения: {e}"
-                
+                    ok = await loop.run_in_executor(None, lambda: set_learning_mode(False))
+                    result = ("Отключил режим изучения языков." if ok is not None
+                              else "Не смог сохранить настройки изучения.")
+
                 elif action == "set_default_language":
-                    lang = args.get("language", "english")
-                    pref_path = BASE_DIR / "config" / "translation_preferences.json"
-                    try:
-                        with open(pref_path, "r", encoding="utf-8") as f:
-                            prefs = json.load(f)
-                        prefs["default_language"] = lang
-                        with open(pref_path, "w", encoding="utf-8") as f:
-                            json.dump(prefs, f, ensure_ascii=False, indent=2)
-                        result = f"Установил язык по умолчанию: {lang}."
-                    except Exception as e:
-                        result = f"Ошибка установки языка по умолчанию: {e}"
-                
-                elif action == "enable_language":
-                    lang = args.get("language", "english")
-                    pref_path = BASE_DIR / "config" / "translation_preferences.json"
-                    try:
-                        with open(pref_path, "r", encoding="utf-8") as f:
-                            prefs = json.load(f)
-                        if lang not in prefs["enabled_languages"]:
-                            prefs["enabled_languages"].append(lang)
-                        with open(pref_path, "w", encoding="utf-8") as f:
-                            json.dump(prefs, f, ensure_ascii=False, indent=2)
-                        result = f"Включил язык: {lang}."
-                    except Exception as e:
-                        result = f"Ошибка включения языка: {e}"
-                
-                elif action == "disable_language":
-                    lang = args.get("language", "english")
-                    pref_path = BASE_DIR / "config" / "translation_preferences.json"
-                    try:
-                        with open(pref_path, "r", encoding="utf-8") as f:
-                            prefs = json.load(f)
-                        if lang in prefs["enabled_languages"]:
-                            prefs["enabled_languages"].remove(lang)
-                        with open(pref_path, "w", encoding="utf-8") as f:
-                            json.dump(prefs, f, ensure_ascii=False, indent=2)
-                        result = f"Отключил язык: {lang}."
-                    except Exception as e:
-                        result = f"Ошибка отключения языка: {e}"
+                    code = await loop.run_in_executor(
+                        None, lambda: set_default_language(lang)
+                    )
+                    result = (f"Язык по умолчанию теперь {code}." if code
+                              else f"Не знаю язык '{lang}' — назовите другой.")
+
+                elif action in ("enable_language", "disable_language"):
+                    on = action == "enable_language"
+                    code = await loop.run_in_executor(
+                        None, lambda: set_language_enabled(lang, on)
+                    )
+                    if not code:
+                        result = f"Не знаю язык '{lang}' — назовите другой."
+                    else:
+                        result = f"{'Включил' if on else 'Отключил'} язык: {code}."
                 else:
                     result = "Не понял команду перевода."
 

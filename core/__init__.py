@@ -21,7 +21,11 @@ from .translation_manager import (
     ContextMemory,
     translate_text,
     get_translation_history,
-    search_translations
+    search_translations,
+    resolve_language_code,
+    set_language_enabled,
+    set_default_language,
+    set_learning_mode
 )
 
 __all__ = [
@@ -43,5 +47,9 @@ __all__ = [
     'ContextMemory',
     'translate_text',
     'get_translation_history',
-    'search_translations'
+    'search_translations',
+    'resolve_language_code',
+    'set_language_enabled',
+    'set_default_language',
+    'set_learning_mode'
 ]
