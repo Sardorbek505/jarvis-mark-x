@@ -15,14 +15,34 @@ from functools import lru_cache
 from typing import Iterable
 
 
+# Несклоняемые ключи: окончаний у них не бывает, поэтому и хвост не нужен.
+# Именно свободный хвост превращал «стоп» в «стопку» и «стопор». Латиница в
+# русском тексте падежей тоже не набирает, так что все английские команды сюда.
+_EXACT_RU = frozenset({"стоп"})
+_LATIN = re.compile(r"^[a-z][a-z-]*$", re.I)
+
+# Сколько букв разрешено дописать к ключу-основе. Русское окончание короткое:
+# «камер» + «у/ой/ы/е». Три буквы уже впускают другую часть речи — «камер» +
+# «ная» даёт «камерная», и безобидная фраза про камерную музыку уходила
+# включать веб-камеру. Замерено: на ≤2 не теряется ни одна настоящая команда.
+_MAX_ENDING = 2
+
+
+def _is_exact(key: str) -> bool:
+    return key in _EXACT_RU or bool(_LATIN.match(key))
+
+
 @lru_cache(maxsize=64)
 def _compile(keys: tuple[str, ...]) -> re.Pattern:
-    # (?<!\w) — ключ обязан начинаться на границе слова; конец свободен,
-    # чтобы работали окончания.
-    return re.compile(
-        r"(?<!\w)(?:" + "|".join(re.escape(k) for k in keys) + r")",
-        re.IGNORECASE,
-    )
+    # (?<!\w) — ключ обязан начинаться на границе слова.
+    parts = []
+    for k in keys:
+        esc = re.escape(k)
+        if _is_exact(k):
+            parts.append(esc + r"(?!\w)")
+        else:
+            parts.append(esc + r"[а-яё]{0,%d}(?![а-яёa-z])" % _MAX_ENDING)
+    return re.compile(r"(?<!\w)(?:" + "|".join(parts) + r")", re.IGNORECASE)
 
 
 def matches(text: str, keys: Iterable[str]) -> bool:
