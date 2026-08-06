@@ -139,6 +139,20 @@ class PCBridge:
     async def send_command_full(self, text: str, user_id: int, timeout: float = 25.0) -> Optional[dict]:
         return await self._send(text, user_id, timeout)
 
+    @staticmethod
+    def delivered(res: Optional[dict]) -> bool:
+        """Ушло ли сообщение адресату.
+
+        Новые клиенты присылают "ok" явно. Пока на домашнем ПК крутится сборка
+        постарше, признаём и прежний способ — слово в тексте: сервер и клиент
+        обновляются порознь, и на время рассинхрона очередь должна работать.
+        """
+        if not res:
+            return False
+        if "ok" in res:
+            return bool(res["ok"])
+        return "Отправлено" in (res.get("text") or "")
+
     async def send_userbot(self, target: str, text: str, as_voice: bool,
                            user_id: int, timeout: float = 30.0) -> Optional[dict]:
         """Ask the home PC's Telethon userbot to deliver an outbound message.
