@@ -1,0 +1,113 @@
+"""Пропажа звукового устройства не должна делать Джарвиса немым навсегда.
+
+06.08 в живом запуске: `stream.write` упал с MME error 6 («There is no
+driver installed on your system») — устройство на секунду стало недоступно.
+Цикл воспроизведения сидел ВНУТРИ try, finally закрывал поток, и задача
+завершалась. Пересоздавать её было некому: _play_audio создаётся единожды
+в TaskGroup, а комментарий рядом обещал «let the task be recreated».
+
+Снаружи это выглядело как «слышит, но не говорит»: распознавание работало,
+ответы генерировались, звука не было до перезапуска.
+"""
+import asyncio
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import main as jarvis_main
+
+
+class _Stream:
+    """Поток вывода, который падает на N-й записи."""
+
+    def __init__(self, fail_at=None):
+        self.written = []
+        self._n = 0
+        self._fail_at = fail_at
+        self.closed = False
+
+    def write(self, chunk):
+        self._n += 1
+        if self._fail_at and self._n == self._fail_at:
+            raise RuntimeError("Unanticipated host error [MME error 6]")
+        self.written.append(chunk)
+
+    def stop(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+class _Stub:
+    """Минимальный носитель состояния для _play_audio."""
+
+    def __init__(self, streams):
+        self._streams = list(streams)
+        self.opened = []
+        self.audio_in_queue = asyncio.Queue()
+        self._turn_done_event = asyncio.Event()
+        self.ui = SimpleNamespace(write_log=lambda *a: None)
+        self.speaking = []
+
+    def _open_output(self):
+        s = self._streams.pop(0)
+        self.opened.append(s)
+        return s
+
+    def set_speaking(self, v):
+        self.speaking.append(v)
+
+
+async def _run_playback(stub, chunks, seconds=0.4, retry=0.02):
+    # Пауза перед переоткрытием — секунда в бою, здесь незачем её ждать.
+    jarvis_main._PLAYBACK_RETRY_SEC = retry
+    play = jarvis_main.Jarvis._play_audio.__get__(stub, jarvis_main.Jarvis)
+    task = asyncio.create_task(play())
+    for c in chunks:
+        await stub.audio_in_queue.put(c)
+    await asyncio.sleep(seconds)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    return task
+
+
+@pytest.mark.asyncio
+async def test_звук_доходит_до_устройства():
+    stub = _Stub([_Stream()])
+    await _run_playback(stub, [b"\x01\x02", b"\x03\x04"])
+    assert stub.opened[0].written == [b"\x01\x02", b"\x03\x04"]
+
+
+@pytest.mark.asyncio
+async def test_после_сбоя_устройство_переоткрывается():
+    """Главное: задача не завершается, а берёт новый поток."""
+    broken, good = _Stream(fail_at=1), _Stream()
+    stub = _Stub([broken, good])
+    await _run_playback(stub, [b"\x01\x02", b"\x03\x04"])
+
+    assert len(stub.opened) >= 2, "поток должен быть открыт заново"
+    assert broken.closed, "сломанный поток закрыт"
+    assert good.written, "после переоткрытия звук снова идёт"
+
+
+@pytest.mark.asyncio
+async def test_сбой_не_завершает_задачу():
+    stub = _Stub([_Stream(fail_at=1), _Stream(), _Stream()])
+    task = await _run_playback(stub, [b"\x01\x02"])
+    assert task.cancelled(), "задача жила до самой отмены, а не умерла сама"
+
+
+@pytest.mark.asyncio
+async def test_отмена_не_считается_сбоем():
+    """CancelledError должен пробрасываться, а не уходить в переоткрытие."""
+    stub = _Stub([_Stream() for _ in range(3)])
+    await _run_playback(stub, [], seconds=0.15)
+    assert len(stub.opened) == 1, "устройство не должно переоткрываться на пустой очереди"

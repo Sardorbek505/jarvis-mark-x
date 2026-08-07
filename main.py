@@ -83,6 +83,61 @@ LIVE_MODEL        = "models/gemini-2.5-flash-native-audio-latest"
 CHANNELS          = 1
 SEND_SAMPLE_RATE  = 16000
 RECV_SAMPLE_RATE  = 24000
+# Пауза перед переоткрытием звукового устройства после сбоя записи. Короче —
+# бьёмся в устройство, которое ещё не освободилось; длиннее — заметная дыра
+# в речи, ведь ответ в это время уже идёт.
+_PLAYBACK_RETRY_SEC = 1.0
+
+# Микрофон с аппаратным шумоподавлением, если он есть в системе.
+#
+# Обычный микрофон слышит комнату целиком — включая музыку из собственных
+# динамиков ноутбука. В логе это выглядело так: Джарвис прилежно расшифровывал
+# узбекскую песню и отвечал ей, а живую речь рядом не разбирал. Программный
+# порог громкости тут бессилен: замерено, музыка даёт RMS 7000-14000, ровно
+# как речь, и по громкости они неразличимы.
+#
+# У ASUS (Intelligo) и у ряда ноутбуков есть отдельное устройство ввода с
+# подавлением фона на уровне драйвера — оно вычитает и звук своих динамиков.
+# Берём его, если найдётся; MIC_DEVICE позволяет задать вручную.
+_NOISE_CANCEL_HINTS = ("noise-cancelling", "noise cancelling", "noise-canceling",
+                       "шумоподавлен")
+
+# Сколько тишины ждать, прежде чем считать фразу законченной. По умолчанию
+# модель ждёт около секунды — это и есть та самая пауза перед ответом.
+_VAD_SILENCE_MS = int(os.getenv("VAD_SILENCE_MS", "400"))
+_VAD_PREFIX_MS = int(os.getenv("VAD_PREFIX_MS", "120"))
+
+# Выше какого уровня в динамиках микрофон не слушаем.
+#
+# 0.02 — это уже отчётливо слышный звук, а не остаточный шум звуковой карты.
+# Пока компьютер играет, всё, что берёт микрофон, — это его же собственный
+# вывод, отражённый от стен. Отличить его от речи по громкости невозможно
+# (замерено: и музыка, и голос дают RMS 7000-14000), поэтому во время
+# воспроизведения микрофон молчит. MIC_IGNORE_SPEAKERS=0 отключает защиту.
+_SPEAKER_GATE = float(os.getenv("SPEAKER_GATE", "0.02"))
+_IGNORE_SPEAKERS = os.getenv("MIC_IGNORE_SPEAKERS", "1") != "0"
+
+
+def _pick_input_device():
+    """Индекс микрофона: из MIC_DEVICE, иначе с шумоподавлением, иначе None."""
+    manual = os.getenv("MIC_DEVICE", "").strip()
+    if manual:
+        try:
+            return int(manual)
+        except ValueError:
+            for i, d in enumerate(sd.query_devices()):
+                if d["max_input_channels"] > 0 and manual.lower() in d["name"].lower():
+                    return i
+            logger.warning("MIC_DEVICE=%r не найден — беру системный по умолчанию", manual)
+            return None
+    for i, d in enumerate(sd.query_devices()):
+        if d["max_input_channels"] <= 0:
+            continue
+        name = d["name"].lower()
+        if any(h in name for h in _NOISE_CANCEL_HINTS):
+            logger.info("Микрофон с шумоподавлением: «%s»", d["name"])
+            return i
+    return None
 CHUNK_SIZE        = 1024
 
 # Порог тишины для микрофона (RMS по int16). Ниже него кадры в облако не
@@ -710,6 +765,7 @@ class Jarvis:
         self._loop           = None
         self._is_speaking    = False
         self._speaking_lock  = threading.Lock()
+        self._speaker_meter  = None   # см. _listen_audio: не слушаем свои динамики
         self._turn_done_event: asyncio.Event | None = None
 
         # Новый мозг ДЖАРВИС
@@ -863,6 +919,20 @@ class Jarvis:
             system_instruction="\n".join(parts),
             tools=[{"function_declarations": TOOLS}],
             session_resumption=types.SessionResumptionConfig(),
+            # Когда считать, что человек договорил.
+            #
+            # По умолчанию модель ждёт около секунды тишины — отсюда пауза
+            # перед каждым ответом. Порог опущен до 400 мс и включена высокая
+            # чувствительность к концу речи: ответ начинается почти сразу.
+            # Ниже 300 мс модель начинает перебивать на паузах внутри фразы.
+            realtime_input_config=types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    silence_duration_ms=_VAD_SILENCE_MS,
+                    prefix_padding_ms=_VAD_PREFIX_MS,
+                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                ),
+            ),
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -1262,6 +1332,15 @@ class Jarvis:
         print("[ДЖАРВИС] 🎤 Микрофон запущен")
         loop = asyncio.get_event_loop()
 
+        if self._speaker_meter is None and _IGNORE_SPEAKERS:
+            from speaker_meter import SpeakerMeter
+            meter = SpeakerMeter()
+            if meter.start():
+                self._speaker_meter = meter
+                self.ui.write_log("SYS: свои динамики микрофон не слушает")
+            else:
+                self.ui.write_log("SYS: уровень динамиков недоступен — слушаю всё")
+
         def _put_nowait_safe(item):
             try:
                 self.out_queue.put_nowait(item)
@@ -1272,6 +1351,11 @@ class Jarvis:
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
             if jarvis_speaking or self.ui.muted:
+                return
+            # Из динамиков сейчас что-то играет — значит микрофон слышит это,
+            # а не человека. Читаем готовое число: COM из аудио-колбэка звать
+            # нельзя, замер идёт в своём потоке.
+            if self._speaker_meter is not None and self._speaker_meter.peak > _SPEAKER_GATE:
                 return
             if not self._is_loud_enough(indata):
                 return
@@ -1286,6 +1370,7 @@ class Jarvis:
                 channels=CHANNELS,
                 dtype="int16",
                 blocksize=CHUNK_SIZE,
+                device=_pick_input_device(),
                 callback=callback,
             ):
                 print("[ДЖАРВИС] 🎤 Поток микрофона открыт")
@@ -1443,41 +1528,81 @@ class Jarvis:
             await asyncio.sleep(1)
 
     # ── Воспроизведение аудио ─────────────────────────────────────────────────
-    async def _play_audio(self):
-        print("[ДЖАРВИС] 🔊 Воспроизведение запущено")
-        stream = sd.RawOutputStream(
-            samplerate=RECV_SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            blocksize=CHUNK_SIZE,
-        )
-        stream.start()
+    def _open_output(self):
+        """Поток вывода: сначала устройство по умолчанию, потом любое рабочее.
+
+        Устройство по умолчанию может существовать в списке и при этом не
+        играть — Windows держит «Наушники» в endpoint'ах, когда их физически
+        нет, MME открывает такой поток молча и падает уже на записи с
+        «There is no driver installed on your system».
+        """
+        def _try(device):
+            s = sd.RawOutputStream(samplerate=RECV_SAMPLE_RATE, channels=CHANNELS,
+                                   dtype="int16", blocksize=CHUNK_SIZE, device=device)
+            s.start()
+            s.write(b"\x00" * (CHUNK_SIZE * 2))   # тишина: проверяем, что ПИШЕТСЯ
+            return s
 
         try:
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(self.audio_in_queue.get(), timeout=0.1)
-                except asyncio.TimeoutError:
-                    if (self._turn_done_event
-                            and self._turn_done_event.is_set()
-                            and self.audio_in_queue.empty()):
-                        self.set_speaking(False)
-                        self._turn_done_event.clear()
-                    continue
+            return _try(None)
+        except Exception as exc:
+            logger.warning("Устройство вывода по умолчанию не играет: %s", exc)
 
-                self.set_speaking(True)
-                await asyncio.to_thread(stream.write, chunk)
+        for idx, dev in enumerate(sd.query_devices()):
+            if dev["max_output_channels"] < CHANNELS:
+                continue
+            try:
+                stream = _try(idx)
+            except Exception:
+                continue
+            logger.warning("Звук переключён на «%s»", dev["name"])
+            self.ui.write_log(f"SYS: звук через «{dev['name'][:32]}»")
+            return stream
+        raise RuntimeError("ни одно устройство вывода не принимает звук")
 
-        except Exception as e:
-            logger.error(f"Playback error: {e}")
-            traceback.print_exc()
-            # Don't raise - let the task be recreated
-            # Brief pause before attempting to continue
-            await asyncio.sleep(1)
-        finally:
-            self.set_speaking(False)
-            stream.stop()
-            stream.close()
+    async def _play_audio(self):
+        """Воспроизведение ответа. Переживает пропажу звукового устройства.
+
+        Раньше цикл сидел ВНУТРИ try, а finally закрывал поток: одна ошибка
+        записи — вынутые наушники, переключение устройства в Windows — и
+        задача завершалась навсегда. Комментарий обещал «let the task be
+        recreated», но пересоздавать её было некому: _play_audio создаётся
+        единожды в TaskGroup. Джарвис немел до перезапуска, продолжая при
+        этом слушать и отвечать текстом — со стороны выглядело как «сломался
+        голос».
+        """
+        print("[ДЖАРВИС] 🔊 Воспроизведение запущено")
+        while True:
+            stream = None
+            try:
+                stream = await asyncio.to_thread(self._open_output)
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(self.audio_in_queue.get(), timeout=0.1)
+                    except asyncio.TimeoutError:
+                        if (self._turn_done_event
+                                and self._turn_done_event.is_set()
+                                and self.audio_in_queue.empty()):
+                            self.set_speaking(False)
+                            self._turn_done_event.clear()
+                        continue
+
+                    self.set_speaking(True)
+                    await asyncio.to_thread(stream.write, chunk)
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("Воспроизведение оборвалось (%s) — переоткрываю устройство", e)
+                self.ui.write_log("SYS: звук отвалился, переподключаю устройство…")
+                await asyncio.sleep(_PLAYBACK_RETRY_SEC)
+            finally:
+                self.set_speaking(False)
+                if stream is not None:
+                    try:
+                        stream.stop(); stream.close()
+                    except Exception as exc:
+                        logger.debug("Закрытие потока вывода: %s", exc)
 
     # ── Основной цикл ─────────────────────────────────────────────────────────
     async def run(self):
