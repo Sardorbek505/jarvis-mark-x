@@ -143,9 +143,10 @@ class HudCanvas(QWidget):
         self.setMinimumSize(300, 300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        # Пока нет активационного слова — стартуем молча, иначе Джарвис
-        # отвечает на музыку и разговоры в комнате. Ctrl+M включает.
-        self.muted    = True
+        # Микрофон включён сразу: собственные динамики он больше не слушает
+        # (см. speaker_meter.py), а раньше приходилось стартовать молча —
+        # иначе Джарвис отвечал музыке. Выключить: Ctrl+M.
+        self.muted    = False
         self.speaking = False
         self.state    = "ИНИЦИАЛИЗАЦИЯ"
 
@@ -841,7 +842,7 @@ class MainWindow(QMainWindow):
             QSplitter::handle {{ background: {C.BORDER}; }}
         """)
 
-        self.muted = True
+        self.muted = False        # см. комментарий выше — микрофон слушает сразу
         self.current_file: str | None = None
         self.on_text_command = None
 
