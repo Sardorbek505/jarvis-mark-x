@@ -85,38 +85,43 @@ class InitiativeEngine:
 
         initiatives = []
 
+        # Реплики держат характер Джарвиса из фильмов: он предлагает конкретное
+        # действие, а не объявляет диагноз. «Сэр, я вижу вам грустно» — то, чего
+        # он не говорит никогда: забота у него в поступке, а не в сочувствии
+        # вслух. Тон сверяется с core/prompt.txt, эти два места должны совпадать.
         if emotion == "sad":
             favorite_comedy = preferences.get("favorite_comedy")
             if favorite_comedy:
-                initiatives.append(f"Сэр, я вижу вам грустно. Может, включить {favorite_comedy}?")
-            initiatives.append("Сэр, мне кажется вам грустно. Может, включить КВН для поднятия настроения?")
-            initiatives.append("Сэр, хочу поднять вам настроение. Может, поставить что-то весёлое?")
+                initiatives.append(f"Могу поставить {favorite_comedy}, сэр. Помогало.")
+            initiatives.append("Вечер выдался так себе, сэр. Включить что-нибудь лёгкое?")
+            initiatives.append("Могу сменить обстановку, сэр — музыку или комедию.")
 
         elif emotion == "bored":
             favorite_movie = preferences.get("favorite_movie")
             if favorite_movie:
-                initiatives.append(f"Сэр, вам скучно. Может, посмотреть {favorite_movie}?")
-            initiatives.append("Сэр, вам скучно. Может, посмотреть фильм?")
-            initiatives.append("Сэр, чем заняться? Может, включу музыку?")
+                initiatives.append(f"{favorite_movie} всё ещё не досмотрен, сэр.")
+            initiatives.append("Тишина, сэр. Фильм или музыка?")
+            initiatives.append("Могу предложить фильм, сэр, если вечер свободен.")
 
         elif emotion == "stressed":
-            initiatives.append("Сэр, я вижу вы в стрессе. Может, сделать перерыв?")
-            initiatives.append("Сэр, давайте передохнём минут 10. Включить спокойную музыку?")
-            initiatives.append("Сэр, у вас много дел. Может, я помогу расставить приоритеты?")
+            initiatives.append("Дел много, сэр. Разобрать по важности?")
+            initiatives.append("Могу отложить второстепенное на завтра, сэр.")
+            initiatives.append("Десять минут тишины, сэр — и продолжим.")
 
         elif emotion == "tired":
-            initiatives.append("Сэр, вы выглядите уставшим. Может, отдохнуть?")
-            initiatives.append("Сэр, пора спать? Может, выключить всё и лечь?")
-            initiatives.append("Сэр, сил нет? Может, включу что-то спокойное и вы отдохнёте?")
+            initiatives.append("Час поздний, сэр. Погасить всё?")
+            initiatives.append("День был длинный, сэр. Могу выключить лишнее.")
+            initiatives.append("Рекомендую остановиться, сэр. Дальше толку не будет.")
 
         elif emotion == "happy":
-            initiatives.append("Сэр, я вижу у вас отличное настроение! Рад за вас!")
-            initiatives.append("Сэр, вам хорошо! Может, продолжим в том же духе?")
+            initiatives.append("Заслуженно, сэр.")
+            initiatives.append("Приятно видеть, сэр.")
 
         elif emotion == "neutral" and random.random() < 0.1:
-            # Иногда проявляем инициативу даже при нейтральной эмоции
-            initiatives.append("Сэр, чем могу помочь?")
-            initiatives.append("Сэр, есть идеи для вечера?")
+            # Джарвис не спрашивает «чем помочь?» от скуки — он сообщает факт
+            # и оставляет ход за хозяином.
+            initiatives.append("Я здесь, сэр.")
+            initiatives.append("Всё тихо, сэр.")
 
         if initiatives:
             return random.choice(initiatives)
@@ -141,25 +146,26 @@ class InitiativeEngine:
         # Утро (6-10)
         if 6 <= hour < 10:
             if not current_activity:
-                return "Сэр, доброе утро! Чем займёмся сегодня?"
+                return "Доброе утро, сэр. Брифинг готов."
 
         # День (10-18)
         elif 10 <= hour < 18:
             if not current_activity:
-                return "Сэр, как проходит день? Чем помочь?"
+                return "Я здесь, сэр."
 
         # Вечер (18-22)
         elif 18 <= hour < 22:
             if not current_activity:
                 preferences = user_profile.get("preferences", {})
                 if preferences.get("favorite_movie"):
-                    return f"Сэр, вечер! Может, посмотреть {preferences['favorite_movie']}?"
-                return "Сэр, вечер! Чем заняться? Фильм или музыка?"
+                    return f"Вечер, сэр. {preferences['favorite_movie']} всё ещё ждёт."
+                return "Вечер, сэр. Фильм или музыка?"
 
         # Ночь (22-6)
         elif 22 <= hour or hour < 6:
             if not current_activity:
-                return "Сэр, поздно. Может, пора спать?"
+                # Точное время, а не «поздно»: Джарвис говорит числами.
+                return f"{current_time.strftime('%H:%M')}, сэр. Рекомендую остановиться."
 
         return None
 
