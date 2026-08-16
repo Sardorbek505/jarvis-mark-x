@@ -62,20 +62,20 @@ def test_незнакомый_язык_не_выдумывается(prefs_file)
 # ── включение/выключение языка (раньше: KeyError на каждый вызов) ────────────
 def test_включение_языка_доходит_до_файла(prefs_file):
     assert tm.set_language_enabled("French", True) == "fr"
-    langs = {l["code"]: l["enabled"] for l in read(prefs_file)["target_languages"]}
+    langs = {lang["code"]: lang["enabled"] for lang in read(prefs_file)["target_languages"]}
     assert langs["fr"] is True
 
 
 def test_выключение_языка_доходит_до_файла(prefs_file):
     assert tm.set_language_enabled("русский", False) == "ru"
-    langs = {l["code"]: l["enabled"] for l in read(prefs_file)["target_languages"]}
+    langs = {lang["code"]: lang["enabled"] for lang in read(prefs_file)["target_languages"]}
     assert langs["ru"] is False
 
 
 def test_обещанный_язык_добавляется_если_его_нет(prefs_file):
     """english объявлен модели, но в настройках его не было — не молчим."""
     assert tm.set_language_enabled("english", True) == "en"
-    langs = {l["code"]: l["enabled"] for l in read(prefs_file)["target_languages"]}
+    langs = {lang["code"]: lang["enabled"] for lang in read(prefs_file)["target_languages"]}
     assert langs["en"] is True
 
 

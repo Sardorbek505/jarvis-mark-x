@@ -1,0 +1,24 @@
+# Конфиг ruff для ДЖАРВИСа.
+# Раньше жил в pyproject.toml — файла больше нет, настройки восстановлены здесь.
+
+# Проект и так требует 3.11+: в main.py используется asyncio.TaskGroup.
+# Без этой строки ruff не знает про BaseExceptionGroup и прочие новинки.
+target-version = "py312"
+
+[lint.per-file-ignores]
+# E402 (импорт не в начале файла) здесь не дефект, а необходимость:
+# до локальных импортов должен отработать бутстрап, иначе модули не найдутся
+# или потеряется вывод в консоль.
+
+# UTF-8 обёртка stdout/stderr под Windows + настройка логгера до импортов
+"main.py" = ["E402"]
+
+# logging.basicConfig до импорта подмодулей telegram_bot
+"telegram_bot/bot.py" = ["E402"]
+
+# sys.path.insert корня проекта до импортов core/*
+"memory/memory_manager.py" = ["E402"]
+"test_fixes.py" = ["E402"]
+
+# импорты по секциям внутри теста, рядом с проверяемым кодом
+"tests/test_keywords.py" = ["E402"]

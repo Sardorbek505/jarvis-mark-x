@@ -70,9 +70,9 @@ def test_fuzzy_matching():
         print(f"  '{query}' vs '{playlist_name}': {score}% (expected ~{expected_score})")
         
         if score >= 60:
-            print(f"    [OK] Would match (threshold 60%)")
+            print("    [OK] Would match (threshold 60%)")
         else:
-            print(f"    [FAIL] Would not match (threshold 60%)")
+            print("    [FAIL] Would not match (threshold 60%)")
     
     print("")
 

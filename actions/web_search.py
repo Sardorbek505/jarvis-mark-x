@@ -39,11 +39,13 @@ def web_search(parameters: dict, player=None) -> str:
             return f"По запросу «{query}»: {answer}"
         else:
             # Открываем браузер как fallback
-            import subprocess, sys
+            import subprocess
+            import sys
             encoded = urllib.parse.quote(query)
             url_browser = f"https://duckduckgo.com/?q={encoded}"
             if sys.platform == "win32":
-                import os; os.startfile(url_browser)
+                import os
+                os.startfile(url_browser)
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", url_browser])
             else:

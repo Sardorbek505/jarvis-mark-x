@@ -32,9 +32,9 @@ print()
 result = _ui_automation_search(test_query, player=None)
 
 if result:
-    print(f"✅ UI automation успешен")
+    print("✅ UI automation успешен")
 else:
-    print(f"❌ UI automation не сработал")
+    print("❌ UI automation не сработал")
 
 print()
 print("Проверьте Spotify - должен открыться и начать воспроизводить трек")

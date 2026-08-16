@@ -16,7 +16,7 @@ from core.calendar_manager import (
     delete_event,
     update_event,
     add_reminder,
-    get_upcoming_reminders,
+    get_upcoming_reminders,  # noqa: F401 — ре-экспорт для core.proactive_engine
     get_todays_schedule
 )
 
@@ -41,7 +41,7 @@ _GOOGLE_CALENDAR_ENABLED = False
 _GOOGLE_CALENDAR_SERVICE = None
 
 try:
-    from google.oauth2.credentials import Credentials
+    from google.oauth2.credentials import Credentials  # noqa: F401 — проба доступности пакета
     from google_auth_oauthlib.flow import InstalledAppFlow
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build

@@ -454,7 +454,7 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
             url = "https://open.spotify.com"
         try:
             browser_control({"action": "go_to", "url": url}, player=player)
-            return f"Открыл Spotify в браузере, сэр."
+            return "Открыл Spotify в браузере, сэр."
         except Exception:
             return "Spotify не установлен и не удалось открыть браузер, сэр."
 

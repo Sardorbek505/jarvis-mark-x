@@ -88,7 +88,7 @@ def get_refresh_token_from_access():
             print("=" * 60)
             print("SUCCESS!")
             print("=" * 60)
-            print(f"Refresh Token:")
+            print("Refresh Token:")
             print(token_data["refresh_token"])
             print()
             print("Add this to config/api_keys.json:")
