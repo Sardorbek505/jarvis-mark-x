@@ -25,9 +25,11 @@ LOG = logging.getLogger("test-reminders")
 class _Bot:
     def __init__(self, fail_times=0):
         self.sent = []
+        self.attempts = 0          # сколько раз цикл вообще пытался отправить
         self._fail = fail_times
 
     async def send_message(self, chat_id=None, text=None):
+        self.attempts += 1
         if self._fail > 0:
             self._fail -= 1
             raise RuntimeError("Temporary failure in name resolution")
@@ -49,10 +51,18 @@ class _Mem:
         self.marked.append(rid)
 
 
-async def _one_pass(bot, mem, fails=False):
-    """Один оборот цикла: запускаем и снимаем, не дожидаясь второго sleep."""
+async def _one_pass(bot, mem, fails=False, attempts=1, budget=5.0):
+    """Крутим цикл, пока он не сделает `attempts` попыток отправки.
+
+    Раньше здесь стоял `sleep(0.05)` при шаге цикла 0.01 — тест верил, что за
+    50 мс успеет пройти нужное число оборотов. На занятой машине оборотов
+    выходило меньше, и проверка повтора после сбоя падала на ровном месте.
+    Ждём не время, а факт: столько попыток, сколько нужно проверке.
+    """
     task = asyncio.create_task(rem.delivery_loop(bot, mem, LOG, every=0.01))
-    await asyncio.sleep(0.05)
+    deadline = asyncio.get_event_loop().time() + budget
+    while bot.attempts < attempts and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.01)
     task.cancel()
     try:
         await task
@@ -83,7 +93,7 @@ async def test_упавшая_отправка_не_отмечает_доста�
 async def test_повтор_после_разового_сбоя():
     bot = _Bot(fail_times=1)
     mem = _Mem([{"id": 1, "user_id": 7, "text": "позвонить маме"}])
-    await _one_pass(bot, mem)
+    await _one_pass(bot, mem, attempts=2)   # первая падает, вторая должна дойти
     assert bot.sent, "второй оборот должен доставить"
     assert mem.marked == [1]
 

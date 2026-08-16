@@ -4,12 +4,17 @@
 Язык: Русский
 """
 
-# Force UTF-8 encoding for Windows console
+# Force UTF-8 encoding for Windows console.
+#
+# line_buffering обязателен: обёртка создаёт НОВЫЙ поток и тем самым отменяет
+# и `python -u`, и обычную построчную выдачу в консоль. В оконном режиме это
+# было незаметно (всё видно в HUD), а без окна консоль — единственный
+# интерфейс: при остановке процесса весь накопленный вывод пропадал.
 import sys
 if sys.platform == "win32":
     import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
 
 import asyncio
 import os
@@ -17,7 +22,6 @@ import traceback
 import re
 import threading
 import time
-import json
 import random
 from pathlib import Path
 from datetime import datetime
@@ -43,6 +47,8 @@ from core.initiative_engine import InitiativeEngine
 from core.proactive_engine import ProactiveEngine
 from core.team_collaboration import TeamCollaborationEngine
 from core.onboarding import ensure_gemini_key
+from core.latency import LatencyTracker
+from core.headless_ui import HeadlessUI, headless_requested
 from actions.open_app import open_app
 from actions.weather import weather_action
 from actions.web_search import web_search
@@ -780,6 +786,10 @@ class Jarvis:
         self._speech_timer = None
         self._speech_debounce_ms = 2000  # Increased from 800ms to allow full phrases
 
+        # Секундомер голосового хода. Пишет в лог задержку от конца речи до
+        # первого звука ответа. Гасится через JARVIS_LATENCY=0.
+        self._latency = LatencyTracker(sink=self.ui.write_log)
+
         self.ui.on_text_command = self._on_text_command
 
     def _flush_speech(self):
@@ -1248,7 +1258,8 @@ class Jarvis:
                 self.ui.write_log("SYS: Завершение работы...")
                 self.speak("До свидания, сэр. Отключаюсь.")
                 def _shutdown():
-                    import time, os
+                    import time
+                    import os
                     time.sleep(1.5)
                     os._exit(0)
                 threading.Thread(target=_shutdown, daemon=True).start()
@@ -1359,6 +1370,9 @@ class Jarvis:
                 return
             if not self._is_loud_enough(indata):
                 return
+            # Отсчёт задержки ведём от последнего громкого кадра: именно он и
+            # есть «человек договорил».
+            self._latency.mark_voice_frame()
             loop.call_soon_threadsafe(
                 _put_nowait_safe,
                 {"data": indata.tobytes(), "mime_type": "audio/pcm"},
@@ -1392,6 +1406,7 @@ class Jarvis:
             while True:
                 async for response in self.session.receive():
                     if response.data:
+                        self._latency.mark_answer_audio()
                         if self._turn_done_event and self._turn_done_event.is_set():
                             self._turn_done_event.clear()
                         try:
@@ -1416,6 +1431,7 @@ class Jarvis:
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = _clean(sc.input_transcription.text)
                             if txt:
+                                self._latency.mark_transcript()
                                 # Add to speech buffer instead of in_buf
                                 self._speech_buffer.append(txt)
                                 print(f"[ДЖАРВИС] 🎤 Фрагмент: '{txt}'")
@@ -1436,6 +1452,7 @@ class Jarvis:
                                 self._speech_timer = asyncio.create_task(_schedule_flush())
 
                         if sc.turn_complete:
+                            self._latency.mark_turn_complete()
                             if self._turn_done_event:
                                 self._turn_done_event.set()
                             
@@ -1516,7 +1533,16 @@ class Jarvis:
                         responses = []
                         for fc in response.tool_call.function_calls:
                             print(f"[ДЖАРВИС] 📞 {fc.name}")
-                            fr = await self._execute_tool(fc)
+                            _tool_started = time.perf_counter()
+                            try:
+                                fr = await self._execute_tool(fc)
+                            finally:
+                                # Медленный инструмент — самая частая причина
+                                # паузы, которую слышно как «завис».
+                                self._latency.add_tool(
+                                    fc.name,
+                                    int((time.perf_counter() - _tool_started) * 1000),
+                                )
                             responses.append(fr)
                         await self.session.send_tool_response(function_responses=responses)
 
@@ -1588,9 +1614,21 @@ class Jarvis:
                         continue
 
                     self.set_speaking(True)
+                    self._latency.mark_playback()
                     await asyncio.to_thread(stream.write, chunk)
 
             except asyncio.CancelledError:
+                raise
+            except (AttributeError, TypeError, NameError, ImportError) as bug:
+                # Дефект кода, а не пропавшие наушники. Раньше он попадал в
+                # ветку ниже: пользователю сообщалось «звук отвалился», и цикл
+                # переоткрывал исправное устройство до бесконечности, пряча
+                # настоящую причину. Такое должно быть громким и заметным —
+                # наверху есть счётчик попыток, который остановит Джарвиса
+                # по-человечески.
+                logger.exception("Сбой в коде воспроизведения (%s) — устройство ни при чём",
+                                 type(bug).__name__)
+                self.ui.write_log("SYS: ошибка воспроизведения в коде — подробности в логе")
                 raise
             except Exception as e:
                 logger.error("Воспроизведение оборвалось (%s) — переоткрываю устройство", e)
@@ -1600,7 +1638,8 @@ class Jarvis:
                 self.set_speaking(False)
                 if stream is not None:
                     try:
-                        stream.stop(); stream.close()
+                        stream.stop()
+                        stream.close()
                     except Exception as exc:
                         logger.debug("Закрытие потока вывода: %s", exc)
 
@@ -1685,7 +1724,7 @@ class Jarvis:
                         retry_count += 1
                         if retry_count > max_retries:
                             print(f"[ДЖАРВИС] ❌ Превышен лимит попыток ({max_retries})")
-                            self.ui.write_log(f"SYS: Превышен лимит попыток подключения")
+                            self.ui.write_log("SYS: Превышен лимит попыток подключения")
                             break
                         delay = min(2 ** retry_count, max_retry_delay)
                         logger.info(f"Waiting {delay}s before retry {retry_count}/{max_retries}...")
@@ -1696,7 +1735,7 @@ class Jarvis:
                     retry_count += 1
                     if retry_count > max_retries:
                         print(f"[ДЖАРВИС] ❌ Превышен лимит попыток ({max_retries})")
-                        self.ui.write_log(f"SYS: Превышен лимит попыток подключения")
+                        self.ui.write_log("SYS: Превышен лимит попыток подключения")
                         break
                     delay = min(2 ** retry_count, max_retry_delay)
                     print(f"[ДЖАРВИС] ⏸️ Ожидаю {delay} сек перед попыткой {retry_count}/{max_retries}...")
@@ -1711,8 +1750,8 @@ class Jarvis:
                 # Check for API key errors - don't retry these
                 if any(key_word in error_msg.lower() for key_word in 
                    ["api key expired", "api_key_invalid", "invalid api key", "api key not found"]):
-                    print(f"[JARVIS] FATAL: API key is invalid or expired!")
-                    print(f"[JARVIS] Please get a new key at: https://aistudio.google.com/apikey")
+                    print("[JARVIS] FATAL: API key is invalid or expired!")
+                    print("[JARVIS] Please get a new key at: https://aistudio.google.com/apikey")
                     print(f"[JARVIS] And update it in: {API_CONFIG}")
                     self.ui.write_log("SYS: API key invalid. Please update config/api_keys.json")
                     self.speak("Сэр, ключ API недействителен. Пожалуйста, обновите его.")
@@ -1723,7 +1762,7 @@ class Jarvis:
                 retry_count += 1
                 if retry_count > max_retries:
                     print(f"[ДЖАРВИС] ❌ Превышен лимит попыток ({max_retries})")
-                    self.ui.write_log(f"SYS: Превышен лимит попыток подключения")
+                    self.ui.write_log("SYS: Превышен лимит попыток подключения")
                     break
                 delay = min(2 ** retry_count, max_retry_delay)
                 logger.info(f"Reconnecting in {delay}s (attempt {retry_count}/{max_retries})...")
@@ -1733,7 +1772,10 @@ class Jarvis:
 
 # ─── Точка входа ──────────────────────────────────────────────────────────────
 def main():
-    ui = JarvisUI("face.png")
+    # Без графики: JARVIS_HEADLESS=1 или --headless. Голосовой круг тот же,
+    # разница только в том, кто показывает состояние и кто ждёт ключ.
+    headless = headless_requested()
+    ui = HeadlessUI() if headless else JarvisUI("face.png")
 
     def runner():
         ui.wait_for_api_key()
@@ -1742,6 +1784,18 @@ def main():
             asyncio.run(jarvis.run())
         except KeyboardInterrupt:
             print("\n🔴 Завершение работы...")
+        finally:
+            summary = jarvis._latency.summary()
+            if summary:
+                print(summary)
+
+    if headless:
+        # Окна нет, значит нет и цикла событий, который держал бы процесс:
+        # крутим круг прямо в главном потоке, иначе демон-поток умрёт вместе
+        # с мгновенно завершившимся main().
+        ui.start_text_input()
+        runner()
+        return
 
     threading.Thread(target=runner, daemon=True).start()
     ui.mainloop()
