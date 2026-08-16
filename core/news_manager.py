@@ -2,11 +2,16 @@
 Модуль для умных новостей с персонализацией
 """
 import json
+import logging
 import feedparser
 import requests
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import re
+
+from core.storage import atomic_write_json
+
+_logger = logging.getLogger(__name__)
 
 # Таймаут на RSS-фид: без него зависший сервер блокирует всё.
 _RSS_TIMEOUT = 5  # секунд
@@ -58,11 +63,10 @@ class NewsPreferences:
     def save_preferences(self) -> bool:
         """Сохраняет предпочтения в файл."""
         try:
-            self.preferences_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.preferences_file, 'w', encoding='utf-8') as f:
-                json.dump(self.preferences, f, ensure_ascii=False, indent=2)
+            atomic_write_json(self.preferences_file, self.preferences)
             return True
-        except Exception:
+        except Exception as exc:
+            _logger.error("Не сохранил %s: %s", self.preferences_file.name, exc)
             return False
     
     def get_topics(self) -> List[str]:

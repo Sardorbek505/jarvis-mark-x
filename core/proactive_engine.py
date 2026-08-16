@@ -10,6 +10,8 @@ from datetime import datetime
 
 import logging
 
+from core.storage import atomic_write_json
+
 _logger = logging.getLogger(__name__)
 
 # Импорт календаря для проактивных уведомлений
@@ -21,14 +23,14 @@ except ImportError:
 
 # Импорт умных напоминаний
 try:
-    from core.smart_reminders import generate_smart_reminder, record_reminder_response
+    from core.smart_reminders import generate_smart_reminder
     SMART_REMINDERS_AVAILABLE = True
 except ImportError:
     SMART_REMINDERS_AVAILABLE = False
 
 # Импорт health-напоминаний
 try:
-    from core.smart_reminders import check_health_needs, start_activity_tracking, end_activity_tracking
+    from core.smart_reminders import check_health_needs
     HEALTH_REMINDERS_AVAILABLE = True
 except ImportError:
     HEALTH_REMINDERS_AVAILABLE = False
@@ -65,51 +67,53 @@ class ProactiveEngine:
                 "morning": {
                     "hour_range": [6, 10],
                     "common_actions": ["weather", "news", "calendar", "email"],
+                    # Тон сверяется с core/prompt.txt: короткая констатация и
+                    # конкретное предложение, без бодрости и восклицаний.
                     "suggestions": [
-                        "Сэр, доброе утро! Хотите узнать погоду на сегодня?",
-                        "Сэр, проверить календарь на сегодня?",
-                        "Сэр, открыть почту?"
+                        "Доброе утро, сэр. Погода и календарь готовы.",
+                        "Календарь на сегодня, сэр?",
+                        "Почта накопилась, сэр. Открыть?"
                     ]
                 },
                 "work_start": {
                     "hour_range": [9, 11],
                     "common_actions": ["open_app", "browser", "files"],
                     "suggestions": [
-                        "Сэр, начать рабочий день? Открыть нужные приложения?",
-                        "Сэр, запустить рабочие инструменты?"
+                        "Готов открыть рабочее, сэр.",
+                        "Начинаем, сэр? Инструменты под рукой."
                     ]
                 },
                 "lunch": {
                     "hour_range": [12, 14],
                     "common_actions": ["food", "break", "music"],
                     "suggestions": [
-                        "Сэр, обеденное время. Может, сделать перерыв?",
-                        "Сэр, включить музыку на обед?"
+                        "Обед, сэр. Перерыв?",
+                        "Могу включить что-нибудь на обед, сэр."
                     ]
                 },
                 "afternoon": {
                     "hour_range": [14, 17],
                     "common_actions": ["work", "focus", "meeting"],
                     "suggestions": [
-                        "Сэр, продолжить работу?",
-                        "Сэр, запланировать встречу?"
+                        "Я здесь, сэр.",
+                        "Могу поставить встречу в календарь, сэр."
                     ]
                 },
                 "evening": {
                     "hour_range": [18, 22],
                     "common_actions": ["movie", "music", "relax", "social"],
                     "suggestions": [
-                        "Сэр, вечер! Чем заняться? Фильм или музыка?",
-                        "Сэр, расслабиться после работы?",
-                        "Сэр, проверить социальные сети?"
+                        "Вечер, сэр. Фильм или музыка?",
+                        "Работа окончена, сэр. Могу сменить обстановку.",
+                        "Накопились уведомления, сэр. Показать?"
                     ]
                 },
                 "night": {
                     "hour_range": [22, 6],
                     "common_actions": ["sleep", "shutdown", "relax"],
                     "suggestions": [
-                        "Сэр, поздно. Может, пора спать?",
-                        "Сэр, завершить работу на сегодня?"
+                        "Час поздний, сэр. Рекомендую остановиться.",
+                        "Могу погасить всё на сегодня, сэр."
                     ]
                 }
             },
@@ -137,11 +141,9 @@ class ProactiveEngine:
     def _save_patterns(self):
         """Сохраняет паттерны в файл"""
         try:
-            self.patterns_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.patterns_path, "w", encoding="utf-8") as f:
-                json.dump(self.patterns, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"[ProactiveEngine] Ошибка сохранения: {e}")
+            atomic_write_json(self.patterns_path, self.patterns)
+        except Exception as exc:
+            _logger.error("Не сохранил паттерны в %s: %s", self.patterns_path.name, exc)
 
     def record_action(self, action: str, context: Dict):
         """
@@ -280,13 +282,14 @@ class ProactiveEngine:
         current_activity = context.get("current_activity")
         current_mode = context.get("mode", "normal")
 
-        # Если долгое бездействие
+        # Если долгое бездействие. «Чем могу помочь?» — реплика колл-центра,
+        # Джарвис так не спрашивает: он обозначает присутствие и молчит.
         if not current_activity and current_mode == "normal":
-            suggestions.append("Сэр, чем могу помочь?")
+            suggestions.append("Я здесь, сэр.")
 
         # Если режим работы давно активен
         if current_mode == "work" and current_activity:
-            suggestions.append("Сэр, нужен перерыв?")
+            suggestions.append("Пора бы сделать паузу, сэр.")
 
         # Дедупликация и фильтрация показанных
         unique_suggestions = []

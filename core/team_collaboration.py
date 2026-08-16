@@ -10,6 +10,8 @@ from datetime import datetime
 
 import logging
 
+from core.storage import atomic_write_json
+
 _logger = logging.getLogger(__name__)
 
 
@@ -48,11 +50,9 @@ class TeamCollaborationEngine:
     def _save_team_data(self):
         """Сохраняет данные командной работы"""
         try:
-            self.team_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.team_path, "w", encoding="utf-8") as f:
-                json.dump(self.team_data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"[TeamCollaboration] Ошибка сохранения: {e}")
+            atomic_write_json(self.team_path, self.team_data)
+        except Exception as exc:
+            _logger.error("Не сохранил данные команды в %s: %s", self.team_path.name, exc)
 
     def add_team_member(self, name: str, role: str, contact: str = ""):
         """Добавляет члена команды"""

@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import re
 
+from core.storage import atomic_write_json
+
 import logging
 
 _logger = logging.getLogger(__name__)
@@ -167,11 +169,10 @@ def _load_calendar() -> Dict[str, Any]:
 def _save_calendar(data: Dict[str, Any]) -> bool:
     """Сохраняет календарь в JSON файл."""
     try:
-        CALENDAR_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(CALENDAR_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(CALENDAR_FILE, data)
         return True
-    except Exception:
+    except Exception as exc:
+        _logger.error("Не сохранил %s: %s", CALENDAR_FILE.name, exc)
         return False
 
 

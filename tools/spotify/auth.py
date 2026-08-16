@@ -7,9 +7,15 @@ Never requires login every launch - uses stored refresh token.
 
 import requests
 import time
+from pathlib import Path
 from typing import Optional
 import json
+import logging
 import os
+
+from core.storage import atomic_write_json
+
+_logger = logging.getLogger(__name__)
 
 # Обновляем токен заранее, чтобы он не истёк посреди запроса
 _REFRESH_MARGIN_SEC = 30
@@ -57,15 +63,15 @@ class SpotifyAuth:
         token_file = os.path.join(script_dir, "config", "spotify_tokens.json")
         
         try:
-            os.makedirs(os.path.dirname(token_file), exist_ok=True)
-            with open(token_file, 'w') as f:
-                json.dump({
-                    'access_token': self.access_token,
-                    'refresh_token': self.refresh_token,
-                    'expiry': self.token_expiry
-                }, f)
-        except Exception as e:
-            print(f"[SpotifyAuth] Failed to save tokens: {e}")
+            # Атомарно: обрыв на середине записи оставлял бы обрезанный JSON,
+            # а это потеря refresh-токена и повторный вход в Spotify руками.
+            atomic_write_json(Path(token_file), {
+                'access_token': self.access_token,
+                'refresh_token': self.refresh_token,
+                'expiry': self.token_expiry
+            })
+        except Exception as exc:
+            _logger.error("Не сохранил токены Spotify в %s: %s", token_file, exc)
     
     def authenticate(self, auth_code: str) -> bool:
         """

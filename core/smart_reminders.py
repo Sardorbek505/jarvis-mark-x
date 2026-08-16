@@ -9,10 +9,15 @@ Smart Reminders Engine — умная система напоминаний.
 """
 
 import json
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import random
+
+from core.storage import atomic_write_json
+
+_logger = logging.getLogger(__name__)
 
 
 # ─── Пути ─────────────────────────────────────────────────────────────────────
@@ -51,11 +56,10 @@ def _load_patterns() -> Dict[str, Any]:
 def _save_patterns(patterns: Dict[str, Any]) -> bool:
     """Сохраняет паттерны пользователя в файл."""
     try:
-        _PATTERNS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(_PATTERNS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(patterns, f, ensure_ascii=False, indent=2)
+        atomic_write_json(_PATTERNS_FILE, patterns)
         return True
-    except Exception:
+    except Exception as exc:
+        _logger.error("Не сохранил %s: %s", _PATTERNS_FILE.name, exc)
         return False
 
 
@@ -230,14 +234,16 @@ class EmotionalReminderAdapter:
             return base_text
         
         # Добавляем эмоциональный контекст
+        # Джарвис не восклицает и не утешает вслух: приставка либо деловая,
+        # либо её нет вовсе. Сверяется с core/prompt.txt.
         emotion_prefixes = {
-            "happy": ["Отлично! ", "Замечательно! "],
+            "happy": ["", ""],
             "neutral": ["", ""],
-            "sad": ["Понимаю, ", "Знаю, "],
-            "stressed": ["Постарайся не волноваться, ", "Всё будет хорошо, "],
-            "overwhelmed": ["Давай по порядку, ", "Одно за другим, "],
+            "sad": ["", ""],
+            "stressed": ["Только одно, сэр: ", "Коротко, сэр: "],
+            "overwhelmed": ["По порядку, сэр: ", "Первое, сэр: "],
             "focused": ["Кратко: ", "Сразу к делу: "],
-            "tired": ["Отдохни немного, ", "Возьми паузу, "]
+            "tired": ["Последнее на сегодня, сэр: ", "Ещё одно, сэр: "]
         }
         
         prefix = random.choice(emotion_prefixes.get(emotion, [""]))
@@ -515,11 +521,10 @@ class ActivityTracker:
     def _save_activities(self) -> bool:
         """Сохраняет данные об активности."""
         try:
-            self.activity_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.activity_file, 'w', encoding='utf-8') as f:
-                json.dump(self.activities, f, ensure_ascii=False, indent=2)
+            atomic_write_json(self.activity_file, self.activities)
             return True
-        except Exception:
+        except Exception as exc:
+            _logger.error("Не сохранил %s: %s", self.activity_file.name, exc)
             return False
     
     def start_activity(self, activity_type: str) -> bool:
@@ -716,7 +721,7 @@ class HealthReminderEngine:
             messages = [
                 f"Сэр, вы работаете уже {minutes} минут. Хотите сделать короткий перерыв?",
                 f"Сэр, рекомендую 5-минутную разминку. Вы работаете {minutes} минут.",
-                f"Сэр, встаньте и разомнитесь. Это улучшит концентрацию."
+                "Сэр, встаньте и разомнитесь. Это улучшит концентрацию."
             ]
         
         suggestions = ["сделать перерыв", "разминка 5 минут", "встать и пройтись"]
