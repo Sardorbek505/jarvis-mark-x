@@ -171,27 +171,30 @@ class EmotionAnalyzer:
         favorite_movie = preferences.get("favorite_movie")
 
         # Генерируем инициативное действие
+        # Джарвис не ставит диагноз вслух: «я вижу, вам грустно» — не его
+        # реплика. Он предлагает конкретное действие и оставляет выбор.
+        # Тон сверяется с core/prompt.txt.
         if emotion == "sad":
             if favorite_comedy:
-                return f"Сэр, я вижу вам грустно. Может, включить {favorite_comedy} или КВН для поднятия настроения?"
+                return f"Могу поставить {favorite_comedy}, сэр. Помогало."
             else:
-                return "Сэр, я вижу вам грустно. Может, включить что-то весёлое? КВН или комедию?"
+                return "Вечер выдался так себе, сэр. Включить что-нибудь лёгкое?"
 
         elif emotion == "bored":
             if favorite_movie:
-                return f"Сэр, вам скучно. Может, посмотреть {favorite_movie}?"
+                return f"{favorite_movie} всё ещё не досмотрен, сэр."
             else:
-                return "Сэр, вам скучно. Может, посмотреть фильм или включить музыку?"
+                return "Тишина, сэр. Фильм или музыка?"
 
         elif emotion == "stressed":
             if favorite_music:
-                return f"Сэр, я вижу вы в стрессе. Может, сделать перерыв и включить {favorite_music}?"
-            return "Сэр, я вижу вы в стрессе. Может, сделать перерыв и включить расслабляющую музыку?"
+                return f"Могу включить {favorite_music}, сэр, и отложить остальное."
+            return "Дел много, сэр. Разобрать по важности?"
 
         elif emotion == "tired":
             if favorite_music:
-                return f"Сэр, вы выглядите уставшим. Может, отдохнуть под {favorite_music}?"
-            return "Сэр, вы выглядите уставшим. Может, отдохнуть и включить что-то спокойное?"
+                return f"День был длинный, сэр. Поставить {favorite_music}?"
+            return "Час поздний, сэр. Погасить всё?"
 
         return None
 

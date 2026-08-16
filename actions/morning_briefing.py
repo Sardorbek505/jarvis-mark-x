@@ -87,7 +87,7 @@ def _get_weather(city: str) -> str:
         result = weather_action({"city": city})
         return result
     except Exception:
-        return f"Данные о погоде временно недоступны, сэр."
+        return "Данные о погоде временно недоступны, сэр."
 
 
 def _get_calendar() -> str:
@@ -177,7 +177,7 @@ def _assemble_briefing(user_name: str, weather: str, calendar: str, news: str) -
     if current_hour < 12:
         closing = "К работе готов, сэр."
     else:
-        closing = "Чем могу помочь, сэр?"
+        closing = "Я здесь, сэр."
     
     briefing += closing
     
