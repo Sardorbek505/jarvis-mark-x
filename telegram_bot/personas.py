@@ -5,6 +5,15 @@ Each mode is a persona overlay appended to the base system prompt. The base
 JARVIS identity (helpful, honest, PC-command rules) always stays; the overlay
 only reshapes tone and the kind of help it leans into.
 
+ВАЖНО про «normal». Базовый промпт в gemini_client._SYSTEM_PROMPT — это канон
+Джарвиса из «Железного человека»: «сэр», невозмутимость, редкая сухая ирония,
+никакого заискивания. Режим «Обычный» не имеет overlay именно поэтому: он и
+есть канон.
+
+Остальные режимы канон НАМЕРЕННО ломают — «Друг» переходит на «ты» и сленг,
+и это не рассинхрон, а смысл фичи: пользователь сам просит другой характер.
+Не «чините» их под канон.
+
 Modes:
   • normal   — обычный JARVIS (по умолчанию)
   • mentor   — мудрый наставник/коуч
