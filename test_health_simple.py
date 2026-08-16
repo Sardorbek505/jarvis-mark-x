@@ -36,6 +36,6 @@ context = {"mode": "movie", "emotion": "neutral"}
 reminder_text = health_engine2.check_health_needs(context)
 assert reminder_text is not None
 assert isinstance(reminder_text, str)
-print(f"6. Health reminder received")
+print("6. Health reminder received")
 
 print("\nAll tests passed!")

@@ -40,7 +40,6 @@ def test_empty_text_is_not_a_command():
 
 import asyncio
 import base64
-import sys
 import types
 
 

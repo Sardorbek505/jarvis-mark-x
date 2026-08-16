@@ -391,7 +391,7 @@ class SpotifyController:
             return _NO_DEVICE_MSG
         
         data = {'volume_percent': percent}
-        result = self._api_request(f'/me/player/volume', method='PUT', data=data)
+        result = self._api_request('/me/player/volume', method='PUT', data=data)
         
         if result is not None:
             self.last_volume = percent

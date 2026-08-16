@@ -18,12 +18,10 @@
 """
 
 import platform
-import re
 import subprocess
 import time
 import urllib.parse
 import urllib.request
-from typing import Optional
 
 from actions.browser_control import browser_control
 from actions.computer_settings import computer_settings

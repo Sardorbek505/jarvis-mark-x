@@ -4,7 +4,6 @@
 пустое значение и молчит. Ответ приходит уверенный — просто без фактов, без
 имени, без напоминаний. Снаружи это неотличимо от «модель тупит».
 """
-import asyncio
 
 import pytest
 
@@ -42,7 +41,7 @@ async def test_genuinely_new_user_still_goes_through_onboarding():
 def test_unparsable_reminder_time_is_reported(caplog):
     # Arrange / Act — на входе мусор вместо ISO
     caplog.set_level("WARNING")
-    out = reminders.fmt_local("не время вовсе", timezone_stub := None)
+    out = reminders.fmt_local("не время вовсе", None)
 
     # Assert — пользователь увидит исходную строку, но сбой попадёт в лог
     assert out == "не время вовсе"
