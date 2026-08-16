@@ -2,10 +2,15 @@
 Модуль для перевода в реальном времени
 """
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import google.genai as genai
+
+from core.storage import atomic_write_json
+
+_logger = logging.getLogger(__name__)
 
 _BASE = Path(__file__).parent.parent
 
@@ -61,11 +66,10 @@ class TranslationPreferences:
     def save_preferences(self) -> bool:
         """Сохраняет предпочтения в файл."""
         try:
-            self.preferences_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.preferences_file, 'w', encoding='utf-8') as f:
-                json.dump(self.preferences, f, ensure_ascii=False, indent=2)
+            atomic_write_json(self.preferences_file, self.preferences)
             return True
-        except Exception:
+        except Exception as exc:
+            _logger.error("Не сохранил %s: %s", self.preferences_file.name, exc)
             return False
     
     def get_enabled_languages(self) -> List[Dict[str, Any]]:
@@ -137,11 +141,10 @@ class TranslationHistory:
     def _save_history(self) -> bool:
         """Сохраняет историю переводов."""
         try:
-            self.history_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.history_file, 'w', encoding='utf-8') as f:
-                json.dump(self.history, f, ensure_ascii=False, indent=2)
+            atomic_write_json(self.history_file, self.history)
             return True
-        except Exception:
+        except Exception as exc:
+            _logger.error("Не сохранил %s: %s", self.history_file.name, exc)
             return False
     
     def add_translation(self, source_text: str, target_text: str, 
@@ -226,11 +229,10 @@ class ContextMemory:
     def _save_context(self) -> bool:
         """Сохраняет контекстную память."""
         try:
-            self.context_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.context_file, 'w', encoding='utf-8') as f:
-                json.dump(self.context, f, ensure_ascii=False, indent=2)
+            atomic_write_json(self.context_file, self.context)
             return True
-        except Exception:
+        except Exception as exc:
+            _logger.error("Не сохранил %s: %s", self.context_file.name, exc)
             return False
     
     def add_context(self, text: str, translation: str, lang: str) -> bool:
@@ -574,7 +576,7 @@ def set_language_enabled(language: str, enabled: bool) -> Optional[str]:
     if not code:
         return None
     prefs = TranslationPreferences()
-    known = {l.get("code") for l in prefs.preferences.get("target_languages", [])}
+    known = {lang.get("code") for lang in prefs.preferences.get("target_languages", [])}
     if code not in known:
         prefs.preferences.setdefault("target_languages", []).append(_language_entry(code))
     saved = prefs.enable_language(code) if enabled else prefs.disable_language(code)

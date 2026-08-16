@@ -23,6 +23,7 @@ from pathlib import Path
 
 from actions.open_app import open_app
 from actions.browser_control import browser_control
+from core.storage import atomic_write_json
 
 import logging
 
@@ -49,11 +50,9 @@ def _load_config() -> dict:
 def _save_state(mode: str, preference: str = "") -> None:
     """Сохраняет текущий режим (для UI и контекста)."""
     try:
-        _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(_STATE_PATH, "w", encoding="utf-8") as f:
-            json.dump({"mode": mode, "preference": preference}, f, ensure_ascii=False)
+        atomic_write_json(_STATE_PATH, {"mode": mode, "preference": preference})
     except Exception as exc:
-        _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
+        _logger.warning("Не сохранил режим в %s: %s", _STATE_PATH.name, exc, exc_info=True)
 
 
 def get_current_mode() -> dict:
@@ -157,7 +156,7 @@ def _activate_study(cfg: dict, player=None) -> str:
     # Проверяем текущий режим - если уже активен, возвращаем приветствие
     current = get_current_mode()
     if current.get("mode") == "study":
-        return "Продолжим учёбу, сэр. Чем могу помочь?"
+        return "Учебный режим уже идёт, сэр."
 
     if player:
         player.write_log("SYS: 🎓 Активация учебного режима...")
@@ -208,7 +207,7 @@ def _activate_work(cfg: dict, preference: str, player=None) -> str:
     current = get_current_mode()
     if current.get("mode") == "work" and current.get("preference") == pref:
         pref_ru = {"design": "дизайн", "code": "код", "client": "клиент"}.get(pref, pref)
-        return f"Продолжим работу в режиме {pref_ru}, сэр. Чем могу помочь?"
+        return f"Режим {pref_ru} уже активен, сэр."
 
     w = cfg.get("work", {})
 
@@ -251,7 +250,7 @@ def _activate_movie(cfg: dict, preference: str, player=None) -> str:
     # Проверяем текущий режим - если уже активен с тем же фильмом, возвращаем приветствие
     current = get_current_mode()
     if current.get("mode") == "movie" and current.get("preference") == title:
-        return f"Продолжаем смотреть '{title}', сэр. Чем могу помочь?"
+        return f"'{title}' уже идёт, сэр."
 
     # Делегируем продвинутому плееру (он также сохраняет kinogo.mu URL)
     from actions.movie_player import movie_player
@@ -285,7 +284,7 @@ def _activate_music(cfg: dict, preference: str, player=None) -> str:
     if current.get("mode") == "music" and current.get("preference") == mood:
         mood_ru = {"energy": "энергичная", "calm": "спокойная",
                    "focus": "фоновая", "power": "мощная"}.get(mood, mood)
-        return f"Продолжаем слушать {mood_ru} музыку, сэр. Чем могу помочь?"
+        return f"{mood_ru.capitalize()} музыка уже играет, сэр."
 
     if not mood or mood not in ("energy", "calm", "focus", "power"):
         return "Какое настроение, сэр? Энергия, спокойствие, фон или мощно?"
