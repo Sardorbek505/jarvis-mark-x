@@ -19,6 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main as jarvis_main
+from core.latency import LatencyTracker
 
 
 class _Stream:
@@ -53,6 +54,8 @@ class _Stub:
         self._turn_done_event = asyncio.Event()
         self.ui = SimpleNamespace(write_log=lambda *a: None)
         self.speaking = []
+        # _play_audio отмечает первый кадр в устройстве; здесь замер не нужен
+        self._latency = LatencyTracker(enabled=False)
 
     def _open_output(self):
         s = self._streams.pop(0)
@@ -77,6 +80,24 @@ async def _run_playback(stub, chunks, seconds=0.4, retry=0.02):
     except asyncio.CancelledError:
         pass
     return task
+
+
+@pytest.mark.asyncio
+async def test_дефект_кода_не_выдаётся_за_поломку_устройства():
+    """AttributeError в своём же коде раньше уходил в ветку «звук отвалился»:
+    пользователь слышал про устройство, а цикл вечно переоткрывал исправную
+    карту. Такая ошибка обязана вылететь наверх, где есть счётчик попыток."""
+    class _Broken(_Stub):
+        def _open_output(self):
+            raise AttributeError("'_Broken' object has no attribute '_latency'")
+
+    stub = _Broken([])
+    stub.audio_in_queue.put_nowait(b"\x01\x02")
+
+    with pytest.raises(AttributeError):
+        await asyncio.wait_for(
+            jarvis_main.Jarvis._play_audio(stub), timeout=2,
+        )
 
 
 @pytest.mark.asyncio
