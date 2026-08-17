@@ -142,6 +142,10 @@ def стенд(tmp_path, monkeypatch):
     monkeypatch.setattr(jarvis_main, "BASE_DIR", tmp_path)
     monkeypatch.setattr(jarvis_main, "_IGNORE_SPEAKERS", False)
     monkeypatch.setattr(jarvis_main, "_pick_input_device", lambda: None)
+    # Тракт озвучки закрепляем явно: по умолчанию говорит Fish, и тогда звук
+    # Gemini намеренно выбрасывается. Тесты ниже проверяют именно путь Gemini,
+    # поэтому провайдер тут не «как настроено у владельца», а заданный.
+    monkeypatch.setattr(jarvis_main, "_VOICE_PROVIDER", "gemini")
 
     ui = _UI()
     jarvis = jarvis_main.Jarvis(ui)
@@ -257,6 +261,32 @@ async def test_расшифровка_и_ответ_попадают_в_окно
     logs = " | ".join(стенд.ui.logs)
     assert "привет" in logs, "сказанное пользователем не показано"
     assert "Здравствуйте, сэр." in logs, "ответ Джарвиса не показан"
+
+
+@pytest.mark.asyncio
+async def test_с_голосом_fish_звук_gemini_не_играет(стенд, monkeypatch):
+    """Два голоса на один ответ — худшее из возможного.
+
+    Когда говорит Fish, аудио Gemini обязано быть выброшено: иначе Charon и
+    Джарвис произнесут одну и ту же реплику одновременно.
+    """
+    monkeypatch.setattr(jarvis_main, "_VOICE_PROVIDER", "fish")
+    сказанное = []
+
+    async def поддельный_fish(self, text):
+        сказанное.append(text)
+    monkeypatch.setattr(jarvis_main.Jarvis, "_speak_fish", поддельный_fish)
+
+    script = [
+        _resp(heard="как дела"),
+        _resp(data=b"\x01\x02" * 100),          # голос Charon — в мусор
+        _resp(said="Всё в норме, сэр.", turn_complete=True),
+    ]
+
+    await _прогнать(стенд, [_loud()], script)
+
+    assert стенд.out.written == [], "звук Gemini не должен доходить до динамиков"
+    assert сказанное == ["Всё в норме, сэр."], "Fish должен получить текст ответа"
 
 
 def test_хвост_тишины_заведомо_длиннее_окна_vad():

@@ -124,6 +124,21 @@ _VAD_PREFIX_MS = int(os.getenv("VAD_PREFIX_MS", "120"))
 # стоит только если он начнёт путаться в многошаговых просьбах.
 _THINKING_BUDGET = int(os.getenv("JARVIS_THINKING_BUDGET", "0"))
 
+# Чей голос звучит из динамиков: "fish" — тот самый Джарвис, которым говорит
+# Telegram-бот (тот же ключ, голос и модель, telegram_bot/tts_fish.py),
+# "gemini" — встроенный пресет Charon.
+#
+# Мозг в обоих случаях один и тот же: Gemini Live понимает речь, держит
+# характер и вызывает инструменты. Меняется только, кто произносит готовый
+# ответ. Текст для Fish берём из output_transcription — просить у Live-модели
+# ответ текстом нельзя, native-audio отвечает на TEXT-модальность ошибкой
+# 1007 (проверено 17.08.2026 и на 2.5-native-audio, и на 3.1-flash-live).
+#
+# Цена голоса — секунда: Fish начинает звучать только когда текст готов
+# (первый кусок ~990 мс). Gemini в это время всё равно синтезирует Charon'а,
+# и этот звук мы выбрасываем — иначе они заговорили бы хором.
+_VOICE_PROVIDER = (os.getenv("JARVIS_VOICE") or "fish").strip().lower()
+
 # Выше какого уровня в динамиках микрофон не слушаем.
 #
 # 0.02 — это уже отчётливо слышный звук, а не остаточный шум звуковой карты.
@@ -1433,6 +1448,37 @@ class Jarvis:
             # Brief pause before attempting to continue
             await asyncio.sleep(1)
 
+    async def _speak_fish(self, text: str):
+        """Озвучивает готовый ответ голосом Джарвиса из Telegram-бота.
+
+        Если Fish не ответил, честно молчим и пишем в лог. Подставить сюда
+        Charon'а нельзя: звук Gemini к этому моменту уже выброшен, и второй
+        раз его никто не синтезирует.
+        """
+        from telegram_bot.tts_fish import speak_pcm
+
+        pcm = await speak_pcm(text, sample_rate=RECV_SAMPLE_RATE)
+        if not pcm:
+            self.ui.write_log("SYS: голос Fish недоступен — ответ остался текстом")
+            self._latency.mark_turn_complete()
+            return
+
+        # Ход считается законченным здесь, а не на turn_complete от сервера:
+        # с внешним голосом сервер объявляет конец, когда текст готов, а
+        # человек в этот момент ещё ничего не слышит. Закрывая ход раньше
+        # времени, секундомер обнулял отсчёт и не видел ответа вовсе.
+        self._latency.mark_answer_audio()
+        logger.info("Голос Fish: %.1f с звука на %d символов",
+                    len(pcm) / 2 / RECV_SAMPLE_RATE, len(text))
+
+        step = CHUNK_SIZE * 2          # int16, тот же размер куска, что у Gemini
+        for i in range(0, len(pcm), step):
+            try:
+                self.audio_in_queue.put_nowait(pcm[i:i + step])
+            except asyncio.QueueFull:
+                await self.audio_in_queue.put(pcm[i:i + step])
+        self._latency.mark_turn_complete()
+
     # ── Получение ответа от Gemini ────────────────────────────────────────────
     async def _receive_audio(self):
         print("[ДЖАРВИС] 👂 Приём запущен")
@@ -1442,9 +1488,13 @@ class Jarvis:
             while True:
                 async for response in self.session.receive():
                     if response.data:
-                        self._latency.mark_answer_audio()
                         if self._turn_done_event and self._turn_done_event.is_set():
                             self._turn_done_event.clear()
+                        if _VOICE_PROVIDER == "fish":
+                            # Говорит Fish — звук Gemini выбрасываем, иначе
+                            # два голоса произнесут один ответ одновременно.
+                            continue
+                        self._latency.mark_answer_audio()
                         try:
                             self.audio_in_queue.put_nowait(response.data)
                         except asyncio.QueueFull:
@@ -1488,7 +1538,10 @@ class Jarvis:
                                 self._speech_timer = asyncio.create_task(_schedule_flush())
 
                         if sc.turn_complete:
-                            self._latency.mark_turn_complete()
+                            # С внешним голосом ход закрывает _speak_fish,
+                            # когда звук реально пошёл: здесь готов только текст.
+                            if _VOICE_PROVIDER != "fish":
+                                self._latency.mark_turn_complete()
                             if self._turn_done_event:
                                 self._turn_done_event.set()
                             
@@ -1563,6 +1616,11 @@ class Jarvis:
                             full_out = " ".join(out_buf).strip()
                             if full_out:
                                 self.ui.write_log(f"Джарвис: {full_out}")
+                                if _VOICE_PROVIDER == "fish":
+                                    # Отдельной задачей: синтез идёт около
+                                    # секунды, а приём в это время должен
+                                    # продолжать читать сессию.
+                                    asyncio.create_task(self._speak_fish(full_out))
                             out_buf = []
 
                     if response.tool_call:
