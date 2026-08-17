@@ -6,6 +6,8 @@ client retried every 5s for two weeks and wrote 46k identical log lines.
 """
 import asyncio
 import json
+import socket
+import time
 
 import pytest
 
@@ -204,6 +206,109 @@ async def test_reconnect_delay_resets_after_success(monkeypatch):
 
 def _ceiling(base: float) -> float:
     return base * (1 + pc_server._RECONNECT_JITTER) + 1e-9
+
+
+# ── pc_server: сон ноутбука — не отказ моста ──────────────────────────────────
+# Разбор лога за 05–17.08 показал: четыре самых длинных «простоя» (до 10 часов)
+# были сном ноутбука — совпали до секунды с Kernel-Power 506/507. В логе они
+# выглядели как авария связи и увели диагностику по ложному следу.
+
+def test_hibernation_is_not_a_failure():
+    # Arrange — стенные часы ушли на час вперёд, монотонные стояли (гибернация)
+    started_wall, started_mono = 1000.0, 500.0
+
+    # Act
+    kind, secs = pc_server._lost_time(started_wall - 3600, started_mono)
+
+    # Assert
+    assert kind == "сон"
+    assert secs >= 3600
+
+
+def test_frozen_process_is_told_apart_from_sleep():
+    # Arrange — обе шкалы шли (Modern Standby), но попытка пережила свой таймаут
+    stalled = pc_server._OPEN_TIMEOUT_SEC + pc_server._FROZEN_SEC + 10
+    now, mono = time.time(), time.monotonic()
+
+    # Act
+    kind, secs = pc_server._lost_time(now - stalled, mono - stalled)
+
+    # Assert — лечится иначе, чем сон, поэтому и называться должно иначе
+    assert kind == "заморозка"
+    assert secs >= stalled - 1
+
+
+def test_ordinary_failure_is_still_a_failure():
+    # Arrange / Act — обычный мгновенный обрыв
+    kind, secs = pc_server._lost_time(time.time(), time.monotonic())
+
+    # Assert
+    assert (kind, secs) == ("", 0.0)
+
+
+# ── pc_server: один клиент на машину ──────────────────────────────────────────
+
+def test_second_client_is_refused_the_machine_lock(free_port):
+    # Arrange — первый клиент занял замок
+    first = pc_server._claim_singleton(free_port)
+    assert first is not None
+
+    try:
+        # Act — вторая копия пытается подняться на той же машине
+        second = pc_server._claim_singleton(free_port)
+
+        # Assert — ей отказано, а не выдан второй замок
+        assert second is None
+    finally:
+        first.close()
+
+    # …и после ухода первого замок снова свободен: упавший процесс не оставляет
+    # мины, из-за которой автозапуск больше никогда не поднимется
+    again = pc_server._claim_singleton(free_port)
+    assert again is not None
+    again.close()
+
+
+@pytest.fixture
+def free_port() -> int:
+    """Свободный порт. Боевой брать нельзя — на машине владельца там живой
+    клиент, и тест падал бы ровно тогда, когда всё исправно работает."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+@pytest.mark.asyncio
+async def test_sleep_does_not_escalate_backoff(monkeypatch):
+    """После пробуждения переподключаемся сразу, а не через выросший backoff.
+
+    Часы не подменяем: `time.monotonic` — это ещё и часы event loop, заморозить
+    их значит сломать сам цикл, который тестируем. Подменяем распознавание.
+    """
+    # Arrange — три обрыва подряд, и все три пришлись на сон ноутбука
+    calls = {"n": 0}
+
+    def dropped(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] >= 4:
+            raise asyncio.CancelledError
+        raise OSError("no close frame received or sent")
+
+    monkeypatch.setattr(pc_server.websockets, "connect", dropped)
+    monkeypatch.setattr(pc_server, "_lost_time", lambda *_: ("сон", 3600.0))
+
+    slept: list[float] = []
+
+    async def fake_sleep(sec):
+        slept.append(sec)
+    monkeypatch.setattr(pc_server.asyncio, "sleep", fake_sleep)
+
+    # Act
+    with pytest.raises(asyncio.CancelledError):
+        await pc_server.run_client("wss://slept.example", "tok")
+
+    # Assert — сон не тратит попытки и не откладывает возврат
+    assert slept == []
 
 
 # ── дубль деплоя не должен отбирать вебхук ────────────────────────────────────

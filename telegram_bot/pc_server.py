@@ -16,7 +16,9 @@ import os
 import platform
 import random
 import re
+import socket
 import sys
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -36,6 +38,32 @@ _RECONNECT_MAX_SEC = 300.0
 _RECONNECT_FACTOR = 1.6
 _RECONNECT_JITTER = 0.2      # ±20%, so restarts don't sync up on the server
 _LOG_EVERY = 20              # repeat an unchanged reason only every Nth try
+
+# Сколько ждём открытия соединения. Значение задано явно, потому что от него
+# зависит распознавание заморозки ниже: попытка, прожившая много дольше своего
+# таймаута, — сигнал, что процессу не давали времени.
+_OPEN_TIMEOUT_SEC = 15.0
+
+# ── Сон ноутбука ≠ отказ моста ────────────────────────────────────────────────
+# Разбор лога за 05–17.08: четыре самых длинных «простоя» (до 10 часов) совпали
+# до секунды с событиями Kernel-Power 506/507 — ноутбук просто спал. В логе это
+# было неотличимо от аварии и увело диагностику по ложному следу.
+# Спящий или замороженный ПК недоступен по определению: это не отказ связи,
+# счётчик неудач и backoff к нему неприменимы.
+_FROZEN_SEC = 30.0           # с какого разрыва во времени считаем, что нас не было
+
+# ── Один клиент на машину ─────────────────────────────────────────────────────
+# Автозапуск умеет наплодить дублей: цикл перезапуска в start_pc.bat живёт своей
+# жизнью, а задача Планировщика поднимает вторую цепочку. 17.08 так и вышло —
+# две копии, и одна семь минут провисела, не написав в лог ни строки.
+# Мост на той стороне рассчитан на один ПК (`next(iter(self._clients))`), так что
+# второй копии тут просто нечего делать.
+# Замок — занятый порт на петле, а не файл: упавший процесс освобождает порт сам,
+# и после жёсткого kill не остаётся мины в виде залипшего lock-файла.
+# Порт продублирован в scripts/pc_watchdog.ps1 — по нему сторож определяет, жив
+# ли клиент. Меняешь здесь — поменяй и там, иначе сторож начнёт будить живого.
+_SINGLETON_PORT = 47821
+_EXIT_ALREADY_RUNNING = 3    # start_pc.bat по этому коду гасит лишний цикл
 
 _LOG_PATH = Path(__file__).resolve().parent.parent / "jarvis_pc_server.log"
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -565,6 +593,47 @@ async def _handle(ws, msg: dict):
         logger.error(f"Send response: {e}")
 
 
+def _claim_singleton(port: int = _SINGLETON_PORT) -> socket.socket | None:
+    """Занимает замок машины. None — если клиент здесь уже запущен.
+
+    SO_REUSEADDR намеренно НЕ ставим: под Windows он разрешил бы второй копии
+    сесть на тот же порт, то есть ровно то, от чего замок и защищает.
+    Возвращённый сокет держать до конца жизни процесса — закроется вместе с ним.
+
+    `port` параметром, чтобы тест не дрался за боевой порт с настоящим клиентом,
+    который на машине разработчика обычно запущен.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", port))
+        sock.listen(1)
+        return sock
+    except OSError:
+        sock.close()
+        return None
+
+
+def _lost_time(started_wall: float, started_mono: float) -> tuple[str, float]:
+    """Классифицирует затянувшуюся попытку: ('сон'|'заморозка'|'', секунды).
+
+    Гибернация: монотонные часы стоят, стенные идут — ловится их расхождением.
+    Modern Standby и голодание CPU: идут обе, но процесс не получает времени,
+    поэтому даже asyncio-таймаут срабатывает много позже срока — ловится тем,
+    что попытка прожила заметно дольше отпущенного ей `open_timeout`.
+
+    Два случая различаются намеренно: лечатся они по-разному, а свести их в
+    одну строчку лога — значит снова потерять сигнал, ради которого всё это.
+    """
+    wall = time.time() - started_wall
+    mono = time.monotonic() - started_mono
+    skew = wall - mono
+    if skew >= _FROZEN_SEC:
+        return "сон", wall
+    if mono >= _OPEN_TIMEOUT_SEC + _FROZEN_SEC:
+        return "заморозка", mono
+    return "", 0.0
+
+
 async def run_client(url: str, token: str):
     if not url:
         logger.error(
@@ -590,12 +659,30 @@ async def run_client(url: str, token: str):
     last_reason = ""   # to avoid logging the same line thousands of times
 
     while True:
+        started_wall, started_mono = time.time(), time.monotonic()
         try:
             async with websockets.connect(
-                uri, ping_interval=20, ping_timeout=20, max_size=8 * 1024 * 1024
+                uri,
+                ping_interval=20,
+                ping_timeout=20,
+                open_timeout=_OPEN_TIMEOUT_SEC,
+                max_size=8 * 1024 * 1024,
             ) as ws:
+                took = time.monotonic() - started_mono
                 if fails:
-                    logger.info(f"Связь восстановлена после {fails} неудачных попыток.")
+                    logger.info(
+                        f"Связь восстановлена после {fails} неудачных попыток "
+                        f"(последняя заняла {took:.0f} с)."
+                    )
+                if took > _OPEN_TIMEOUT_SEC:
+                    # Открытие обязано было прерваться по open_timeout и не
+                    # прервалось. Значит цикл не получал управления — то самое
+                    # место, где мост тихо лежал минутами. Цифра нужна в логе:
+                    # без неё затянувшаяся попытка не видна вообще никак.
+                    logger.warning(
+                        f"Открытие соединения заняло {took:.0f} с при таймауте "
+                        f"{_OPEN_TIMEOUT_SEC:.0f} с — событийный цикл простаивал."
+                    )
                 delay, fails, last_reason = _RECONNECT_MIN_SEC, 0, ""
                 logger.info("✅ Подключено. Жду команды с телефона/Telegram…")
                 async for raw in ws:
@@ -608,6 +695,19 @@ async def run_client(url: str, token: str):
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            # Нас не было на связи не потому, что мост сломан, а потому что
+            # процессу не давали идти. Backoff тут вреден: он растянет паузу
+            # ровно в тот момент, когда ноутбук проснулся и всё уже работает.
+            gap_kind, gap_sec = _lost_time(started_wall, started_mono)
+            if gap_kind:
+                logger.info(
+                    f"{gap_kind.capitalize()} ПК ~{gap_sec / 60:.0f} мин — "
+                    f"соединение потеряно за это время, отказом не считаю. "
+                    f"Переподключаюсь."
+                )
+                delay, fails, last_reason = _RECONNECT_MIN_SEC, 0, ""
+                continue
+
             fails += 1
             reason = str(e)
             # The server can be down for weeks (dead deploy, quota). Back off so
@@ -622,7 +722,8 @@ async def run_client(url: str, token: str):
             if reason != last_reason or fails % _LOG_EVERY == 0:
                 last_reason = reason
                 logger.warning(
-                    f"Отключено: {reason}. Попытка №{fails}, "
+                    f"Отключено: {reason}. Попытка №{fails} прожила "
+                    f"{time.monotonic() - started_mono:.0f} с, "
                     f"следующая через {round(sleep_for)} с…"
                 )
             await asyncio.sleep(sleep_for)
@@ -643,6 +744,14 @@ if __name__ == "__main__":
             ),
         ],
     )
+    _lock = _claim_singleton()
+    if _lock is None:
+        logger.warning(
+            "Клиент уже запущен на этом ПК — вторую копию не поднимаю: "
+            "две копии дерутся за мост, и одна из них зависает."
+        )
+        sys.exit(_EXIT_ALREADY_RUNNING)
+
     from telegram_bot.config import load as load_config
     cfg = load_config(require_bot=False)
     try:
