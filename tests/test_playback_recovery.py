@@ -54,8 +54,14 @@ class _Stub:
         self._turn_done_event = asyncio.Event()
         self.ui = SimpleNamespace(write_log=lambda *a: None)
         self.speaking = []
+        # Громкость кадра, которой дышит HUD. Копим, чтобы проверить: волна
+        # должна брать амплитуду настоящего звука, а не рисовать своё.
+        self.levels: list[float] = []
         # _play_audio отмечает первый кадр в устройстве; здесь замер не нужен
         self._latency = LatencyTracker(enabled=False)
+
+    def _push_level(self, value):
+        self.levels.append(value)
 
     def _open_output(self):
         s = self._streams.pop(0)
@@ -98,6 +104,27 @@ async def test_дефект_кода_не_выдаётся_за_поломку_�
         await asyncio.wait_for(
             jarvis_main.Jarvis._play_audio(stub), timeout=2,
         )
+
+
+@pytest.mark.asyncio
+async def test_волна_на_hud_следует_за_настоящим_звуком():
+    """HUD обязан дышать амплитудой того, что реально звучит.
+
+    Раньше он «реагировал» на random.uniform: одинаково в тишине и на крике,
+    то есть был заставкой, а не индикатором. Проверяем на двух кадрах —
+    тишине и громком — что уровень берётся из самих сэмплов.
+    """
+    import numpy as np
+
+    тишина = np.zeros(1024, dtype=np.int16).tobytes()
+    громкий = (np.ones(1024, dtype=np.int16) * 9000).tobytes()
+
+    stub = _Stub([_Stream()])
+    await _run_playback(stub, [тишина, громкий])
+
+    assert len(stub.levels) == 2, "уровень должен уходить на каждый кадр"
+    assert stub.levels[0] == 0.0, "тишина обязана быть нулём, а не случайностью"
+    assert stub.levels[1] > 0.9, "громкий кадр обязан поднять волну"
 
 
 @pytest.mark.asyncio
