@@ -263,6 +263,38 @@ def _clean(text: str) -> str:
     return " ".join(cleaned_words)
 
 
+# Короче этого предложение не отправляем в синтез отдельно: «Да, сэр.» звучит
+# оборванно, если оторвать его от следующей фразы, а выигрыша по времени не
+# даёт — накладные расходы запроса больше самой фразы.
+_MIN_SPEECH_CHUNK = 40
+
+# Первому куску порог ниже: он определяет, через сколько человек услышит хоть
+# что-то, а синтез тем короче, чем короче фраза. «Секунду, сэр.» — идеальное
+# начало: звучит почти сразу и прикрывает синтез остального ответа.
+_MIN_FIRST_CHUNK = 12
+
+
+def _split_for_speech(text: str) -> list[str]:
+    """Режет ответ на куски, которые можно синтезировать и играть по очереди.
+
+    Смысл в том, чтобы человек услышал первое предложение, пока синтезируется
+    второе: целиком длинный ответ готовится секундами, а первая фраза — почти
+    сразу. Слишком мелкие куски вредны — у синтеза ломается интонация, и
+    каждый запрос стоит своего round-trip'а, поэтому короткие склеиваем.
+    """
+    parts = re.split(r"(?<=[.!?…])\s+", text.strip())
+    chunks: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        floor = _MIN_FIRST_CHUNK if len(chunks) == 1 else _MIN_SPEECH_CHUNK
+        if chunks and len(chunks[-1]) < floor:
+            chunks[-1] = f"{chunks[-1]} {part}"
+        else:
+            chunks.append(part)
+    return chunks
+
+
 # ─── Описания инструментов (на русском) ───────────────────────────────────────
 TOOLS = [
     {
@@ -1457,26 +1489,52 @@ class Jarvis:
         """
         from telegram_bot.tts_fish import speak_pcm
 
-        pcm = await speak_pcm(text, sample_rate=RECV_SAMPLE_RATE)
-        if not pcm:
-            self.ui.write_log("SYS: голос Fish недоступен — ответ остался текстом")
+        chunks = _split_for_speech(text)
+        if not chunks:
             self._latency.mark_turn_complete()
             return
 
-        # Ход считается законченным здесь, а не на turn_complete от сервера:
-        # с внешним голосом сервер объявляет конец, когда текст готов, а
-        # человек в этот момент ещё ничего не слышит. Закрывая ход раньше
-        # времени, секундомер обнулял отсчёт и не видел ответа вовсе.
-        self._latency.mark_answer_audio()
-        logger.info("Голос Fish: %.1f с звука на %d символов",
-                    len(pcm) / 2 / RECV_SAMPLE_RATE, len(text))
+        def synth(fragment: str):
+            return asyncio.create_task(
+                speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE))
 
+        # Следующее предложение синтезируется, пока звучит текущее. Иначе
+        # человек ждёт готовности ВСЕГО ответа: 102 символа — это 6.8 секунды
+        # звука, и все они собирались до первого слова.
+        pending = synth(chunks[0])
         step = CHUNK_SIZE * 2          # int16, тот же размер куска, что у Gemini
-        for i in range(0, len(pcm), step):
-            try:
-                self.audio_in_queue.put_nowait(pcm[i:i + step])
-            except asyncio.QueueFull:
-                await self.audio_in_queue.put(pcm[i:i + step])
+        spoken = 0
+
+        for i in range(len(chunks)):
+            pcm = await pending
+            pending = synth(chunks[i + 1]) if i + 1 < len(chunks) else None
+
+            if not pcm:
+                # Молчание в середине ответа хуже, чем в начале: человек уже
+                # слушает. Но подставить нечего — звук Gemini выброшен.
+                self.ui.write_log("SYS: голос Fish отвалился на середине ответа"
+                                  if spoken else
+                                  "SYS: голос Fish недоступен — ответ остался текстом")
+                if pending:
+                    pending.cancel()   # иначе запрос осиротеет и доживёт впустую
+                break
+
+            if not spoken:
+                # Ход закрывает не turn_complete от сервера, а первый реально
+                # прозвучавший фрагмент: текст готов раньше, чем человек
+                # что-либо слышит, и секундомер обнулялся впустую.
+                self._latency.mark_answer_audio()
+            spoken += len(pcm)
+
+            for j in range(0, len(pcm), step):
+                try:
+                    self.audio_in_queue.put_nowait(pcm[j:j + step])
+                except asyncio.QueueFull:
+                    await self.audio_in_queue.put(pcm[j:j + step])
+
+        if spoken:
+            logger.info("Голос Fish: %.1f с звука, %d фрагмент(ов) на %d символов",
+                        spoken / 2 / RECV_SAMPLE_RATE, len(chunks), len(text))
         self._latency.mark_turn_complete()
 
     # ── Получение ответа от Gemini ────────────────────────────────────────────
