@@ -63,6 +63,18 @@ class HeadlessUI:
         self.state = state
         _logger.debug("состояние: %s", state)
 
+    def set_level(self, value: float) -> None:
+        """Громкость для HUD. Без окна её некому показывать — молча забываем.
+
+        Метод обязан существовать: Jarvis зовёт его из аудио-колбэка на каждом
+        кадре, и «нет такого метода» здесь означало бы падение микрофона.
+        """
+        self.level = value
+
+    def lock_on(self, tool: str) -> None:
+        """Прицел на инструмент — в headless это просто строчка в логе."""
+        _logger.debug("инструмент: %s", tool)
+
     # ── то, что зовёт main() ──────────────────────────────────────────────────
 
     def wait_for_api_key(self) -> str:

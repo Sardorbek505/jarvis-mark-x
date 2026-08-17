@@ -139,6 +139,15 @@ _THINKING_BUDGET = int(os.getenv("JARVIS_THINKING_BUDGET", "0"))
 # и этот звук мы выбрасываем — иначе они заговорили бы хором.
 _VOICE_PROVIDER = (os.getenv("JARVIS_VOICE") or "fish").strip().lower()
 
+# За что принимаем «полную громкость» на индикаторе HUD. Не 32767: обычная
+# речь в метре от ноутбука даёт RMS порядка 1000-5000, и по полной шкале
+# int16 полоска почти не двигалась бы.
+_MIC_FULL_SCALE = float(os.getenv("JARVIS_LEVEL_SCALE", "4000"))
+
+# У синтеза громкость ровнее и выше, чем у микрофона в комнате, поэтому шкала
+# своя: по микрофонной волна упиралась бы в потолок на каждом слове.
+_SPEAK_FULL_SCALE = float(os.getenv("JARVIS_SPEAK_LEVEL_SCALE", "9000"))
+
 # Выше какого уровня в динамиках микрофон не слушаем.
 #
 # 0.02 — это уже отчётливо слышный звук, а не остаточный шум звуковой карты.
@@ -272,6 +281,25 @@ _MIN_SPEECH_CHUNK = 40
 # что-то, а синтез тем короче, чем короче фраза. «Секунду, сэр.» — идеальное
 # начало: звучит почти сразу и прикрывает синтез остального ответа.
 _MIN_FIRST_CHUNK = 12
+
+
+def _chunk_level(chunk: bytes) -> float:
+    """Громкость 0..1 куска int16-аудио — для волны на HUD.
+
+    Считается на каждом кадре воспроизведения, поэтому берём срез, а не весь
+    буфер: точность здесь никому не нужна, а лишние миллисекунды в звуковом
+    цикле слышно как щелчки.
+    """
+    try:
+        import numpy as np
+        head = chunk[:2048]
+        if len(head) < 2:
+            return 0.0
+        data = np.frombuffer(head[:len(head) // 2 * 2], dtype=np.int16)
+        rms = float(np.sqrt(np.mean(np.square(data.astype(np.float32)))))
+        return min(1.0, rms / _SPEAK_FULL_SCALE)
+    except Exception:
+        return 0.0
 
 
 def _split_for_speech(text: str) -> list[str]:
@@ -1392,6 +1420,14 @@ class Jarvis:
 
     # ── Захват микрофона ──────────────────────────────────────────────────────
 
+    def _push_level(self, value: float):
+        """Отдаёт громкость окну. Зовётся из аудио-потока, поэтому дёшево и
+        молча: замер для красоты не имеет права ни тормозить звук, ни падать."""
+        try:
+            self.ui.set_level(value)
+        except Exception as exc:
+            logger.debug("Уровень в HUD не ушёл: %s", exc, exc_info=True)
+
     def _is_loud_enough(self, indata) -> bool:
         """Пропускать ли кадр в облако.
 
@@ -1409,6 +1445,12 @@ class Jarvis:
         except Exception:
             self._frame_was_loud = True
             return True          # не смогли посчитать — лучше пропустить, чем оглохнуть
+
+        # HUD дышит этим числом. Раньше он «реагировал» на random.uniform и
+        # выглядел одинаково в тишине и на крике. _MIC_FULL_SCALE — не предел
+        # int16, а громкость обычной речи в метре от ноутбука: масштабируя по
+        # 32767, мы получили бы почти неподвижную полоску.
+        self._push_level(min(1.0, rms / _MIC_FULL_SCALE))
         if rms >= MIC_RMS_THRESHOLD:
             self._quiet_frames = 0
             self._frame_was_loud = True
@@ -1685,6 +1727,12 @@ class Jarvis:
                         responses = []
                         for fc in response.tool_call.function_calls:
                             print(f"[ДЖАРВИС] 📞 {fc.name}")
+                            # Джарвис у Старка не работает молча: HUD всегда
+                            # показывает, на что наведён.
+                            try:
+                                self.ui.lock_on(fc.name)
+                            except Exception as exc:
+                                logger.debug("Прицел не встал: %s", exc, exc_info=True)
                             _tool_started = time.perf_counter()
                             try:
                                 fr = await self._execute_tool(fc)
@@ -1767,6 +1815,10 @@ class Jarvis:
 
                     self.set_speaking(True)
                     self._latency.mark_playback()
+                    # Громкость собственного голоса — прямо перед тем, как
+                    # кадр уйдёт в динамики. Так волна на HUD совпадает с тем,
+                    # что человек слышит, а не идёт своим ритмом.
+                    self._push_level(_chunk_level(chunk))
                     await asyncio.to_thread(stream.write, chunk)
 
             except asyncio.CancelledError:

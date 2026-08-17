@@ -156,6 +156,20 @@ class HudCanvas(QWidget):
         self._halo      = 55.0
         self._tgt_halo  = 55.0
         self._last_t    = time.time()
+        # Громкость 0..1: слева — микрофон, справа — собственный голос.
+        # До этого HUD «реагировал» на random.uniform, то есть дышал ровно так
+        # же в тишине и на крике. Живое число берётся быстро (атака), а спадает
+        # плавно (затухание) — так ведёт себя стрелочный индикатор уровня, и
+        # именно поэтому она выглядит связанной со звуком, а не сама по себе.
+        self.level      = 0.0
+        # Инструмент, на который сейчас «наведён» прицел, и когда он погаснет.
+        self._tool: str | None = None
+        self._tool_until = 0.0
+        self._tool_lock  = 0.0        # 0..1, насколько скобки сомкнулись
+        # Бегущая история громкости — та самая полоска-осциллограф внизу.
+        # 36 столбиков на 60 fps = окно около 0.6 секунды: достаточно, чтобы
+        # глаз увидел ритм фразы, и мало, чтобы она не превратилась в кашу.
+        self._wave: list[float] = [0.0] * 36
         self._scan      = 0.0
         self._scan2     = 180.0
         self._rings     = [0.0, 120.0, 240.0]
@@ -189,24 +203,50 @@ class HudCanvas(QWidget):
         except Exception:
             self._face_px = None
 
+    def feed_level(self, value: float):
+        """Живая громкость 0..1. Атака мгновенная, спад — в _step."""
+        self.level = max(self.level, max(0.0, min(1.0, value)))
+
+    def lock_on(self, tool: str, seconds: float = 2.6):
+        """Прицел на инструмент: скобки смыкаются и подписываются именем."""
+        self._tool = tool
+        self._tool_until = time.time() + seconds
+        self._tool_lock = 0.0
+
     def _step(self):
         self._tick += 1
         now = time.time()
-        if now - self._last_t > (0.12 if self.speaking else 0.5):
-            if self.speaking:
-                self._tgt_scale = random.uniform(1.06, 1.14)
-                self._tgt_halo  = random.uniform(145, 190)
-            elif self.muted:
-                self._tgt_scale = random.uniform(0.998, 1.002)
-                self._tgt_halo  = random.uniform(15, 28)
-            else:
-                self._tgt_scale = random.uniform(1.001, 1.008)
-                self._tgt_halo  = random.uniform(48, 68)
-            self._last_t = now
+
+        # Спад громкости. Быстрее, когда говорит Джарвис: его речь рвётся
+        # паузами между словами, и медленный спад смазал бы их в одно гудение.
+        self.level *= 0.88 if self.speaking else 0.82
+
+        # Цели считаются из громкости каждый кадр, а не выдумываются раз в
+        # полсекунды. Дыхание в тишине оставлено намеренно: мёртвый HUD
+        # выглядит выключенным, а не спокойным.
+        breath = 0.004 * math.sin(self._tick * 0.03)
+        if self.muted:
+            self._tgt_scale = 1.0 + breath * 0.3
+            self._tgt_halo  = 18.0
+        elif self.speaking:
+            self._tgt_scale = 1.0 + breath + self.level * 0.16
+            self._tgt_halo  = 110.0 + self.level * 95.0
+        else:
+            self._tgt_scale = 1.0 + breath + self.level * 0.05
+            self._tgt_halo  = 46.0 + self.level * 70.0
+        self._last_t = now
 
         sp = 0.38 if self.speaking else 0.15
         self._scale += (self._tgt_scale - self._scale) * sp
         self._halo  += (self._tgt_halo  - self._halo)  * sp
+
+        if self._tool and now > self._tool_until:
+            self._tool = None
+        if self._tool:
+            # Ease-out: скобки быстро идут к цели и мягко встают на место.
+            self._tool_lock += (1.0 - self._tool_lock) * 0.22
+        else:
+            self._tool_lock *= 0.85
 
         speeds = [1.3, -0.9, 2.0] if self.speaking else [0.55, -0.35, 0.9]
         for i, spd in enumerate(speeds):
@@ -221,7 +261,8 @@ class HudCanvas(QWidget):
         if len(self._pulses) < 3 and random.random() < (0.07 if self.speaking else 0.025):
             self._pulses.append(0.0)
 
-        if self.speaking and random.random() < 0.28:
+        # Искры летят тем гуще, чем громче голос — на тихой фразе их почти нет.
+        if self.speaking and random.random() < 0.06 + self.level * 0.45:
             cx, cy = self.width() / 2, self.height() / 2
             ang = random.uniform(0, 2 * math.pi)
             r_s = fw * 0.28
@@ -234,6 +275,9 @@ class HudCanvas(QWidget):
             [p[0]+p[2], p[1]+p[3], p[2]*0.97, p[3]*0.97, p[4]-0.028]
             for p in self._particles if p[4] > 0
         ]
+
+        self._wave.pop(0)
+        self._wave.append(0.0 if self.muted else self.level)
 
         self._blink_tick += 1
         if self._blink_tick >= 38:
@@ -364,6 +408,30 @@ class HudCanvas(QWidget):
             p.setBrush(QBrush(qcol(C.PRI, a)))
             p.drawEllipse(QPointF(pt[0], pt[1]), 2.5, 2.5)
 
+        # Прицел на инструмент. Джарвис у Старка никогда не работает молча:
+        # он всегда показывает, на что именно наведён. Скобки приходят
+        # снаружи внутрь (ease-out) и подписываются именем модуля.
+        if self._tool_lock > 0.01:
+            k = self._tool_lock
+            half = fw * (0.42 - 0.10 * k)          # смыкаются к центру
+            arm  = fw * 0.055
+            a    = int(230 * min(1.0, k * 1.4))
+            p.setPen(QPen(qcol(C.ACC2, a), 2))
+            for sx in (-1, 1):
+                for sy_ in (-1, 1):
+                    x = cx + sx * half
+                    y = cy + sy_ * half * 0.62
+                    p.drawLine(QPointF(x, y), QPointF(x - sx * arm, y))
+                    p.drawLine(QPointF(x, y), QPointF(x, y - sy_ * arm))
+            if self._tool:
+                p.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
+                p.setPen(QPen(qcol(C.ACC2, a), 1))
+                p.drawText(
+                    QRectF(0, cy - half * 0.62 - 26, W, 20),
+                    Qt.AlignmentFlag.AlignCenter,
+                    f"▏ {self._tool.upper().replace('_', ' ')} ▕",
+                )
+
         # Статус
         sy = cy + fw * 0.40
         if self.muted:
@@ -392,13 +460,18 @@ class HudCanvas(QWidget):
         N, bw = 36, 8
         wx0 = (W - N * bw) / 2
         for i in range(N):
+            # Столбики — это записанная громкость, а не случайные числа:
+            # полоска бежит в такт голосу и замирает, когда никто не говорит.
+            lvl = self._wave[i] if i < len(self._wave) else 0.0
             if self.muted:
                 hgt, cl = 2, qcol(C.MUTED_C)
-            elif self.speaking:
-                hgt = random.randint(3, 20)
+            elif lvl > 0.02:
+                hgt = int(3 + lvl * 22)
                 cl = qcol(C.PRI) if hgt > 12 else qcol(C.PRI_DIM)
             else:
-                hgt = int(3 + 2 * math.sin(self._tick * 0.09 + i * 0.6))
+                # Тишина — ровная линия с едва заметной рябью, чтобы полоска
+                # читалась как живая, а не как погасшая.
+                hgt = int(3 + 1.5 * math.sin(self._tick * 0.09 + i * 0.6))
                 cl = qcol(C.BORDER_B)
             p.fillRect(QRectF(wx0 + i * bw, wy + 20 - hgt, bw - 1, hgt), cl)
 
@@ -824,6 +897,11 @@ class SetupOverlay(QWidget):
 class MainWindow(QMainWindow):
     _log_sig   = pyqtSignal(str)
     _state_sig = pyqtSignal(str)
+    # Громкость приходит из аудио-потока, имя инструмента — из событийного
+    # цикла. Оба чужие для Qt, поэтому только через сигналы: трогать виджеты
+    # из другого потока — это падение, а не подтормаживание.
+    _level_sig = pyqtSignal(float)
+    _tool_sig  = pyqtSignal(str)
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -992,6 +1070,8 @@ class MainWindow(QMainWindow):
 
         self._log_sig.connect(self._log.append_log)
         self._state_sig.connect(self._apply_state)
+        self._level_sig.connect(self._hud.feed_level)
+        self._tool_sig.connect(self._hud.lock_on)
 
     # ── Публичный API ──────────────────────────────────────────────────────────
     def write_log(self, text: str):
@@ -999,6 +1079,14 @@ class MainWindow(QMainWindow):
 
     def set_state(self, state: str):
         self._state_sig.emit(state)
+
+    def set_level(self, value: float):
+        """Громкость 0..1 — ею дышит весь HUD. Зовётся из аудио-потока."""
+        self._level_sig.emit(float(value))
+
+    def lock_on(self, tool: str):
+        """Навести прицел на инструмент, который сейчас выполняется."""
+        self._tool_sig.emit(str(tool))
 
     def wait_for_api_key(self):
         """Блокирует поток до получения API-ключа. Пропускает если ключ уже есть."""
