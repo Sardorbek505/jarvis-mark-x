@@ -59,3 +59,6 @@ config/unlock_secret.txt
 
 jarvis_watchdog.log
 jarvis_pc_server.log
+
+# Реплики стенда замера — генерируются офлайн за секунду (scripts/latency_probe.py)
+logs/latency_voice/
