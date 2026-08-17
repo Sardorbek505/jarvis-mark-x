@@ -149,8 +149,20 @@ CHUNK_SIZE        = 1024
 # Порог тишины для микрофона (RMS по int16). Ниже него кадры в облако не
 # уходят вовсе. Речь в метре от ноутбука даёт ~1000-5000, тишина — десятки.
 MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "250"))
-# Кадр = 64 мс, поэтому 10 кадров ≈ 0.6 с «хвоста» после последнего громкого.
-MIC_HANGOVER_FRAMES = int(os.getenv("MIC_HANGOVER_FRAMES", "10"))
+# Хвост тишины после речи — не косметика, а условие того, что тебе вообще
+# ответят. Конец фразы определяет VAD на стороне Gemini, и определить его он
+# может только по ПОЛУЧЕННОЙ тишине: когда гейт обрывает поток сразу за
+# последним громким кадром, сервер остаётся ждать продолжения фразы.
+#
+# Замер 17.08.2026 на стенде scripts/latency_probe.py: с хвостом 0.64 с (10
+# кадров) модель не ответила НИ РАЗУ — расшифровывала сказанное и молчала;
+# с 1.92 с отвечала всегда. Поэтому хвост считается от окна VAD с запасом,
+# а не подбирается на глаз.
+MIC_HANGOVER_MS = int(os.getenv("MIC_HANGOVER_MS", str(_VAD_SILENCE_MS + 600)))
+_FRAME_MS = CHUNK_SIZE / SEND_SAMPLE_RATE * 1000
+MIC_HANGOVER_FRAMES = int(os.getenv(
+    "MIC_HANGOVER_FRAMES", str(max(1, round(MIC_HANGOVER_MS / _FRAME_MS)))
+))
 
 # ── Необратимые действия ──────────────────────────────────────────────────────
 # Окно, в течение которого повторный вызов считается подтверждением.
@@ -1332,11 +1344,14 @@ class Jarvis:
             import numpy as np
             rms = float(np.sqrt(np.mean(np.square(indata.astype(np.float32)))))
         except Exception:
+            self._frame_was_loud = True
             return True          # не смогли посчитать — лучше пропустить, чем оглохнуть
         if rms >= MIC_RMS_THRESHOLD:
             self._quiet_frames = 0
+            self._frame_was_loud = True
             return True
         self._quiet_frames = getattr(self, "_quiet_frames", MIC_HANGOVER_FRAMES) + 1
+        self._frame_was_loud = False
         return self._quiet_frames <= MIC_HANGOVER_FRAMES
 
     async def _listen_audio(self):
@@ -1370,9 +1385,14 @@ class Jarvis:
                 return
             if not self._is_loud_enough(indata):
                 return
-            # Отсчёт задержки ведём от последнего громкого кадра: именно он и
-            # есть «человек договорил».
-            self._latency.mark_voice_frame()
+            # Отсчёт задержки ведём от последнего ГРОМКОГО кадра: именно он и
+            # есть «человек договорил». Кадры хвоста тишины тоже уезжают в
+            # облако, но человек в это время уже молчит — считая и от них, мы
+            # вычитали из задержки длину собственного хвоста и отчитывались
+            # цифрой лучше правды: «слышит» выходило отрицательным, потому что
+            # расшифровка успевала прийти раньше конца хвоста.
+            if self._frame_was_loud:
+                self._latency.mark_voice_frame()
             loop.call_soon_threadsafe(
                 _put_nowait_safe,
                 {"data": indata.tobytes(), "mime_type": "audio/pcm"},
