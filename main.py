@@ -156,6 +156,9 @@ _SPEAK_FULL_SCALE = float(os.getenv("JARVIS_SPEAK_LEVEL_SCALE", "9000"))
 # (замерено: и музыка, и голос дают RMS 7000-14000), поэтому во время
 # воспроизведения микрофон молчит. MIC_IGNORE_SPEAKERS=0 отключает защиту.
 _SPEAKER_GATE = float(os.getenv("SPEAKER_GATE", "0.02"))
+# Как часто рапортовать, что микрофон глух. Реже — можно не заметить, чаще —
+# спам: колбэк зовётся ~15 раз в секунду.
+_GATE_REPORT_SEC = float(os.getenv("MIC_GATE_REPORT_SEC", "5"))
 _IGNORE_SPEAKERS = os.getenv("MIC_IGNORE_SPEAKERS", "1") != "0"
 
 
@@ -1420,6 +1423,40 @@ class Jarvis:
 
     # ── Захват микрофона ──────────────────────────────────────────────────────
 
+    def _note_gate(self, reason: str | None):
+        """Копит причины, по которым кадры не уезжают, и раз в несколько
+        секунд пишет сводку. Зовётся из аудио-колбэка — только счётчики.
+
+        Без этого «Джарвис меня не слышит» неотличимо от «Джарвис завис»:
+        все три отказа в callback молчаливые, и глухой микрофон выглядит
+        ровно как исправный.
+        """
+        now = time.monotonic()
+        if reason is None:
+            self._gate_passed = getattr(self, "_gate_passed", 0) + 1
+        else:
+            counts = getattr(self, "_gate_counts", None)
+            if counts is None:
+                counts = self._gate_counts = {}
+            counts[reason] = counts.get(reason, 0) + 1
+
+        last = getattr(self, "_gate_reported_at", 0.0)
+        if now - last < _GATE_REPORT_SEC:
+            return
+        self._gate_reported_at = now
+
+        counts = getattr(self, "_gate_counts", {}) or {}
+        passed = getattr(self, "_gate_passed", 0)
+        self._gate_counts, self._gate_passed = {}, 0
+        if not counts or passed:
+            return          # что-то доезжает — значит слух работает
+        top = max(counts.items(), key=lambda kv: kv[1])
+        logger.warning(
+            "Микрофон глухой уже %.0f с: ни один кадр не ушёл. Причина — %s (%d кадров)",
+            _GATE_REPORT_SEC, top[0], top[1],
+        )
+        self.ui.write_log(f"SYS: не слышу вас — {top[0]}")
+
     def _push_level(self, value: float):
         """Отдаёт громкость окну. Зовётся из аудио-потока, поэтому дёшево и
         молча: замер для красоты не имеет права ни тормозить звук, ни падать."""
@@ -1479,17 +1516,32 @@ class Jarvis:
                 pass  # Drop audio frame silently to avoid flooding event loop
 
         def callback(indata, frames, time_info, status):
+            # Почему кадр не уехал — самое важное, чего тут не хватало.
+            # Все три отказа ниже молчаливые, и когда микрофон глохнет
+            # насовсем, в логе нет ни строчки: со стороны Джарвис просто
+            # «не отвечает». Считаем причины и раз в _GATE_REPORT_SEC пишем
+            # сводку — по кадру логировать нельзя, их 15 в секунду.
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
-            if jarvis_speaking or self.ui.muted:
+            if jarvis_speaking:
+                self._note_gate("Джарвис говорит сам")
+                return
+            if self.ui.muted:
+                self._note_gate("микрофон выключен (Ctrl+M)")
                 return
             # Из динамиков сейчас что-то играет — значит микрофон слышит это,
             # а не человека. Читаем готовое число: COM из аудио-колбэка звать
             # нельзя, замер идёт в своём потоке.
             if self._speaker_meter is not None and self._speaker_meter.peak > _SPEAKER_GATE:
+                self._note_gate(
+                    f"звук в динамиках {self._speaker_meter.peak:.3f} > "
+                    f"порога {_SPEAKER_GATE}"
+                )
                 return
             if not self._is_loud_enough(indata):
+                self._note_gate("тихо для порога MIC_RMS_THRESHOLD")
                 return
+            self._note_gate(None)
             # Отсчёт задержки ведём от последнего ГРОМКОГО кадра: именно он и
             # есть «человек договорил». Кадры хвоста тишины тоже уезжают в
             # облако, но человек в это время уже молчит — считая и от них, мы
