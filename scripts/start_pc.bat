@@ -39,6 +39,14 @@ where python >nul 2>&1 || set "PY=py -3"
 :loop
 >>"%LOG%" echo [run] %DATE% %TIME% launching pc_server...
 %PY% -m telegram_bot.pc_server >>"%LOG%" 2>&1
+REM Code 3 = another client already holds the machine lock. That means a second
+REM launcher chain is alive (the task started one while this loop was running).
+REM Keep looping and we respawn every 5s forever, spamming the log; the extra
+REM loop must retire instead — one launcher, one client.
+if %errorlevel%==3 (
+  >>"%LOG%" echo [=] another client is already running - this launcher exits.
+  exit /b 0
+)
 >>"%LOG%" echo [!] pc_server stopped (code %errorlevel%), restart in 5s...
 ping -n 6 127.0.0.1 >nul
 goto loop
