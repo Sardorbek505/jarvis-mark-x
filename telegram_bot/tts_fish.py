@@ -68,19 +68,35 @@ def is_configured() -> bool:
     return bool(_key())
 
 
-def _request(text: str) -> bytes:
-    body = json.dumps({
+def _request(text: str, fmt: str = "opus", latency: str | None = None,
+             sample_rate: int | None = None) -> bytes:
+    payload = {
         "text": text[:_MAX_CHARS],
         "reference_id": _voice_id(),
-        "format": "opus",          # Ogg/Opus — родной формат голосовых Telegram
-        "latency": _LATENCY,
-    }).encode("utf-8")
+        "format": fmt,
+        "latency": latency or _LATENCY,
+    }
+    if sample_rate:
+        payload["sample_rate"] = sample_rate
+    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(_API_URL, data=body, headers={
         "Authorization": f"Bearer {_key()}",
         "Content-Type": "application/json",
         "model": _MODEL,
     })
     return urllib.request.urlopen(req, timeout=_TIMEOUT_SEC).read()
+
+
+def _pcm_from_wav(data: bytes) -> bytes | None:
+    """Выковыривает сэмплы из RIFF. Заголовок не фиксированной длины: между
+    'fmt ' и 'data' встречаются служебные куски, поэтому ищем 'data', а не
+    отрезаем первые 44 байта."""
+    if not data.startswith(b"RIFF"):
+        return None
+    idx = data.find(b"data", 12)
+    if idx < 0 or len(data) < idx + 8:
+        return None
+    return data[idx + 8:]
 
 
 async def speak_ogg(text: str) -> bytes | None:
@@ -103,3 +119,35 @@ async def speak_ogg(text: str) -> bytes | None:
         logger.warning("Fish TTS: неожиданный ответ (%d байт)", len(audio))
         return None
     return audio
+
+
+async def speak_pcm(text: str, sample_rate: int = 24000) -> bytes | None:
+    """Тот же голос, что в Telegram, но сырым PCM — для десктопа.
+
+    Десктопный ассистент играет int16 напрямую в звуковую карту, поэтому
+    просим WAV на его же частоте и снимаем заголовок: Ogg/Opus здесь
+    потребовал бы ffmpeg, а Opus вдобавок не умеет 24 кГц (только 48).
+
+    Задержка: замер 17.08.2026 с машины владельца, фраза на 70 символов —
+    первый кусок `balanced` 989 мс против `normal` 3548 мс. Для разговора
+    важен именно первый звук, поэтому здесь balanced, а не общий _LATENCY.
+    """
+    text = (text or "").strip()
+    if not text or not is_configured():
+        return None
+    try:
+        raw = await asyncio.to_thread(
+            _request, text, "wav", "balanced", sample_rate)
+    except urllib.error.HTTPError as e:
+        detail = e.read(200).decode("utf-8", "replace")
+        logger.warning("Fish PCM: HTTP %s — %s", e.code, detail)
+        return None
+    except Exception as e:
+        logger.warning("Fish PCM: %s: %s", type(e).__name__, e)
+        return None
+
+    pcm = _pcm_from_wav(raw)
+    if not pcm or len(pcm) < 500:
+        logger.warning("Fish PCM: неожиданный ответ (%d байт)", len(raw))
+        return None
+    return pcm
