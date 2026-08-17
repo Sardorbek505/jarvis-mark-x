@@ -162,8 +162,32 @@ _GATE_REPORT_SEC = float(os.getenv("MIC_GATE_REPORT_SEC", "5"))
 _IGNORE_SPEAKERS = os.getenv("MIC_IGNORE_SPEAKERS", "1") != "0"
 
 
+def _device_is_silent(index: int, seconds: float = 0.3) -> bool:
+    """Отдаёт ли устройство РОВНО нули.
+
+    Проверяется именно ноль в ноль, а не «тихо»: настоящий микрофон даже в
+    пустой комнате даёт собственный шум в единицы-десятки по амплитуде.
+    Идеальные нули бывают только у мёртвого входа.
+
+    Ради чего: 18.08.2026 Джарвис три минуты слушал «AI Noise-cancelling Input
+    (ASUS)» и не услышал ни слова — все 79 кадров каждые 5 секунд уходили в
+    отбраковку по порогу тишины. Устройство выбиралось ПО НАЗВАНИЮ, а этот
+    вход виртуальный: всегда в списке, открывается без ошибки и молчит, пока
+    не запущен ASUS-софт. Та же виртуалка ломала и вывод (PaErrorCode -9999).
+    """
+    try:
+        import numpy as np
+        rec = sd.rec(int(seconds * SEND_SAMPLE_RATE), samplerate=SEND_SAMPLE_RATE,
+                     channels=1, dtype="int16", device=index)
+        sd.wait()
+        return int(np.abs(rec).max()) == 0
+    except Exception as exc:
+        logger.warning("Устройство %s не удалось проверить (%s) — пропускаю", index, exc)
+        return True          # не открылось или не читается — точно не кандидат
+
+
 def _pick_input_device():
-    """Индекс микрофона: из MIC_DEVICE, иначе с шумоподавлением, иначе None."""
+    """Индекс микрофона: из MIC_DEVICE, иначе рабочий с шумоподавлением, иначе None."""
     manual = os.getenv("MIC_DEVICE", "").strip()
     if manual:
         try:
@@ -179,6 +203,14 @@ def _pick_input_device():
             continue
         name = d["name"].lower()
         if any(h in name for h in _NOISE_CANCEL_HINTS):
+            if _device_is_silent(i):
+                logger.warning(
+                    "«%s» отдаёт идеальную тишину — беру системный микрофон. "
+                    "Выбор по названию и подвёл: это виртуальный вход, он всегда "
+                    "в списке и открывается без ошибки, но молчит, пока не "
+                    "запущен софт производителя.", d["name"],
+                )
+                break
             logger.info("Микрофон с шумоподавлением: «%s»", d["name"])
             return i
     return None
@@ -1451,9 +1483,15 @@ class Jarvis:
         if not counts or passed:
             return          # что-то доезжает — значит слух работает
         top = max(counts.items(), key=lambda kv: kv[1])
+        подсказка = ""
+        if top[0].startswith("тихо"):
+            # Самый частый случай — выбран мёртвый вход. Пишем это прямо, а не
+            # оставляем человека гадать, почему «он меня не слышит».
+            подсказка = (" Похоже, слушаем не тот вход: проверьте микрофон в "
+                         "системе или задайте MIC_DEVICE=<имя или номер>.")
         logger.warning(
-            "Микрофон глухой уже %.0f с: ни один кадр не ушёл. Причина — %s (%d кадров)",
-            _GATE_REPORT_SEC, top[0], top[1],
+            "Микрофон глухой уже %.0f с: ни один кадр не ушёл. Причина — %s (%d кадров).%s",
+            _GATE_REPORT_SEC, top[0], top[1], подсказка,
         )
         self.ui.write_log(f"SYS: не слышу вас — {top[0]}")
 
