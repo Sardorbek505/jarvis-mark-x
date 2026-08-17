@@ -1747,11 +1747,18 @@ class Jarvis:
                         await self.session.send_tool_response(function_responses=responses)
 
         except Exception as e:
-            logger.error(f"Receive audio error: {e}")
-            traceback.print_exc()
-            # Don't raise - let the connection be re-established in the outer loop
-            # Brief pause before attempting to continue
-            await asyncio.sleep(1)
+            logger.error("Приём оборвался: %s", e)
+            # Комментарий здесь обещал «внешний цикл переподключится», а код
+            # молча проглатывал ошибку и завершал задачу. Переподключаться было
+            # НЕКОМУ: остальные три задачи продолжали работать с мёртвой
+            # сессией, Джарвис оставался запущенным и глухим, а на разрыв
+            # 1011 от Gemini (тот приходит регулярно, это штатное поведение их
+            # серверов) просто закрывался посреди разговора.
+            #
+            # Пробрасываем наверх: TaskGroup свернётся, и сработает настоящий
+            # реконнект в `run()`, где уже есть счётчик попыток и backoff.
+            self.ui.write_log("SYS: связь с Gemini оборвалась — переподключаюсь…")
+            raise
 
     # ── Воспроизведение аудио ─────────────────────────────────────────────────
     def _open_output(self):
