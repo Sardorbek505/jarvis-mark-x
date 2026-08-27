@@ -32,17 +32,18 @@ PC_LINK_TOKEN = os.getenv("PC_LINK_TOKEN", "")
 
 _PC_KEYWORDS = [
     "play", "stop", "pause", "next", "prev", "volume",
-    "включи", "выключи", "стоп", "пауза", "следующий", "предыдущий", "трек",
+    "включи", "выключи", "стоп", "пауза", "следующий", "предыдущий", "трек", "песн", "музык",
     "поставь", "запусти", "воспроизведи", "играй",
     "open", "открой", "weather", "погода",
     "search", "найди", "поищи",
     "сверни", "свернуть", "minimize", "рабочий стол", "разверни",
-    "закрой окно", "переключи окно", "проводник", "диспетчер",
-    "screenshot", "скриншот", "заблокируй", "sysinfo", "системная",
-    "переключи", "отключи", "громче", "тише", "дальше", "громкость",
+    "закрой окно", "переключи окно", "проводник", "диспетчер", "окна", "окно",
+    "screenshot", "скриншот", "заблокируй", "заблокировать", "заблок", "блокировка", "lock", "sysinfo", "системная",
+    "переключи", "отключи", "громче", "тише", "дальше", "назад", "громкость", "звук", "яркость",
     "камер", "вебкам", "webcam", "сфоткай", "что рядом", "что вокруг", "что там происходит",
     "брифинг", "briefing", "батарея", "calendar", "календарь",
-    "разблокир", "нажми enter", "нажать enter", "нажми интер",
+    "разблокир", "разблок", "нажми enter", "нажать enter", "нажми интер", "enter", "интер",
+    "выключи пк", "перезагрузи", "restart", "shutdown",
 ]
 
 
@@ -253,12 +254,18 @@ async def _handle_action(ws: WebSocket, user_id: int, msg: dict):
     elif mtype == "task_done" and msg.get("id") is not None:
         await _memory.complete_task(user_id, int(msg["id"]))
         await _send_view(ws, user_id, "tasks")
+    elif mtype == "task_delete" and msg.get("id") is not None:
+        await _memory.delete_task(user_id, int(msg["id"]))
+        await _send_view(ws, user_id, "tasks")
     elif mtype == "reminder_add" and msg.get("text"):
         now_local = user_context.local_now(user_id, _DEFAULT_TZ)
         parsed = rem.parse_reminder(msg["text"].strip(), now_local)
         if parsed:
             when, what = parsed
             await _memory.add_reminder(user_id, what, rem.to_utc_iso(when))
+        await _send_view(ws, user_id, "tasks")
+    elif mtype in ("reminder_delete", "reminder_done") and msg.get("id") is not None:
+        await _memory.delete_reminder(user_id, int(msg["id"]))
         await _send_view(ws, user_id, "tasks")
 
 
@@ -307,7 +314,8 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             if mtype in ("habit_add", "habit_toggle", "habit_delete",
-                         "task_add", "task_done", "reminder_add"):
+                         "task_add", "task_done", "task_delete",
+                         "reminder_add", "reminder_delete", "reminder_done"):
                 await _handle_action(ws, user_id, msg)
                 continue
 
@@ -391,28 +399,36 @@ async def _send_text(ws: WebSocket, text: str, want_audio: bool):
 
 async def _send_media_to_tg(ws: WebSocket, user_id: int, pc_cmd: str, label: str):
     """Grab a screenshot/camera shot from the PC and push it to the user's
-    Telegram chat via the bot (works on HF — bot uses the Cloudflare proxy)."""
+    Telegram chat via the bot, or display directly in Mini App."""
     if not (_bridge and _bridge.connected):
         await _send_text(ws, "❌ ПК офлайн — нечего отправлять.", want_audio=False)
         return
-    if _bot is None:
-        await _send_text(ws, "❌ Отправка в Telegram недоступна.", want_audio=False)
-        return
-    await _send_text(ws, f"📸 Делаю {label} и отправляю в Telegram…", want_audio=False)
+    await _send_text(ws, f"📸 Делаю {label}…", want_audio=False)
     rich = await _bridge.send_command_full(pc_cmd, user_id)
     img = (rich or {}).get("image_b64")
     if not img:
         await _send_text(ws, "❌ Не получил изображение с ПК.", want_audio=False)
         return
-    try:
-        from io import BytesIO
-        data = base64.b64decode(img)
-        await _bot.send_photo(chat_id=user_id, photo=BytesIO(data),
-                              caption=(rich.get("text") or label))
-        await _send_text(ws, "📤 Отправил в Telegram-чат ✅", want_audio=False)
-    except Exception as e:
-        logger.error(f"send media to tg: {e}")
-        await _send_text(ws, f"❌ Не смог отправить в Telegram: {e}", want_audio=False)
+
+    # Always show the image directly in the Mini App as well
+    await ws.send_text(json.dumps({
+        "type": "image",
+        "data": img,
+        "caption": rich.get("text") or label,
+    }))
+
+    if _bot is not None and user_id > 0:
+        try:
+            from io import BytesIO
+            data = base64.b64decode(img)
+            await _bot.send_photo(chat_id=user_id, photo=BytesIO(data),
+                                  caption=(rich.get("text") or label))
+            await _send_text(ws, "📤 Отправил в Telegram-чат ✅", want_audio=False)
+        except Exception as e:
+            logger.error(f"send media to tg: {e}")
+            await _send_text(ws, f"⚠ Отобразил в приложении (ошибка отправки в TG: {e})", want_audio=False)
+    else:
+        await _send_text(ws, "📸 Снимок готов и отображён выше.", want_audio=False)
 
 
 async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool = True):
