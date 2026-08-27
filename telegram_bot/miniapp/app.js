@@ -123,6 +123,30 @@ function showWelcomeOnce() {
   addMsg('sys', 'JARVIS на связи. Напиши или зажми орб, чтобы говорить.');
 }
 
+// Toast notification banner
+function showToast(text, type = 'info', action = null) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  const span = document.createElement('span');
+  span.textContent = text;
+  toast.appendChild(span);
+  if (action) {
+    const btn = document.createElement('button');
+    btn.className = 'toast-action';
+    btn.textContent = action.label || 'Открыть';
+    btn.onclick = () => { action.onClick(); toast.remove(); };
+    toast.appendChild(btn);
+  }
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.classList.add('hide');
+    setTimeout(() => toast.remove(), 350);
+  }, 4000);
+}
+window.showToast = showToast;
+
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 let ws = null;
 
@@ -159,11 +183,20 @@ function connect() {
         // The server will follow with either 'audio' (real JARVIS voice) or
         // 'tts_failed' (use browser fallback). Just wait — no timer race.
         awaitVoice(msg.text);
+        if (activeTab === 'pc') {
+          showToast(msg.text.replace(/^🖥\s*/, ''));
+        }
         break;
 
       case 'image':
         addImage(msg.data, msg.caption);
         setState('idle');
+        if (activeTab === 'pc') {
+          showToast('📸 Снимок получен', 'success', {
+            label: 'Открыть в чате',
+            onClick: () => switchTab('chat'),
+          });
+        }
         break;
 
       case 'transcript_user':
@@ -197,6 +230,7 @@ function connect() {
 
       case 'pc_status':
         pcBadge.className = msg.online ? 'badge online' : 'badge';
+        pcBadge.title = msg.online ? 'Desktop JARVIS: онлайн' : 'Desktop JARVIS: офлайн';
         break;
 
       case 'thinking':
@@ -258,9 +292,19 @@ function sendText() {
 }
 
 // ── Quick PC actions ──────────────────────────────────────────────────────────
-function pcCmd(text) {
-  if (ws?.readyState !== WebSocket.OPEN) { addMsg('sys', '⚠ Нет соединения'); return; }
-  haptic();
+function pcCmd(text, event) {
+  if (event?.currentTarget) {
+    const btn = event.currentTarget;
+    btn.classList.add('pc-tile-active');
+    setTimeout(() => btn.classList.remove('pc-tile-active'), 600);
+  }
+  if (ws?.readyState !== WebSocket.OPEN) {
+    showToast('⚠ Нет соединения с сервером', 'error');
+    addMsg('sys', '⚠ Нет соединения');
+    return;
+  }
+  haptic('medium');
+  showToast('🖥 ' + text);
   addMsg('user', text);
   ws.send(JSON.stringify({ type: 'text', text, tts: voiceEnabled }));
   setState('processing');
@@ -599,12 +643,12 @@ function renderDashboard(p) {
         : `<div class="hero-city">📍 ${esc(p.city || 'Город не задан')}</div>`}
     </div>
     <div class="dash-grid">
-      <div class="stat stat-habits">
+      <div class="stat stat-habits" onclick="switchTab('habits')" role="button" tabindex="0" title="Открыть привычки">
         <div class="stat-ico">🔁</div>
         <div><div class="stat-num">${p.habits_done}<span>/${p.habits_total}</span></div>
         <div class="stat-lbl">привычки · 🔥${p.best_streak}</div></div>
       </div>
-      <div class="stat stat-tasks">
+      <div class="stat stat-tasks" onclick="switchTab('tasks')" role="button" tabindex="0" title="Открыть дела">
         <div class="stat-ico">✅</div>
         <div><div class="stat-num">${p.open_tasks}</div>
         <div class="stat-lbl">задач открыто</div></div>
@@ -647,10 +691,10 @@ function renderHabits(p) {
   }
   body.innerHTML = habits.map(h => `
     <div class="row">
-      <button class="check ${h.done_today ? 'on' : ''}" onclick="habitToggle(${h.id})">${h.done_today ? '✓' : ''}</button>
+      <button class="check ${h.done_today ? 'on' : ''}" onclick="habitToggle(${h.id})" title="Отметить">${h.done_today ? '✓' : ''}</button>
       <div class="body"><div class="title">${esc(h.title)}</div></div>
       ${h.streak ? `<div class="streak">🔥${h.streak}</div>` : ''}
-      <button class="x" onclick="habitDelete(${h.id})">✕</button>
+      <button class="x" onclick="habitDelete(${h.id})" title="Удалить">✕</button>
     </div>`).join('');
 }
 
@@ -662,29 +706,37 @@ function renderTasks(p) {
     html += `<div class="section-label">Задачи</div>`;
     html += tasks.map(t => `
       <div class="row">
-        <button class="check" onclick="taskDone(${t.id})"></button>
+        <button class="check" onclick="taskDone(${t.id})" title="Выполнено"></button>
         <div class="body"><div class="title">${esc(t.title)}</div>
           ${t.due ? `<div class="meta ${t.overdue ? 'overdue' : ''}">${esc(t.due)}</div>` : ''}</div>
+        <button class="x" onclick="taskDelete(${t.id})" title="Удалить">✕</button>
       </div>`).join('');
   }
   if (reminders.length) {
     html += `<div class="section-label">Напоминания</div>`;
     html += reminders.map(r => `
       <div class="row">
-        <div class="check on" style="cursor:default">🔔</div>
+        <button class="check on" onclick="reminderDone(${r.id})" title="Завершить" style="font-size:13px;line-height:1">🔔</button>
         <div class="body"><div class="title">${esc(r.text)}</div><div class="meta">${esc(r.when)}</div></div>
+        <button class="x" onclick="reminderDelete(${r.id})" title="Удалить">✕</button>
       </div>`).join('');
   }
   body.innerHTML = html || `<div class="empty">Пусто ✨<br>Добавь задачу или напиши «напомни в 15:00 …»</div>`;
 }
 
 // Actions (re-rendered automatically when the server echoes the updated view)
-function habitToggle(id) { haptic('medium'); send({ type: 'habit_toggle', id }); }
-function habitDelete(id) { haptic('rigid');  send({ type: 'habit_delete', id }); }
-function taskDone(id)    { haptic('medium'); send({ type: 'task_done', id }); }
+function habitToggle(id)   { haptic('medium'); send({ type: 'habit_toggle', id }); }
+function habitDelete(id)   { haptic('rigid');  send({ type: 'habit_delete', id }); }
+function taskDone(id)      { haptic('medium'); send({ type: 'task_done', id }); }
+function taskDelete(id)    { haptic('rigid');  send({ type: 'task_delete', id }); }
+function reminderDone(id)  { haptic('medium'); send({ type: 'reminder_done', id }); }
+function reminderDelete(id){ haptic('rigid');  send({ type: 'reminder_delete', id }); }
 window.habitToggle = habitToggle;
 window.habitDelete = habitDelete;
 window.taskDone = taskDone;
+window.taskDelete = taskDelete;
+window.reminderDone = reminderDone;
+window.reminderDelete = reminderDelete;
 
 function addHabit() {
   const el = document.getElementById('habit-in');

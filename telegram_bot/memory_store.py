@@ -499,6 +499,17 @@ class MemoryStore:
         self._cache[uid]["tasks"] = [t for t in self._cache[uid]["tasks"] if t["id"] != task_id]
         return match
 
+    async def delete_task(self, uid: int, task_id: int) -> bool:
+        await self.ensure_loaded(uid)
+        owner = await self._fetchone(
+            "SELECT 1 FROM tasks WHERE id=? AND user_id=?", (task_id, uid)
+        )
+        if not owner:
+            return False
+        await self._exec("DELETE FROM tasks WHERE id=? AND user_id=?", (task_id, uid))
+        self._cache[uid]["tasks"] = [t for t in self._cache[uid]["tasks"] if t["id"] != task_id]
+        return True
+
     # ── habits ───────────────────────────────────────────────────────────────────
 
     async def add_habit(self, uid: int, title: str) -> dict:
@@ -584,6 +595,15 @@ class MemoryStore:
 
     async def mark_reminder_sent(self, reminder_id: int):
         await self._exec("UPDATE reminders SET sent=1 WHERE id=?", (reminder_id,))
+
+    async def delete_reminder(self, uid: int, reminder_id: int) -> bool:
+        owner = await self._fetchone(
+            "SELECT 1 FROM reminders WHERE id=? AND user_id=?", (reminder_id, uid)
+        )
+        if not owner:
+            return False
+        await self._exec("DELETE FROM reminders WHERE id=? AND user_id=?", (reminder_id, uid))
+        return True
 
     async def list_reminders(self, uid: int) -> list:
         rows = await self._fetchall(

@@ -1584,6 +1584,7 @@ def main():
             try:
                 from telegram_bot import miniapp_server
                 miniapp_server._memory = memory
+                miniapp_server._bot = application.bot
                 from telegram_bot.miniapp_server import run as run_miniapp
                 _miniapp_task = loop.create_task(
                     run_miniapp(port=cfg.miniapp_port, gemini=gemini, bridge=bridge)
