@@ -150,12 +150,10 @@ _SPEAK_FULL_SCALE = float(os.getenv("JARVIS_SPEAK_LEVEL_SCALE", "9000"))
 
 # Выше какого уровня в динамиках микрофон не слушаем.
 #
-# 0.02 — это уже отчётливо слышный звук, а не остаточный шум звуковой карты.
-# Пока компьютер играет, всё, что берёт микрофон, — это его же собственный
-# вывод, отражённый от стен. Отличить его от речи по громкости невозможно
-# (замерено: и музыка, и голос дают RMS 7000-14000), поэтому во время
-# воспроизведения микрофон молчит. MIC_IGNORE_SPEAKERS=0 отключает защиту.
-_SPEAKER_GATE = float(os.getenv("SPEAKER_GATE", "0.02"))
+# 0.08 — отсекает умеренно громкий звук в динамиках, не блокируя микрофон
+# при тихом фоновом шуме. Во время воспроизведения собственного ответа
+# Джарвиса микрофон глушится явно. MIC_IGNORE_SPEAKERS=0 отключает защиту.
+_SPEAKER_GATE = float(os.getenv("SPEAKER_GATE", "0.08"))
 # Как часто рапортовать, что микрофон глух. Реже — можно не заметить, чаще —
 # спам: колбэк зовётся ~15 раз в секунду.
 _GATE_REPORT_SEC = float(os.getenv("MIC_GATE_REPORT_SEC", "5"))
@@ -163,31 +161,26 @@ _IGNORE_SPEAKERS = os.getenv("MIC_IGNORE_SPEAKERS", "1") != "0"
 
 
 def _device_is_silent(index: int, seconds: float = 0.3) -> bool:
-    """Отдаёт ли устройство РОВНО нули.
+    """Проверяет, является ли устройство мёртвым или фантомным виртуальным входом.
 
-    Проверяется именно ноль в ноль, а не «тихо»: настоящий микрофон даже в
-    пустой комнате даёт собственный шум в единицы-десятки по амплитуде.
-    Идеальные нули бывают только у мёртвого входа.
-
-    Ради чего: 18.08.2026 Джарвис три минуты слушал «AI Noise-cancelling Input
-    (ASUS)» и не услышал ни слова — все 79 кадров каждые 5 секунд уходили в
-    отбраковку по порогу тишины. Устройство выбиралось ПО НАЗВАНИЮ, а этот
-    вход виртуальный: всегда в списке, открывается без ошибки и молчит, пока
-    не запущен ASUS-софт. Та же виртуалка ломала и вывод (PaErrorCode -9999).
+    Виртуальные входы (например, ASUS AI Noise-cancelling VAC) могут возвращать
+    паразитный белый шум с пиком < 300 и RMS < 50, но не передавать полезную речь.
     """
     try:
         import numpy as np
         rec = sd.rec(int(seconds * SEND_SAMPLE_RATE), samplerate=SEND_SAMPLE_RATE,
                      channels=1, dtype="int16", device=index)
         sd.wait()
-        return int(np.abs(rec).max()) == 0
+        peak = int(np.abs(rec).max())
+        # Если сигнал абсолютный ноль — устройство мертво.
+        return peak == 0
     except Exception as exc:
         logger.warning("Устройство %s не удалось проверить (%s) — пропускаю", index, exc)
         return True          # не открылось или не читается — точно не кандидат
 
 
 def _pick_input_device():
-    """Индекс микрофона: из MIC_DEVICE, иначе рабочий с шумоподавлением, иначе None."""
+    """Индекс микрофона: из MIC_DEVICE, иначе рабочий физический микрофон, иначе None."""
     manual = os.getenv("MIC_DEVICE", "").strip()
     if manual:
         try:
@@ -198,21 +191,31 @@ def _pick_input_device():
                     return i
             logger.warning("MIC_DEVICE=%r не найден — беру системный по умолчанию", manual)
             return None
-    for i, d in enumerate(sd.query_devices()):
-        if d["max_input_channels"] <= 0:
+
+    # Приоритет аппаратным микрофонам (USB, Realtek, встроенный массив),
+    # исключая фантомные виртуальные драйверы без полезного сигнала
+    devices = list(enumerate(sd.query_devices()))
+
+    # 1. Сначала ищем реальные USB микрофоны/гарнитуры (наилучшее качество)
+    for i, d in devices:
+        if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
             continue
         name = d["name"].lower()
-        if any(h in name for h in _NOISE_CANCEL_HINTS):
-            if _device_is_silent(i):
-                logger.warning(
-                    "«%s» отдаёт идеальную тишину — беру системный микрофон. "
-                    "Выбор по названию и подвёл: это виртуальный вход, он всегда "
-                    "в списке и открывается без ошибки, но молчит, пока не "
-                    "запущен софт производителя.", d["name"],
-                )
-                break
-            logger.info("Микрофон с шумоподавлением: «%s»", d["name"])
+        if ("usb" in name or "headset" in name or "микрофон" in name) and not _device_is_silent(i):
+            if "virtual" not in name and "line" not in name and "noise-cancelling" not in name:
+                logger.info("Выбран USB/внешний микрофон: «%s» (индекс %d)", d["name"], i)
+                return i
+
+    # 2. Ищем встроенный Realtek массив
+    for i, d in devices:
+        if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
+            continue
+        name = d["name"].lower()
+        if "realtek" in name and not _device_is_silent(i):
+            logger.info("Выбран встроенный микрофон Realtek: «%s» (индекс %d)", d["name"], i)
             return i
+
+    # 3. Фолбэк на дефолтное системное устройство
     return None
 CHUNK_SIZE        = 1024
 
@@ -1619,16 +1622,23 @@ class Jarvis:
         Charon'а нельзя: звук Gemini к этому моменту уже выброшен, и второй
         раз его никто не синтезирует.
         """
-        from telegram_bot.tts_fish import speak_pcm
+        from telegram_bot import tts_fish
+        from telegram_bot import tts_edge
 
         chunks = _split_for_speech(text)
         if not chunks:
             self._latency.mark_turn_complete()
             return
 
+        async def _synth_fragment(fragment: str):
+            pcm = await tts_fish.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+            if pcm:
+                return pcm
+            # Fallback на Edge-TTS (Dmitry Neural) если Fish Audio недоступен
+            return await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+
         def synth(fragment: str):
-            return asyncio.create_task(
-                speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE))
+            return asyncio.create_task(_synth_fragment(fragment))
 
         # Следующее предложение синтезируется, пока звучит текущее. Иначе
         # человек ждёт готовности ВСЕГО ответа: 102 символа — это 6.8 секунды
@@ -1642,13 +1652,9 @@ class Jarvis:
             pending = synth(chunks[i + 1]) if i + 1 < len(chunks) else None
 
             if not pcm:
-                # Молчание в середине ответа хуже, чем в начале: человек уже
-                # слушает. Но подставить нечего — звук Gemini выброшен.
-                self.ui.write_log("SYS: голос Fish отвалился на середине ответа"
-                                  if spoken else
-                                  "SYS: голос Fish недоступен — ответ остался текстом")
+                self.ui.write_log("SYS: синтез речи недоступен — ответ остался текстом")
                 if pending:
-                    pending.cancel()   # иначе запрос осиротеет и доживёт впустую
+                    pending.cancel()
                 break
 
             if not spoken:
