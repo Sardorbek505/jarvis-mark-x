@@ -11,13 +11,33 @@
 # было незаметно (всё видно в HUD), а без окна консоль — единственный
 # интерфейс: при остановке процесса весь накопленный вывод пропадал.
 import sys
+import io
+import os
+
 if sys.platform == "win32":
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
+    if sys.stdout is not None and hasattr(sys.stdout, "buffer"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+        except Exception:
+            try:
+                sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", line_buffering=True)
+            except Exception:
+                pass
+    elif sys.stdout is None:
+        sys.stdout = io.StringIO()
+
+    if sys.stderr is not None and hasattr(sys.stderr, "buffer"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+        except Exception:
+            try:
+                sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", line_buffering=True)
+            except Exception:
+                pass
+    elif sys.stderr is None:
+        sys.stderr = io.StringIO()
 
 import asyncio
-import os
 import traceback
 import re
 import threading
