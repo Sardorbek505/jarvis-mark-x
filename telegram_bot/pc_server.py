@@ -245,6 +245,22 @@ async def _execute(text: str) -> dict:
             except Exception as e:
                 return _r(f"Брифинг недоступен: {e}")
 
+        if any(k in tl for k in ["обсидиан", "obsidian", "заметка в обсидиан", "запиши в обсидиан", "дневник обсидиан"]):
+            try:
+                from actions.obsidian import obsidian_action
+                if any(k in tl for k in ["дневник", "daily"]):
+                    content = _extract_after(tl, ["дневник ", "в дневник ", "daily "]) or text
+                    res = await asyncio.to_thread(obsidian_action, {"action": "append_daily", "content": content})
+                elif any(k in tl for k in ["найди", "search", "поиск"]):
+                    q = _extract_after(tl, ["найди ", "поиск ", "search "]) or text
+                    res = await asyncio.to_thread(obsidian_action, {"action": "search", "query": q})
+                else:
+                    title = _extract_after(tl, ["заметка ", "заметку ", "запиши ", "note "]) or "Заметка"
+                    res = await asyncio.to_thread(obsidian_action, {"action": "write", "title": title, "content": text})
+                return _r(res or "Заметка сохранена в Obsidian")
+            except Exception as e:
+                return _r(f"Obsidian недоступен: {e}")
+
         # unknown=True — признак для сервера, что это не ответ, а промах.
         # Шлюз на стороне бота решает по ключевым словам и иногда ошибается
         # («громкость голоса у неё приятная» — не команда), а лексикой такое

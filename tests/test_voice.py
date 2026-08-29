@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from telegram_bot import tts_fish, voice
+from telegram_bot import tts_edge, tts_fish, voice
 
 
 class _Gemini:
@@ -32,32 +32,38 @@ async def test_fish_is_used_when_configured(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_falls_back_to_gemini_when_fish_fails(monkeypatch):
-    # Arrange — Fish настроен, но упал
+async def test_falls_back_to_edge_then_gemini_when_fish_fails(monkeypatch):
+    # Arrange — Fish упал, Edge сработал
     async def fish_dead(text): return None
+    async def edge_ok(text): return b"edge-ogg"
     monkeypatch.setattr(tts_fish, "is_configured", lambda: True)
     monkeypatch.setattr(tts_fish, "speak_ogg", fish_dead)
+    monkeypatch.setattr(tts_edge, "speak_ogg", edge_ok)
     g = _Gemini()
 
-    # Act
     out = await voice.speak_ogg("привет", g)
+    assert out == b"edge-ogg" and g.calls == 0
 
-    # Assert — пользователь всё равно услышал голос
-    assert out == b"gemini-ogg" and g.calls == 1
+    # Если и Edge упал — черед Gemini
+    monkeypatch.setattr(tts_edge, "speak_ogg", lambda text: asyncio.sleep(0, result=None))
+    out2 = await voice.speak_ogg("привет", g)
+    assert out2 == b"gemini-ogg" and g.calls == 1
 
 
 @pytest.mark.asyncio
-async def test_gemini_used_when_fish_not_configured(monkeypatch):
+async def test_gemini_used_when_fish_and_edge_fail(monkeypatch):
     monkeypatch.setattr(tts_fish, "is_configured", lambda: False)
+    monkeypatch.setattr(tts_edge, "speak_ogg", lambda text: asyncio.sleep(0, result=None))
     g = _Gemini()
     assert await voice.speak_ogg("привет", g) == b"gemini-ogg"
     assert g.calls == 1
 
 
 @pytest.mark.asyncio
-async def test_both_dead_returns_none(monkeypatch):
+async def test_all_dead_returns_none(monkeypatch):
     monkeypatch.setattr(tts_fish, "is_configured", lambda: True)
     monkeypatch.setattr(tts_fish, "speak_ogg", lambda text: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(tts_edge, "speak_ogg", lambda text: asyncio.sleep(0, result=None))
     g = _Gemini(result=None)
     assert await voice.speak_ogg("привет", g) is None
 
