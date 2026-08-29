@@ -26,7 +26,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QPushButton, QSizePolicy, QTextEdit,
+    QMainWindow, QPushButton, QSizePolicy, QSystemTrayIcon, QTextEdit,
     QVBoxLayout, QWidget,
 )
 

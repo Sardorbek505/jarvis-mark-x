@@ -5,9 +5,7 @@
 """
 import enum
 import logging
-import os
 import threading
-import time
 from typing import Callable, Optional
 
 logger = logging.getLogger("jarvis-wakeword")

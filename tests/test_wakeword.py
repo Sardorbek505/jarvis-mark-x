@@ -1,5 +1,4 @@
 """Тесты для детектора Wake-Word и генератора аудио-отклика."""
-import pytest
 from core import wakeword
 
 

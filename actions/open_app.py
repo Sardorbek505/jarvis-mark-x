@@ -76,23 +76,12 @@ def open_app(parameters: dict, response=None, player=None) -> str:
                 _logger.warning("Ошибка запуска URI %s: %s", cmd, e)
                 continue
 
+        # Проверяем наличие исполняемого файла в PATH
         path = shutil.which(cmd)
-        if path or sys.platform == "win32":
+        if path:
             try:
-                # В Windows os.startfile или subprocess с DETACHED_PROCESS
                 if sys.platform == "win32":
-                    try:
-                        os.startfile(cmd)
-                        return f"Открыл {app_name}."
-                    except Exception:
-                        subprocess.Popen(
-                            [path or cmd],
-                            shell=True,
-                            stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
-                        return f"Открыл {app_name}."
+                    os.startfile(path)
                 else:
                     subprocess.Popen(
                         [path],
@@ -101,8 +90,17 @@ def open_app(parameters: dict, response=None, player=None) -> str:
                         stderr=subprocess.DEVNULL,
                         start_new_session=True,
                     )
-                    return f"Открыл {app_name}."
+                return f"Открыл {app_name}."
             except Exception as e:
-                _logger.warning("Не удалось запустить %s: %s", cmd, e)
+                _logger.warning("Ошибка запуска %s: %s", path, e)
+                continue
+
+        # Встроенные системные утилиты Windows (notepad.exe, calc.exe, explorer.exe)
+        if sys.platform == "win32" and cmd.endswith(".exe"):
+            try:
+                os.startfile(cmd)
+                return f"Открыл {app_name}."
+            except Exception:
+                pass
 
     return f"Не удалось найти приложение «{app_name}» в системе."

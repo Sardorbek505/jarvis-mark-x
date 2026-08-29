@@ -3,38 +3,29 @@
 Позволяет Джарвису голосом отправлять пользователю в телефон заметки, ссылки,
 напоминания и текущие скриншоты экрана.
 """
-import asyncio
-import io
-import json
 import logging
 import os
 import urllib.parse
 import urllib.request
-from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger("jarvis-telegram-sender")
+from core.paths import load_api_keys
 
-_BASE_DIR = Path(__file__).resolve().parent.parent
-_CONFIG_FILE = _BASE_DIR / "config" / "api_keys.json"
+logger = logging.getLogger("jarvis-telegram-sender")
 
 
 def _get_tg_config() -> tuple[str, list[int]]:
     """Возвращает (bot_token, [allowed_user_ids])."""
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     users = []
-    if _CONFIG_FILE.exists():
-        try:
-            cfg = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-            if not token:
-                token = cfg.get("telegram_bot_token", "").strip()
-            raw_users = cfg.get("telegram_allowed_users", [])
-            if isinstance(raw_users, list):
-                users = [int(u) for u in raw_users if str(u).isdigit()]
-            elif str(raw_users).isdigit():
-                users = [int(raw_users)]
-        except Exception:
-            pass
+    cfg = load_api_keys()
+    if not token:
+        token = cfg.get("telegram_bot_token", "").strip()
+    raw_users = cfg.get("telegram_allowed_users", [])
+    if isinstance(raw_users, list):
+        users = [int(u) for u in raw_users if str(u).isdigit()]
+    elif str(raw_users).isdigit():
+        users = [int(raw_users)]
     return token, users
 
 
@@ -76,7 +67,7 @@ def send_to_telegram(
 
             # photo file
             body.extend(f"--{boundary}\r\n".encode("utf-8"))
-            body.extend(f'Content-Disposition: form-data; name="photo"; filename="screenshot.jpg"\r\n'.encode("utf-8"))
+            body.extend('Content-Disposition: form-data; name="photo"; filename="screenshot.jpg"\r\n'.encode("utf-8"))
             body.extend(b"Content-Type: image/jpeg\r\n\r\n")
             body.extend(jpeg_data)
             body.extend(b"\r\n")
@@ -98,7 +89,7 @@ def send_to_telegram(
             data = urllib.parse.urlencode({"chat_id": target_chat_id, "text": msg_text}).encode("utf-8")
             req = urllib.request.Request(url, data=data)
             urllib.request.urlopen(req, timeout=10)
-            return f"Сэр, сообщение успешно отправлено в ваш Telegram."
+            return "Сэр, сообщение успешно отправлено в ваш Telegram."
 
     except Exception as e:
         logger.error("Failed to send telegram message: %s", e)

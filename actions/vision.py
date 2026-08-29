@@ -4,30 +4,21 @@
 и отвечать на любые вопросы пользователя через мультимодальную модель Gemini 2.5.
 """
 import io
-import json
 import logging
 import os
 import sys
-from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
+
+from core.paths import load_api_keys
 
 logger = logging.getLogger("jarvis-vision")
-
-_BASE_DIR = Path(__file__).resolve().parent.parent
-_CONFIG_FILE = _BASE_DIR / "config" / "api_keys.json"
 
 
 def _get_api_key() -> str:
     key = os.getenv("GEMINI_API_KEY", "").strip()
     if key:
         return key
-    if _CONFIG_FILE.exists():
-        try:
-            cfg = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-            return cfg.get("gemini_api_key", "").strip()
-        except Exception:
-            pass
-    return ""
+    return load_api_keys().get("gemini_api_key", "").strip()
 
 
 # ── Захват экрана ─────────────────────────────────────────────────────────────
@@ -39,7 +30,8 @@ def capture_screen_jpeg(max_size: int = 1280, quality: int = 80) -> bytes | None
         from PyQt6.QtGui import QGuiApplication
         from PyQt6.QtWidgets import QApplication
 
-        app = QApplication.instance() or QApplication(sys.argv)
+        _app = QApplication.instance() or QApplication(sys.argv)
+        del _app
         screen = QGuiApplication.primaryScreen()
         if screen:
             pix = screen.grabWindow(0)
@@ -66,7 +58,8 @@ def capture_screen_jpeg(max_size: int = 1280, quality: int = 80) -> bytes | None
             img = ImageGrab.grab()
         except Exception:
             import mss
-            with mss.mss() as sct:
+            mss_cls = getattr(mss, "MSS", mss.mss)
+            with mss_cls() as sct:
                 monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
                 sct_img = sct.grab(monitor)
                 img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
@@ -100,7 +93,8 @@ def capture_active_window_jpeg(max_size: int = 1280, quality: int = 80) -> bytes
                     from PyQt6.QtGui import QGuiApplication
                     from PyQt6.QtWidgets import QApplication
 
-                    app = QApplication.instance() or QApplication(sys.argv)
+                    _app = QApplication.instance() or QApplication(sys.argv)
+                    del _app
                     screen = QGuiApplication.primaryScreen()
                     if screen:
                         pix = screen.grabWindow(0, win.left, win.top, win.width, win.height)

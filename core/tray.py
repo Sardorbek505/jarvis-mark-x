@@ -4,11 +4,10 @@
 управлять автозапуском и открывать настройки без черных окон терминала.
 """
 import logging
-import sys
 from typing import Callable, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QMenu, QSystemTrayIcon, QWidget
 
 logger = logging.getLogger("jarvis-tray")
