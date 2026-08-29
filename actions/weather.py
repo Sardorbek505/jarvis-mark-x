@@ -2,9 +2,10 @@
 Действие: погода через wttr.in (без API-ключа)
 """
 
-import urllib.request
-import urllib.parse
 import json
+import time
+import urllib.parse
+import urllib.request
 
 
 _CITY_ALIASES = {
@@ -47,13 +48,27 @@ _DESC_RU = {
 }
 
 
+_WEATHER_CACHE: dict[str, tuple[float, str]] = {}
+_CACHE_TTL_SEC = 300  # 5 минут
+
+
 def weather_action(parameters: dict, player=None) -> str:
     city = parameters.get("city", "").strip()
     city_en = _CITY_ALIASES.get(city.lower(), city)
+    now = time.monotonic()
+
+    # Проверка TTL-кэша
+    cache_key = city_en.lower()
+    if cache_key in _WEATHER_CACHE:
+        cached_time, cached_result = _WEATHER_CACHE[cache_key]
+        if now - cached_time < _CACHE_TTL_SEC:
+            if player:
+                player.write_log(f"SYS: Погода (кэш) — {city}")
+            return cached_result
 
     try:
         url = f"https://wttr.in/{urllib.parse.quote(city_en)}?format=j1"
-        with urllib.request.urlopen(url, timeout=6) as resp:
+        with urllib.request.urlopen(url, timeout=4) as resp:
             data = json.loads(resp.read().decode())
 
         current = data["current_condition"][0]
@@ -70,6 +85,8 @@ def weather_action(parameters: dict, player=None) -> str:
             f"Температура {temp_c}°C, ощущается как {feels}°C. "
             f"Влажность {humidity}%, ветер {wind} км/ч."
         )
+
+        _WEATHER_CACHE[cache_key] = (now, result)
 
         if player:
             player.write_log(f"SYS: Погода — {city}: {temp_c}°C, {desc_ru}")

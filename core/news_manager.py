@@ -3,11 +3,13 @@
 """
 import json
 import logging
+import re
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import feedparser
 import requests
-from pathlib import Path
-from typing import Dict, List, Any, Optional
-import re
 
 from core.storage import atomic_write_json
 
@@ -148,6 +150,10 @@ class NewsArticle:
         }
 
 
+_RSS_CACHE: dict[str, tuple[float, list]] = {}
+_RSS_CACHE_TTL = 600  # 10 минут
+
+
 class NewsAggregator:
     """Агрегатор новостей из RSS фидов."""
     
@@ -156,20 +162,19 @@ class NewsAggregator:
     
     def fetch_from_source(self, source: Dict[str, Any]) -> List[NewsArticle]:
         """
-        Загружает новости из источника.
-        
-        Args:
-            source: Информация об источнике
-            
-        Returns:
-            Список статей
+        Загружает новости из источника (с TTL-кэшированием).
         """
+        url = source.get("url", "")
+        now = time.time()
+        if url in _RSS_CACHE:
+            cached_time, cached_articles = _RSS_CACHE[url]
+            if now - cached_time < _RSS_CACHE_TTL:
+                return cached_articles
+
         articles = []
         
         try:
             if source["type"] == "rss":
-                # Качаем сами с таймаутом — feedparser.parse() сам по себе
-                # не поддерживает timeout и может зависнуть навсегда.
                 try:
                     resp = requests.get(
                         source["url"],
@@ -182,17 +187,19 @@ class NewsAggregator:
                     print(f"[News] Timeout/ошибка {source['name']}: {e}")
                     return articles
 
-                for entry in feed.entries[:20]:  # Максимум 20 статей
+                for entry in feed.entries[:20]:
                     title = entry.get("title", "")
                     link = entry.get("link", "")
                     description = entry.get("description", "")
                     published = entry.get("published", "")
                     
-                    # Очистка HTML из описания
                     description = self._clean_html(description)
                     
                     article = NewsArticle(title, link, description, published, source["name"])
                     articles.append(article)
+
+                if articles:
+                    _RSS_CACHE[url] = (now, articles)
         except Exception as e:
             print(f"Error fetching from {source['name']}: {e}")
         

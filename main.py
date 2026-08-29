@@ -151,7 +151,7 @@ _THINKING_BUDGET = int(os.getenv("JARVIS_THINKING_BUDGET", "0"))
 # Цена голоса — секунда: Fish начинает звучать только когда текст готов
 # (первый кусок ~990 мс). Gemini в это время всё равно синтезирует Charon'а,
 # и этот звук мы выбрасываем — иначе они заговорили бы хором.
-_VOICE_PROVIDER = (os.getenv("JARVIS_VOICE") or "fish").strip().lower()
+_VOICE_PROVIDER = (os.getenv("JARVIS_VOICE") or "gemini").strip().lower()
 
 # За что принимаем «полную громкость» на индикаторе HUD. Не 32767: обычная
 # речь в метре от ноутбука даёт RMS порядка 1000-5000, и по полной шкале
@@ -981,6 +981,7 @@ class Jarvis:
         self._loop           = None
         self._is_speaking    = False
         self._speaking_lock  = threading.Lock()
+        self._active_synth_tasks = 0
         self._speaker_meter  = None   # см. _listen_audio: не слушаем свои динамики
         self._turn_done_event: asyncio.Event | None = None
 
@@ -1697,64 +1698,61 @@ class Jarvis:
             await asyncio.sleep(1)
 
     async def _speak_fish(self, text: str):
-        """Озвучивает готовый ответ голосом Джарвиса из Telegram-бота.
+        """Озвучивает готовый ответ голосом Джарвиса из Telegram-бота."""
+        with self._speaking_lock:
+            self._active_synth_tasks += 1
+        self.set_speaking(True)
 
-        Если Fish не ответил, честно молчим и пишем в лог. Подставить сюда
-        Charon'а нельзя: звук Gemini к этому моменту уже выброшен, и второй
-        раз его никто не синтезирует.
-        """
-        from telegram_bot import tts_fish
-        from telegram_bot import tts_edge
+        try:
+            from telegram_bot import tts_fish
+            from telegram_bot import tts_edge
 
-        chunks = _split_for_speech(text)
-        if not chunks:
+            chunks = _split_for_speech(text)
+            if not chunks:
+                self._latency.mark_turn_complete()
+                return
+
+            async def _synth_fragment(fragment: str):
+                pcm = await tts_fish.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+                if pcm:
+                    return pcm
+                # Fallback на Edge-TTS (Dmitry Neural) если Fish Audio недоступен
+                return await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+
+            def synth(fragment: str):
+                return asyncio.create_task(_synth_fragment(fragment))
+
+            pending = synth(chunks[0])
+            step = CHUNK_SIZE * 2
+            spoken = 0
+
+            for i in range(len(chunks)):
+                pcm = await pending
+                pending = synth(chunks[i + 1]) if i + 1 < len(chunks) else None
+
+                if not pcm:
+                    self.ui.write_log("SYS: синтез речи недоступен — ответ остался текстом")
+                    if pending:
+                        pending.cancel()
+                    break
+
+                if not spoken:
+                    self._latency.mark_answer_audio()
+                spoken += len(pcm)
+
+                for j in range(0, len(pcm), step):
+                    try:
+                        self.audio_in_queue.put_nowait(pcm[j:j + step])
+                    except asyncio.QueueFull:
+                        await self.audio_in_queue.put(pcm[j:j + step])
+
+            if spoken:
+                logger.info("Голос Fish: %.1f с звука, %d фрагмент(ов) на %d символов",
+                            spoken / 2 / RECV_SAMPLE_RATE, len(chunks), len(text))
             self._latency.mark_turn_complete()
-            return
-
-        async def _synth_fragment(fragment: str):
-            pcm = await tts_fish.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
-            if pcm:
-                return pcm
-            # Fallback на Edge-TTS (Dmitry Neural) если Fish Audio недоступен
-            return await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
-
-        def synth(fragment: str):
-            return asyncio.create_task(_synth_fragment(fragment))
-
-        # Следующее предложение синтезируется, пока звучит текущее. Иначе
-        # человек ждёт готовности ВСЕГО ответа: 102 символа — это 6.8 секунды
-        # звука, и все они собирались до первого слова.
-        pending = synth(chunks[0])
-        step = CHUNK_SIZE * 2          # int16, тот же размер куска, что у Gemini
-        spoken = 0
-
-        for i in range(len(chunks)):
-            pcm = await pending
-            pending = synth(chunks[i + 1]) if i + 1 < len(chunks) else None
-
-            if not pcm:
-                self.ui.write_log("SYS: синтез речи недоступен — ответ остался текстом")
-                if pending:
-                    pending.cancel()
-                break
-
-            if not spoken:
-                # Ход закрывает не turn_complete от сервера, а первый реально
-                # прозвучавший фрагмент: текст готов раньше, чем человек
-                # что-либо слышит, и секундомер обнулялся впустую.
-                self._latency.mark_answer_audio()
-            spoken += len(pcm)
-
-            for j in range(0, len(pcm), step):
-                try:
-                    self.audio_in_queue.put_nowait(pcm[j:j + step])
-                except asyncio.QueueFull:
-                    await self.audio_in_queue.put(pcm[j:j + step])
-
-        if spoken:
-            logger.info("Голос Fish: %.1f с звука, %d фрагмент(ов) на %d символов",
-                        spoken / 2 / RECV_SAMPLE_RATE, len(chunks), len(text))
-        self._latency.mark_turn_complete()
+        finally:
+            with self._speaking_lock:
+                self._active_synth_tasks = max(0, self._active_synth_tasks - 1)
 
     # ── Получение ответа от Gemini ────────────────────────────────────────────
     async def _receive_audio(self):
@@ -1990,18 +1988,22 @@ class Jarvis:
                     try:
                         chunk = await asyncio.wait_for(self.audio_in_queue.get(), timeout=0.1)
                     except asyncio.TimeoutError:
-                        if (self._turn_done_event
-                                and self._turn_done_event.is_set()
-                                and self.audio_in_queue.empty()):
-                            self.set_speaking(False)
-                            self._turn_done_event.clear()
+                        lock = getattr(self, "_speaking_lock", None)
+                        if lock is not None:
+                            with lock:
+                                is_busy = (getattr(self, "_active_synth_tasks", 0) > 0) or (not self.audio_in_queue.empty())
+                        else:
+                            is_busy = (getattr(self, "_active_synth_tasks", 0) > 0) or (not self.audio_in_queue.empty())
+
+                        if not is_busy:
+                            if getattr(self, "_is_speaking", False):
+                                self.set_speaking(False)
+                            if self._turn_done_event and self._turn_done_event.is_set():
+                                self._turn_done_event.clear()
                         continue
 
                     self.set_speaking(True)
                     self._latency.mark_playback()
-                    # Громкость собственного голоса — прямо перед тем, как
-                    # кадр уйдёт в динамики. Так волна на HUD совпадает с тем,
-                    # что человек слышит, а не идёт своим ритмом.
                     self._push_level(_chunk_level(chunk))
                     await asyncio.to_thread(stream.write, chunk)
 
