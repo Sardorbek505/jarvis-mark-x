@@ -1,6 +1,5 @@
 """Тесты для модуля голосовой отправки в Telegram."""
 from unittest.mock import MagicMock, patch
-import pytest
 
 from actions import telegram_sender
 

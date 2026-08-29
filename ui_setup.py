@@ -4,7 +4,6 @@
 выбрать голос и настроить автозапуск в Windows без редактирования файлов.
 """
 import asyncio
-import json
 import logging
 import os
 import sys
@@ -12,17 +11,15 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
-from typing import Optional
 
-from PyQt6.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPalette
+from core.paths import load_api_keys, save_api_keys
+
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
-    QFrame,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -81,9 +78,12 @@ def set_windows_autostart(enable: bool) -> bool:
         try:
             if enable:
                 if getattr(sys, "frozen", False):
-                    exe_path = sys.executable
+                    exe_path = f'"{sys.executable}"'
                 else:
-                    exe_path = f'"{sys.executable}" "{_BASE_DIR / "main.py"}"'
+                    py_exe = sys.executable.replace("python.exe", "pythonw.exe")
+                    if not Path(py_exe).exists():
+                        py_exe = sys.executable
+                    exe_path = f'"{py_exe}" "{_BASE_DIR / "main.py"}"'
                 winreg.SetValueEx(key, "JARVIS_Mark_X", 0, winreg.REG_SZ, str(exe_path))
             else:
                 try:
@@ -108,6 +108,7 @@ def validate_gemini_key(key: str) -> tuple[bool, str]:
         return False, "Слишком короткий ключ. Проверьте правильность копирования."
     try:
         from google import genai
+
         client = genai.Client(api_key=key)
         # Быстрый легкий пинг модели
         response = client.models.generate_content(
@@ -126,35 +127,13 @@ def validate_gemini_key(key: str) -> tuple[bool, str]:
         return False, f"Ошибка проверки: {err_msg[:120]}"
 
 
-_APPDATA_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "JARVIS"
-_APPDATA_CONFIG = _APPDATA_DIR / "api_keys.json"
-
-
 # ── Конфигурация ──────────────────────────────────────────────────────────────
 def load_config_data() -> dict:
-    for p in [_APPDATA_CONFIG, _CONFIG_FILE]:
-        if p.exists():
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                if data:
-                    return data
-            except Exception:
-                pass
-    return {}
+    return load_api_keys()
 
 
 def save_config_data(data: dict) -> bool:
-    saved = False
-    for p in [_CONFIG_FILE, _APPDATA_CONFIG]:
-        try:
-            p.parent.mkdir(parents=True, exist_ok=True)
-            existing = load_config_data()
-            existing.update(data)
-            p.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
-            saved = True
-        except Exception as e:
-            logger.debug("Save config to %s failed: %s", p, e)
-    return saved
+    return save_api_keys(data)
 
 
 # ── Поток для проверки микрофона в реальном времени ───────────────────────────
@@ -363,11 +342,11 @@ class SetupWizardDialog(QDialog):
     # ── Вкладка 1: Gemini AI ──────────────────────────────────────────────────
     def _tab_ai(self) -> QWidget:
         w = QWidget()
-        l = QVBoxLayout(w)
-        l.setSpacing(12)
+        tab_layout = QVBoxLayout(w)
+        tab_layout.setSpacing(12)
 
         lbl = QLabel("<b>Ключ Google Gemini API</b> (обязательно для работы ума):")
-        l.addWidget(lbl)
+        tab_layout.addWidget(lbl)
 
         key_row = QHBoxLayout()
         self.edit_gemini = QLineEdit()
@@ -380,7 +359,7 @@ class SetupWizardDialog(QDialog):
         self.btn_toggle_key.setToolTip("Показать/скрыть ключ")
         self.btn_toggle_key.clicked.connect(self._toggle_key_visibility)
         key_row.addWidget(self.btn_toggle_key)
-        l.addLayout(key_row)
+        tab_layout.addLayout(key_row)
 
         actions_row = QHBoxLayout()
         self.btn_get_key = QPushButton("🔗 Получить бесплатный ключ (Google AI Studio)")
@@ -391,19 +370,19 @@ class SetupWizardDialog(QDialog):
         self.btn_test_key = QPushButton("Проверить ключ")
         self.btn_test_key.clicked.connect(self._check_gemini_key)
         actions_row.addWidget(self.btn_test_key)
-        l.addLayout(actions_row)
+        tab_layout.addLayout(actions_row)
 
         self.lbl_key_status = QLabel("⚪ Статус: не проверен")
         self.lbl_key_status.setStyleSheet("color: #94a3b8; font-size: 12px; margin-top: 4px;")
-        l.addWidget(self.lbl_key_status)
+        tab_layout.addWidget(self.lbl_key_status)
 
         # Модель
-        l.addWidget(QLabel("Модель Gemini:"))
+        tab_layout.addWidget(QLabel("Модель Gemini:"))
         self.combo_model = QComboBox()
         self.combo_model.addItems(["gemini-2.5-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro"])
-        l.addWidget(self.combo_model)
+        tab_layout.addWidget(self.combo_model)
 
-        l.addStretch()
+        tab_layout.addStretch()
         return w
 
     def _toggle_key_visibility(self):
@@ -441,29 +420,29 @@ class SetupWizardDialog(QDialog):
     # ── Вкладка 2: Микрофон ───────────────────────────────────────────────────
     def _tab_audio(self) -> QWidget:
         w = QWidget()
-        l = QVBoxLayout(w)
-        l.setSpacing(12)
+        tab_layout = QVBoxLayout(w)
+        tab_layout.setSpacing(12)
 
-        l.addWidget(QLabel("<b>Микрофон (входное устройство):</b>"))
+        tab_layout.addWidget(QLabel("<b>Микрофон (входное устройство):</b>"))
         self.combo_mic = QComboBox()
         self._populate_audio_devices()
-        l.addWidget(self.combo_mic)
+        tab_layout.addWidget(self.combo_mic)
 
         # Тест уровня звука
-        l.addWidget(QLabel("Уровень входящего звука (говорите в микрофон):"))
+        tab_layout.addWidget(QLabel("Уровень входящего звука (говорите в микрофон):"))
         self.progress_mic = QProgressBar()
         self.progress_mic.setRange(0, 100)
         self.progress_mic.setValue(0)
-        l.addWidget(self.progress_mic)
+        tab_layout.addWidget(self.progress_mic)
 
         mic_btn_row = QHBoxLayout()
         self.btn_toggle_mic_test = QPushButton("▶ Начать тест микрофона")
         self.btn_toggle_mic_test.setProperty("class", "secondary")
         self.btn_toggle_mic_test.clicked.connect(self._toggle_mic_test)
         mic_btn_row.addWidget(self.btn_toggle_mic_test)
-        l.addLayout(mic_btn_row)
+        tab_layout.addLayout(mic_btn_row)
 
-        l.addStretch()
+        tab_layout.addStretch()
         return w
 
     def _populate_audio_devices(self):
@@ -494,19 +473,19 @@ class SetupWizardDialog(QDialog):
     # ── Вкладка 3: Голос ──────────────────────────────────────────────────────
     def _tab_voice(self) -> QWidget:
         w = QWidget()
-        l = QVBoxLayout(w)
-        l.setSpacing(12)
+        tab_layout = QVBoxLayout(w)
+        tab_layout.setSpacing(12)
 
-        l.addWidget(QLabel("<b>Основной голос Джарвиса:</b>"))
+        tab_layout.addWidget(QLabel("<b>Основной голос Джарвиса:</b>"))
 
         self.rb_edge_dmitry = QRadioButton("Microsoft Edge — Дмитрий (100% Бесплатно, без задержек)")
         self.rb_edge_svetlana = QRadioButton("Microsoft Edge — Светлана (Женский, бесплатно)")
         self.rb_fish = QRadioButton("Fish Audio — Каноничный голос JARVIS из фильмов (Требует API ключ)")
 
         self.rb_edge_dmitry.setChecked(True)
-        l.addWidget(self.rb_edge_dmitry)
-        l.addWidget(self.rb_edge_svetlana)
-        l.addWidget(self.rb_fish)
+        tab_layout.addWidget(self.rb_edge_dmitry)
+        tab_layout.addWidget(self.rb_edge_svetlana)
+        tab_layout.addWidget(self.rb_fish)
 
         # Fish audio key box
         self.fish_box = QWidget()
@@ -516,7 +495,7 @@ class SetupWizardDialog(QDialog):
         self.edit_fish_key = QLineEdit()
         self.edit_fish_key.setPlaceholderText("Вставьте ключ Fish Audio...")
         fb_layout.addWidget(self.edit_fish_key)
-        l.addWidget(self.fish_box)
+        tab_layout.addWidget(self.fish_box)
 
         self.rb_fish.toggled.connect(self.fish_box.setVisible)
         self.fish_box.setVisible(False)
@@ -526,9 +505,9 @@ class SetupWizardDialog(QDialog):
         self.btn_test_voice = QPushButton("🔊 Прослушать образец голоса")
         self.btn_test_voice.clicked.connect(self._test_voice_sample)
         test_btn_row.addWidget(self.btn_test_voice)
-        l.addLayout(test_btn_row)
+        tab_layout.addLayout(test_btn_row)
 
-        l.addStretch()
+        tab_layout.addStretch()
         return w
 
     def _test_voice_sample(self):
@@ -568,29 +547,29 @@ class SetupWizardDialog(QDialog):
     # ── Вкладка 4: Telegram ───────────────────────────────────────────────────
     def _tab_telegram(self) -> QWidget:
         w = QWidget()
-        l = QVBoxLayout(w)
-        l.setSpacing(12)
+        tab_layout = QVBoxLayout(w)
+        tab_layout.setSpacing(12)
 
-        l.addWidget(QLabel("<b>Связь с Telegram (для управления с телефона):</b>"))
+        tab_layout.addWidget(QLabel("<b>Связь с Telegram (для управления с телефона):</b>"))
 
-        l.addWidget(QLabel("Токен бота (Telegram Bot Token):"))
+        tab_layout.addWidget(QLabel("Токен бота (Telegram Bot Token):"))
         self.edit_tg_token = QLineEdit()
         self.edit_tg_token.setPlaceholderText("123456789:ABCdefGhIJKlmNoPQRstuVWXyz...")
-        l.addWidget(self.edit_tg_token)
+        tab_layout.addWidget(self.edit_tg_token)
 
         tg_actions = QHBoxLayout()
         btn_botfather = QPushButton("🔗 Создать бота через @BotFather")
         btn_botfather.setProperty("class", "secondary")
         btn_botfather.clicked.connect(lambda: webbrowser.open("https://t.me/BotFather"))
         tg_actions.addWidget(btn_botfather)
-        l.addLayout(tg_actions)
+        tab_layout.addLayout(tg_actions)
 
-        l.addWidget(QLabel("Ваш Telegram User ID (узнать у @userinfobot):"))
+        tab_layout.addWidget(QLabel("Ваш Telegram User ID (узнать у @userinfobot):"))
         self.edit_tg_user = QLineEdit()
         self.edit_tg_user.setPlaceholderText("Например: 123456789")
-        l.addWidget(self.edit_tg_user)
+        tab_layout.addWidget(self.edit_tg_user)
 
-        l.addStretch()
+        tab_layout.addStretch()
         return w
 
     # ── Загрузка и Сохранение ─────────────────────────────────────────────────
@@ -672,7 +651,8 @@ def ensure_setup(force: bool = False) -> bool:
     if has_key and not force:
         return True
 
-    app = QApplication.instance() or QApplication(sys.argv)
+    _app = QApplication.instance() or QApplication(sys.argv)
+    del _app
     wizard = SetupWizardDialog()
     res = wizard.exec()
     return res == QDialog.DialogCode.Accepted

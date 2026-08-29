@@ -1,6 +1,5 @@
 """Тесты для модуля Vision Mode (анализ экрана и камеры)."""
 from unittest.mock import MagicMock, patch
-import pytest
 
 from actions import vision
 

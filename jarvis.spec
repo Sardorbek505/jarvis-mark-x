@@ -1,5 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller specification file for building standalone JARVIS Mark X executable."""
+"""PyInstaller specification file for building standalone JARVIS Mark X executable.
+
+КРИТИЧЕСКИ ВАЖНО: Никогда не паковать реальные секреты (api_keys.json, userbot.session,
+jarvis_memory.db). Пакуются только безопасные шаблоны и ассеты.
+"""
 
 import sys
 from pathlib import Path
@@ -8,11 +12,21 @@ block_cipher = None
 
 BASE_DIR = Path(SPECPATH)
 
+# Только безопасные шаблоны и ассеты (БЕЗ личных данных, токенов и сессий)
 datas = []
-for p in ["config", "actions", "core", "face.png"]:
-    full = BASE_DIR / p
+
+safe_files = [
+    ("core/prompt.txt", "core"),
+    ("config/modes.json", "config"),
+    ("config/obsidian.json", "config"),
+    ("config/api_keys.example.json", "config"),
+    ("face.png", "."),
+]
+
+for src, dst in safe_files:
+    full = BASE_DIR / src
     if full.exists():
-        datas.append((str(full), p if full.is_dir() else "."))
+        datas.append((str(full), dst))
 
 if (BASE_DIR / "telegram_bot" / "miniapp").exists():
     datas.append((str(BASE_DIR / "telegram_bot" / "miniapp"), "telegram_bot/miniapp"))
@@ -32,6 +46,7 @@ hidden_imports = [
     "PyQt6.QtGui",
     "PyQt6.QtWidgets",
     "core",
+    "core.paths",
     "core.emotion_analyzer",
     "core.proactive_engine",
     "core.initiative_engine",
@@ -64,7 +79,7 @@ a = Analysis(
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
-    runtimehooks=[],
+    runtime_hooks=[],
     excludes=['tkinter', 'matplotlib', 'torch', 'torchvision', 'transformers'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

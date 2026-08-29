@@ -3,7 +3,6 @@
 Использование:
     python scripts/build_exe.py
 """
-import os
 import shutil
 import subprocess
 import sys

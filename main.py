@@ -23,7 +23,6 @@ import re
 import threading
 import time
 import random
-from pathlib import Path
 from datetime import datetime
 import logging
 
@@ -55,7 +54,6 @@ from actions.web_search import web_search
 from actions.computer_settings import computer_settings
 from actions.browser_control import browser_control
 from actions.file_controller import file_controller
-from actions.vision_review import vision_review
 from actions.modes import set_mode, get_current_mode
 from actions.movie_player import movie_player
 from actions.spotify_controller import spotify_player
@@ -74,15 +72,11 @@ from core import (
 
 
 # ─── Пути и константы ─────────────────────────────────────────────────────────
-def _get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent
+from core.paths import get_base_dir, get_config_path, get_prompt_path
 
-
-BASE_DIR      = _get_base_dir()
-API_CONFIG    = BASE_DIR / "config" / "api_keys.json"
-PROMPT_PATH   = BASE_DIR / "core" / "prompt.txt"
+BASE_DIR      = get_base_dir()
+API_CONFIG    = get_config_path("api_keys.json")
+PROMPT_PATH   = get_prompt_path()
 
 # Модель Gemini Live с нативным аудио
 LIVE_MODEL        = "models/gemini-2.5-flash-native-audio-latest"
@@ -876,6 +870,66 @@ TOOLS = [
                 }
             },
             "required": ["action"]
+        }
+    },
+    {
+        "name": "look_at_screen",
+        "description": (
+            "Захватывает текущий экран или активное окно и анализирует его с помощью компьютерного зрения. "
+            "Вызывай когда пользователь просит посмотреть на экран, найти ошибку в коде, оценить дизайн, "
+            "прочитать что написано на мониторе, или говорит 'что на экране'."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "prompt": {
+                    "type": "STRING",
+                    "description": "Что конкретно нужно проанализировать или найти на экране"
+                },
+                "source": {
+                    "type": "STRING",
+                    "description": "Источник: 'screen' (весь монитор) или 'active_window' (только активное окно)"
+                }
+            },
+            "required": ["prompt"]
+        }
+    },
+    {
+        "name": "look_at_camera",
+        "description": (
+            "Делает снимок с веб-камеры и анализирует окружающую обстановку. "
+            "Вызывай когда пользователь просит взглянуть через камеру, посмотреть на него или показать предмет."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "prompt": {
+                    "type": "STRING",
+                    "description": "Вопрос или задача для анализа изображения с камеры"
+                }
+            },
+            "required": ["prompt"]
+        }
+    },
+    {
+        "name": "send_to_telegram",
+        "description": (
+            "Отправляет текстовое сообщение или скриншот экрана в личный Telegram-чат пользователя. "
+            "Вызывай когда пользователь просит скинуть ссылку, отправить заметку или скриншот в телеграм."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "text": {
+                    "type": "STRING",
+                    "description": "Текст сообщения для отправки"
+                },
+                "send_screenshot": {
+                    "type": "BOOLEAN",
+                    "description": "True, если нужно прикрепить снимок экрана"
+                }
+            },
+            "required": []
         }
     },
     {
