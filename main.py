@@ -1216,12 +1216,19 @@ class Jarvis:
                 )
                 result = r or "Готово."
 
-            # ── Инструмент: Vision (анализ экрана) ───────────────────
-            elif name == "vision_review":
-                r = await loop.run_in_executor(
-                    None, lambda: vision_review(parameters=args, player=self.ui)
-                )
-                result = r or "Готово."
+            # ── Инструмент: Vision (анализ экрана и камеры) ─────────
+            elif name in ("look_at_screen", "look_at_camera", "vision_review"):
+                from actions.vision import vision_action
+                source = "camera" if name == "look_at_camera" else args.get("source", "screen")
+                args["source"] = source
+                r = await loop.run_in_executor(None, lambda: vision_action(args))
+                result = r or "Анализ изображения завершен."
+
+            # ── Инструмент: отправка в Telegram ──────────────────────
+            elif name in ("send_to_telegram", "telegram_send"):
+                from actions.telegram_sender import telegram_sender_action
+                r = await loop.run_in_executor(None, lambda: telegram_sender_action(args))
+                result = r or "Отправлено в Telegram."
 
             # ── Инструмент: режимы (study/work/movie/music) ──────────
             elif name == "set_mode":

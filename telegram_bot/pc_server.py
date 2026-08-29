@@ -261,6 +261,24 @@ async def _execute(text: str) -> dict:
             except Exception as e:
                 return _r(f"Obsidian недоступен: {e}")
 
+        if any(k in tl for k in ["посмотри на экран", "что на экране", "проанализируй экран", "глянь на экран", "ошибка на экране", "vision"]):
+            try:
+                from actions.vision import vision_action
+                prompt = _extract_after(tl, ["посмотри на экран", "что на экране", "проанализируй экран", "глянь на экран"]) or text
+                res = await asyncio.to_thread(vision_action, {"prompt": prompt, "source": "screen"})
+                return _r(res or "Анализ экрана выполнен")
+            except Exception as e:
+                return _r(f"Зрительный анализ недоступен: {e}")
+
+        if any(k in tl for k in ["отправь в телеграм", "скинь в тг", "отправь в тг", "send to telegram"]):
+            try:
+                from actions.telegram_sender import telegram_sender_action
+                msg = _extract_after(tl, ["отправь в телеграм ", "скинь в тг ", "отправь в тг "]) or text
+                res = await asyncio.to_thread(telegram_sender_action, {"text": msg})
+                return _r(res or "Отправлено в Telegram")
+            except Exception as e:
+                return _r(f"Отправка в Telegram недоступна: {e}")
+
         # unknown=True — признак для сервера, что это не ответ, а промах.
         # Шлюз на стороне бота решает по ключевым словам и иногда ошибается
         # («громкость голоса у неё приятная» — не команда), а лексикой такое
