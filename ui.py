@@ -924,6 +924,15 @@ class MainWindow(QMainWindow):
         self.current_file: str | None = None
         self.on_text_command = None
 
+        # ── Системный трей Windows ──────────────────────────────────
+        try:
+            from core.tray import JarvisTray
+            self.tray = JarvisTray(main_window=self, on_exit=self.force_quit, parent=self)
+            self.tray.show()
+        except Exception as _exc:
+            _logger.debug("Системный трей недоступен: %s", _exc)
+            self.tray = None
+
         # ── Центральный виджет ──────────────────────────────────────
         central = QWidget()
         self.setCentralWidget(central)
@@ -1233,6 +1242,26 @@ class MainWindow(QMainWindow):
         net = snap["net"]
         net_str = f"{net:.1f} МБ/с" if net >= 0.1 else f"{net*1024:.0f} КБ/с"
         self._net_bar.set_value(min(100, net * 10), net_str)
+
+    def closeEvent(self, event):
+        """Сворачивание в трей при закрытии окна (вместо уничтожения процесса)."""
+        if hasattr(self, "tray") and self.tray and self.tray.isVisible():
+            event.ignore()
+            self.hide()
+            self.tray.showMessage(
+                "JARVIS Mark X",
+                "Ассистент свёрнут в системный трей и продолжает слушать.",
+                QSystemTrayIcon.MessageIcon.Information,
+                2000,
+            )
+        else:
+            event.accept()
+
+    def force_quit(self):
+        """Полное закрытие приложения по команде из меню трея."""
+        if hasattr(self, "tray") and self.tray:
+            self.tray.hide()
+        QApplication.quit()
 
 
 # ─── Публичный класс JarvisUI (совместимость с main.py) ──────────────────────

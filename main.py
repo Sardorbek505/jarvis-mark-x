@@ -2082,6 +2082,17 @@ def main():
     # Без графики: JARVIS_HEADLESS=1 или --headless. Голосовой круг тот же,
     # разница только в том, кто показывает состояние и кто ждёт ключ.
     headless = headless_requested()
+
+    # Если запускаемся с графикой — проверяем наличие API ключа
+    if not headless:
+        try:
+            from ui_setup import ensure_setup
+            if not ensure_setup(force=False):
+                print("[ДЖАРВИС] Настройка отменена пользователем.")
+                return
+        except Exception as _e:
+            logger.debug("Setup wizard bypass: %s", _e)
+
     ui = HeadlessUI() if headless else JarvisUI("face.png")
 
     def runner():

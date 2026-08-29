@@ -4,6 +4,8 @@ __pycache__/
 *.pyd
 .Python
 *.log
+build/
+dist/
 
 # Секреты деплоя (Oracle/VPS) — НЕ коммитим
 .env
