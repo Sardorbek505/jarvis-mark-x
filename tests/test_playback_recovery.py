@@ -52,6 +52,9 @@ class _Stub:
         self.opened = []
         self.audio_in_queue = asyncio.Queue()
         self._turn_done_event = asyncio.Event()
+        self._speaking_lock = None
+        self._active_synth_tasks = 0
+        self._is_speaking = False
         self.ui = SimpleNamespace(write_log=lambda *a: None)
         self.speaking = []
         # Громкость кадра, которой дышит HUD. Копим, чтобы проверить: волна
