@@ -36,10 +36,10 @@ pinned: false
 | <img src="assets/voice.png" width="100%" alt="Voice Stream" /> | <img src="assets/vision.jpg" width="100%" alt="Vision Scan" /> |
 | **Мгновенный двусторонний диалог без задержек** | **Анализ кода, экранов и веб-камеры** |
 
-| 🧠 Второй Мозг (Obsidian & SQLite) | ⚛️ Ядро системы Mark X |
+| 🧠 Второй Мозг (Obsidian & SQLite) | 📱 Telegram Bot & Remote PC Control |
 |:---:|:---:|
-| <img src="assets/memory.jpg" width="100%" alt="Second Brain" /> | <img src="assets/icon.png" width="100%" alt="Arc Reactor" /> |
-| **Долгосрочная память и база заметок** | **Неоновый анимированный HUD & System Tray** |
+| <img src="assets/memory.jpg" width="100%" alt="Second Brain" /> | <img src="assets/telegram_remote.png" width="100%" alt="Telegram Remote PC Control" /> |
+| **Долгосрочная память и база заметок** | **Удаленное управление ПК из любой точки мира** |
 
 </div>
 
