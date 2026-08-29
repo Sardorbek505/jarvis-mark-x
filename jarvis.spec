@@ -21,6 +21,7 @@ safe_files = [
     ("config/obsidian.json", "config"),
     ("config/api_keys.example.json", "config"),
     ("face.png", "."),
+    ("app.ico", "."),
 ]
 
 for src, dst in safe_files:
@@ -95,6 +96,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name='JARVIS',
+    icon=str(BASE_DIR / 'app.ico'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

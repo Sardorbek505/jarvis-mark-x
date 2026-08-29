@@ -21,6 +21,7 @@ DisableProgramGroupPage=yes
 ; Output setup file configuration
 OutputDir=..\dist
 OutputBaseFilename=JARVIS_Setup_v1.0
+SetupIconFile=..\app.ico
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
