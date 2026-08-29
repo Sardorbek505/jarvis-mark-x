@@ -8,9 +8,11 @@ app_port: 8000
 pinned: false
 ---
 
-# 🤖 JARVIS Mark X — Русскоязычный персональный ИИ-ассистент
-
 <div align="center">
+
+<img src="assets/banner.jpg" alt="JARVIS Mark X Hero Banner" width="100%" />
+
+# 🤖 JARVIS Mark X — Персональный ИИ-ассистент
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![GUI PyQt6](https://img.shields.io/badge/GUI-PyQt6-green.svg)](https://riverbankcomputing.com/software/pyqt/)
@@ -19,7 +21,25 @@ pinned: false
 [![Tests Passing](https://img.shields.io/badge/Tests-274%20passed-brightgreen.svg)](https://pytest.org/)
 [![License MIT](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 
-**Высокотехнологичный голосовой ИИ-ассистент нового поколения с нативным двусторонним аудио-потоком, компьютерным зрением, памятью Obsidian и управлением ПК.**
+**Высокотехнологичный русскоязычный голосовой ИИ-ассистент с нативным двусторонним аудио-потоком, компьютерным зрением, базой знаний Obsidian и управлением компьютером.**
+
+</div>
+
+---
+
+## 📸 Галерея возможностей
+
+<div align="center">
+
+| 🎙️ Нативный аудио-стриминг (Gemini Live) | 👁️ Компьютерное зрение (Vision Mode) |
+|:---:|:---:|
+| <img src="assets/voice.png" width="100%" alt="Voice Stream" /> | <img src="assets/vision.jpg" width="100%" alt="Vision Scan" /> |
+| **Мгновенный двусторонний диалог без задержек** | **Анализ кода, экранов и веб-камеры** |
+
+| 🧠 Второй Мозг (Obsidian & SQLite) | ⚛️ Ядро системы Mark X |
+|:---:|:---:|
+| <img src="assets/memory.jpg" width="100%" alt="Second Brain" /> | <img src="assets/icon.png" width="100%" alt="Arc Reactor" /> |
+| **Долгосрочная память и база заметок** | **Неоновый анимированный HUD & System Tray** |
 
 </div>
 
@@ -120,7 +140,7 @@ flowchart TD
 
 ## 🛠️ Сборка дистрибутива
 
-Для сборки автономного `.exe` и установщика:
+Для сборки автономного `.exe` и инсталлятора с иконкой Stark Industries:
 
 ```bash
 # 1. Компиляция автономного бинарника PyInstaller
@@ -131,7 +151,7 @@ python scripts/package_dist.py
 ```
 
 Готовые файлы появятся в папке `dist/`:
-- `dist/JARVIS_Setup_v1.0.exe` — инсталлятор Windows.
+- `dist/JARVIS_Setup_v1.0.exe` — инсталлятор Windows с встроенной иконкой.
 - `dist/JARVIS_Mark_X_Portable_v1.0.zip` — портативная версия.
 
 ---
