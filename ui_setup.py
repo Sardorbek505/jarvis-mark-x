@@ -126,26 +126,35 @@ def validate_gemini_key(key: str) -> tuple[bool, str]:
         return False, f"Ошибка проверки: {err_msg[:120]}"
 
 
+_APPDATA_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "JARVIS"
+_APPDATA_CONFIG = _APPDATA_DIR / "api_keys.json"
+
+
 # ── Конфигурация ──────────────────────────────────────────────────────────────
 def load_config_data() -> dict:
-    if _CONFIG_FILE.exists():
-        try:
-            return json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+    for p in [_APPDATA_CONFIG, _CONFIG_FILE]:
+        if p.exists():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if data:
+                    return data
+            except Exception:
+                pass
     return {}
 
 
 def save_config_data(data: dict) -> bool:
-    try:
-        _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        existing = load_config_data()
-        existing.update(data)
-        _CONFIG_FILE.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
-        return True
-    except Exception as e:
-        logger.error("Ошибка сохранения конфига: %s", e)
-        return False
+    saved = False
+    for p in [_CONFIG_FILE, _APPDATA_CONFIG]:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            existing = load_config_data()
+            existing.update(data)
+            p.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+            saved = True
+        except Exception as e:
+            logger.debug("Save config to %s failed: %s", p, e)
+    return saved
 
 
 # ── Поток для проверки микрофона в реальном времени ───────────────────────────
