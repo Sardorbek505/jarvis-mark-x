@@ -105,9 +105,17 @@ def load_api_keys() -> dict:
 
 
 def save_api_keys(data: dict) -> bool:
-    """Сохраняет API ключи в пользовательскую директорию %APPDATA% и локально."""
+    """Сохраняет API ключи в безопасную пользовательскую директорию %APPDATA%."""
     saved = False
-    for target in [get_user_data_dir() / "api_keys.json", get_app_dir() / "config" / "api_keys.json"]:
+    targets = [get_user_data_dir() / "api_keys.json"]
+
+    # В режиме разработки (не скомпилированный .exe) также обновляем локальный config если он существует
+    if not getattr(sys, "frozen", False):
+        local_dev = get_app_dir() / "config" / "api_keys.json"
+        if local_dev.exists():
+            targets.append(local_dev)
+
+    for target in targets:
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             existing = {}

@@ -6,7 +6,6 @@ UI: точная копия Mark-XXXIX с русскоязычными надп�
 
 from __future__ import annotations
 
-import json
 import math
 import platform
 import random

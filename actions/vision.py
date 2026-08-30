@@ -166,11 +166,12 @@ def analyze_vision(
         return "Сэр, не найден API-ключ Gemini. Пожалуйста, укажите его в настройках."
 
     if not image_bytes:
-        if source == "camera":
+        src = str(source).strip().lower()
+        if src in ("camera", "webcam"):
             image_bytes = capture_camera_jpeg()
             if not image_bytes:
                 return "Сэр, не удалось получить изображение с веб-камеры. Проверьте подключение камеры."
-        elif source == "window":
+        elif src in ("window", "active_window", "active"):
             image_bytes = capture_active_window_jpeg()
             if not image_bytes:
                 return "Сэр, не удалось сделать снимок активного окна."
@@ -218,9 +219,22 @@ def analyze_vision(
 def vision_action(params: dict) -> str:
     """Функция-обработчик для вызова из ядра команд или Gemini Live tools."""
     prompt = params.get("prompt") or params.get("query") or params.get("question") or ""
-    source = params.get("source", "screen").lower()
+    focus = params.get("focus", "")
+    mode = params.get("mode", "")
+    source = params.get("source", "screen")
+
+    if mode:
+        source = mode
+    if focus and focus != "general":
+        prompt = (
+            f"Проведи экспертный анализ ({focus}): {prompt}"
+            if prompt
+            else f"Проведи экспертный анализ экрана с фокусом на {focus}."
+        )
+
+    src_lower = str(source).strip().lower()
     if "камер" in prompt.lower() or "camera" in prompt.lower():
         source = "camera"
-    elif "окно" in prompt.lower() or "window" in prompt.lower():
-        source = "window"
+    elif "окно" in prompt.lower() or src_lower in ("window", "active_window", "active"):
+        source = "active_window"
     return analyze_vision(prompt=prompt, source=source)

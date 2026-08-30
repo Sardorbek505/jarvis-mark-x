@@ -367,6 +367,9 @@ def _app_keyboard() -> InlineKeyboardMarkup | None:
 
 # ── Basic commands ─────────────────────────────────────────────────────────────
 
+_cached_banner_file_id: str | None = None
+
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
@@ -383,7 +386,22 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"/help — все команды"
     )
 
-    # Ищем баннер / логотип
+    # Быстрая отправка из кэша Telegram
+    global _cached_banner_file_id
+    if _cached_banner_file_id:
+        try:
+            await update.effective_message.reply_photo(
+                photo=_cached_banner_file_id,
+                caption=welcome_text,
+                reply_markup=_app_keyboard(),
+            )
+            if not await onboarding.already_onboarded(memory, uid):
+                await update.effective_message.reply_text(onboarding.start(uid))
+            return
+        except Exception:
+            _cached_banner_file_id = None
+
+    # Ищем локальный файл баннера
     banner_candidates = [
         Path(__file__).resolve().parent.parent / "assets" / "banner.jpg",
         Path(__file__).resolve().parent.parent / "assets" / "icon.png",
@@ -392,11 +410,13 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if banner_file:
         try:
             with open(banner_file, "rb") as f:
-                await update.effective_message.reply_photo(
+                sent_msg = await update.effective_message.reply_photo(
                     photo=f,
                     caption=welcome_text,
                     reply_markup=_app_keyboard(),
                 )
+                if sent_msg and sent_msg.photo:
+                    _cached_banner_file_id = sent_msg.photo[-1].file_id
         except Exception:
             await update.effective_message.reply_text(
                 welcome_text,

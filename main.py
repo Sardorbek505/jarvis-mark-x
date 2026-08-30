@@ -689,35 +689,6 @@ TOOLS = [
         }
     },
     {
-        "name": "vision_review",
-        "description": (
-            "Анализирует текущий экран и даёт экспертную обратную связь по дизайну, UX, "
-            "типографике, цветам, премиальности или конверсии. "
-            "Использует Gemini Vision для реального анализа изображения. "
-            "Вызывай когда пользователь говорит: посмотри на экран, оцени, что думаешь о дизайне, "
-            "проверь, как тебе, что улучшить, какой UX, премиально ли, ревью, обзор."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "focus": {
-                    "type": "STRING",
-                    "description": (
-                        "Что оценивать: design — общий дизайн | ux — юзабилити | "
-                        "premium — премиальность | conversion — конверсия | "
-                        "spacing — отступы | typography — шрифты | colors — цвета | "
-                        "accessibility — доступность | general — общая оценка (по умолчанию)"
-                    )
-                },
-                "mode": {
-                    "type": "STRING",
-                    "description": "active_window (по умолчанию, только активное окно) или full_screen (весь экран)"
-                }
-            },
-            "required": []
-        }
-    },
-    {
         "name": "team_collaboration",
         "description": (
             "Управление командной работой и проектами: добавление членов команды, "
@@ -2080,7 +2051,12 @@ class Jarvis:
 
                         print("[ДЖАРВИС] ✅ Подключён.")
                         self.ui.set_state("IDLE")
-                        
+                        try:
+                            from core.wakeword import play_activation_chime
+                            play_activation_chime()
+                        except Exception:
+                            pass
+
                         # Reset retry count on successful connection
                         retry_count = 0
 
