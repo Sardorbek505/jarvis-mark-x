@@ -202,6 +202,7 @@ def analyze_vision(
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
                 temperature=0.4,
+                max_output_tokens=300,
             ),
         )
 

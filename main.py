@@ -245,7 +245,7 @@ MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "250"))
 # кадров) модель не ответила НИ РАЗУ — расшифровывала сказанное и молчала;
 # с 1.92 с отвечала всегда. Поэтому хвост считается от окна VAD с запасом,
 # а не подбирается на глаз.
-MIC_HANGOVER_MS = int(os.getenv("MIC_HANGOVER_MS", str(_VAD_SILENCE_MS + 600)))
+MIC_HANGOVER_MS = int(os.getenv("MIC_HANGOVER_MS", str(_VAD_SILENCE_MS + 400)))
 _FRAME_MS = CHUNK_SIZE / SEND_SAMPLE_RATE * 1000
 MIC_HANGOVER_FRAMES = int(os.getenv(
     "MIC_HANGOVER_FRAMES", str(max(1, round(MIC_HANGOVER_MS / _FRAME_MS)))
