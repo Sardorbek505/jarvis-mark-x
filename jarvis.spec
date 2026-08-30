@@ -29,6 +29,9 @@ for src, dst in safe_files:
     if full.exists():
         datas.append((str(full), dst))
 
+if (BASE_DIR / "assets").exists():
+    datas.append((str(BASE_DIR / "assets"), "assets"))
+
 if (BASE_DIR / "telegram_bot" / "miniapp").exists():
     datas.append((str(BASE_DIR / "telegram_bot" / "miniapp"), "telegram_bot/miniapp"))
 
