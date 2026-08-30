@@ -73,12 +73,23 @@ hidden_imports = [
     "actions.weather",
     "actions.music_player",
     "actions.spotify_controller",
+    "imageio_ffmpeg",
 ]
+
+binaries = []
+try:
+    from PyInstaller.utils.hooks import collect_all
+    ff_datas, ff_binaries, ff_hidden = collect_all("imageio_ffmpeg")
+    datas += ff_datas
+    binaries += ff_binaries
+    hidden_imports += ff_hidden
+except Exception:
+    pass
 
 a = Analysis(
     ['main.py'],
     pathex=[str(BASE_DIR)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hidden_imports,
     hookspath=[],

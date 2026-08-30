@@ -26,4 +26,7 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Run unit tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          JARVIS_HEADLESS: "1"
         run: python -m pytest tests/ -q

@@ -1,14 +1,20 @@
 # Test-only dependencies for the curated tests/ suite (CI).
-# Pure unit tests — no Gemini, Telegram, Neon or network required.
 pytest>=8.0
 pytest-asyncio>=0.23
 aiosqlite>=0.19.0
 
-# Imported at module level by code the curated suite exercises. Without them
-# collection dies with ModuleNotFoundError — none of them touch the network
-# during the tests themselves.
-websockets>=12.0      # telegram_bot.pc_server      (tests/test_resilience.py)
-feedparser>=6.0.0     # core.news_manager          (tests/test_smart_reminders.py)
-requests>=2.31.0      # tools.spotify              (tests/test_spotify.py)
-google-genai>=1.0.0   # core.translation_manager, pulled in by core/__init__
-rapidfuzz>=3.0.0      # tools.spotify.controller
+# Module dependencies needed for test suite execution
+websockets>=12.0
+feedparser>=6.0.0
+requests>=2.31.0
+google-genai>=1.0.0
+rapidfuzz>=3.0.0
+PyQt6>=6.6.0
+sounddevice>=0.4.6
+numpy>=1.24.0
+python-telegram-bot>=20.0
+pydub>=0.25.1
+psutil>=5.9.0
+Pillow>=10.0.0
+edge-tts>=6.1.0
+imageio-ffmpeg>=0.4.8

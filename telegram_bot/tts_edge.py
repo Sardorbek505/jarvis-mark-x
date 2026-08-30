@@ -45,7 +45,15 @@ async def speak_pcm(text: str, voice: str = _DEFAULT_VOICE, sample_rate: int = 2
     if not mp3_data:
         return None
     try:
-        from pydub import AudioSegment
+        try:
+            import imageio_ffmpeg
+            from pydub import AudioSegment
+            ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+            if ffmpeg_path:
+                AudioSegment.converter = ffmpeg_path
+        except Exception:
+            from pydub import AudioSegment
+
         seg = AudioSegment.from_file(io.BytesIO(mp3_data), format="mp3")
         seg = seg.set_frame_rate(sample_rate).set_channels(1).set_sample_width(2)
         return seg.raw_data
