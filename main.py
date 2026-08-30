@@ -1722,11 +1722,22 @@ class Jarvis:
                 self._latency.mark_turn_complete()
                 return
 
+            # Жив ли Fish — решается ОДИН раз за ответ, а не на каждом куске.
+            #
+            # Раньше падение Fish стоило по таймауту на фрагмент: у запроса
+            # tts_fish._TIMEOUT_SEC = 60, и ответ из четырёх предложений мог
+            # молчать четыре минуты, каждый раз заново убеждаясь в том, что
+            # уже известно. Один отказ — и остаток ответа договаривает Edge.
+            fish_alive = tts_fish.is_configured()
+
             async def _synth_fragment(fragment: str):
-                pcm = await tts_fish.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
-                if pcm:
-                    return pcm
-                # Fallback на Edge-TTS (Dmitry Neural) если Fish Audio недоступен
+                nonlocal fish_alive
+                if fish_alive:
+                    pcm = await tts_fish.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+                    if pcm:
+                        return pcm
+                    fish_alive = False
+                    self.ui.write_log("SYS: Fish молчит — остаток ответа озвучит Edge-TTS")
                 return await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
 
             def synth(fragment: str):
