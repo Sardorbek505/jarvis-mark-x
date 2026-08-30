@@ -171,6 +171,8 @@ class MemoryStore:
         import aiosqlite
         _SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._sqlite = await aiosqlite.connect(_SQLITE_PATH)
+        await self._sqlite.execute("PRAGMA journal_mode = WAL;")
+        await self._sqlite.execute("PRAGMA synchronous = NORMAL;")
         await self._sqlite.executescript(_SCHEMA_SQLITE)
         # Досыпаем колонки, которых нет. Раньше ALTER выполнялся вслепую и на
         # уже мигрированной базе падал ожидаемым "duplicate column name" —
