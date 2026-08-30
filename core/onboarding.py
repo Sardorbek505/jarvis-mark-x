@@ -114,20 +114,34 @@ def _prompt_for_key(config_path: Path) -> str | None:
     return None
 
 
-def ensure_gemini_key(config_path: Path, *, interactive: bool = True) -> str | None:
+def ensure_gemini_key(config_path: Path | None = None, *, interactive: bool = True) -> str | None:
     """Возвращает ключ Gemini или None, если получить его не удалось."""
     env_key = os.environ.get(_ENV_VAR, "").strip()
     if env_key:
         _logger.info("Ключ Gemini взят из %s (%s)", _ENV_VAR, _mask(env_key))
         return env_key
 
-    cfg = safe_read_json(config_path, default={})
-    stored = (cfg or {}).get(_KEY_FIELD, "").strip() if isinstance(cfg, dict) else ""
-    if stored:
-        return stored
+    if config_path is not None:
+        cfg = safe_read_json(config_path, default={})
+        stored = (cfg or {}).get(_KEY_FIELD, "").strip() if isinstance(cfg, dict) else ""
+        if stored:
+            return stored
+    else:
+        try:
+            from core.paths import load_api_keys
+            stored = load_api_keys().get(_KEY_FIELD, "").strip()
+            if stored:
+                return stored
+        except Exception as _e:
+            _logger.debug("load_api_keys lookup failed: %s", _e)
 
     if not interactive or not sys.stdin.isatty():
         _logger.error("Ключ Gemini не настроен, а мастер запустить негде (нет TTY)")
         return None
 
-    return _prompt_for_key(config_path)
+    try:
+        from core.paths import get_config_path
+        target_path = config_path if config_path is not None else get_config_path("api_keys.json", for_writing=True)
+    except Exception:
+        target_path = config_path or Path("config/api_keys.json")
+    return _prompt_for_key(target_path)

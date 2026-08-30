@@ -187,9 +187,30 @@ class HudCanvas(QWidget):
 
     def _load_face(self, path: str):
         try:
-            from PIL import Image, ImageDraw
             import io
-            img = Image.open(path).convert("RGBA")
+            from PIL import Image, ImageDraw
+            from core.paths import get_base_dir, get_app_dir
+
+            p = Path(path)
+            if not p.is_absolute() or not p.exists():
+                candidates = [
+                    get_base_dir() / path,
+                    get_app_dir() / path,
+                    Path(__file__).resolve().parent / path,
+                    get_base_dir() / "face.png",
+                    get_app_dir() / "face.png",
+                    Path(path),
+                ]
+                for c in candidates:
+                    if c.exists():
+                        p = c
+                        break
+
+            if not p.exists():
+                self._face_px = None
+                return
+
+            img = Image.open(str(p)).convert("RGBA")
             sz = min(img.size)
             img = img.resize((sz, sz), Image.LANCZOS)
             mk = Image.new("L", (sz, sz), 0)
@@ -200,7 +221,8 @@ class HudCanvas(QWidget):
             px = QPixmap()
             px.loadFromData(buf.getvalue())
             self._face_px = px
-        except Exception:
+        except Exception as exc:
+            _logger.debug("Face image loading error: %s", exc)
             self._face_px = None
 
     def feed_level(self, value: float):
@@ -909,6 +931,22 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(_MIN_W, _MIN_H)
         self.resize(_DEFAULT_W, _DEFAULT_H)
 
+        # Установка иконки окна и панели задач
+        try:
+            from PyQt6.QtGui import QIcon
+            from core.paths import get_base_dir, get_app_dir
+            for ico_candidate in [
+                get_base_dir() / "app.ico",
+                get_app_dir() / "app.ico",
+                Path(__file__).resolve().parent / "app.ico",
+                get_base_dir() / "face.png",
+            ]:
+                if ico_candidate.exists():
+                    self.setWindowIcon(QIcon(str(ico_candidate)))
+                    break
+        except Exception as exc:
+            _logger.debug("Window icon setup error: %s", exc)
+
         screen = QApplication.primaryScreen().availableGeometry()
         self.move(
             (screen.width()  - _DEFAULT_W) // 2,
@@ -1100,26 +1138,17 @@ class MainWindow(QMainWindow):
     def wait_for_api_key(self):
         """Блокирует поток до получения API-ключа. Пропускает если ключ уже есть."""
         import threading
-        import json
-        from pathlib import Path
+        from core.paths import load_api_keys
 
-        # Проверяем, существует ли файл с ключом
-        config_path = Path(__file__).parent / "config" / "api_keys.json"
-        reason = "init"
-        try:
-            if config_path.exists():
-                with open(config_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    api_key = data.get("gemini_api_key")
-                    if api_key:
-                        # Ключ есть - пропускаем без проверки API для быстрого запуска
-                        print("[UI] API ключ найден, пропускаем инициализацию...")
-                        return None
-        except Exception as e:
-            print(f"[UI] Ошибка чтения ключа: {e}")
-            pass
+        # Проверяем наличие ключа во всех конфигурациях (%APPDATA% и локально)
+        keys = load_api_keys()
+        api_key = keys.get("gemini_api_key", "").strip()
+        if api_key:
+            print("[UI] API ключ найден, пропускаем инициализацию...")
+            return None
 
         # Ключа нет или файл повреждён — показываем оверлей
+        reason = "init"
         self._key_ready = threading.Event()
         self._setup_reason = reason
         QTimer.singleShot(0, lambda: self._show_overlay(reason))
@@ -1146,16 +1175,8 @@ class MainWindow(QMainWindow):
         self._resize_overlay()
 
     def _on_setup_done(self, key: str, os_name: str):
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        data = {}
-        if API_FILE.exists():
-            try:
-                data = json.loads(API_FILE.read_text())
-            except Exception as exc:
-                _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
-        data["gemini_api_key"] = key
-        data["os"] = os_name
-        API_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        from core.paths import save_api_keys
+        save_api_keys({"gemini_api_key": key, "os": os_name})
 
         if self._overlay:
             self._overlay.hide()
