@@ -188,6 +188,23 @@ class SetupWizardDialog(QDialog):
         self.cfg = load_config_data()
         self.mic_worker = None
 
+        # Установка иконки окна
+        try:
+            from PyQt6.QtGui import QIcon
+            from core.paths import get_base_dir, get_app_dir
+            for ico_candidate in [
+                get_base_dir() / "app.ico",
+                get_app_dir() / "app.ico",
+                Path(__file__).resolve().parent / "app.ico",
+                get_base_dir() / "assets" / "icon.ico",
+                get_base_dir() / "face.png",
+            ]:
+                if ico_candidate.exists():
+                    self.setWindowIcon(QIcon(str(ico_candidate)))
+                    break
+        except Exception:
+            pass
+
         self._setup_style()
         self._init_ui()
         self._load_current_values()
@@ -300,8 +317,34 @@ class SetupWizardDialog(QDialog):
 
         # Header
         header = QHBoxLayout()
+        header.setSpacing(12)
+
+        # Header Icon / Avatar
+        logo_lbl = QLabel()
+        logo_lbl.setFixedSize(48, 48)
+        try:
+            from PyQt6.QtGui import QPixmap
+            from PyQt6.QtCore import Qt
+            from core.paths import get_base_dir, get_app_dir
+            for logo_candidate in [
+                get_base_dir() / "assets" / "icon.png",
+                get_base_dir() / "face.png",
+                get_app_dir() / "assets" / "icon.png",
+            ]:
+                if logo_candidate.exists():
+                    px = QPixmap(str(logo_candidate)).scaled(
+                        48, 48,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    logo_lbl.setPixmap(px)
+                    break
+        except Exception:
+            pass
+        header.addWidget(logo_lbl)
+
         title_box = QVBoxLayout()
-        title = QLabel("🤖 JARVIS MARK X — НАСТРОЙКА")
+        title = QLabel("JARVIS MARK X — НАСТРОЙКА")
         title.setStyleSheet("font-size: 17px; font-weight: 800; color: #22d3ee; letter-spacing: 1px;")
         sub = QLabel("Персональный ИИ-ассистент с голосовым управлением и синхронизацией")
         sub.setStyleSheet("color: #94a3b8; font-size: 12px;")

@@ -99,6 +99,20 @@ async def serve_appjs():
 async def serve_css():
     return FileResponse(MINIAPP_DIR / "style.css", media_type="text/css", headers=_NOCACHE)
 
+@app.get("/favicon.ico")
+async def serve_favicon():
+    fav = MINIAPP_DIR / "favicon.ico"
+    if fav.exists():
+        return FileResponse(fav, media_type="image/x-icon", headers=_NOCACHE)
+    return FileResponse(MINIAPP_DIR / "index.html", headers=_NOCACHE)
+
+@app.get("/logo.png")
+async def serve_logo():
+    logo = MINIAPP_DIR / "logo.png"
+    if logo.exists():
+        return FileResponse(logo, media_type="image/png", headers=_NOCACHE)
+    return FileResponse(MINIAPP_DIR / "index.html", headers=_NOCACHE)
+
 @app.get("/ping")
 async def ping():
     # Ultra-light keep-alive target for cron-job.org (no file I/O, tiny payload).
