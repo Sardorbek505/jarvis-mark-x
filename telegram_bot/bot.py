@@ -374,14 +374,40 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     pc = "онлайн ✅" if bridge.connected else "офлайн ❌"
     uid = update.effective_user.id
     await memory.ensure_loaded(uid)
-    await update.effective_message.reply_text(
+
+    welcome_text = (
         f"Привет, {name}! Я JARVIS — твой личный ИИ-ассистент.\n\n"
         f"🖥 ПК: {pc}\n"
         f"🤖 Gemini: готов ✅\n\n"
         f"Напиши что угодно — поговорим, помогу, отвечу.\n"
-        f"/help — все команды",
-        reply_markup=_app_keyboard(),
+        f"/help — все команды"
     )
+
+    # Ищем баннер / логотип
+    banner_candidates = [
+        Path(__file__).resolve().parent.parent / "assets" / "banner.jpg",
+        Path(__file__).resolve().parent.parent / "assets" / "icon.png",
+    ]
+    banner_file = next((b for b in banner_candidates if b.exists()), None)
+    if banner_file:
+        try:
+            with open(banner_file, "rb") as f:
+                await update.effective_message.reply_photo(
+                    photo=f,
+                    caption=welcome_text,
+                    reply_markup=_app_keyboard(),
+                )
+        except Exception:
+            await update.effective_message.reply_text(
+                welcome_text,
+                reply_markup=_app_keyboard(),
+            )
+    else:
+        await update.effective_message.reply_text(
+            welcome_text,
+            reply_markup=_app_keyboard(),
+        )
+
     # First meeting → get to know the user
     if not await onboarding.already_onboarded(memory, uid):
         await update.effective_message.reply_text(onboarding.start(uid))
