@@ -175,23 +175,18 @@ _GATE_REPORT_SEC = float(os.getenv("MIC_GATE_REPORT_SEC", "5"))
 _IGNORE_SPEAKERS = os.getenv("MIC_IGNORE_SPEAKERS", "0") != "0"
 
 
-def _device_is_silent(index: int, seconds: float = 0.3) -> bool:
-    """Проверяет, является ли устройство мёртвым или фантомным виртуальным входом.
-
-    Виртуальные входы (например, ASUS AI Noise-cancelling VAC) могут возвращать
-    паразитный белый шум с пиком < 300 и RMS < 50, но не передавать полезную речь.
-    """
+def _device_is_silent(index: int, seconds: float = 0.05) -> bool:
+    """Проверяет, является ли устройство мёртвым или фантомным виртуальным входом."""
     try:
         import numpy as np
         rec = sd.rec(int(seconds * SEND_SAMPLE_RATE), samplerate=SEND_SAMPLE_RATE,
                      channels=1, dtype="int16", device=index)
         sd.wait()
         peak = int(np.abs(rec).max())
-        # Если сигнал абсолютный ноль — устройство мертво.
         return peak == 0
     except Exception as exc:
         logger.warning("Устройство %s не удалось проверить (%s) — пропускаю", index, exc)
-        return True          # не открылось или не читается — точно не кандидат
+        return True
 
 
 def _pick_input_device():
@@ -207,30 +202,29 @@ def _pick_input_device():
             logger.warning("MIC_DEVICE=%r не найден — беру системный по умолчанию", manual)
             return None
 
-    # Приоритет аппаратным микрофонам (USB, Realtek, встроенный массив),
-    # исключая фантомные виртуальные драйверы без полезного сигнала
     devices = list(enumerate(sd.query_devices()))
 
-    # 1. Сначала ищем реальные USB микрофоны/гарнитуры (наилучшее качество)
+    # 1. Внешние USB / Bluetooth / Headset гарнитуры
     for i, d in devices:
         if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
             continue
         name = d["name"].lower()
-        if ("usb" in name or "headset" in name or "микрофон" in name) and not _device_is_silent(i):
+        if any(k in name for k in ("usb", "headset", "bluetooth", "wireless")) and not _device_is_silent(i):
             if "virtual" not in name and "line" not in name and "noise-cancelling" not in name:
-                logger.info("Выбран USB/внешний микрофон: «%s» (индекс %d)", d["name"], i)
+                logger.info("Выбран внешний микрофон: «%s» (индекс %d)", d["name"], i)
                 return i
 
-    # 2. Ищем встроенный Realtek массив
+    # 2. Встроенный Realtek / массив микрофонов
     for i, d in devices:
         if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
             continue
         name = d["name"].lower()
-        if "realtek" in name and not _device_is_silent(i):
-            logger.info("Выбран встроенный микрофон Realtek: «%s» (индекс %d)", d["name"], i)
-            return i
+        if any(k in name for k in ("realtek", "микрофон", "array", "массив")) and not _device_is_silent(i):
+            if "virtual" not in name and "line" not in name and "noise-cancelling" not in name:
+                logger.info("Выбран микрофон: «%s» (индекс %d)", d["name"], i)
+                return i
 
-    # 3. Фолбэк на дефолтное системное устройство
+    # 3. Системное устройство по умолчанию
     return None
 CHUNK_SIZE        = 1024
 
@@ -1967,26 +1961,29 @@ class Jarvis:
                         # Reset retry count on successful connection
                         retry_count = 0
 
-                        # Авто-триггер утреннего брифинга (6-10 утра)
-                        from datetime import datetime
-                        current_hour = datetime.now().hour
-                        if 6 <= current_hour < 11:
-                            print("[ДЖАРВИС] 🌅 Утро: авто-брифинг")
-                            self.ui.write_log("SYS: Утренний брифинг...")
-                            try:
-                                from actions.morning_briefing import morning_briefing
-                                loop = asyncio.get_event_loop()
-                                briefing = await loop.run_in_executor(
-                                    None, lambda: morning_briefing({}, player=self.ui)
-                                )
-                                self.speak(briefing)
-                            except Exception as e:
-                                print(f"[ДЖАРВИС] ⚠️ Брифинг не удался: {e}")
-
                         tg.create_task(self._send_realtime())
                         tg.create_task(self._listen_audio())
                         tg.create_task(self._receive_audio())
                         tg.create_task(self._play_audio())
+
+                        # Авто-триггер утреннего брифинга (6-11 утра, 1 раз в день)
+                        from datetime import datetime
+                        today_str = datetime.now().strftime("%Y-%m-%d")
+                        if 6 <= datetime.now().hour < 11 and getattr(self, "_last_briefing_date", None) != today_str:
+                            self._last_briefing_date = today_str
+                            async def _run_morning_briefing():
+                                await asyncio.sleep(1.5)
+                                try:
+                                    from actions.morning_briefing import morning_briefing
+                                    loop = asyncio.get_event_loop()
+                                    briefing = await loop.run_in_executor(
+                                        None, lambda: morning_briefing({}, player=self.ui)
+                                    )
+                                    if briefing:
+                                        self.speak(briefing)
+                                except Exception as e:
+                                    logger.warning("Утренний брифинг: %s", e)
+                            tg.create_task(_run_morning_briefing())
                 except Exception as e:
                     logger.error(f"Live API connection error: {e}")
                     logger.error(f"Error type: {type(e).__name__}")
