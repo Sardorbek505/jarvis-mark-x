@@ -6,6 +6,7 @@ UI: точная копия Mark-XXXIX с русскоязычными надп�
 
 from __future__ import annotations
 
+import html
 import math
 import platform
 import random
@@ -21,7 +22,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QBrush, QColor, QDragEnterEvent, QDropEvent, QFont, QKeySequence, QPainter, QPen, QPixmap,
-    QShortcut,
+    QShortcut, QTextCursor,
 )
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
@@ -550,17 +551,19 @@ class MetricBar(QWidget):
                    self._text)
 
 
-# ─── Лог-виджет с эффектом печатания ─────────────────────────────────────────
+# ─── Лог-виджет диалога (HUD Chat) ──────────────────────────────────────────
 class LogWidget(QTextEdit):
+    """Высокотехнологичный виджет диалога со стилями Stark HUD и мгновенным выводом."""
     _sig = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
-        self.setFont(QFont("Courier New", 9))
+        self.setAcceptRichText(True)
+        self.setFont(QFont("Segoe UI", 9))
         self.setStyleSheet(f"""
             QTextEdit {{
-                background: {C.PANEL};
+                background-color: {C.PANEL};
                 color: {C.TEXT};
                 border: 1px solid {C.BORDER};
                 border-radius: 4px;
@@ -569,208 +572,95 @@ class LogWidget(QTextEdit):
             }}
             QScrollBar:vertical {{
                 background: {C.BG};
-                width: 8px;
+                width: 6px;
                 border: none;
+                margin: 0px;
             }}
             QScrollBar::handle:vertical {{
                 background: {C.BORDER_B};
-                border-radius: 4px;
+                border-radius: 3px;
                 min-height: 20px;
             }}
+            QScrollBar::handle:vertical:hover {{
+                background: {C.PRI_DIM};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
         """)
-        self._queue: list[str] = []
-        self._typing = False
-        self._text   = ""
-        self._pos    = 0
-        self._tag    = "sys"
-        self._tmr    = QTimer(self)
-        self._tmr.timeout.connect(self._step)
-        self._sig.connect(self._enqueue)
+        self._sig.connect(self._handle_append)
 
     def append_log(self, text: str):
         self._sig.emit(text)
 
-    def _enqueue(self, text: str):
-        self._queue.append(text)
-        if not self._typing:
-            self._next()
-
-    def _next(self):
-        if not self._queue:
-            self._typing = False
+    def _handle_append(self, text: str):
+        if not text:
             return
-        self._typing = True
-        self._text = self._queue.pop(0)
-        self._pos  = 0
-        tl = self._text.lower()
+
+        tl = text.strip().lower()
+        now_str = time.strftime("%H:%M")
+
         if tl.startswith("вы:") or tl.startswith("you:"):
-            self._tag = "you"
-        elif tl.startswith("джарвис:") or tl.startswith("jarvis:"):
-            self._tag = "ai"
-        elif tl.startswith("file:"):
-            self._tag = "file"
-        elif "err" in tl or "ошибка" in tl:
-            self._tag = "err"
-        else:
-            self._tag = "sys"
-        self._tmr.start(5)
-
-    def _step(self):
-        if self._pos < len(self._text):
-            ch = self._text[self._pos]
-            cur = self.textCursor()
-            fmt = cur.charFormat()
-            col = {
-                "you":  qcol(C.WHITE),
-                "ai":   qcol(C.PRI),
-                "err":  qcol(C.RED),
-                "file": qcol(C.GREEN),
-                "sys":  qcol(C.ACC2),
-            }.get(self._tag, qcol(C.TEXT))
-            fmt.setForeground(QBrush(col))
-            cur.movePosition(cur.MoveOperation.End)
-            cur.insertText(ch, fmt)
-            self.setTextCursor(cur)
-            self.ensureCursorVisible()
-            self._pos += 1
-        else:
-            self._tmr.stop()
-            cur = self.textCursor()
-            cur.movePosition(cur.MoveOperation.End)
-            cur.insertText("\n")
-            self.setTextCursor(cur)
-            self.ensureCursorVisible()
-            QTimer.singleShot(20, self._next)
-
-
-# ─── Зона перетаскивания файлов ───────────────────────────────────────────────
-class FileDropZone(QWidget):
-    file_selected = pyqtSignal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(90)
-        self._current_file: str | None = None
-        self._hovering  = False
-        self._drag_over = False
-        self._dash_off  = 0.0
-        self._anim = QTimer(self)
-        self._anim.timeout.connect(self._animate)
-        self._anim.start(40)
-
-    def _animate(self):
-        self._dash_off = (self._dash_off + 0.8) % 20
-        self.update()
-
-    def dragEnterEvent(self, e: QDragEnterEvent):
-        if e.mimeData().hasUrls():
-            e.acceptProposedAction()
-            self._drag_over = True
-            self.update()
-
-    def dragLeaveEvent(self, e):
-        self._drag_over = False
-        self.update()
-
-    def dropEvent(self, e: QDropEvent):
-        self._drag_over = False
-        urls = e.mimeData().urls()
-        if urls:
-            path = urls[0].toLocalFile()
-            if Path(path).is_file():
-                self._current_file = path
-                self.file_selected.emit(path)
-        self.update()
-
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            if self._current_file and e.pos().x() > self.width() - 34:
-                self._current_file = None
-                self.update()
-                return
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Выберите файл для ДЖАРВИС", str(Path.home()), "Все файлы (*.*)"
+            content = text.split(":", 1)[1].strip()
+            safe_content = html.escape(content)
+            card = (
+                f'<div style="margin: 4px 0px 6px 0px; padding: 6px 8px; background: rgba(0, 32, 48, 0.6); '
+                f'border-left: 3px solid #00d4ff; border-radius: 4px;">'
+                f'<table width="100%" style="margin-bottom: 2px;"><tr>'
+                f'<td style="font-family: \'Segoe UI\', sans-serif; font-size: 10px; font-weight: bold; color: #50c8e8; letter-spacing: 1px;">ВЫ</td>'
+                f'<td align="right" style="font-family: monospace; font-size: 9px; color: #3a7588;">{now_str}</td>'
+                f'</tr></table>'
+                f'<div style="font-family: \'Segoe UI\', sans-serif; font-size: 12px; color: #ffffff; line-height: 135%;">{safe_content}</div>'
+                f'</div>'
             )
-            if path:
-                self._current_file = path
-                self.file_selected.emit(path)
-                self.update()
-
-    def enterEvent(self, e):
-        self._hovering = True
-        self.update()
-
-    def leaveEvent(self, e):
-        self._hovering = False
-        self.update()
-
-    @property
-    def current_file(self) -> str | None:
-        return self._current_file
-
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        W, H = self.width(), self.height()
-        pad = 6
-        rect = QRectF(pad, pad, W - pad * 2, H - pad * 2)
-
-        bg = qcol("#001a24" if self._drag_over else ("#001218" if self._hovering else C.PANEL))
-        p.setBrush(QBrush(bg))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(rect, 6, 6)
-
-        if self._current_file:
-            bc = qcol(C.GREEN, 200)
-        elif self._drag_over:
-            bc = qcol(C.PRI, 230)
-        elif self._hovering:
-            bc = qcol(C.BORDER_B, 200)
+        elif tl.startswith("джарвис:") or tl.startswith("jarvis:"):
+            content = text.split(":", 1)[1].strip()
+            safe_content = html.escape(content)
+            card = (
+                f'<div style="margin: 4px 0px 6px 0px; padding: 6px 8px; background: rgba(0, 48, 36, 0.6); '
+                f'border-left: 3px solid #00ffaa; border-radius: 4px;">'
+                f'<table width="100%" style="margin-bottom: 2px;"><tr>'
+                f'<td style="font-family: \'Segoe UI\', sans-serif; font-size: 10px; font-weight: bold; color: #00ffaa; letter-spacing: 1px;">◈ ДЖАРВИС</td>'
+                f'<td align="right" style="font-family: monospace; font-size: 9px; color: #2a7a5c;">{now_str}</td>'
+                f'</tr></table>'
+                f'<div style="font-family: \'Segoe UI\', sans-serif; font-size: 12px; color: #dcf8ff; line-height: 135%;">{safe_content}</div>'
+                f'</div>'
+            )
+        elif tl.startswith("err:") or "ошибка" in tl:
+            content = text.split(":", 1)[1].strip() if ":" in text else text
+            safe_content = html.escape(content)
+            card = (
+                f'<div style="margin: 3px 0px; padding: 4px 6px; background: rgba(60, 10, 20, 0.45); '
+                f'border-left: 2px solid #ff3b5c; border-radius: 3px;">'
+                f'<span style="font-family: monospace; font-size: 9px; font-weight: bold; color: #ff3b5c;">ERR:</span> '
+                f'<span style="font-family: \'Segoe UI\', sans-serif; font-size: 11px; color: #ff99aa;">{safe_content}</span>'
+                f'</div>'
+            )
+        elif tl.startswith("sys:"):
+            content = text.split(":", 1)[1].strip()
+            safe_content = html.escape(content)
+            card = (
+                f'<div style="margin: 2px 0px; padding: 3px 6px; background: rgba(30, 25, 10, 0.35); '
+                f'border-left: 2px solid #d49b35; border-radius: 3px;">'
+                f'<span style="font-family: monospace; font-size: 9px; font-weight: bold; color: #d49b35;">SYS:</span> '
+                f'<span style="font-family: \'Segoe UI\', sans-serif; font-size: 10px; color: #8ab0b8;">{safe_content}</span>'
+                f'</div>'
+            )
         else:
-            bc = qcol(C.BORDER, 160)
+            safe_content = html.escape(text)
+            card = (
+                f'<div style="margin: 2px 0px; font-family: \'Segoe UI\', sans-serif; font-size: 11px; color: {C.TEXT_DIM};">'
+                f'{safe_content}</div>'
+            )
 
-        pen = QPen(bc, 1.5, Qt.PenStyle.DashLine)
-        pen.setDashOffset(self._dash_off)
-        p.setPen(pen)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(rect, 6, 6)
-
-        cy = H / 2
-
-        if self._current_file:
-            path = Path(self._current_file)
-            p.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
-            p.setPen(QPen(qcol(C.GREEN), 1))
-            p.drawText(QRectF(10, cy - 12, W - 44, 20),
-                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                       f"📄 {path.name[:40]}")
-            size = path.stat().st_size
-            size_str = (f"{size} Б" if size < 1024 else
-                        f"{size/1024:.1f} КБ" if size < 1024**2 else
-                        f"{size/1024**2:.1f} МБ")
-            p.setFont(QFont("Courier New", 7))
-            p.setPen(QPen(qcol(C.TEXT_DIM), 1))
-            p.drawText(QRectF(10, cy + 10, W - 44, 16),
-                       Qt.AlignmentFlag.AlignLeft, size_str)
-            p.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
-            p.setPen(QPen(qcol(C.RED, 180), 1))
-            p.drawText(QRectF(W - 34, 0, 28, H), Qt.AlignmentFlag.AlignCenter, "✕")
-        elif self._drag_over:
-            p.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
-            p.setPen(QPen(qcol(C.PRI), 1))
-            p.drawText(QRectF(0, 0, W, H), Qt.AlignmentFlag.AlignCenter,
-                       "⬇  Отпустите файл")
-        else:
-            p.setFont(QFont("Courier New", 8))
-            p.setPen(QPen(qcol(C.PRI_DIM if not self._hovering else C.TEXT), 1))
-            p.drawText(QRectF(0, 0, W, H - 14), Qt.AlignmentFlag.AlignCenter,
-                       "Перетащите файл сюда или нажмите")
-            p.setFont(QFont("Courier New", 7))
-            p.setPen(QPen(qcol("#1a4a5a"), 1))
-            p.drawText(QRectF(0, H - 20, W, 16), Qt.AlignmentFlag.AlignCenter,
-                       "Изображения · Видео · PDF · Код · Данные")
+        cur = self.textCursor()
+        cur.movePosition(QTextCursor.MoveOperation.End)
+        self.setTextCursor(cur)
+        self.insertHtml(card)
+        self.ensureCursorVisible()
+        sb = self.verticalScrollBar()
+        if sb:
+            sb.setValue(sb.maximum())
 
 
 # ─── Экран настройки ──────────────────────────────────────────────────────────
@@ -1039,12 +929,6 @@ class MainWindow(QMainWindow):
         self._log = LogWidget()
         right_lay.addWidget(self._log, stretch=1)
 
-        right_lay.addWidget(_sec_label("◈ ФАЙЛ"))
-
-        self._drop = FileDropZone()
-        self._drop.file_selected.connect(self._on_file)
-        right_lay.addWidget(self._drop)
-
         right_lay.addWidget(_sec_label("◈ ТЕКСТОВЫЙ ВВОД"))
 
         input_row = QHBoxLayout()
@@ -1052,27 +936,27 @@ class MainWindow(QMainWindow):
 
         self._input = QLineEdit()
         self._input.setPlaceholderText("Напишите команду... (Enter)")
-        self._input.setFont(QFont("Courier New", 9))
-        self._input.setFixedHeight(30)
+        self._input.setFont(QFont("Segoe UI", 9))
+        self._input.setFixedHeight(32)
         self._input.setStyleSheet(f"""
             QLineEdit {{
                 background: #000d12; color: {C.TEXT};
-                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px;
+                border: 1px solid {C.BORDER}; border-radius: 4px; padding: 4px 8px;
             }}
-            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+            QLineEdit:focus {{ border: 1px solid {C.PRI}; background: #00141e; }}
         """)
         self._input.returnPressed.connect(self._send_text)
         input_row.addWidget(self._input)
 
         send_btn = QPushButton("▸")
-        send_btn.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
-        send_btn.setFixedSize(30, 30)
+        send_btn.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        send_btn.setFixedSize(32, 32)
         send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         send_btn.clicked.connect(self._send_text)
         send_btn.setStyleSheet(f"""
             QPushButton {{
                 background: {C.PRI_GHO}; color: {C.PRI};
-                border: 1px solid {C.PRI_DIM}; border-radius: 3px;
+                border: 1px solid {C.PRI_DIM}; border-radius: 4px;
             }}
             QPushButton:hover {{ background: {C.BORDER_A}; border: 1px solid {C.PRI}; }}
         """)
