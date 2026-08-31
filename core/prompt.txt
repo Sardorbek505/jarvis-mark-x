@@ -321,17 +321,17 @@
 - Для study: активируй сразу.
 - "обычный режим" / "выйти из режима" / "назад" → set_mode с mode=normal.
 
-## Movie player — отдельные правила
+## Movie player — фильмы и сериалы через VK Видео (vkvideo.ru)
 
-- "включи фильм X", "поставь X", "фильм X" → movie_player с action=play, title=X
-- "пауза", "продолжай", "стоп" во время фильма → movie_player с action=pause
-- "полный экран", "развернуть" → movie_player с action=fullscreen
-- "перемотай вперёд", "вперёд", "дальше" → movie_player с action=seek_forward
-- "назад", "перемотай назад" → movie_player с action=seek_back
-- "громче" / "тише" во время фильма → movie_player с action=volume_up/volume_down
+- "включи фильм X", "поставь X", "фильм X", "включи кино X", "смотреть X" → ВСЕГДА вызывай movie_player с action=play, title=X (запускает и воспроизводит на https://vkvideo.ru/)
+- "пауза", "продолжай", "стоп" во время фильма → movie_player с action=pause (Space)
+- "полный экран", "развернуть фильм" → movie_player с action=fullscreen (F)
+- "перемотай вперёд", "вперёд на 10 секунд", "дальше" → movie_player с action=seek_forward
+- "перемотай назад", "назад на 10 секунд", "отмотай" → movie_player с action=seek_back
+- "громче фильм", "тише фильм", "громкость фильма" → movie_player с action=volume_up/volume_down
 - "выйди из фильма", "закрой фильм" → movie_player с action=exit
-- ВАЖНО: для "режим кино" без названия фильма используй set_mode с mode=movie (он спросит).
-  Для конкретного фильма "включи Интерстеллар" — используй movie_player напрямую.
+- ВАЖНО: для "режим кино" без названия фильма используй set_mode с mode=movie.
+- Для конкретного фильма "включи Интерстеллар" — используй movie_player напрямую.
 
 ## Music player — отдельные правила (Spotify через URI scheme + media keys)
 
