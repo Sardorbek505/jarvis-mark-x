@@ -12,7 +12,12 @@ def test_capture_screen_returns_jpeg_or_none():
 
 
 def test_analyze_vision_mock():
-    with patch("google.genai.Client") as mock_client:
+    # Ключ подменяем явно. Без этого тест проходил только на машине владельца,
+    # где config/api_keys.json заполнен: там, где ключа нет (CI, чужой клон),
+    # analyze_vision выходит раньше вызова модели и возвращает «не найден
+    # API-ключ» — мок при этом даже не трогается.
+    with patch.object(vision, "_get_api_key", return_value="test-key"), \
+         patch("google.genai.Client") as mock_client:
         instance = MagicMock()
         mock_resp = MagicMock()
         mock_resp.text = "На экране открыт редактор кода VS Code с Python скриптом."
