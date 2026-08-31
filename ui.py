@@ -21,11 +21,11 @@ from PyQt6.QtCore import (
     QTimer, pyqtSignal,
 )
 from PyQt6.QtGui import (
-    QBrush, QColor, QDragEnterEvent, QDropEvent, QFont, QKeySequence, QPainter, QPen, QPixmap,
+    QBrush, QColor, QFont, QKeySequence, QPainter, QPen, QPixmap,
     QShortcut, QTextCursor,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPushButton, QSizePolicy, QSystemTrayIcon, QTextEdit,
     QVBoxLayout, QWidget,
 )

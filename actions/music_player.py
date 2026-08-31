@@ -388,8 +388,12 @@ def _ui_automation_search(query: str, player=None) -> bool:
             pyperclip.copy(query)
             pyautogui.hotkey("ctrl", "v")
         except Exception:
-            cmd = f"(New-Object -ComObject WScript.Shell).SendKeys(@'{query}'@)"
-            subprocess.run(["powershell", "-Command", f"Set-Clipboard -Value '{query}'"], capture_output=True, timeout=2)
+            # Кавычку внутри названия удваиваем: в одинарных строках PowerShell
+            # это единственный способ её экранировать, иначе «Don't Stop»
+            # обрывает команду и в буфер уезжает мусор.
+            safe = query.replace("'", "''")
+            subprocess.run(["powershell", "-Command", f"Set-Clipboard -Value '{safe}'"],
+                           capture_output=True, timeout=2)
             pyautogui.hotkey("ctrl", "v")
 
         time.sleep(0.4)
