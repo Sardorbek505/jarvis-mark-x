@@ -50,8 +50,21 @@ from telegram_bot import memory_rag
 from telegram_bot import memory_store as memory_store_mod
 from telegram_bot.memory_store import MemoryStore
 
-cfg = load_config()
-gemini = GeminiClient(cfg.gemini_api_key, cfg.gemini_model)
+# Секреты нужны, чтобы бот РАБОТАЛ, но не чтобы модуль импортировался.
+#
+# Раньше здесь стоял load_config() с require_bot=True, а он на нехватке токена
+# делает sys.exit(1). Модуль импортируют тесты — и весь прогон pytest падал
+# целиком с INTERNALERROR: SystemExit, а не одним тестом; CI был красным на
+# каждом коммите. Значения load отдаёт одни и те же в обоих режимах,
+# отличается только проверка, поэтому она переехала в main() — туда, где
+# процессом распоряжаться уместно.
+cfg = load_config(require_bot=False)
+
+# Пустым ключ бывает ровно в одном случае — импорт без конфига (CI, тесты).
+# genai.Client на пустой строке падает ValueError'ом, поэтому подставляем
+# заглушку: до запросов дело не дойдёт, main() не стартует без секретов.
+_NO_API_KEY = "unconfigured"
+gemini = GeminiClient(cfg.gemini_api_key or _NO_API_KEY, cfg.gemini_model)
 bridge = PCBridge()
 memory = MemoryStore()
 
@@ -1611,6 +1624,11 @@ _memory_task: asyncio.Task | None = None
 
 
 def main():
+    # Проверка секретов живёт здесь, а не на импорте модуля: сообщения и код
+    # возврата те же, что были, но теперь она не убивает того, кто просто
+    # импортировал bot.py ради пары функций.
+    load_config(require_bot=True)
+
     async def post_init(application: Application) -> None:
         global _bridge_task, _reminder_task, _miniapp_task, _proactive_task
         global _memory_task
