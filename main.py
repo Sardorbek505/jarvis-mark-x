@@ -316,22 +316,26 @@ def _load_system_prompt() -> str:
         )
 
 
-def _clean(text: str) -> str:
+def _clean_dialog_text(text: str) -> str:
+    """Очищает и нормализует текст диалога, собирая фрагменты речи в связный текст."""
+    if not text:
+        return ""
     text = _CTRL_RE.sub("", text)
-    text = re.sub(r"[\x00-\x08\x0b-\x1f]", "", text).strip()
+    text = re.sub(r"[\x00-\x08\x0b-\x1f]", "", text)
 
-    # Умная очистка пробелов внутри слов
-    words = text.split()
-    cleaned_words = []
-    for word in words:
-        # Если слово содержит только буквы и пробелы внутри (без цифр/знаков) - склеиваем
-        # Например: "по став ь" → "поставь"
-        if re.search(r"[а-яА-Яa-zA-ZёЁӣҒғҚқӨөҺһ]", word) and " " in word:
-            # Склеиваем части слова
-            word = re.sub(r"\s+", "", word)
-        cleaned_words.append(word)
+    # Убираем звуки-паразиты и заминки
+    for filler in ("э-э-э", "м-м-м", "э-м-м", "м-э-м", "э-э", "м-м", "а-а"):
+        text = re.sub(rf"\b{filler}\b", "", text, flags=re.IGNORECASE)
 
-    return " ".join(cleaned_words)
+    # Исправляем склеивание оторванных знаков (например, "став ь" -> "ставь", "под ъ" -> "подъ")
+    text = re.sub(r"([а-яёА-ЯЁ]{2,})\s+([ьъы])\b", r"\1\2", text)
+
+    # Нормализуем множественные пробелы
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+_clean = _clean_dialog_text
 
 
 # Короче этого предложение не отправляем в синтез отдельно: «Да, сэр.» звучит
@@ -972,49 +976,14 @@ class Jarvis:
         self.proactive_engine = ProactiveEngine(BASE_DIR)
         self.team_engine = TeamCollaborationEngine(BASE_DIR)
         self.last_user_text = ""
-        
-        # Speech recognition buffer with debounce
-        self._speech_buffer = []
-        self._speech_timer = None
-        self._speech_debounce_ms = 2000  # Increased from 800ms to allow full phrases
 
         # Секундомер голосового хода. Пишет в лог задержку от конца речи до
-        # первого звука ответа. Гасится через JARVIS_LATENCY=0.
-        self._latency = LatencyTracker(sink=self.ui.write_log)
+        # первого звука ответа при JARVIS_DEBUG_UI=1.
+        self._latency = LatencyTracker(
+            sink=self.ui.write_log if os.getenv("JARVIS_DEBUG_UI") == "1" else None
+        )
 
         self.ui.on_text_command = self._on_text_command
-
-    def _flush_speech(self):
-        """Flush speech buffer and return accumulated text with normalization."""
-        if self._speech_buffer:
-            # Join and normalize text
-            full_text = " ".join(self._speech_buffer)
-            
-            # Normalize: remove extra spaces, clean up common speech artifacts
-            full_text = " ".join(full_text.split())  # Remove extra spaces
-            full_text = full_text.strip()
-            
-            # Remove common speech artifacts (partial words, fillers)
-            artifacts = ["э-э", "м-м", "а-а", "э-м-м", "м-э-м", "э-э-э", "м-м-м"]
-            for artifact in artifacts:
-                full_text = full_text.replace(artifact, "")
-            
-            # Clean with existing _clean function
-            full_text = _clean(full_text)
-            
-            # Anti-debounce: reject if too short (less than 2 chars) or same as last
-            if len(full_text) < 2:
-                self._speech_buffer = []
-                return None
-            
-            if full_text == self.last_user_text:
-                self._speech_buffer = []
-                return None
-            
-            self.last_user_text = full_text
-            self._speech_buffer = []
-            return full_text if full_text else None
-        return None
 
     # ── Текстовый ввод ────────────────────────────────────────────────────────
     def _on_text_command(self, text: str):
@@ -1034,21 +1003,7 @@ class Jarvis:
     
     def _normalize_input_text(self, text: str) -> str:
         """Normalize user input text for better intent parsing."""
-        if not text:
-            return text
-        
-        # Remove extra spaces and normalize
-        text = " ".join(text.split()).strip()
-        
-        # Remove speech artifacts
-        artifacts = ["э-э", "м-м", "а-а", "э-м-м", "м-э-м", "э-э-э", "м-м-м"]
-        for artifact in artifacts:
-            text = text.replace(artifact, "")
-        
-        # Clean with existing _clean function
-        text = _clean(text)
-        
-        return text
+        return _clean_dialog_text(text)
 
     # ── Управление состоянием ─────────────────────────────────────────────────
     def set_speaking(self, value: bool):
@@ -1602,9 +1557,9 @@ class Jarvis:
             meter = SpeakerMeter()
             if meter.start():
                 self._speaker_meter = meter
-                self.ui.write_log("SYS: свои динамики микрофон не слушает")
+                _logger.info("Speaker meter started successfully (loopback active)")
             else:
-                self.ui.write_log("SYS: уровень динамиков недоступен — слушаю всё")
+                _logger.info("Speaker meter unavailable, capturing all audio")
 
         def _put_nowait_safe(item):
             try:
@@ -1770,32 +1725,13 @@ class Jarvis:
                         sc = response.server_content
 
                         if sc.output_transcription and sc.output_transcription.text:
-                            txt = _clean(sc.output_transcription.text)
-                            if txt:
-                                out_buf.append(txt)
+                            out_buf.append(sc.output_transcription.text)
 
                         if sc.input_transcription and sc.input_transcription.text:
-                            txt = _clean(sc.input_transcription.text)
-                            if txt:
-                                self._latency.mark_transcript()
-                                # Add to speech buffer instead of in_buf
-                                self._speech_buffer.append(txt)
-                                print(f"[ДЖАРВИС] 🎤 Фрагмент: '{txt}'")
-                                
-                                # Reset debounce timer
-                                if self._speech_timer:
-                                    self._speech_timer.cancel()
-                                
-                                # Schedule flush after debounce delay
-                                async def _schedule_flush():
-                                    await asyncio.sleep(self._speech_debounce_ms / 1000)
-                                    flushed = self._flush_speech()
-                                    if flushed:
-                                        print(f"[ДЖАРВИС] 🎤 Полный текст: '{flushed}'")
-                                        # Add to in_buf for processing
-                                        in_buf.append(flushed)
-                                
-                                self._speech_timer = asyncio.create_task(_schedule_flush())
+                            txt = sc.input_transcription.text
+                            in_buf.append(txt)
+                            self._latency.mark_transcript()
+                            print(f"[ДЖАРВИС] 🎤 Фрагмент: '{txt}'")
 
                         if sc.turn_complete:
                             # С внешним голосом ход закрывает _speak_fish,
@@ -1804,18 +1740,13 @@ class Jarvis:
                                 self._latency.mark_turn_complete()
                             if self._turn_done_event:
                                 self._turn_done_event.set()
-                            
-                            # Flush any remaining speech buffer
-                            if self._speech_timer:
-                                self._speech_timer.cancel()
-                                self._speech_timer = None
-                            flushed = self._flush_speech()
-                            if flushed:
-                                in_buf.append(flushed)
-                                print(f"[ДЖАРВИС] 🎤 Финальный текст: '{flushed}'")
 
-                            full_in = " ".join(in_buf).strip()
+                            raw_in = "".join(in_buf)
+                            full_in = _clean_dialog_text(raw_in)
+                            in_buf = []
+
                             if full_in:
+                                print(f"[ДЖАРВИС] 🎤 Полная фраза: '{full_in}'")
                                 self.ui.write_log(f"Вы: {full_in}")
                                 self.last_user_text = full_in
 
@@ -1871,9 +1802,10 @@ class Jarvis:
                                                 self._loop,
                                             )
 
-                            in_buf = []
+                            raw_out = "".join(out_buf)
+                            full_out = _clean_dialog_text(raw_out)
+                            out_buf = []
 
-                            full_out = " ".join(out_buf).strip()
                             if full_out:
                                 self.ui.write_log(f"Джарвис: {full_out}")
                                 if _VOICE_PROVIDER == "fish":
@@ -1881,7 +1813,6 @@ class Jarvis:
                                     # секунды, а приём в это время должен
                                     # продолжать читать сессию.
                                     asyncio.create_task(self._speak_fish(full_out))
-                            out_buf = []
 
                     if response.tool_call:
                         responses = []
