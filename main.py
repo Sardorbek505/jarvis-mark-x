@@ -38,6 +38,7 @@ if sys.platform == "win32":
         sys.stderr = io.StringIO()
 
 import asyncio
+import collections
 import traceback
 import re
 import threading
@@ -234,28 +235,13 @@ def _pick_input_device():
 CHUNK_SIZE        = 1024
 
 # Порог тишины для микрофона (RMS по int16). Ниже него кадры в облако не
-# уходят вовсе. Порог 80 обеспечивает отличную чувствительность для любых микрофонов.
-MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "80"))
+# уходят вовсе. Порог 25 обеспечивает отличную чувствительность для шепота и речи на расстоянии.
+MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "25"))
 # Хвост тишины после речи — не косметика, а условие того, что тебе вообще
 # ответят. Конец фразы определяет VAD на стороне Gemini, и определить его он
 # может только по ПОЛУЧЕННОЙ тишине: когда гейт обрывает поток сразу за
 # последним громким кадром, сервер остаётся ждать продолжения фразы.
-#
-# Замер 17.08.2026 на стенде scripts/latency_probe.py: с хвостом 0.64 с (10
-# кадров) модель не ответила НИ РАЗУ — расшифровывала сказанное и молчала;
-# с 1.92 с отвечала всегда. Поэтому хвост считается от окна VAD с запасом,
-# а не подбирается на глаз.
-#
-# Замер 30.08.2026, тот же стенд, три реплики подряд:
-#     +400 (0.8 с) — ответ ОДИН на три вопроса. Реплики расшифровывались
-#                    порознь, но turn_complete приходил единственный раз:
-#                    сервер так и не увидел конца первых двух фраз и склеил
-#                    их в один ход. Задержка при этом «улучшается» до 2.8 с,
-#                    но мерить нечего — ходов больше нет.
-#     +600 (1.0 с) — три ответа из трёх.
-# Обрыв лежит между ними, а не в 0.64 с, как думалось раньше. Экономия 200 мс
-# стоила двух ответов из трёх, поэтому запас вернули.
-MIC_HANGOVER_MS = int(os.getenv("MIC_HANGOVER_MS", str(_VAD_SILENCE_MS + 600)))
+MIC_HANGOVER_MS = int(os.getenv("MIC_HANGOVER_MS", str(_VAD_SILENCE_MS + 800)))
 _FRAME_MS = CHUNK_SIZE / SEND_SAMPLE_RATE * 1000
 MIC_HANGOVER_FRAMES = int(os.getenv(
     "MIC_HANGOVER_FRAMES", str(max(1, round(MIC_HANGOVER_MS / _FRAME_MS)))
@@ -1567,41 +1553,45 @@ class Jarvis:
             except asyncio.QueueFull:
                 pass  # Drop audio frame silently to avoid flooding event loop
 
+        preroll = collections.deque(maxlen=4)
+
         def callback(indata, frames, time_info, status):
-            # Почему кадр не уехал — самое важное, чего тут не хватало.
-            # Все три отказа ниже молчаливые, и когда микрофон глохнет
-            # насовсем, в логе нет ни строчки: со стороны Джарвис просто
-            # «не отвечает». Считаем причины и раз в _GATE_REPORT_SEC пишем
-            # сводку — по кадру логировать нельзя, их 15 в секунду.
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
             if jarvis_speaking:
                 self._note_gate("Джарвис говорит сам")
+                preroll.clear()
                 return
             if self.ui.muted:
                 self._note_gate("микрофон выключен (Ctrl+M)")
+                preroll.clear()
                 return
-            # Из динамиков сейчас что-то играет — значит микрофон слышит это,
-            # а не человека. Читаем готовое число: COM из аудио-колбэка звать
-            # нельзя, замер идёт в своём потоке.
             if self._speaker_meter is not None and self._speaker_meter.peak > _SPEAKER_GATE:
                 self._note_gate(
                     f"звук в динамиках {self._speaker_meter.peak:.3f} > "
                     f"порога {_SPEAKER_GATE}"
                 )
+                preroll.clear()
                 return
+
+            was_silent = getattr(self, "_quiet_frames", MIC_HANGOVER_FRAMES + 1) > MIC_HANGOVER_FRAMES
             if not self._is_loud_enough(indata):
                 self._note_gate("тихо для порога MIC_RMS_THRESHOLD")
+                preroll.append(indata.tobytes())
                 return
+
             self._note_gate(None)
-            # Отсчёт задержки ведём от последнего ГРОМКОГО кадра: именно он и
-            # есть «человек договорил». Кадры хвоста тишины тоже уезжают в
-            # облако, но человек в это время уже молчит — считая и от них, мы
-            # вычитали из задержки длину собственного хвоста и отчитывались
-            # цифрой лучше правды: «слышит» выходило отрицательным, потому что
-            # расшифровка успевала прийти раньше конца хвоста.
             if self._frame_was_loud:
                 self._latency.mark_voice_frame()
+
+            # Сбрасываем предбуфер (pre-roll), чтобы не отрезать согласные в начале слов
+            if was_silent and preroll:
+                while preroll:
+                    loop.call_soon_threadsafe(
+                        _put_nowait_safe,
+                        {"data": preroll.popleft(), "mime_type": "audio/pcm"},
+                    )
+
             loop.call_soon_threadsafe(
                 _put_nowait_safe,
                 {"data": indata.tobytes(), "mime_type": "audio/pcm"},
