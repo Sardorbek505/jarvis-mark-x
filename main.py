@@ -171,7 +171,7 @@ _SPEAKER_GATE = float(os.getenv("SPEAKER_GATE", "0.08"))
 # Как часто рапортовать, что микрофон глух. Реже — можно не заметить, чаще —
 # спам: колбэк зовётся ~15 раз в секунду.
 _GATE_REPORT_SEC = float(os.getenv("MIC_GATE_REPORT_SEC", "5"))
-_IGNORE_SPEAKERS = os.getenv("MIC_IGNORE_SPEAKERS", "1") != "0"
+_IGNORE_SPEAKERS = os.getenv("MIC_IGNORE_SPEAKERS", "0") != "0"
 
 
 def _device_is_silent(index: int, seconds: float = 0.3) -> bool:
@@ -986,21 +986,28 @@ class Jarvis:
         self.ui.on_text_command = self._on_text_command
 
     # ── Текстовый ввод ────────────────────────────────────────────────────────
-    def _on_text_command(self, text: str):
-        if not self._loop or not self.session or not self._loop.is_running():
+    def _send_text_to_session(self, text: str):
+        """Отправляет текстовое сообщение в Live-сессию с корректной структурой типов."""
+        if not self._loop or not self.session or not self._loop.is_running() or not text:
             return
-        
-        # Normalize text before sending
-        text = self._normalize_input_text(text)
-        
+        content = types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=text)],
+        )
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
+                turns=[content],
                 turn_complete=True,
             ),
             self._loop,
         )
-    
+
+    def _on_text_command(self, text: str):
+        # Normalize text before sending
+        text = self._normalize_input_text(text)
+        if text:
+            self._send_text_to_session(text)
+
     def _normalize_input_text(self, text: str) -> str:
         """Normalize user input text for better intent parsing."""
         return _clean_dialog_text(text)
@@ -1016,15 +1023,8 @@ class Jarvis:
 
     def speak(self, text: str):
         """Отправляет текст в сессию для озвучки."""
-        if not self._loop or not self.session or not self._loop.is_running():
-            return
-        asyncio.run_coroutine_threadsafe(
-            self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
-                turn_complete=True,
-            ),
-            self._loop,
-        )
+        if text:
+            self._send_text_to_session(text)
 
     def speak_error(self, tool_name: str, error: str):
         short = str(error)[:100]
@@ -1767,14 +1767,7 @@ class Jarvis:
                                     if initiative:
                                         print(f"[Инициатива] {initiative}")
                                         # Отправляем инициативное предложение
-                                        if self._loop and self._loop.is_running():
-                                            asyncio.run_coroutine_threadsafe(
-                                                self.session.send_client_content(
-                                                    turns={"parts": [{"text": initiative}]},
-                                                    turn_complete=True,
-                                                ),
-                                                self._loop,
-                                            )
+                                        self._send_text_to_session(initiative)
 
                                 # Обучение из контекста
                                 preference = self.initiative_engine.should_learn_preference(full_in, "")
@@ -1793,14 +1786,7 @@ class Jarvis:
                                     print(f"[Прогноз] Предложения: {proactive_suggestions}")
                                     # Отправляем первое предложение (не навязчиво)
                                     if proactive_suggestions and random.random() < 0.3:  # 30% шанс
-                                        if self._loop and self._loop.is_running():
-                                            asyncio.run_coroutine_threadsafe(
-                                                self.session.send_client_content(
-                                                    turns={"parts": [{"text": proactive_suggestions[0]}]},
-                                                    turn_complete=True,
-                                                ),
-                                                self._loop,
-                                            )
+                                        self._send_text_to_session(proactive_suggestions[0])
 
                             raw_out = "".join(out_buf)
                             full_out = _clean_dialog_text(raw_out)
