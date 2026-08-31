@@ -1557,9 +1557,9 @@ class Jarvis:
             meter = SpeakerMeter()
             if meter.start():
                 self._speaker_meter = meter
-                _logger.info("Speaker meter started successfully (loopback active)")
+                logger.info("Speaker meter started successfully (loopback active)")
             else:
-                _logger.info("Speaker meter unavailable, capturing all audio")
+                logger.info("Speaker meter unavailable, capturing all audio")
 
         def _put_nowait_safe(item):
             try:
