@@ -162,17 +162,15 @@ spotify_api = SpotifyAPI()
 
 def spotify_player(parameters: Dict[str, Any], player=None) -> str:
     """
-    Main entry point for Spotify player tool.
-    
-    Parameters:
-        action: play | pause | resume | next | prev | stop | volume_up | volume_down | 
-                shuffle | repeat | now_playing | mood
-        query: what to play for action=play
-        value: volume percentage or repeat mode
+    Main entry point for Spotify player tool with fallback to system media keys.
     """
     if not spotify_api.is_ready():
-        return "Spotify недоступен, сэр. Настройте credentials в config/api_keys.json"
-    
+        try:
+            from actions.music_player import music_player
+            return music_player(parameters=parameters, player=player)
+        except Exception as e:
+            return f"Медиа недоступно: {e}"
+
     action = (parameters.get("action") or "").strip().lower()
     query = (parameters.get("query") or "").strip()
     value = parameters.get("value")
