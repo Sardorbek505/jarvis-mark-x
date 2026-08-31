@@ -1,6 +1,5 @@
 """Tests for speech text normalization and LogWidget chat rendering."""
 
-import pytest
 from main import _clean_dialog_text
 
 
