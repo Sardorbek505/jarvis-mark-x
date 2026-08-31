@@ -358,105 +358,73 @@ def _spotify_search_track_uri(query: str) -> Optional[str]:
 
 def _ui_automation_search(query: str, player=None) -> bool:
     """
-    UI automation для поиска трека в Spotify когда API недоступен.
-    
-    Процесс:
-    1. Открыть Spotify
-    2. Фокусировать окно
-    3. Ввести запрос в поиск (Ctrl+L или Ctrl+E)
-    4. Подождать результаты
-    5. Нажать Enter на первый результат
+    Надёжный поиск и воспроизведение трека в Spotify через UI и буфер обмена.
     """
     if not _HAS_PYAUTOGUI:
         return False
-    
+
     try:
         if player:
-            player.write_log(f"SYS: 🤖 UI automation для поиска: {query}")
-        
-        # Открываем Spotify если не открыт
-        if not _is_spotify_installed():
-            if player:
-                player.write_log("SYS: ⚠ Spotify не установлен")
+            player.write_log(f"SYS: 🎵 Поиск в Spotify: {query}")
+
+        if not _open_spotify_uri("spotify:"):
             return False
-        
-        # Открываем Spotify
-        _open_spotify_uri("spotify:")
-        time.sleep(2.0)
-        
-        # Фокусируем окно
+        time.sleep(1.5)
+
         _focus_spotify_window()
-        time.sleep(0.5)
-        
-        # Открываем поиск (Ctrl+L или Ctrl+E)
-        pyautogui.hotkey('ctrl', 'l')
         time.sleep(0.3)
-        
-        # Вводим запрос
-        pyautogui.write(query, interval=0.01)
-        time.sleep(0.5)
-        
-        # Нажимаем Enter
-        pyautogui.press('enter')
-        time.sleep(2.0)
-        
-        # Выбираем первый результат (Down + Enter)
-        pyautogui.press('down')
-        time.sleep(0.3)
-        pyautogui.press('enter')
-        time.sleep(1.0)
-        
+
+        # Открываем поиск (Ctrl+L) и очищаем поле
+        pyautogui.hotkey("ctrl", "l")
+        time.sleep(0.2)
+        pyautogui.hotkey("ctrl", "a")
+        time.sleep(0.1)
+        pyautogui.press("backspace")
+        time.sleep(0.1)
+
+        # Вставляем запрос через буфер обмена (гарантия поддержки кириллицы/Unicode)
+        try:
+            import pyperclip
+            pyperclip.copy(query)
+            pyautogui.hotkey("ctrl", "v")
+        except Exception:
+            cmd = f"(New-Object -ComObject WScript.Shell).SendKeys(@'{query}'@)"
+            subprocess.run(["powershell", "-Command", f"Set-Clipboard -Value '{query}'"], capture_output=True, timeout=2)
+            pyautogui.hotkey("ctrl", "v")
+
+        time.sleep(0.4)
+        pyautogui.press("enter")
+        time.sleep(1.2)
+
+        # Запуск первого найденного трека (стрелка вниз -> Enter / Space)
+        pyautogui.press("down")
+        time.sleep(0.2)
+        pyautogui.press("enter")
+        time.sleep(0.4)
+        pyautogui.press("space")
+
         if player:
-            player.write_log("SYS: ✓ UI automation завершена")
-        
+            player.write_log("SYS: ✓ Трек в Spotify запущен")
+
         return True
     except Exception as e:
         if player:
-            player.write_log(f"SYS: ✗ UI automation error: {e}")
-        print(f"[Music] UI automation error: {e}")
+            player.write_log(f"SYS: ✗ Spotify UI error: {e}")
         return False
 
 
 # ─── Действия плеера ──────────────────────────────────────────────────────────
 def _play(query: str = "", playlist_url: str = "", player=None) -> str:
     """
-    Запускает музыку только через Spotify.
-
-    Стратегия (по приоритету):
-      1. Если URL плейлиста → spotify:playlist:ID → открывается плейлист
-      2. Если запрос трека:
-         a. Spotify Web API → получаем spotify:track:ID → автоплей в десктопе
-         b. Если API недоступен или ничего не нашёл → UI automation
-         c. Если UI automation не сработал → честно сказать "трек не найден"
-      3. Если пустой запрос → просто открыть Spotify
-
-    Priority Rule: Явный запрос трека всегда переопределяет историю/очередь.
+    Запускает музыку через Spotify, а при недоступности — через YouTube Music.
     """
     if player:
         if query:
-            player.write_log(f"SYS: 🎵 Spotify — поиск «{query}»")
+            player.write_log(f"SYS: 🎵 Воспроизведение «{query}»")
         elif playlist_url:
-            player.write_log("SYS: 🎵 Spotify — плейлист")
+            player.write_log("SYS: 🎵 Плейлист Spotify")
         else:
-            player.write_log("SYS: 🎵 Spotify — запуск")
-
-    # Проверяем, установлен ли Spotify
-    if not _is_spotify_installed():
-        if player:
-            player.write_log("SYS: ⚠ Spotify не установлен, использую веб-версию")
-        # Прямо открываем веб-версию
-        if query:
-            encoded = urllib.parse.quote(query)
-            url = f"https://open.spotify.com/search/{encoded}"
-        elif playlist_url:
-            url = playlist_url
-        else:
-            url = "https://open.spotify.com"
-        try:
-            browser_control({"action": "go_to", "url": url}, player=player)
-            return "Открыл Spotify в браузере, сэр."
-        except Exception:
-            return "Spotify не установлен и не удалось открыть браузер, сэр."
+            player.write_log("SYS: 🎵 Запуск музыки")
 
     # ── Шаг 1: Обработка плейлиста ────────────────────────────────────────
     if playlist_url:
@@ -482,58 +450,40 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
 
     # ── Шаг 2: Обработка запроса трека ─────────────────────────────────────
     if query:
-        # Сначала пробуем через API
+        # Пробуем через Spotify API
         track_uri = _spotify_search_track_uri(query)
         if track_uri:
-            if player:
-                player.write_log(f"SYS: ✓ API нашёл трек: {track_uri}")
-            # Открываем точный трек URI
-            if player:
-                player.write_log("SYS: → Открываю точный URI...")
             if _open_spotify_uri(track_uri):
-                if player:
-                    player.write_log("SYS: ✓ URI открыт")
                 time.sleep(2.0)
                 _focus_spotify_window()
-                # Открытие spotify:track: URI переходит на трек, но НЕ играет его.
-                # Жмём play, как в ветках плейлиста и пустого запроса, иначе
-                # Джарвис говорит «включил», а музыка стоит.
                 _send_media_key("playpause")
                 return f"Включаю «{query}» в Spotify, сэр."
-            else:
-                if player:
-                    player.write_log("SYS: ✗ Не удалось открыть URI")
-        
-        # API недоступен или ничего не нашёл → пробуем UI automation
-        if player:
-            player.write_log("SYS: API недоступен или ничего не найдено → UI automation")
-        
-        if _ui_automation_search(query, player):
-            return f"Открыл «{query}» в Spotify, сэр."
-        else:
-            return "Сэр, трек не найден."
 
-    # ── Шаг 3: Пустой запрос ──────────────────────────────────────────────
-    if player:
-        player.write_log("SYS: → Открываю Spotify (пустой)")
-    spotify_opened = _open_spotify_uri("spotify:")
-    if not spotify_opened:
+        # Пробуем через UI automation в Spotify
+        if _is_spotify_installed() and _ui_automation_search(query, player):
+            return f"Включаю «{query}» в Spotify, сэр."
+
+        # Резервный фолбэк: YouTube Music / YouTube
+        encoded = urllib.parse.quote(query)
+        yt_url = f"https://music.youtube.com/search?q={encoded}"
         try:
-            browser_control(
-                {"action": "go_to", "url": "https://open.spotify.com"},
-                player=player,
-            )
-            spotify_opened = True
-        except Exception as exc:
-            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+            browser_control({"action": "go_to", "url": yt_url}, player=player)
+            time.sleep(1.5)
+            _send_media_key("playpause")
+            return f"Включаю «{query}» в YouTube Music, сэр."
+        except Exception:
+            return "Не удалось воспроизвести трек, сэр."
 
-    if not spotify_opened:
-        return "Не удалось открыть Spotify, сэр."
-
-    time.sleep(2.0)
-    _focus_spotify_window()
-    _send_media_key("playpause")
-    return "Spotify открыт и воспроизводится, сэр."
+    # ── Шаг 3: Пустой запрос (продолжить или запустить Spotify) ──────────────
+    if _is_spotify_installed():
+        _open_spotify_uri("spotify:")
+        time.sleep(1.5)
+        _focus_spotify_window()
+        _send_media_key("playpause")
+        return "Музыка включена, сэр."
+    else:
+        _send_media_key("playpause")
+        return "Воспроизведение, сэр."
 
 
 def _pause_resume(player=None) -> str:

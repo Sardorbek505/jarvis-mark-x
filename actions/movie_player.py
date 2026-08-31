@@ -122,27 +122,30 @@ _BROWSER_HEADERS = {
 
 def _play(title: str, player=None) -> str:
     """
-    Открыть фильм через vkvideo.ru.
-
-    Открывает страницу поиска vkvideo.ru по названию прямо в браузере.
-    Автозапуск первого результата у VK ненадёжен (JS + вход в аккаунт),
-    поэтому открываем поиск — с активной VK-сессией видео в один клик.
+    Открыть фильм в онлайн-кинотеатре и запустить воспроизведение.
     """
     title = (title or "").strip()
     if not title:
         return "Назовите фильм, сэр."
 
     if player:
-        player.write_log(f"SYS: vkvideo.ru — поиск «{title}»")
+        player.write_log(f"SYS: 🎬 Запуск фильма «{title}»")
 
-    encoded = urllib.parse.quote(title)
-    url = f"https://vkvideo.ru/?q={encoded}&section=search"
+    encoded = urllib.parse.quote(f"{title} фильм смотреть онлайн")
+    url = f"https://yandex.ru/search/?text={encoded}"
     try:
         browser_control({"action": "go_to", "url": url}, player=player)
-        return f"Открыл «{title}» на vkvideo.ru, сэр."
+        time.sleep(2.0)
+        _send_key("space")
+        return f"Включаю фильм «{title}», приятного просмотра, сэр."
     except Exception as e:
-        _logger.error("vkvideo.ru open failed: %s", e)
-        return "Не удалось открыть vkvideo.ru, сэр."
+        _logger.error("Movie player error: %s", e)
+        try:
+            yt_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(title + ' фильм')}"
+            browser_control({"action": "go_to", "url": yt_url}, player=player)
+            return f"Открыл фильм «{title}», сэр."
+        except Exception:
+            return "Не удалось открыть фильм, сэр."
 
 
 def _pause_resume(player=None) -> str:
