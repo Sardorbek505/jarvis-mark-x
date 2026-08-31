@@ -21,6 +21,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Install system libraries
+        # pip ставит только Python-обвязку, а нативные библиотеки — нет:
+        #   libportaudio2 — под sounddevice, иначе на импорте
+        #                   OSError: PortAudio library not found
+        #   libegl1/libgl1 — под PyQt6, иначе ImportError: libEGL.so.1
+        # Даже с QT_QPA_PLATFORM=offscreen Qt линкуется с EGL при импорте.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libportaudio2 libegl1 libgl1
+
       - name: Install test dependencies
         # Curated suite is offline (SQLite only) — no Gemini/Telegram/Neon needed.
         run: pip install -r requirements-dev.txt
