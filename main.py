@@ -196,7 +196,7 @@ def _device_is_silent(index: int, seconds: float = 0.05) -> bool:
 
 
 def _pick_input_device():
-    """Индекс микрофона: из MIC_DEVICE, иначе рабочий физический микрофон, иначе None."""
+    """Индекс микрофона: из MIC_DEVICE, иначе лучший физический/шумоподавляющий микрофон, иначе None."""
     manual = os.getenv("MIC_DEVICE", "").strip()
     if manual:
         try:
@@ -210,45 +210,45 @@ def _pick_input_device():
 
     devices = list(enumerate(sd.query_devices()))
 
-    # 1. Внешние USB / Bluetooth / Headset гарнитуры
+    # 1. Аппаратные/драйверные микрофоны с ИИ-шумоподавлением (ASUS AI Noise-cancelling, Krisp, RTX Voice, Intelligo)
+    # Они отсекают пространственные шумы комнаты, эхо и посторонние голоса.
+    for i, d in devices:
+        if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
+            continue
+        name = d["name"].lower()
+        if any(k in name for k in ("noise-cancelling", "noise cancelling", "noise-canceling", "шумоподавлен", "ai noise")) and not _device_is_silent(i):
+            if "virtual line" not in name and "output" not in name:
+                logger.info("Выбран микрофон с аппаратным шумоподавлением: «%s» (индекс %d)", d["name"], i)
+                return i
+
+    # 2. Внешние USB / Bluetooth / Headset гарнитуры
     for i, d in devices:
         if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
             continue
         name = d["name"].lower()
         if any(k in name for k in ("usb", "headset", "bluetooth", "wireless")) and not _device_is_silent(i):
-            if "virtual" not in name and "line" not in name and "noise-cancelling" not in name:
+            if "virtual" not in name and "line" not in name:
                 logger.info("Выбран внешний микрофон: «%s» (индекс %d)", d["name"], i)
                 return i
 
-    # 2. Встроенный Realtek / массив микрофонов
+    # 3. Встроенный Realtek / массив микрофонов
     for i, d in devices:
         if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
             continue
         name = d["name"].lower()
         if any(k in name for k in ("realtek", "микрофон", "array", "массив")) and not _device_is_silent(i):
-            if "virtual" not in name and "line" not in name and "noise-cancelling" not in name:
+            if "virtual" not in name and "line" not in name:
                 logger.info("Выбран микрофон: «%s» (индекс %d)", d["name"], i)
                 return i
 
-    # 3. Системное устройство по умолчанию
+    # 4. Системное устройство по умолчанию
     return None
 CHUNK_SIZE        = 1024
 
 # Порог тишины для микрофона (RMS по int16). Ниже него кадры в облако не
 # уходят вовсе. Речь в метре от ноутбука даёт ~1000-5000, тишина — единицы
-# и десятки.
-#
-# Замер шума комнаты 31.08.2026, 62 кадра подряд при молчании:
-#     медиана 7 · 90-й процентиль 29 · максимум 433
-#     порог  25 — в облако уезжает 15% «пустых» кадров
-#     порог  80 — 3%
-#     порог 250 — 2%
-# С порогом 25 (он ниже 90-го процентиля тишины) Джарвис на стенде подобрал
-# в комнате звук, которого никто не произносил, и вплёл его в ответ:
-# на «Джарвис, как дела?» ответил «...чем могу помочь, когда вы слушаете
-# музыку?». На 80 и 250 ответы были чистые. 80 — компромисс: шёпот ещё
-# проходит, комната уже нет.
-MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "80"))
+# и десятки. 150 отсекает пространственный шум комнаты, шёпот и шорохи.
+MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "150"))
 # Хвост тишины после речи — не косметика, а условие того, что тебе вообще
 # ответят. Конец фразы определяет VAD на стороне Gemini, и определить его он
 # может только по ПОЛУЧЕННОЙ тишине: когда гейт обрывает поток сразу за
@@ -284,6 +284,11 @@ def _is_destructive(name: str, args: dict) -> bool:
 
 
 _CTRL_RE = re.compile(r"<ctrl\d+>", re.IGNORECASE)
+_NOISE_TOKENS_RE = re.compile(
+    r"<\s*noise\s*>|<\s*laughter\s*>|<\s*applause\s*>|\[\s*noise\s*\]|\(\s*noise\s*\)|"
+    r"<\s*whisper\s*>|<\s*gasp\s*>|<\s*groan\s*>",
+    re.IGNORECASE,
+)
 
 
 # ─── Вспомогательные функции ──────────────────────────────────────────────────
@@ -315,10 +320,11 @@ def _load_system_prompt() -> str:
 
 
 def _clean_dialog_text(text: str) -> str:
-    """Очищает и нормализует текст диалога, собирая фрагменты речи в связный текст."""
+    """Очищает и нормализует текст диалога, отсекая шум и звуковые артефакты."""
     if not text:
         return ""
     text = _CTRL_RE.sub("", text)
+    text = _NOISE_TOKENS_RE.sub("", text)
     text = re.sub(r"[\x00-\x08\x0b-\x1f]", "", text)
 
     # Убираем звуки-паразиты и заминки
@@ -330,6 +336,10 @@ def _clean_dialog_text(text: str) -> str:
 
     # Нормализуем множественные пробелы
     text = re.sub(r"\s+", " ", text).strip()
+
+    # Если после очистки осталась только пунктуация (например, ".", "...", "?", "-") — пустая строка
+    if re.match(r"^[\s\W_]*$", text):
+        return ""
     return text
 
 
@@ -1086,7 +1096,7 @@ class Jarvis:
                     silence_duration_ms=_VAD_SILENCE_MS,
                     prefix_padding_ms=_VAD_PREFIX_MS,
                     end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
-                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_BALANCED,
                 ),
             ),
             speech_config=types.SpeechConfig(
