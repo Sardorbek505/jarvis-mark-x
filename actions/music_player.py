@@ -22,6 +22,7 @@ import os
 import platform
 import subprocess
 import time
+import re
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -412,11 +413,16 @@ def _find_youtube_direct_url(query: str) -> Optional[str]:
         url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "ru,en;q=0.9",
+            }
         )
-        with urllib.request.urlopen(req, timeout=3.5) as resp:
+        with urllib.request.urlopen(req, timeout=4.0) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
-            matches = re.findall(r'/watch\?v=([a-zA-Z0-9_-]{11})', html)
+            matches = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', html)
+            if not matches:
+                matches = re.findall(r'/watch\?v=([a-zA-Z0-9_-]{11})', html)
             if matches:
                 return f"https://www.youtube.com/watch?v={matches[0]}&autoplay=1"
     except Exception as e:
@@ -461,24 +467,26 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
 
     # ── Шаг 2: Обработка запроса трека ─────────────────────────────────────
     if query:
-        # Пробуем через Spotify API
+        # Способ 1: Прямой запуск по Spotify Track URI (если API вернул URI трека)
         track_uri = _spotify_search_track_uri(query)
         if track_uri:
             if _open_spotify_uri(track_uri):
-                time.sleep(2.0)
+                time.sleep(1.5)
                 _focus_spotify_window()
+                _send_key("space")
                 _send_media_key("playpause")
                 return f"Включаю «{query}» в Spotify, сэр."
 
-        # Пробуем через UI automation в Spotify
+        # Способ 2: UI поиск и воспроизведение в Spotify
         if _is_spotify_installed() and _ui_automation_search(query, player):
             return f"Включаю «{query}» в Spotify, сэр."
 
-        # Прямой запуск через YouTube с мгновенным автозапуском звука
+        # Способ 3: Прямой запуск через YouTube с гарантированным звуком
         yt_url = _find_youtube_direct_url(query) or f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
         try:
             browser_control({"action": "go_to", "url": yt_url}, player=player)
             time.sleep(2.0)
+            _send_key("space")
             _send_media_key("playpause")
             return f"Включаю «{query}», сэр."
         except Exception:

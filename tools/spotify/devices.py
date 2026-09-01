@@ -161,12 +161,12 @@ class SpotifyDevices:
         if desktop:
             return self.transfer_playback(desktop['id'])
 
-        # No device available — launch desktop app then wait up to 5 s
+        # No device available — launch desktop app then check quickly
         print("[SpotifyDevices] No device found, launching desktop app...")
         self.launch_spotify_desktop()
 
-        for _ in range(5):
-            time.sleep(1)
+        for _ in range(1):
+            time.sleep(0.5)
             devices = self.list_devices(force_refresh=True)
             if devices:
                 desktop = self.get_desktop_device()

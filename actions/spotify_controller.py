@@ -182,24 +182,23 @@ def spotify_player(parameters: Dict[str, Any], player=None) -> str:
     # Playback actions
     if action in ("play", "start", "включить", "запустить", "поставь"):
         if query:
-            return spotify_api.play_query(query)
+            res = spotify_api.play_query(query)
+            if not res or any(k in res.lower() for k in ("запускается", "недоступен", "не нашёл", "не нашел", "ошибка", "failed")):
+                try:
+                    from actions.music_player import music_player
+                    return music_player(parameters=parameters, player=player)
+                except Exception as exc:
+                    return res or "Не удалось запустить воспроизведение, сэр."
+            return res
         else:
-            return spotify_api.resume()
-    
-    elif action in ("pause", "пауза"):
-        return spotify_api.pause()
-    
-    elif action in ("resume", "continue", "продолжи"):
-        return spotify_api.resume()
-    
-    elif action in ("next", "next_track", "skip", "следующий"):
-        return spotify_api.next_track()
-    
-    elif action in ("prev", "previous", "prev_track", "предыдущий"):
-        return spotify_api.previous_track()
-    
-    elif action in ("stop", "стоп", "остановить"):
-        return spotify_api.pause()  # Stop = pause for now
+            res = spotify_api.resume()
+            if not res or any(k in res.lower() for k in ("запускается", "недоступен", "ошибка")):
+                try:
+                    from actions.music_player import music_player
+                    return music_player(parameters=parameters, player=player)
+                except Exception:
+                    return res or "Воспроизведение, сэр."
+            return res
     
     # Volume actions
     elif action in ("volume_up", "louder", "громче"):
