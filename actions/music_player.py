@@ -234,21 +234,19 @@ def _https_to_spotify_uri(url: str) -> Optional[str]:
 def _focus_spotify_window() -> bool:
     """Активирует окно Spotify (если открыто) — для надёжной отправки клавиш."""
     try:
+        import ctypes
         import pygetwindow as gw
+        user32 = ctypes.windll.user32
         for win in gw.getAllWindows():
             if "spotify" in (win.title or "").lower():
-                try:
-                    win.activate()
-                    return True
-                except Exception:
-                    # На Windows иногда нужно сначала minimize+restore
-                    try:
-                        win.minimize()
-                        time.sleep(0.1)
-                        win.restore()
-                        return True
-                    except Exception as exc:
-                        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+                hwnd = win._hWnd
+                if user32.IsIconic(hwnd):
+                    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                else:
+                    user32.ShowWindow(hwnd, 5)  # SW_SHOW
+                user32.SetForegroundWindow(hwnd)
+                time.sleep(0.15)
+                return True
     except Exception as exc:
         _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
     return False
@@ -276,7 +274,6 @@ def _get_spotify_token() -> Optional[str]:
     """
     global _SPOTIFY_TOKEN, _SPOTIFY_TOKEN_EXPIRES
 
-    # Возвращаем кэшированный токен если ещё валидный
     if _SPOTIFY_TOKEN and time.time() < _SPOTIFY_TOKEN_EXPIRES:
         return _SPOTIFY_TOKEN
 
@@ -285,10 +282,9 @@ def _get_spotify_token() -> Optional[str]:
         return None
 
     cid, secret = creds
-    auth_str = f"{cid}:{secret}"
-    auth_b64 = base64.b64encode(auth_str.encode()).decode()
-
     try:
+        auth_bytes = f"{cid}:{secret}".encode("utf-8")
+        auth_b64 = base64.b64encode(auth_bytes).decode("utf-8")
         req = urllib.request.Request(
             "https://accounts.spotify.com/api/token",
             data=b"grant_type=client_credentials",
@@ -296,14 +292,12 @@ def _get_spotify_token() -> Optional[str]:
                 "Authorization": f"Basic {auth_b64}",
                 "Content-Type": "application/x-www-form-urlencoded",
             },
-            method="POST",
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
             data = json.loads(resp.read().decode())
         token = data.get("access_token")
         if token:
             _SPOTIFY_TOKEN = token
-            # Токен живёт 3600 сек, обновим чуть раньше для надёжности
             _SPOTIFY_TOKEN_EXPIRES = time.time() + data.get("expires_in", 3600) - 60
             return token
     except Exception as exc:
@@ -314,19 +308,16 @@ def _get_spotify_token() -> Optional[str]:
 def _spotify_search_track_uri(query: str) -> Optional[str]:
     """
     Ищет трек через Spotify Web API и возвращает его URI (spotify:track:ID).
-    Пробует несколько вариантов запроса для лучшего результата.
-    None если поиск не удался или нет credentials.
     """
     token = _get_spotify_token()
     if not token:
         return None
 
-    # Пробуем разные варианты запроса
     query_variants = [
-        query,  # Оригинальный запрос
-        query.replace("ё", "е"),  # Замена ё на е
-        query.replace("й", "i"),  # Замена й на i для транслитерации
-        query.split()[0] if " " in query else query,  # Только первое слово
+        query,
+        query.replace("ё", "е"),
+        query.replace("й", "i"),
+        query.split()[0] if " " in query else query,
     ]
 
     for variant in query_variants:
@@ -342,12 +333,10 @@ def _spotify_search_track_uri(query: str) -> Optional[str]:
 
             items = data.get("tracks", {}).get("items", [])
             if items:
-                # Ищем точное совпадение по названию
                 for item in items:
                     track_name = item.get("name", "").lower()
                     if variant.lower() in track_name or track_name in variant.lower():
-                        return item.get("uri")  # формат: spotify:track:ID
-                # Если точного совпадения нет, возвращаем первый результат
+                        return item.get("uri")
                 return items[0].get("uri")
         except Exception as exc:
             _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
@@ -358,7 +347,7 @@ def _spotify_search_track_uri(query: str) -> Optional[str]:
 
 def _ui_automation_search(query: str, player=None) -> bool:
     """
-    Надёжный поиск и воспроизведение трека в Spotify через UI и буфер обмена.
+    Надёжный поиск и запуск трека в Spotify через URI навигацию, буфер и хоткеи.
     """
     if not _HAS_PYAUTOGUI:
         return False
@@ -367,30 +356,27 @@ def _ui_automation_search(query: str, player=None) -> bool:
         if player:
             player.write_log(f"SYS: 🎵 Поиск в Spotify: {query}")
 
-        if not _open_spotify_uri("spotify:"):
-            return False
-        time.sleep(1.5)
+        # Стратегия 1: Прямой переход на результаты поиска через spotify:search:
+        search_uri = f"spotify:search:{urllib.parse.quote(query)}"
+        _open_spotify_uri(search_uri)
+        time.sleep(1.8)
 
         _focus_spotify_window()
         time.sleep(0.3)
 
-        # Открываем поиск (Ctrl+L) и очищаем поле
+        # Стратегия 2: Поиск через активное поле (Ctrl+K и Ctrl+L)
+        pyautogui.hotkey("ctrl", "k")
+        time.sleep(0.2)
         pyautogui.hotkey("ctrl", "l")
         time.sleep(0.2)
         pyautogui.hotkey("ctrl", "a")
         time.sleep(0.1)
-        pyautogui.press("backspace")
-        time.sleep(0.1)
 
-        # Вставляем запрос через буфер обмена (гарантия поддержки кириллицы/Unicode)
         try:
             import pyperclip
             pyperclip.copy(query)
             pyautogui.hotkey("ctrl", "v")
         except Exception:
-            # Кавычку внутри названия удваиваем: в одинарных строках PowerShell
-            # это единственный способ её экранировать, иначе «Don't Stop»
-            # обрывает команду и в буфер уезжает мусор.
             safe = query.replace("'", "''")
             subprocess.run(["powershell", "-Command", f"Set-Clipboard -Value '{safe}'"],
                            capture_output=True, timeout=2)
@@ -400,12 +386,15 @@ def _ui_automation_search(query: str, player=None) -> bool:
         pyautogui.press("enter")
         time.sleep(1.2)
 
-        # Запуск первого найденного трека (стрелка вниз -> Enter / Space)
+        # Воспроизведение: нажать Enter / Space / Media Play
+        pyautogui.press("enter")
+        time.sleep(0.3)
         pyautogui.press("down")
         time.sleep(0.2)
         pyautogui.press("enter")
-        time.sleep(0.4)
+        time.sleep(0.3)
         pyautogui.press("space")
+        _send_media_key("playpause")
 
         if player:
             player.write_log("SYS: ✓ Трек в Spotify запущен")
