@@ -1,12 +1,25 @@
 """JARVIS Mark X — Двухстадийный детектор ключевого слова (Wake Word Detector).
 
-Архитектура:
+Архитектура каскада — как в обычном KWS: дешёвая стадия отсекает почти всё,
+дорогая подтверждает то немногое, что прошло.
+
   - Stage 1 (Fast Streaming Candidate Detector):
       Потоковый ONNX-инференс модели 'hey_jarvis' через openWakeWord на 16 кГц.
-      Высокая чувствительность (High Recall), ловит даже тихий голос и шепот.
+      Высокая чувствительность (порог 0.38): ловит тихий голос и шёпот, но и
+      ошибается чаще. Ниже этого порога выходим сразу, не трогая буферы.
+
   - Stage 2 (Context Verifier с Pre/Post-roll буфером):
-      Кольцевой буфер на 2.0 секунды. Извлекает [Pre-roll 300мс] + [Слово] + [Post-roll 200мс],
-      проверяет спектральную целостность фонем и отсекает ложные срабатывания от ТВ/фильмов.
+      Кольцевой буфер на 2.0 секунды. Подтверждает кандидата по контексту:
+      в окне должна быть энергия живого звука, а пик уверенности за последние
+      ~0.5 с — превысить строгий порог 0.50.
+
+Почему пик, а не последний кадр: слово «Джарвис» длиннее одного 80-мс чанка,
+и максимум уверенности модели обычно приходится на кадр-два раньше того, на
+котором мы проверяем. Брать только последний кадр — терять эти срабатывания.
+
+Прежняя версия применяла строгий порог ТОЛЬКО когда контекста не хватало, то
+есть в штатном режиме второй стадии не существовало: всё решали порог 0.38 и
+проверка энергии.
 """
 
 import logging
@@ -19,6 +32,12 @@ logger = logging.getLogger("jarvis-kws")
 
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1280  # ~80 мс блок для openwakeword
+
+# Сколько последних кадров модели считать «контекстом» слова (~0.5 с).
+_CONTEXT_SCORE_FRAMES = 6
+
+# Ниже этого RMS в окне — тишина или шум квантования, а не речь.
+_MIN_CONTEXT_RMS = 50.0
 
 
 class WakeWordDetector2Stage:
@@ -85,43 +104,54 @@ class WakeWordDetector2Stage:
 
             # Stage 1: Fast Streaming Inference
             arr = np.frombuffer(pcm_bytes, dtype=np.int16)
-            prediction = self._oww_model.predict(arr)
+            self._oww_model.predict(arr)
 
-            # Получаем скор для 'hey_jarvis'
-            jarvis_score = 0.0
-            for k, v in self._oww_model.prediction_buffer.items():
-                if "jarvis" in k.lower() and len(v) > 0:
-                    jarvis_score = float(v[-1])
-                    break
+            jarvis_score, context_score = self._read_scores()
 
             # Если Stage 1 не сработал — выходим мгновенно
             if jarvis_score < self.threshold_stage1:
                 return False
 
             # Stage 2: Verification with Pre-roll & Context
-            # Извлекаем окно из кольцевого буфера: 300мс до + текущее + 200мс после
+            # Извлекаем окно из кольцевого буфера: 300мс до + слово + 200мс после
             context_samples = min(len(self._ring_buffer) // 2, int(SAMPLE_RATE * 0.9))
-            if context_samples < int(SAMPLE_RATE * 0.4):
-                # Слишком мало данных в истории
-                if jarvis_score < self.threshold_stage2:
-                    return False
+            if context_samples <= 0:
+                return False
 
             context_bytes = bytes(self._ring_buffer[-context_samples * 2:])
             context_arr = np.frombuffer(context_bytes, dtype=np.int16).astype(np.float32)
 
-            # Проверка энергии и спектрального контраста
             rms_energy = float(np.sqrt(np.mean(context_arr ** 2)))
-            if rms_energy < 50.0:  # Абсолютная тишина / шум квантования
+            if rms_energy < _MIN_CONTEXT_RMS:  # Абсолютная тишина / шум квантования
+                return False
+
+            # Строгий порог второй стадии. Если истории ещё нет, подтверждать
+            # нечем — судим по одному текущему кадру.
+            has_context = context_samples >= int(SAMPLE_RATE * 0.4)
+            evidence = context_score if has_context else jarvis_score
+            if evidence < self.threshold_stage2:
                 return False
 
             # Подтверждение срабатывания
             self._last_wake_time = now
-            logger.info("Wake Word: [WAKE CONFIRMED] 'Джарвис' (Score: %.2f, Energy RMS: %.0f)", jarvis_score, rms_energy)
+            logger.info(
+                "Wake Word: [WAKE CONFIRMED] 'Джарвис' (Score: %.2f, Context: %.2f, Energy RMS: %.0f)",
+                jarvis_score, evidence, rms_energy,
+            )
 
             if self.on_wake:
                 self.on_wake(jarvis_score)
 
             return True
+
+    def _read_scores(self) -> tuple:
+        """Текущая уверенность модели и пик за последние кадры контекста."""
+        for name, history in self._oww_model.prediction_buffer.items():
+            if "jarvis" not in name.lower() or len(history) == 0:
+                continue
+            recent = list(history)[-_CONTEXT_SCORE_FRAMES:]
+            return float(history[-1]), float(max(recent))
+        return 0.0, 0.0
 
     def reset(self):
         """Сброс буферов и истории предсказаний."""

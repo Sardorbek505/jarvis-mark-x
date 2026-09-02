@@ -59,6 +59,23 @@ import sounddevice as sd
 from google import genai
 from google.genai import types
 
+# ВАЖЕН ПОРЯДОК: onnxruntime грузится ДО PyQt6 (его тянет `from ui import ...`).
+#
+# На Windows Qt подменяет путь поиска DLL и подкладывает свои копии рантайма.
+# Если onnxruntime импортируется после него, загрузка нативной части падает:
+#   DLL load failed while importing onnxruntime_pybind11_state
+# Наружу это не вылетает: WakeWordDetector2Stage ловит исключение, пишет
+# предупреждение и остаётся с _oww_model = None, то есть process_pcm() всегда
+# возвращает False. Ассистент при этом работает — просто ключевое слово
+# «Джарвис» не срабатывает никогда, и понять почему по поведению нельзя.
+#
+# Проверено на этой машине: без прогрева модель не грузится, с прогревом
+# грузится. Импорт «в никуда» — вся суть в том, чтобы DLL встали первыми.
+try:
+    import onnxruntime  # noqa: F401
+except Exception as _onnx_exc:
+    logger.debug("onnxruntime warm-up skipped: %s", _onnx_exc)
+
 from ui import JarvisUI
 from memory.memory_manager import load_memory, update_memory, format_memory_for_prompt
 from core.emotion_analyzer import EmotionAnalyzer
@@ -992,16 +1009,21 @@ class Jarvis:
             sink=self.ui.write_log if os.getenv("JARVIS_DEBUG_UI") == "1" else None
         )
 
-        # Акустический процессор (AEC), 2-Stage KWS и Audio Ducking
+        # 2-Stage KWS: ловит «Джарвис», когда микрофонный шлюз закрыт музыкой.
+        #
+        # AEC здесь СОЗНАТЕЛЬНО не поднимается. Раньше строка `self._aec =
+        # AECPipeline()` тут была, а в логе значилось «AEC подключён» — но поле
+        # больше нигде не читалось: эхоподавление в живом тракте не работало,
+        # лог вводил в заблуждение при разборе проблем со звуком.
+        # Чтобы включить его по-настоящему, микрофонному циклу нужен опорный
+        # поток колонок (WASAPI loopback) — сейчас его нет: speaker_meter.py
+        # отдаёт только скалярный уровень, не PCM. См. core/audio_capture.py.
         try:
-            from core.aec_pipeline import AECPipeline
             from core.wake_detector import WakeWordDetector2Stage
-            self._aec = AECPipeline()
             self._wake_detector = WakeWordDetector2Stage()
-            logger.info("VoiceTriggerEngine: AEC и WakeWord подключены к JarvisBot")
+            logger.info("WakeWord: 2-Stage KWS подключён к JarvisBot")
         except Exception as _e:
-            logger.debug("VoiceTriggerEngine init note: %s", _e)
-            self._aec = None
+            logger.debug("WakeWord init note: %s", _e)
             self._wake_detector = None
 
         self.ui.on_text_command = self._on_text_command

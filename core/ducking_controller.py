@@ -15,7 +15,7 @@ import logging
 import math
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 logger = logging.getLogger("jarvis-ducking")
 
@@ -37,6 +37,13 @@ class DuckingState(enum.Enum):
 class DuckingController:
     """Потокобезопасный контроллер Audio Ducking и управления медиа."""
 
+    # Состояния, в которых музыка уже приглушена, а исходный уровень сохранён.
+    _DUCKED_STATES = (
+        DuckingState.LISTENING,
+        DuckingState.THINKING,
+        DuckingState.SPEAKING,
+    )
+
     def __init__(
         self,
         duck_ratio: float = 0.20,       # Уровень приглушения (20% от исходного или -18dB)
@@ -57,7 +64,8 @@ class DuckingController:
         # Громкости
         self._original_volume: Optional[float] = None
         self._current_volume: Optional[float] = None
-        self._saved_session_vols: Dict[str, float] = {}
+        # Ключ — PID процесса (int), значение — громкость сессии до приглушения.
+        self._saved_session_vols: Dict[int, float] = {}
 
         # Windows CoreAudio Endpoint
         self._endpoint_volume = None
@@ -184,6 +192,17 @@ class DuckingController:
         self._fade_duration = duration_ms
         self._fade_start_time = time.time()
 
+    def _capture_original_volume(self):
+        """Запоминает громкость «до приглушения».
+
+        Читать устройство можно только когда фейд не в полёте: иначе поймаем
+        промежуточный уровень и запомним его как исходный, и каждый следующий
+        цикл «приглушить — вернуть» занижал бы громкость всё сильнее.
+        """
+        if self._fade_target is not None and self._original_volume is not None:
+            return
+        self._original_volume = self._get_master_volume()
+
     def set_state(self, new_state: DuckingState):
         """Управление состоянием дакинга."""
         with self._lock:
@@ -193,8 +212,16 @@ class DuckingController:
             prev_state = self.state
             self.state = new_state
 
-            if prev_state == DuckingState.IDLE and new_state == DuckingState.LISTENING:
-                self._original_volume = self._get_master_volume()
+            if new_state == DuckingState.LISTENING:
+                # Приглушаем из любого состояния, где музыка ещё громкая, —
+                # включая RESTORING. Раньше условие было `prev == IDLE`, и
+                # если пользователь заговаривал во время 350 мс возврата
+                # громкости, duck() молча не делал ничего: release-фейд
+                # доводил музыку до 100% прямо поверх речи.
+                if prev_state in self._DUCKED_STATES:
+                    return
+
+                self._capture_original_volume()
                 target_duck = max(0.05, (self._original_volume or 1.0) * self.duck_ratio)
                 logger.info("Audio Ducking: [ATTACK] -> %.0f%% за %.0f мс", target_duck * 100, self.attack_ms)
                 self._begin_fade(target_duck, self.attack_ms)
@@ -255,4 +282,27 @@ class DuckingController:
                 pass
 
 
-ducking_controller = DuckingController()
+# ─── Ленивый общий экземпляр ──────────────────────────────────────────────────
+# Конструктор поднимает CoreAudio-эндпоинт и фоновый поток интерполяции, поэтому
+# создавать его на импорте модуля нельзя: любой `import core.ducking_controller`
+# — из теста, бенчмарка или утилиты — заводил поток на 60 Гц и брал в руки
+# системную громкость, даже если дакинг в этом процессе никому не нужен.
+_singleton: Optional[DuckingController] = None
+_singleton_lock = threading.Lock()
+
+
+def get_ducking_controller() -> DuckingController:
+    """Общий контроллер дакинга; создаётся при первом обращении."""
+    global _singleton
+    if _singleton is None:
+        with _singleton_lock:
+            if _singleton is None:
+                _singleton = DuckingController()
+    return _singleton
+
+
+def __getattr__(name: str):
+    """Поддерживает привычное `from ... import ducking_controller` без импорт-эффекта."""
+    if name == "ducking_controller":
+        return get_ducking_controller()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
