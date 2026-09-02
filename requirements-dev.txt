@@ -3,6 +3,9 @@ pytest>=8.0
 pytest-asyncio>=0.23
 aiosqlite>=0.19.0
 
+# Линтер. Настройки — в ruff.toml.
+ruff>=0.6
+
 # Module dependencies needed for test suite execution
 websockets>=12.0
 feedparser>=6.0.0

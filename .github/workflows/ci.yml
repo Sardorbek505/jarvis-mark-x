@@ -35,6 +35,13 @@ jobs:
         # Curated suite is offline (SQLite only) — no Gemini/Telegram/Neon needed.
         run: pip install -r requirements-dev.txt
 
+      - name: Lint (ruff)
+        # Ловит то, что тесты пропускают: обращение к несуществующему имени —
+        # гарантированный NameError в рантайме. Так в master уехал вызов
+        # _send_key() в actions/music_player.py, ронявший основной сценарий
+        # запуска музыки, — pytest его не видел, потому что этот путь не покрыт.
+        run: python -m ruff check .
+
       - name: Run unit tests
         env:
           QT_QPA_PLATFORM: offscreen
