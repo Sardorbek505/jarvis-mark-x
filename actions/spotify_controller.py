@@ -6,6 +6,7 @@ Replaces old UI-based music_player with official API control.
 """
 
 import json
+import logging
 import os
 from typing import Dict, Any, Optional
 import sys
@@ -14,6 +15,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools.spotify import SpotifyController
+
+_logger = logging.getLogger(__name__)
 
 
 class SpotifyAPI:
@@ -188,6 +191,7 @@ def spotify_player(parameters: Dict[str, Any], player=None) -> str:
                     from actions.music_player import music_player
                     return music_player(parameters=parameters, player=player)
                 except Exception as exc:
+                    _logger.debug("Откат на music_player не сработал: %s", exc, exc_info=True)
                     return res or "Не удалось запустить воспроизведение, сэр."
             return res
         else:
