@@ -64,3 +64,6 @@ jarvis_pc_server.log
 
 # Реплики стенда замера — генерируются офлайн за секунду (scripts/latency_probe.py)
 logs/latency_voice/
+
+# Кэш ключевого слова для бенчмарка — синтезируется системным TTS на месте
+logs/benchmark/
