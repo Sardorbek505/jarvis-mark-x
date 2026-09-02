@@ -992,6 +992,18 @@ class Jarvis:
             sink=self.ui.write_log if os.getenv("JARVIS_DEBUG_UI") == "1" else None
         )
 
+        # Акустический процессор (AEC), 2-Stage KWS и Audio Ducking
+        try:
+            from core.aec_pipeline import AECPipeline
+            from core.wake_detector import WakeWordDetector2Stage
+            self._aec = AECPipeline()
+            self._wake_detector = WakeWordDetector2Stage()
+            logger.info("VoiceTriggerEngine: AEC и WakeWord подключены к JarvisBot")
+        except Exception as _e:
+            logger.debug("VoiceTriggerEngine init note: %s", _e)
+            self._aec = None
+            self._wake_detector = None
+
         self.ui.on_text_command = self._on_text_command
 
     # ── Текстовый ввод ────────────────────────────────────────────────────────
@@ -1027,8 +1039,18 @@ class Jarvis:
             self._is_speaking = value
         if value:
             self.ui.set_state("SPEAKING")
+            try:
+                from core.ducking_controller import ducking_controller, DuckingState
+                ducking_controller.set_state(DuckingState.SPEAKING)
+            except Exception:
+                pass
         elif not self.ui.muted:
             self.ui.set_state("LISTENING")
+            try:
+                from core.ducking_controller import ducking_controller, DuckingState
+                ducking_controller.set_state(DuckingState.RESTORING)
+            except Exception:
+                pass
 
     def speak(self, text: str):
         """Отправляет текст в сессию для озвучки."""
@@ -1590,6 +1612,14 @@ class Jarvis:
                 preroll.clear()
                 return
             if self._speaker_meter is not None and self._speaker_meter.peak > _SPEAKER_GATE:
+                # Если в динамиках громко играет музыка, проверяем ключевое слово «Джарвис»
+                if self._wake_detector:
+                    if self._wake_detector.process_pcm(indata.tobytes()):
+                        try:
+                            from core.ducking_controller import ducking_controller
+                            ducking_controller.duck()
+                        except Exception:
+                            pass
                 self._note_gate(
                     f"звук в динамиках {self._speaker_meter.peak:.3f} > "
                     f"порога {_SPEAKER_GATE}"
