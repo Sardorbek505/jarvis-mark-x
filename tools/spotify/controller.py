@@ -149,10 +149,13 @@ class SpotifyController:
                 )
 
             response.raise_for_status()
-            # 204 No Content is a success response with no body
-            if response.status_code == 204 or not response.content:
+            # 204 No Content (or empty body on 200/202) is a success response
+            if response.status_code == 204 or not response.content or not response.text.strip():
                 return {}
-            return response.json()
+            try:
+                return response.json()
+            except Exception:
+                return {}
         except Exception as e:
             print(f"[SpotifyController] API request failed: {e}")
             return None
