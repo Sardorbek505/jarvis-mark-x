@@ -16,7 +16,7 @@ from typing import Callable, Optional
 from core.audio_capture import AudioCaptureEngine
 from core.aec_pipeline import AECPipeline
 from core.wake_detector import WakeWordDetector2Stage
-from core.ducking_controller import DuckingController, DuckingState, ducking_controller
+from core.ducking_controller import DuckingState, get_ducking_controller
 from core.wakeword import play_activation_chime
 
 logger = logging.getLogger("jarvis-vte")
@@ -39,7 +39,7 @@ class VoiceTriggerEngine:
         self.enable_ducking = enable_ducking
 
         self.aec = AECPipeline()
-        self.ducking = ducking_controller if enable_ducking else None
+        self.ducking = get_ducking_controller() if enable_ducking else None
         self.wake_detector = WakeWordDetector2Stage(on_wake=self._handle_wake_detected)
         self.capture = AudioCaptureEngine(
             on_frame=self._handle_raw_frame,

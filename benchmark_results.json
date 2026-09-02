@@ -1,110 +1,101 @@
 [
   {
-    "timestamp": "2026-09-02T14:23:54.595700",
+    "timestamp": "2026-09-02T16:16:40.898518",
     "scenario": "Тишина (Silence)",
     "music_level_percent": 0,
     "speech_mode": "normal",
-    "distance": "1.0m",
     "wake_detected": true,
-    "wake_latency_ms": 17.23,
+    "wake_latency_ms": 840.0,
     "aec_erle_db": 0.0,
     "false_alarm": false,
-    "cpu_percent": 208.3
+    "realtime_percent": 12.7
   },
   {
-    "timestamp": "2026-09-02T14:23:54.659143",
+    "timestamp": "2026-09-02T16:16:42.059114",
     "scenario": "Музыка 20% + Обычная речь",
     "music_level_percent": 20,
     "speech_mode": "normal",
-    "distance": "1.0m",
     "wake_detected": true,
-    "wake_latency_ms": 62.21,
-    "aec_erle_db": 5.58,
+    "wake_latency_ms": 840.0,
+    "aec_erle_db": 9.87,
     "false_alarm": false,
-    "cpu_percent": 99.2
+    "realtime_percent": 18.7
   },
   {
-    "timestamp": "2026-09-02T14:23:54.721408",
+    "timestamp": "2026-09-02T16:16:43.274670",
     "scenario": "Музыка 40% + Обычная речь",
     "music_level_percent": 40,
     "speech_mode": "normal",
-    "distance": "1.0m",
     "wake_detected": true,
-    "wake_latency_ms": 61.12,
-    "aec_erle_db": 6.58,
+    "wake_latency_ms": 840.0,
+    "aec_erle_db": 16.65,
     "false_alarm": false,
-    "cpu_percent": 100.8
+    "realtime_percent": 20.4
   },
   {
-    "timestamp": "2026-09-02T14:23:54.791063",
+    "timestamp": "2026-09-02T16:16:44.499618",
     "scenario": "Музыка 60% + Обычная речь",
     "music_level_percent": 60,
     "speech_mode": "normal",
-    "distance": "1.0m",
     "wake_detected": true,
-    "wake_latency_ms": 68.5,
-    "aec_erle_db": 7.72,
+    "wake_latency_ms": 840.0,
+    "aec_erle_db": 18.17,
     "false_alarm": false,
-    "cpu_percent": 79.1
+    "realtime_percent": 20.4
   },
   {
-    "timestamp": "2026-09-02T14:23:54.859145",
+    "timestamp": "2026-09-02T16:16:45.673574",
     "scenario": "Музыка 80% + Обычная речь",
     "music_level_percent": 80,
     "speech_mode": "normal",
-    "distance": "1.0m",
     "wake_detected": true,
-    "wake_latency_ms": 67.53,
-    "aec_erle_db": 8.73,
+    "wake_latency_ms": 840.0,
+    "aec_erle_db": 18.87,
     "false_alarm": false,
-    "cpu_percent": 100.8
+    "realtime_percent": 20.8
   },
   {
-    "timestamp": "2026-09-02T14:23:54.924740",
+    "timestamp": "2026-09-02T16:16:46.866414",
     "scenario": "Музыка 40% + Тихая речь",
     "music_level_percent": 40,
     "speech_mode": "quiet",
-    "distance": "1.5m",
     "wake_detected": true,
-    "wake_latency_ms": 64.7,
-    "aec_erle_db": 8.21,
+    "wake_latency_ms": 840.0,
+    "aec_erle_db": 18.02,
     "false_alarm": false,
-    "cpu_percent": 124.0
+    "realtime_percent": 20.4
   },
   {
-    "timestamp": "2026-09-02T14:23:54.987854",
+    "timestamp": "2026-09-02T16:16:48.111633",
     "scenario": "Музыка 60% + Шёпот",
     "music_level_percent": 60,
     "speech_mode": "whisper",
-    "distance": "1.0m",
     "wake_detected": true,
-    "wake_latency_ms": 61.91,
-    "aec_erle_db": 6.07,
+    "wake_latency_ms": 920.0,
+    "aec_erle_db": 21.41,
     "false_alarm": false,
-    "cpu_percent": 100.8
+    "realtime_percent": 22.1
   },
   {
-    "timestamp": "2026-09-02T14:23:55.056875",
+    "timestamp": "2026-09-02T16:16:49.374106",
     "scenario": "Музыка 80% + Шёпот (Hard)",
     "music_level_percent": 80,
     "speech_mode": "whisper",
-    "distance": "1.0m",
     "wake_detected": true,
-    "wake_latency_ms": 67.44,
-    "aec_erle_db": 10.36,
+    "wake_latency_ms": 920.0,
+    "aec_erle_db": 22.45,
     "false_alarm": false,
-    "cpu_percent": 80.1
+    "realtime_percent": 22.5
   },
   {
-    "timestamp": "2026-09-02T14:23:55.119819",
-    "scenario": "Только громкая музыка (False Alarm Test)",
+    "timestamp": "2026-09-02T16:16:50.214074",
+    "scenario": "Только громкая музыка (False Alarm)",
     "music_level_percent": 80,
     "speech_mode": "none",
-    "distance": "-",
     "wake_detected": false,
-    "wake_latency_ms": 62.6,
-    "aec_erle_db": 24.3,
+    "wake_latency_ms": null,
+    "aec_erle_db": 21.0,
     "false_alarm": false,
-    "cpu_percent": 99.2
+    "realtime_percent": 19.5
   }
 ]
