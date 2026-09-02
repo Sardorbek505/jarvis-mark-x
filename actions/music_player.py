@@ -30,6 +30,7 @@ from typing import Optional
 
 from actions.computer_settings import computer_settings
 from actions.browser_control import browser_control
+from actions.keyboard import send_key as _send_key
 
 import logging
 
@@ -446,6 +447,9 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
     # ── Шаг 1: Обработка плейлиста ────────────────────────────────────────
     if playlist_url:
         uri = _https_to_spotify_uri(playlist_url)
+        # Ссылка может быть и не спотифаевской — тогда URI не построится
+        # и открывать плейлист будем сразу браузером.
+        spotify_opened = False
         if uri:
             if player:
                 player.write_log(f"SYS: → Открываю плейлист URI: {uri}")
@@ -485,12 +489,16 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
         yt_url = _find_youtube_direct_url(query) or f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
         try:
             browser_control({"action": "go_to", "url": yt_url}, player=player)
-            time.sleep(2.0)
-            _send_key("space")
-            _send_media_key("playpause")
-            return f"Включаю «{query}», сэр."
-        except Exception:
+        except Exception as exc:
+            _logger.debug("YouTube fallback не открылся: %s", exc, exc_info=True)
             return "Не удалось воспроизвести трек, сэр."
+
+        # Вкладка уже открыта — дальше идёт только «дожать автоплей».
+        # Промах по клавише не повод врать, что ничего не вышло.
+        time.sleep(2.0)
+        _send_key("space")
+        _send_media_key("playpause")
+        return f"Включаю «{query}», сэр."
 
     # ── Шаг 3: Пустой запрос (продолжить или запустить Spotify) ──────────────
     if _is_spotify_installed():

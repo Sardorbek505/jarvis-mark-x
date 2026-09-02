@@ -19,6 +19,7 @@ import logging
 
 from actions.browser_control import browser_control
 from actions.computer_settings import computer_settings
+from actions.keyboard import send_key as _send_key
 
 _logger = logging.getLogger(__name__)
 _OS = platform.system()
@@ -32,17 +33,6 @@ except Exception:
     _HAS_PYAUTOGUI = False
 
 
-# ─── Карта клавиш ─────────────────────────────────────────────────────────────
-_KEY_MAP = {
-    "space":      ("space",      " "),
-    "f":          ("f",          "f"),
-    "right":      ("right",      "{RIGHT}"),
-    "left":       ("left",       "{LEFT}"),
-    "up":         ("up",         "{UP}"),
-    "down":       ("down",       "{DOWN}"),
-    "escape":     ("escape",     "{ESC}"),
-    "enter":      ("enter",      "{ENTER}"),
-}
 
 
 def _focus_movie_player() -> bool:
@@ -63,34 +53,6 @@ def _focus_movie_player() -> bool:
                         pass
     except Exception:
         pass
-    return False
-
-
-def _send_key(key: str) -> bool:
-    """Отправляет одиночную клавишу в активное окно."""
-    if key not in _KEY_MAP:
-        return False
-
-    py_key, ps_key = _KEY_MAP[key]
-
-    if _HAS_PYAUTOGUI:
-        try:
-            pyautogui.press(py_key)
-            return True
-        except Exception as exc:
-            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
-
-    if _OS == "Windows":
-        try:
-            cmd = f"(New-Object -ComObject WScript.Shell).SendKeys('{ps_key}')"
-            result = subprocess.run(
-                ["powershell", "-Command", cmd],
-                capture_output=True, timeout=3
-            )
-            return result.returncode == 0
-        except Exception as exc:
-            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
-
     return False
 
 
