@@ -1096,7 +1096,7 @@ class Jarvis:
                     silence_duration_ms=_VAD_SILENCE_MS,
                     prefix_padding_ms=_VAD_PREFIX_MS,
                     end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
-                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_BALANCED,
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
                 ),
             ),
             speech_config=types.SpeechConfig(
