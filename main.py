@@ -979,6 +979,29 @@ TOOLS = [
             "required": []
         }
     },
+    {
+        "name": "sleep_timer",
+        "description": (
+            "Управляет умным таймером сна с подтверждением голосом и автовыключением ноутбука/ПК. "
+            "По истечении времени Джарвис спросит разрешение выключить ПК. Если пользователь молчит 15 сек — выключает. "
+            "Вызывай когда пользователь говорит: 'через полчаса буду спать', 'через 30 минут спать', "
+            "'таймер сна на 45 минут', 'через час выключи ноут', 'отмени таймер сна', 'сколько осталось до сна'."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "set (установить таймер) | cancel (отменить) | status (проверить оставшееся время)"
+                },
+                "duration_minutes": {
+                    "type": "NUMBER",
+                    "description": "Время таймера в минутах (например, 30 для получаса, 60 для часа, 45, 15)"
+                }
+            },
+            "required": ["action"]
+        }
+    },
 ]
 
 
@@ -1463,6 +1486,14 @@ class Jarvis:
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
                     None, lambda: morning_briefing(args, player=self.ui)
+                )
+
+            # ── Инструмент: умный таймер сна ──────────────────────────────
+            elif name == "sleep_timer":
+                from actions.sleep_timer import sleep_timer
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None, lambda: sleep_timer(args, player=self.ui, bot=self)
                 )
 
             # ── Инструмент: выключить ────────────────────────────────
@@ -2010,7 +2041,7 @@ class Jarvis:
     async def run(self):
         client = genai.Client(
             api_key=_get_api_key(),
-            http_options={"api_version": "v1beta"},
+            http_options={"api_version": "v1alpha"},
         )
 
         retry_count = 0
