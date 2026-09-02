@@ -199,6 +199,54 @@ def spotify_player(parameters: Dict[str, Any], player=None) -> str:
                 except Exception:
                     return res or "Воспроизведение, сэр."
             return res
+
+    elif action in ("pause", "пауза"):
+        res = spotify_api.pause()
+        if not res or any(k in res.lower() for k in ("недоступен", "не удалось")):
+            try:
+                from actions.music_player import music_player
+                return music_player(parameters={"action": "pause"}, player=player)
+            except Exception:
+                return res or "Пауза, сэр."
+        return res
+
+    elif action in ("resume", "продолжай", "продолжить", "играй"):
+        res = spotify_api.resume()
+        if not res or any(k in res.lower() for k in ("недоступен", "не удалось")):
+            try:
+                from actions.music_player import music_player
+                return music_player(parameters={"action": "resume"}, player=player)
+            except Exception:
+                return res or "Продолжаю, сэр."
+        return res
+
+    elif action in ("next", "next_track", "skip", "следующий", "дальше"):
+        res = spotify_api.next_track()
+        if not res or any(k in res.lower() for k in ("недоступен", "не удалось")):
+            try:
+                from actions.music_player import music_player
+                return music_player(parameters={"action": "next"}, player=player)
+            except Exception:
+                return res or "Следующий трек, сэр."
+        return res
+
+    elif action in ("prev", "previous", "prev_track", "предыдущий", "назад"):
+        res = spotify_api.previous_track()
+        if not res or any(k in res.lower() for k in ("недоступен", "не удалось")):
+            try:
+                from actions.music_player import music_player
+                return music_player(parameters={"action": "prev"}, player=player)
+            except Exception:
+                return res or "Предыдущий трек, сэр."
+        return res
+
+    elif action in ("stop", "стоп", "остановить", "выключи"):
+        res = spotify_api.pause()
+        try:
+            from actions.music_player import music_player
+            return music_player(parameters={"action": "stop"}, player=player)
+        except Exception:
+            return res or "Музыка остановлена, сэр."
     
     # Volume actions
     elif action in ("volume_up", "louder", "громче"):
