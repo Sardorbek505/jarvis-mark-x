@@ -1637,13 +1637,19 @@ class Jarvis:
             if self._frame_was_loud:
                 self._latency.mark_voice_frame()
 
-            # Сбрасываем предбуфер (pre-roll), чтобы не отрезать согласные в начале слов
-            if was_silent and preroll:
-                while preroll:
-                    loop.call_soon_threadsafe(
-                        _put_nowait_safe,
-                        {"data": preroll.popleft(), "mime_type": "audio/pcm"},
-                    )
+            # Сбрасываем предбуфер (pre-roll) и плавно приглушаем музыку/кино при начале речи
+            if was_silent:
+                try:
+                    from core.ducking_controller import ducking_controller
+                    ducking_controller.duck()
+                except Exception:
+                    pass
+                if preroll:
+                    while preroll:
+                        loop.call_soon_threadsafe(
+                            _put_nowait_safe,
+                            {"data": preroll.popleft(), "mime_type": "audio/pcm"},
+                        )
 
             loop.call_soon_threadsafe(
                 _put_nowait_safe,
