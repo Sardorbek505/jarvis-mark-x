@@ -262,10 +262,10 @@ def _pick_input_device():
     return None
 CHUNK_SIZE        = 1024
 
-# Порог тишины для микрофона (RMS по int16). Ниже него кадры в облако не
-# уходят вовсе. Речь в метре от ноутбука даёт ~1000-5000, тишина — единицы
-# и десятки. 150 отсекает пространственный шум комнаты, шёпот и шорохи.
-MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "150"))
+# Порог тишины для микрофона (RMS по int16).
+# 35.0 обеспечивает высокую чувствительность к обычной речи и шёпоту
+# без необходимости повышать голос или кричать в микрофон ноутбука.
+MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "35.0"))
 # Хвост тишины после речи — не косметика, а условие того, что тебе вообще
 # ответят. Конец фразы определяет VAD на стороне Gemini, и определить его он
 # может только по ПОЛУЧЕННОЙ тишине: когда гейт обрывает поток сразу за
@@ -1651,7 +1651,7 @@ class Jarvis:
             except asyncio.QueueFull:
                 pass  # Drop audio frame silently to avoid flooding event loop
 
-        preroll = collections.deque(maxlen=4)
+        preroll = collections.deque(maxlen=10)
 
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
@@ -1664,26 +1664,23 @@ class Jarvis:
                 self._note_gate("микрофон выключен (Ctrl+M)")
                 preroll.clear()
                 return
+
+            pcm_bytes = indata.tobytes()
+
+            # Если в динамиках играет звук — проверяем ключевое слово для немедленного ducking
             if self._speaker_meter is not None and self._speaker_meter.peak > _SPEAKER_GATE:
-                # Если в динамиках громко играет музыка, проверяем ключевое слово «Джарвис»
                 if self._wake_detector:
-                    if self._wake_detector.process_pcm(indata.tobytes()):
+                    if self._wake_detector.process_pcm(pcm_bytes):
                         try:
                             from core.ducking_controller import ducking_controller
                             ducking_controller.duck()
                         except Exception:
                             pass
-                self._note_gate(
-                    f"звук в динамиках {self._speaker_meter.peak:.3f} > "
-                    f"порога {_SPEAKER_GATE}"
-                )
-                preroll.clear()
-                return
 
             was_silent = getattr(self, "_quiet_frames", MIC_HANGOVER_FRAMES + 1) > MIC_HANGOVER_FRAMES
             if not self._is_loud_enough(indata):
                 self._note_gate("тихо для порога MIC_RMS_THRESHOLD")
-                preroll.append(indata.tobytes())
+                preroll.append(pcm_bytes)
                 return
 
             self._note_gate(None)
@@ -1706,7 +1703,7 @@ class Jarvis:
 
             loop.call_soon_threadsafe(
                 _put_nowait_safe,
-                {"data": indata.tobytes(), "mime_type": "audio/pcm"},
+                {"data": pcm_bytes, "mime_type": "audio/pcm"},
             )
 
         try:
