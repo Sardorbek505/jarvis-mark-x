@@ -60,7 +60,7 @@ def play_activation_chime():
 
 
 class WakeWordDetector:
-    """Детектор активационного слова с поддержкой переключения режимов."""
+    """Детектор активационного слова с поддержкой переключения режимов и VoiceTriggerEngine."""
 
     WAKE_KEYWORDS = ("джарвис", "jarvis", "слушай", "компьютер")
 
@@ -74,15 +74,51 @@ class WakeWordDetector:
         self.on_wake = on_wake
         self.device_index = device_index
         self._running = False
-        self._thread: Optional[threading.Thread] = None
+        self._vte = None
+
+        try:
+            from core.voice_trigger_engine import VoiceTriggerEngine
+            self._vte = VoiceTriggerEngine(
+                on_wake=self._on_engine_wake,
+                mic_device_index=self.device_index,
+            )
+        except Exception as e:
+            logger.debug("VoiceTriggerEngine init fallback: %s", e)
+
+    def _on_engine_wake(self):
+        if self.on_wake:
+            self.on_wake()
 
     def set_mode(self, mode: WakeWordMode):
         self.mode = mode
         logger.info("WakeWord mode switched to: %s", self.mode.value)
+        if self.mode == WakeWordMode.WAKE_WORD and self._vte and not self._running:
+            self.start()
+        elif self.mode != WakeWordMode.WAKE_WORD and self._running:
+            self.stop()
+
+    def start(self):
+        """Запуск локального нейросетевого детектора ключевого слова."""
+        if self._vte and not self._running:
+            self._running = True
+            self._vte.start()
+            logger.info("WakeWordDetector: VoiceTriggerEngine запущен")
+
+    def stop(self):
+        """Остановка детектора."""
+        if self._vte and self._running:
+            self._running = False
+            self._vte.stop()
+            logger.info("WakeWordDetector: VoiceTriggerEngine остановлен")
 
     def trigger_wake(self):
         """Принудительно триггерит пробуждение (например, по горячей клавише Push-to-Talk)."""
         play_activation_chime()
+        try:
+            from core.ducking_controller import ducking_controller
+            ducking_controller.duck()
+        except Exception:
+            pass
         if self.on_wake:
             self.on_wake()
 
@@ -90,3 +126,4 @@ class WakeWordDetector:
         """Проверяет наличие ключевого слова в распознанном тексте."""
         text_lower = (text or "").lower().strip()
         return any(kw in text_lower for kw in self.WAKE_KEYWORDS)
+

@@ -1,0 +1,110 @@
+[
+  {
+    "timestamp": "2026-09-02T14:17:59.843507",
+    "scenario": "Тишина (Silence)",
+    "music_level_percent": 0,
+    "speech_mode": "normal",
+    "distance": "1.0m",
+    "wake_detected": true,
+    "wake_latency_ms": 15.9,
+    "aec_erle_db": 0.0,
+    "false_alarm": false,
+    "cpu_percent": 104.2
+  },
+  {
+    "timestamp": "2026-09-02T14:17:59.906660",
+    "scenario": "Музыка 20% + Обычная речь",
+    "music_level_percent": 20,
+    "speech_mode": "normal",
+    "distance": "1.0m",
+    "wake_detected": true,
+    "wake_latency_ms": 61.99,
+    "aec_erle_db": 5.58,
+    "false_alarm": false,
+    "cpu_percent": 99.2
+  },
+  {
+    "timestamp": "2026-09-02T14:17:59.969283",
+    "scenario": "Музыка 40% + Обычная речь",
+    "music_level_percent": 40,
+    "speech_mode": "normal",
+    "distance": "1.0m",
+    "wake_detected": true,
+    "wake_latency_ms": 61.83,
+    "aec_erle_db": 6.58,
+    "false_alarm": false,
+    "cpu_percent": 100.8
+  },
+  {
+    "timestamp": "2026-09-02T14:18:00.038619",
+    "scenario": "Музыка 60% + Обычная речь",
+    "music_level_percent": 60,
+    "speech_mode": "normal",
+    "distance": "1.0m",
+    "wake_detected": true,
+    "wake_latency_ms": 67.96,
+    "aec_erle_db": 7.72,
+    "false_alarm": false,
+    "cpu_percent": 98.9
+  },
+  {
+    "timestamp": "2026-09-02T14:18:00.105278",
+    "scenario": "Музыка 80% + Обычная речь",
+    "music_level_percent": 80,
+    "speech_mode": "normal",
+    "distance": "1.0m",
+    "wake_detected": true,
+    "wake_latency_ms": 65.45,
+    "aec_erle_db": 8.73,
+    "false_alarm": false,
+    "cpu_percent": 100.8
+  },
+  {
+    "timestamp": "2026-09-02T14:18:00.172009",
+    "scenario": "Музыка 40% + Тихая речь",
+    "music_level_percent": 40,
+    "speech_mode": "quiet",
+    "distance": "1.5m",
+    "wake_detected": true,
+    "wake_latency_ms": 66.46,
+    "aec_erle_db": 8.21,
+    "false_alarm": false,
+    "cpu_percent": 99.2
+  },
+  {
+    "timestamp": "2026-09-02T14:18:00.236218",
+    "scenario": "Музыка 60% + Шёпот",
+    "music_level_percent": 60,
+    "speech_mode": "whisper",
+    "distance": "1.0m",
+    "wake_detected": true,
+    "wake_latency_ms": 62.33,
+    "aec_erle_db": 6.16,
+    "false_alarm": false,
+    "cpu_percent": 100.8
+  },
+  {
+    "timestamp": "2026-09-02T14:18:00.301712",
+    "scenario": "Музыка 80% + Шёпот (Hard)",
+    "music_level_percent": 80,
+    "speech_mode": "whisper",
+    "distance": "1.0m",
+    "wake_detected": true,
+    "wake_latency_ms": 64.48,
+    "aec_erle_db": 10.42,
+    "false_alarm": false,
+    "cpu_percent": 99.2
+  },
+  {
+    "timestamp": "2026-09-02T14:18:00.369822",
+    "scenario": "Только громкая музыка (False Alarm Test)",
+    "music_level_percent": 80,
+    "speech_mode": "none",
+    "distance": "-",
+    "wake_detected": false,
+    "wake_latency_ms": 66.26,
+    "aec_erle_db": 24.16,
+    "false_alarm": false,
+    "cpu_percent": 80.1
+  }
+]
