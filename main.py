@@ -140,10 +140,10 @@ _PLAYBACK_RETRY_SEC = 1.0
 _NOISE_CANCEL_HINTS = ("noise-cancelling", "noise cancelling", "noise-canceling",
                        "шумоподавлен")
 
-# Сколько тишины ждать, прежде чем считать фразу законченной. По умолчанию
-# модель ждёт около секунды — это и есть та самая пауза перед ответом.
-_VAD_SILENCE_MS = int(os.getenv("VAD_SILENCE_MS", "400"))
-_VAD_PREFIX_MS = int(os.getenv("VAD_PREFIX_MS", "120"))
+# Сколько тишины ждать, прежде чем считать фразу законченной.
+# 220 мс обеспечивает мгновенную реакцию и диалог без неловких пауз.
+_VAD_SILENCE_MS = int(os.getenv("VAD_SILENCE_MS", "220"))
+_VAD_PREFIX_MS = int(os.getenv("VAD_PREFIX_MS", "60"))
 
 # Сколько модели позволено думать перед тем, как открыть рот.
 #
@@ -270,7 +270,7 @@ MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "35.0"))
 # ответят. Конец фразы определяет VAD на стороне Gemini, и определить его он
 # может только по ПОЛУЧЕННОЙ тишине: когда гейт обрывает поток сразу за
 # последним громким кадром, сервер остаётся ждать продолжения фразы.
-MIC_HANGOVER_MS = int(os.getenv("MIC_HANGOVER_MS", str(_VAD_SILENCE_MS + 800)))
+MIC_HANGOVER_MS = int(os.getenv("MIC_HANGOVER_MS", "450"))
 _FRAME_MS = CHUNK_SIZE / SEND_SAMPLE_RATE * 1000
 MIC_HANGOVER_FRAMES = int(os.getenv(
     "MIC_HANGOVER_FRAMES", str(max(1, round(MIC_HANGOVER_MS / _FRAME_MS)))
@@ -1713,6 +1713,7 @@ class Jarvis:
                 dtype="int16",
                 blocksize=CHUNK_SIZE,
                 device=_pick_input_device(),
+                latency="low",
                 callback=callback,
             ):
                 print("[ДЖАРВИС] 🎤 Поток микрофона открыт")
@@ -1947,7 +1948,7 @@ class Jarvis:
         """
         def _try(device):
             s = sd.RawOutputStream(samplerate=RECV_SAMPLE_RATE, channels=CHANNELS,
-                                   dtype="int16", blocksize=CHUNK_SIZE, device=device)
+                                   dtype="int16", blocksize=CHUNK_SIZE, device=device, latency="low")
             s.start()
             s.write(b"\x00" * (CHUNK_SIZE * 2))   # тишина: проверяем, что ПИШЕТСЯ
             return s
