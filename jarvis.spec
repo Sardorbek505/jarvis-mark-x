@@ -59,6 +59,11 @@ hidden_imports = [
     "core.latency",
     "core.wakeword",
     "core.tray",
+    "core.ducking_controller",
+    "core.audio_capture",
+    "core.aec_pipeline",
+    "core.wake_detector",
+    "core.voice_trigger_engine",
     "ui_setup",
     "telegram_bot.tts_edge",
     "telegram_bot.tts_fish",
@@ -73,18 +78,28 @@ hidden_imports = [
     "actions.weather",
     "actions.music_player",
     "actions.spotify_controller",
+    "actions.movie_player",
+    "actions.sleep_timer",
     "imageio_ffmpeg",
+    "pycaw",
+    "comtypes",
+    "pyaudiowpatch",
+    "scipy",
+    "scipy.signal",
+    "numpy",
+    "onnxruntime",
 ]
 
 binaries = []
 try:
     from PyInstaller.utils.hooks import collect_all
-    ff_datas, ff_binaries, ff_hidden = collect_all("imageio_ffmpeg")
-    datas += ff_datas
-    binaries += ff_binaries
-    hidden_imports += ff_hidden
-except Exception:
-    pass
+    for pkg in ["imageio_ffmpeg", "openwakeword", "pycaw", "comtypes", "pyaudiowpatch"]:
+        pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
+        datas += pkg_datas
+        binaries += pkg_binaries
+        hidden_imports += pkg_hidden
+except Exception as e:
+    print(f"Hook collection notice: {e}")
 
 a = Analysis(
     ['main.py'],
