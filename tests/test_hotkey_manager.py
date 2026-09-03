@@ -1,7 +1,6 @@
 """Tests for GlobalHotkeyManager."""
 
 import time
-import pytest
 from core.hotkey_manager import GlobalHotkeyManager
 
 

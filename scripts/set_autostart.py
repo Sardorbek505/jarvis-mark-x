@@ -1,6 +1,5 @@
 """Configure Windows Registry autostart for JARVIS."""
 
-import os
 import sys
 import winreg
 from pathlib import Path
@@ -30,5 +29,5 @@ key = winreg.OpenKey(
 val, _ = winreg.QueryValueEx(key, "JARVIS_Mark_X")
 winreg.CloseKey(key)
 
-print(f"[OK] Windows Registry Autostart successfully configured!")
+print("[OK] Windows Registry Autostart successfully configured!")
 print(f"Target command: {val}")
