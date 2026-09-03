@@ -334,9 +334,13 @@ async def _apply_send_directives(update: Update, user_id: int, reply: str) -> st
 
 
 def _is_authorized(update: Update) -> bool:
-    if not cfg.allowed_user_ids:
-        return True
-    return update.effective_user.id in cfg.allowed_user_ids
+    uid = getattr(update.effective_user, "id", None)
+    if uid is None:
+        return False
+    if cfg.allowed_user_ids:
+        return uid in cfg.allowed_user_ids
+    # Защита от Fail-Open: если список пуст — доступ закрыт по умолчанию
+    return False
 
 
 def _looks_like_pc_command(text: str) -> bool:

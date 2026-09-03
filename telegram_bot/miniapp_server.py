@@ -55,6 +55,20 @@ def _looks_like_pc_command(text: str) -> bool:
     return any(k in low for k in _PC_KEYWORDS)
 
 
+def _is_user_authorized(user_id: int) -> bool:
+    """Проверяет, авторизован ли пользователь Telegram для работы с Mini App."""
+    if not user_id:
+        return False
+    try:
+        from telegram_bot.config import load as load_config
+        cfg = load_config(require_bot=False)
+        if cfg.allowed_user_ids:
+            return user_id in cfg.allowed_user_ids
+    except Exception as exc:
+        logger.debug("Auth check error: %s", exc)
+    return False
+
+
 def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000) -> bytes:
     """Wrap raw int16 PCM in a WAV container."""
     n_ch, bits = 1, 16
@@ -290,13 +304,18 @@ async def _handle_action(ws: WebSocket, user_id: int, msg: dict):
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
-    await ws.accept()
-    _miniapp_clients.add(ws)
     try:
         user_id = int(ws.query_params.get("user_id", 0) or 0)
     except ValueError:
         user_id = 0
 
+    if not _is_user_authorized(user_id):
+        logger.warning("Mini App WebSocket rejected: unauthorized user_id=%s", user_id)
+        await ws.close(code=1008)
+        return
+
+    await ws.accept()
+    _miniapp_clients.add(ws)
     _audio_buffers[user_id] = b""
 
     await ws.send_text(json.dumps({

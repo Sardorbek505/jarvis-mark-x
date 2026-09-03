@@ -58,6 +58,19 @@ def load(require_bot: bool = True) -> Config:
     else:
         allowed = [int(x.strip()) for x in str(allowed_raw).split(",") if x.strip()]
 
+    # Защита от Fail-Open: если список пуст, подгружаем ID владельца из профиля
+    if not allowed:
+        profile_path = BASE_DIR / "config" / "user_profile.json"
+        if profile_path.exists():
+            try:
+                with open(profile_path, encoding="utf-8") as pf:
+                    pdata = json.load(pf)
+                    tid = pdata.get("telegram_id")
+                    if tid:
+                        allowed = [int(tid)]
+            except Exception:
+                pass
+
     pc_host = os.getenv("PC_WS_HOST") or raw.get("pc_ws_host", "")
     pc_port = int(os.getenv("PC_WS_PORT") or raw.get("pc_ws_port", 8765))
     # Render automatically provides RENDER_EXTERNAL_URL — use it so the user

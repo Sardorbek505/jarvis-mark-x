@@ -57,6 +57,8 @@ config/token.json
 config/gcal_auth_url.txt
 
 config/unlock_secret.txt
+config/unlock_password.txt
+config/unlock_*.txt
 
 jarvis_watchdog.log
 jarvis_pc_server.log
