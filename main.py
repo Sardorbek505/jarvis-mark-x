@@ -254,8 +254,19 @@ def _pick_input_device():
 
     devices = list(enumerate(sd.query_devices()))
 
-    # 1. Аппаратные/драйверные микрофоны с ИИ-шумоподавлением (ASUS AI Noise-cancelling, Krisp, RTX Voice, Intelligo)
-    # Они отсекают пространственные шумы комнаты, эхо и посторонние голоса.
+    # 1. Подключенные наушники и гарнитуры (Bluetooth, USB, AirPods, Buds, Headset, Гарнитура)
+    # Если вы надели наушники — их микрофон находится ближе всего ко рту, поэтому имеет абсолютный приоритет!
+    for i, d in devices:
+        if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
+            continue
+        name = d["name"].lower()
+        if any(k in name for k in ("headset", "headphone", "bluetooth", "wireless", "buds", "airpods", "freebuds", "wh-1000", "airdots", "гарнитур", "наушник", "hands-free", "usb")) and not _device_is_silent(i):
+            if "virtual" not in name and "line" not in name and "output" not in name:
+                logger.info("Обнаружена подключенная гарнитура/наушники — выбран микрофон: «%s» (индекс %d)", d["name"], i)
+                return i
+
+    # 2. Аппаратные/драйверные микрофоны с ИИ-шумоподавлением (ASUS AI Noise-cancelling, Krisp, RTX Voice, Intelligo)
+    # Они отсекают пространственные шумы комнаты, эхо и посторонние голоса при работе со встроенного микрофона ноутбука.
     for i, d in devices:
         if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
             continue
@@ -263,16 +274,6 @@ def _pick_input_device():
         if any(k in name for k in ("noise-cancelling", "noise cancelling", "noise-canceling", "шумоподавлен", "ai noise")) and not _device_is_silent(i):
             if "virtual line" not in name and "output" not in name:
                 logger.info("Выбран микрофон с аппаратным шумоподавлением: «%s» (индекс %d)", d["name"], i)
-                return i
-
-    # 2. Внешние USB / Bluetooth / Headset гарнитуры
-    for i, d in devices:
-        if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
-            continue
-        name = d["name"].lower()
-        if any(k in name for k in ("usb", "headset", "bluetooth", "wireless")) and not _device_is_silent(i):
-            if "virtual" not in name and "line" not in name:
-                logger.info("Выбран внешний микрофон: «%s» (индекс %d)", d["name"], i)
                 return i
 
     # 3. Встроенный Realtek / массив микрофонов
