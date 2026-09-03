@@ -391,6 +391,34 @@ def _clean_dialog_text(text: str) -> str:
 
 _clean = _clean_dialog_text
 
+_PC_WAKE_WORDS = (
+    "джарвис", "jarvis", "жарвис", "джарв", "jarv",
+    "эй джарвис", "hey jarvis", "хэй джарвис",
+    "слушай джарвис", "ок джарвис", "ok jarvis",
+)
+
+
+def is_addressed_to_jarvis(text: str) -> bool:
+    """Проверяет, обращается ли пользователь к Джарвису по имени.
+
+    На ПК Джарвис отвечает ТОЛЬКО если фраза начинается с обращения
+    'Джарвис' (или содержит его среди первых слов). Без обращения — молчит.
+    """
+    if not text:
+        return False
+    t = text.lower().strip().lstrip(" ,.:!-—?'\"«»")
+    for w in _PC_WAKE_WORDS:
+        if t.startswith(w):
+            return True
+    parts = t.split(maxsplit=3)
+    if len(parts) >= 2 and parts[0] in ("а", "ну", "так", "слушай", "эй", "хэй") and any(parts[1].startswith(w) for w in ("джарвис", "jarvis", "жарвис")):
+        return True
+    first_3_words = [p.strip(" ,.:!-—?'\"«»") for p in parts[:3]]
+    for word in first_3_words:
+        if word in ("джарвис", "jarvis", "жарвис"):
+            return True
+    return False
+
 
 # Короче этого предложение не отправляем в синтез отдельно: «Да, сэр.» звучит
 # оборванно, если оторвать его от следующей фразы, а выигрыша по времени не
@@ -1135,6 +1163,8 @@ class Jarvis:
             logger.debug("Hotkey init note: %s", _e)
             self._hotkey_mgr = None
 
+        self._wake_active_until = 0.0  # Окно активности после слова "Джарвис" или F8
+
         # Автоматический запуск мобильного Telegram-бота (@Aimyjarvisbot) в фоне
         self._telegram_proc = self._start_telegram_bot()
         atexit.register(self.cleanup)
@@ -1142,6 +1172,7 @@ class Jarvis:
     def _on_hotkey_wake(self):
         """Реакция на глобальный хоткей F8 / Ctrl+Shift+J из любого приложения или игры."""
         logger.info("[Hotkey] Нажата горячая клавиша вызова Джарвиса (F8)")
+        self._wake_active_until = time.monotonic() + 15.0
         if self.ui.muted:
             self.ui.toggle_mute()
             self.ui.write_log("SYS: ⚡ Микрофон активирован по горячей клавише F8.")
@@ -1233,6 +1264,7 @@ class Jarvis:
         # Normalize text before sending
         text = self._normalize_input_text(text)
         if text:
+            self._wake_active_until = time.monotonic() + 15.0
             self._send_text_to_session(text)
 
     def _normalize_input_text(self, text: str) -> str:
@@ -1297,12 +1329,13 @@ class Jarvis:
         # Профиль пользователя (новый мозг)
         profile_str = self.user_profile.format_for_prompt()
 
-        lang_anchor = (
-            "[ОСНОВНОЙ ЯЗЫК: РУССКИЙ]\n"
-            "Собеседник говорит по-русски (либо узбекский/казахский). Твоё имя: Джарвис (JARVIS).\n"
-            "Все входящие акустические фразы ('Čia Harvis', 'Harvis', 'Jarvis') расшифровывай и воспринимай строго как обращение 'Джарвис' на русском языке.\n\n"
+        wake_anchor = (
+            "[КРИТИЧЕСКОЕ ПРАВИЛО АКТИВАЦИИ — WAKE-WORD]\n"
+            "Ты отвечаешь и реагируешь ТОЛЬКО если пользователь лично назвал тебя по имени: 'Джарвис' (или 'Jarvis').\n"
+            "Если фраза произнесена БЕЗ слова 'Джарвис' (например: 'поставь музыку', 'включи свет', разговор между людьми в комнате) — СОХРАНЯЙ АБСОЛЮТНОЕ МОЛЧАНИЕ, не вызывай никаких инструментов и не включай музыку.\n"
+            "Только при наличии обращения 'Джарвис' исполняй команды и отвечай.\n\n"
         )
-        parts = [lang_anchor, time_ctx]
+        parts = [lang_anchor, wake_anchor, time_ctx]
         if mode_ctx:
             parts.append(mode_ctx)
         if profile_str:
@@ -1874,15 +1907,21 @@ class Jarvis:
 
             pcm_bytes = indata.tobytes()
 
-            # Если в динамиках играет звук — проверяем ключевое слово для немедленного ducking
-            if self._speaker_meter is not None and self._speaker_meter.peak > _SPEAKER_GATE:
-                if self._wake_detector:
-                    if self._wake_detector.process_pcm(pcm_bytes):
-                        try:
-                            from core.ducking_controller import ducking_controller
-                            ducking_controller.duck()
-                        except Exception:
-                            pass
+            # Детектор ключевого слова 'Джарвис' (2-Stage KWS)
+            if self._wake_detector:
+                if self._wake_detector.process_pcm(pcm_bytes):
+                    logger.info("WakeWord: 🔔 Ключевое слово 'Джарвис' зафиксировано!")
+                    self._wake_active_until = time.monotonic() + 15.0
+                    try:
+                        from core.wakeword import play_activation_chime
+                        play_activation_chime()
+                    except Exception:
+                        pass
+                    try:
+                        from core.ducking_controller import ducking_controller
+                        ducking_controller.duck()
+                    except Exception:
+                        pass
 
             was_silent = getattr(self, "_quiet_frames", MIC_HANGOVER_FRAMES + 1) > MIC_HANGOVER_FRAMES
             if not self._is_loud_enough(indata):
@@ -2025,6 +2064,10 @@ class Jarvis:
                     if response.data:
                         if self._turn_done_event and self._turn_done_event.is_set():
                             self._turn_done_event.clear()
+                        # Если обращение к Джарвису не зафиксировано — отбрасываем аудио
+                        current_speech = " ".join(in_buf)
+                        if (time.monotonic() >= self._wake_active_until) and not is_addressed_to_jarvis(current_speech):
+                            continue
                         if get_voice_provider() == "fish":
                             # Говорит Fish — звук Gemini выбрасываем, иначе
                             # два голоса произнесут один ответ одновременно.
@@ -2052,6 +2095,8 @@ class Jarvis:
                             in_buf.append(txt)
                             self._latency.mark_transcript()
                             print(f"[ДЖАРВИС] 🎤 Фрагмент: '{txt}'")
+                            if is_addressed_to_jarvis(" ".join(in_buf)):
+                                self._wake_active_until = time.monotonic() + 15.0
 
                         if sc.turn_complete:
                             # С внешним голосом ход закрывает _speak_fish,
@@ -2065,7 +2110,22 @@ class Jarvis:
                             full_in = _clean_dialog_text(raw_in)
                             in_buf = []
 
+                            is_active = (time.monotonic() < self._wake_active_until) or is_addressed_to_jarvis(full_in)
+
                             if full_in:
+                                if not is_active:
+                                    print(f"[ДЖАРВИС] 🔇 Игнорирую: нет обращения 'Джарвис' ('{full_in}')")
+                                    self.ui.write_log(f"🔇 [Игнор]: '{full_in}' (нет обращения 'Джарвис')")
+                                    out_buf = []
+                                    while not self.audio_in_queue.empty():
+                                        try:
+                                            self.audio_in_queue.get_nowait()
+                                        except Exception:
+                                            break
+                                    continue
+
+                                # Продлеваем активность на 10 сек для непрерывного диалога
+                                self._wake_active_until = time.monotonic() + 10.0
                                 print(f"[ДЖАРВИС] 🎤 Полная фраза: '{full_in}'")
                                 self.ui.write_log(f"Вы: {full_in}")
                                 self.last_user_text = full_in
@@ -2107,7 +2167,7 @@ class Jarvis:
                             full_out = _clean_dialog_text(raw_out)
                             out_buf = []
 
-                            if full_out:
+                            if full_out and is_active:
                                 self.ui.write_log(f"Джарвис: {full_out}")
                                 if get_voice_provider() == "fish":
                                     # Отдельной задачей: синтез идёт около
@@ -2116,6 +2176,17 @@ class Jarvis:
                                     asyncio.create_task(self._speak_fish(full_out))
 
                     if response.tool_call:
+                        current_user_text = full_in or " ".join(in_buf) or self.last_user_text
+                        is_active = (time.monotonic() < self._wake_active_until) or is_addressed_to_jarvis(current_user_text)
+                        if not is_active:
+                            logger.info(f"[ДЖАРВИС] 🔇 Инструменты заблокированы — нет обращения 'Джарвис' (фраза: '{current_user_text}')")
+                            responses = [
+                                {"name": fc.name, "response": {"result": "ignored_no_wake_word"}}
+                                for fc in response.tool_call.function_calls
+                            ]
+                            await self.session.send_tool_response(function_responses=responses)
+                            continue
+
                         responses = []
                         for fc in response.tool_call.function_calls:
                             print(f"[ДЖАРВИС] 📞 {fc.name}")

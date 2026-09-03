@@ -71,23 +71,25 @@ memory = MemoryStore()
 
 _WD_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
-# ── Wake-word gate ────────────────────────────────────────────────────────────
-# Бот реагирует на свободный текст/голос ТОЛЬКО если сообщение начинается с
-# обращения к Джарвису. Слэш-команды (/screenshot, /claude …) — без ограничений.
+# ── Wake-word cleaner ─────────────────────────────────────────────────────────
+# В Telegram обращение "Джарвис" НЕ обязательно (пользователь пишет напрямую).
+# Если обращение есть — убираем его для чистоты команды, если нет — оставляем.
 _WAKE_WORDS = (
     "джарвис", "jarvis", "жарвис", "джарв", "jarv",
     "эй джарвис", "hey jarvis", "хэй джарвис",
 )
 
-def _strip_wake_word(text: str) -> str | None:
-    """Если текст начинается с wake-word — возвращает текст без него (и без
-    ведущих запятых/пробелов). Если wake-word нет — возвращает None."""
+def _clean_wake_word(text: str) -> str:
+    """Если текст начинается с wake-word — возвращает текст без него.
+    Если wake-word нет — возвращает исходный текст (в Telegram отвечаем всегда)."""
+    if not text:
+        return text
     low = text.lower().strip()
     for w in _WAKE_WORDS:
         if low.startswith(w):
             rest = text[len(w):].lstrip(" ,.:!-—")
-            return rest if rest.strip() else text   # «Джарвис» без команды → передаём целиком
-    return None
+            return rest if rest.strip() else text
+    return text
 
 
 # Формат записи пары — общий с context_builder, чтобы копии не разошлись.
@@ -1503,14 +1505,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text(reply, parse_mode="Markdown")
             return
 
-        # ── Wake-word gate ────────────────────────────────────────────
-        # Бот реагирует ТОЛЬКО если сообщение начинается с "Джарвис".
-        # Без обращения — молча игнорируем. Слэш-команды не проходят
-        # сюда (MessageHandler с ~filters.COMMAND), так что они работают.
-        cleaned = _strip_wake_word(text)
-        if cleaned is None:
-            return  # не обращаются к Джарвису — молчим
-        text = cleaned  # «Джарвис, поставь музыку» → «поставь музыку»
+        # В Telegram фильтр обращения не требуется — очищаем имя, если есть:
+        text = _clean_wake_word(text)
 
         await update.effective_message.chat.send_action("typing")
 
@@ -1612,22 +1608,9 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await msg.reply_text(reply, parse_mode="Markdown")
                 return
 
-            # ── Wake-word gate for voice ──────────────────────────────
-            # Если в голосовом не было обращения "Джарвис" — молчим и игнорируем.
-            if not transcript:
-                if getattr(gemini, "last_error", "") == "quota":
-                    await msg.reply_text(
-                        "🎙 Не могу распознать голос: исчерпан бесплатный лимит Gemini "
-                        "на распознавание речи. Напиши текстом — на текст лимит "
-                        "отдельный, — или попробуй голосом позже."
-                    )
-                return
-
-            cleaned = _strip_wake_word(transcript)
-            if cleaned is None:
-                # В голосовом нет слова "Джарвис" — молчим и игнорируем
-                return
-            transcript = cleaned  # «Джарвис, поставь музыку» → «поставь музыку»
+            # В Telegram фильтр обращения не требуется — очищаем имя, если есть:
+            if transcript:
+                transcript = _clean_wake_word(transcript)
 
             if transcript and _looks_like_pc_command(transcript):
                 await msg.reply_text(f"🎙 «{transcript}»")
