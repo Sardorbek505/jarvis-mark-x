@@ -48,9 +48,9 @@ def load(require_bot: bool = True) -> Config:
         with open(_CONFIG_FILE, encoding="utf-8") as f:
             raw = json.load(f)
 
-    gemini_key = os.getenv("GEMINI_API_KEY") or raw.get("gemini_api_key", "")
-    gemini_model = os.getenv("GEMINI_MODEL") or raw.get("gemini_model", "gemini-2.5-flash")
-    token = os.getenv("TELEGRAM_BOT_TOKEN") or raw.get("telegram_bot_token", "")
+    gemini_key = (os.getenv("GEMINI_API_KEY") or raw.get("gemini_api_key", "")).strip()
+    gemini_model = (os.getenv("GEMINI_MODEL") or raw.get("gemini_model", "gemini-2.5-flash")).strip()
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or raw.get("telegram_bot_token", "")).strip()
 
     allowed_raw = os.getenv("TELEGRAM_ALLOWED_USERS") or raw.get("telegram_allowed_users", "")
     if isinstance(allowed_raw, list):
@@ -80,8 +80,8 @@ def load(require_bot: bool = True) -> Config:
     miniapp_port = int(os.getenv("MINIAPP_PORT") or raw.get("miniapp_port", 8000))
 
     # PC link — home PC dials out to the server (works behind NAT)
-    pc_link_url = os.getenv("PC_LINK_URL") or raw.get("pc_link_url", "") or miniapp_url
-    pc_link_token = os.getenv("PC_LINK_TOKEN") or raw.get("pc_link_token", "")
+    pc_link_url = (os.getenv("PC_LINK_URL") or raw.get("pc_link_url", "") or miniapp_url).strip()
+    pc_link_token = (os.getenv("PC_LINK_TOKEN") or raw.get("pc_link_token", "")).strip()
 
     # Fallback location/timezone when the phone hasn't reported its own.
     # Defaults tuned for the owner (Shymkent, Kazakhstan, UTC+5).

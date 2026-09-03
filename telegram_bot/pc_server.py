@@ -649,6 +649,23 @@ async def _handle_userbot(msg: dict) -> dict:
 
 
 async def _handle(ws, msg: dict):
+    req_uid = msg.get("user_id")
+    if req_uid is not None:
+        try:
+            from telegram_bot.config import load as load_config
+            cfg = load_config(require_bot=False)
+            if cfg.allowed_user_ids and int(req_uid) not in cfg.allowed_user_ids:
+                logger.warning("Отвергнута попытка управления ПК от неавторизованного user_id=%s", req_uid)
+                await ws.send(json.dumps({
+                    "type": "response",
+                    "req_id": msg.get("req_id"),
+                    "text": "⛔ Отклонено: этот ПК принимает команды только от владельца.",
+                    "user_id": req_uid,
+                }))
+                return
+        except Exception as exc:
+            logger.debug("Ошибка проверки авторизации на ПК: %s", exc)
+
     if msg.get("action") == "send_telegram":
         result = await _handle_userbot(msg)
     else:

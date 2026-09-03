@@ -151,12 +151,13 @@ def _is_quota_error(exc: Exception) -> bool:
 
 
 class GeminiClient:
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
+        clean_key = (api_key or "").strip()
         self._client = genai.Client(
-            api_key=api_key,
+            api_key=clean_key,
             http_options={"api_version": "v1beta"},
         )
-        self._model = model
+        self._model = model or "gemini-2.5-flash"
         self._history: dict = {}  # user_id -> list of Content dicts
         self._context_provider = None  # callable(user_id) -> str (live time/location)
         self._recall_provider = None   # async (user_id, text) -> str (notes/facts recall)
