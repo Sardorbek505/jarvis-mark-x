@@ -1185,5 +1185,19 @@ class JarvisUI(MainWindow):
         """Псевдо-атрибут для совместимости — возвращает приложение."""
         return self._app
 
+    def bring_to_front(self):
+        """Разворачивает окно и выводит на передний план."""
+        try:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+
+    def toggle_mute(self) -> bool:
+        """Переключает режим микрофона и обновляет интерфейс."""
+        self._toggle_mute()
+        return self.muted
+
     def mainloop(self):
         sys.exit(self._app.exec())

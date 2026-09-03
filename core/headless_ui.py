@@ -75,6 +75,16 @@ class HeadlessUI:
         """Прицел на инструмент — в headless это просто строчка в логе."""
         _logger.debug("инструмент: %s", tool)
 
+    def toggle_mute(self) -> bool:
+        """Переключает состояние микрофона."""
+        self.muted = not self.muted
+        _logger.debug("микрофон переключён: muted=%s", self.muted)
+        return self.muted
+
+    def bring_to_front(self) -> None:
+        """В headless окна нет — заглушка."""
+        pass
+
     # ── то, что зовёт main() ──────────────────────────────────────────────────
 
     def wait_for_api_key(self) -> str:
