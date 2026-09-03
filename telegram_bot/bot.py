@@ -90,6 +90,9 @@ _BOT_COMMANDS = [
     BotCommand("app",        "Открыть Mini App"),
     BotCommand("status",     "Статус ПК"),
     BotCommand("pc",         "Команда на ПК"),
+    BotCommand("claude",     "Написать в Claude: /claude текст"),
+    BotCommand("type",       "Напечатать в активное окно: /type текст"),
+    BotCommand("unlock_pwd", "Пароль разблокировки ПК: /unlock_pwd пин"),
     BotCommand("screenshot", "Скриншот рабочего стола"),
     BotCommand("camera",     "Снимок с веб-камеры"),
     BotCommand("vol",        "Громкость ПК: /vol 70"),
@@ -157,6 +160,12 @@ _PC_KEYWORDS = [
     "выключи компьютер", "выключи пк", "перезагрузи", "restart", "shutdown",
     # Keyboard input
     "разблокир", "разблок", "нажми enter", "нажать enter", "нажми интер", "enter", "интер",
+    # Claude & Terminal typing
+    "напиши клоду", "напиши в клод", "напиши в терминал", "напечатай в терминал",
+    "напечатай в терминале", "напечатай клоду", "скажи клоду", "отправь в клод",
+    "отправь в терминал", "введи в терминал", "передай клоду", "продолжи работу в клоде",
+    "пусть клод продолжит", "скажи клоду продолжить", "напиши клоду продолжить",
+    "напечатай", "напиши в консоль", "claude", "type",
 ]
 
 _REMINDER_TRIGGERS = ["напомни", "remind me", "поставь напоминание", "таймер на"]
@@ -1233,6 +1242,44 @@ async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _run_pc(update.effective_message, command, update.effective_user.id)
 
 
+async def cmd_claude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    text = " ".join(ctx.args).strip()
+    if not text:
+        await update.effective_message.reply_text(
+            "Использование: /claude <команда>\nПример: /claude продолжай работу над фазой 1"
+        )
+        return
+    await _run_pc(update.effective_message, f"/claude {text}", update.effective_user.id,
+                  timeout=35.0, action="upload_photo")
+
+
+async def cmd_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    text = " ".join(ctx.args).strip()
+    if not text:
+        await update.effective_message.reply_text(
+            "Использование: /type <текст>\nПример: /type npm run build"
+        )
+        return
+    await _run_pc(update.effective_message, f"/type {text}", update.effective_user.id,
+                  timeout=35.0, action="upload_photo")
+
+
+async def cmd_unlock_pwd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    pwd = " ".join(ctx.args).strip()
+    if not pwd:
+        await update.effective_message.reply_text(
+            "Использование: /unlock_pwd <пароль или пин>\nПример: /unlock_pwd 1234"
+        )
+        return
+    await _run_pc(update.effective_message, f"/unlock_pwd {pwd}", update.effective_user.id)
+
+
 async def cmd_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
@@ -1695,6 +1742,9 @@ def main():
     app.add_handler(CommandHandler("remember",   cmd_remember))
     app.add_handler(CommandHandler("forget",     cmd_forget))
     app.add_handler(CommandHandler("pc",         cmd_pc))
+    app.add_handler(CommandHandler("claude",     cmd_claude))
+    app.add_handler(CommandHandler("type",       cmd_type))
+    app.add_handler(CommandHandler("unlock_pwd", cmd_unlock_pwd))
     app.add_handler(CommandHandler("screenshot", cmd_screenshot))
     app.add_handler(CommandHandler("camera",     cmd_camera))
     app.add_handler(CommandHandler("vol",        cmd_vol))

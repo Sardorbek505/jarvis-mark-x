@@ -168,6 +168,45 @@ async def _execute(text: str) -> dict:
                   "убавь громкость", "volume down"):
             return _do_volume(-1)
 
+        # Сохранение пароля/PIN разблокировки экрана
+        if text.startswith("/unlock_pwd ") or text.startswith("unlock_pwd "):
+            from actions.claude_terminal import save_unlock_password
+            pwd = text.split(maxsplit=1)[-1].strip()
+            ok = save_unlock_password(pwd)
+            return _r("🔑 Пароль разблокировки сохранён." if ok else "❌ Не удалось сохранить пароль.")
+
+        # Удалённая печать в терминал / Claude Code
+        claude_markers = [
+            "/claude ", "claude ", "/type ", "type ",
+            "напиши клоду ", "напиши в клод ", "напиши в терминал ",
+            "напечатай в терминале ", "напечатай в терминал ", "напечатай клоду ",
+            "скажи клоду ", "отправь в клод ", "отправь в терминал ",
+            "введи в терминал ", "передай клоду ", "напиши в консоль "
+        ]
+        is_claude_cmd = False
+        target_text = ""
+        for marker in claude_markers:
+            if tl.startswith(marker):
+                target_text = text[len(marker):].strip()
+                is_claude_cmd = True
+                break
+            elif marker in tl:
+                idx = tl.find(marker)
+                target_text = text[idx + len(marker):].strip()
+                is_claude_cmd = True
+                break
+
+        if not is_claude_cmd and any(k in tl for k in (
+            "продолжи работу в клоде", "пусть клод продолжит", "скажи клоду продолжить",
+            "напиши клоду продолжить", "напиши клоду чтобы он продолжил"
+        )):
+            target_text = "продолжай работу"
+            is_claude_cmd = True
+
+        if is_claude_cmd:
+            from actions.claude_terminal import execute_claude_typing
+            return await asyncio.to_thread(execute_claude_typing, target_text, True)
+
         # Launch the desktop JARVIS app (main.py) on this PC. Must be checked
         # BEFORE the open_app block, otherwise "запусти ..." is caught there.
         if any(k in tl for k in (

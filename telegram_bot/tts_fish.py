@@ -41,12 +41,36 @@ _LATENCY = (os.getenv("FISH_LATENCY") or "normal").strip()
 _CONFIG_FILE = Path(__file__).resolve().parent.parent / "config" / "api_keys.json"
 
 
+def _config_file() -> Path:
+    """Где лежит api_keys.json — с учётом собранного .exe.
+
+    Путь рядом с исходником годится только для запуска из репозитория.
+    В сборке PyInstaller он указывает внутрь _internal, куда api_keys.json
+    не попадает и не должен: файл секретный и лежит в .gitignore. Реальный
+    конфиг установленного приложения живёт в %APPDATA%/JARVIS — и находит
+    его core.paths, который для того и написан.
+
+    Чем это было: в билде ключ не находился, is_configured() возвращала
+    False, и весь ответ молча озвучивал запасной Edge-TTS вместо Fish.
+    Снаружи это выглядело как «Джарвис говорит чужим голосом», причём без
+    единой строки в логе — до сообщения об откате исполнение не доходило.
+
+    Импорт защищён: telegram_bot ездит в облако (HF Spaces) отдельно от
+    core/, и там ключи всё равно приходят переменными окружения.
+    """
+    try:
+        from core.paths import get_config_path
+        return get_config_path("api_keys.json")
+    except Exception:
+        return _CONFIG_FILE
+
+
 @lru_cache(maxsize=1)
 def _from_config() -> dict:
     """В облаке ключи приходят env-секретами, на ПК — из api_keys.json.
     Тот же порядок, что и у остального конфига проекта."""
     try:
-        return json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+        return json.loads(_config_file().read_text(encoding="utf-8"))
     except Exception:
         return {}
 

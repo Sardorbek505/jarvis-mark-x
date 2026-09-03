@@ -153,6 +153,28 @@ def _is_spotify_installed() -> bool:
     return False
 
 
+def _is_spotify_running() -> bool:
+    """Проверяет, запущен ли реальный процесс Spotify в операционной системе."""
+    try:
+        if _OS == "Windows":
+            import subprocess
+            out = subprocess.check_output(
+                ["tasklist", "/FI", "IMAGENAME eq Spotify.exe", "/NH"],
+                text=True, errors="ignore"
+            )
+            return "Spotify.exe" in out
+        elif _OS == "Darwin":
+            import subprocess
+            out = subprocess.check_output(["pgrep", "-x", "Spotify"], text=True, errors="ignore")
+            return bool(out.strip())
+        else:
+            import subprocess
+            out = subprocess.check_output(["pgrep", "-x", "spotify"], text=True, errors="ignore")
+            return bool(out.strip())
+    except Exception:
+        return False
+
+
 def _is_valid_spotify_uri(uri: str) -> bool:
     """
     Принимаем только spotify: URI или https://open.spotify.com/...
@@ -471,21 +493,20 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
 
     # ── Шаг 2: Обработка запроса трека ─────────────────────────────────────
     if query:
-        # Способ 1: Прямой запуск по Spotify Track URI (если API вернул URI трека)
-        track_uri = _spotify_search_track_uri(query)
-        if track_uri:
-            if _open_spotify_uri(track_uri):
-                time.sleep(1.5)
+        # Способ 1: Если Spotify РЕАЛЬНО запущен в системе — играем в нём
+        if _is_spotify_running():
+            track_uri = _spotify_search_track_uri(query)
+            if track_uri and _open_spotify_uri(track_uri):
+                time.sleep(1.0)
                 _focus_spotify_window()
                 _send_key("space")
                 _send_media_key("playpause")
                 return f"Включаю «{query}» в Spotify, сэр."
 
-        # Способ 2: UI поиск и воспроизведение в Spotify
-        if _is_spotify_installed() and _ui_automation_search(query, player):
-            return f"Включаю «{query}» в Spotify, сэр."
+            if _is_spotify_installed() and _ui_automation_search(query, player):
+                return f"Включаю «{query}» в Spotify, сэр."
 
-        # Способ 3: Прямой запуск через YouTube с гарантированным звуком
+        # Способ 2 (Основной/Надёжный): Прямой запуск через YouTube с гарантированным звуком
         yt_url = _find_youtube_direct_url(query) or f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
         try:
             browser_control({"action": "go_to", "url": yt_url}, player=player)
@@ -493,23 +514,22 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
             _logger.debug("YouTube fallback не открылся: %s", exc, exc_info=True)
             return "Не удалось воспроизвести трек, сэр."
 
-        # Вкладка уже открыта — дальше идёт только «дожать автоплей».
-        # Промах по клавише не повод врать, что ничего не вышло.
-        time.sleep(2.0)
+        time.sleep(1.5)
         _send_key("space")
-        _send_media_key("playpause")
         return f"Включаю «{query}», сэр."
 
-    # ── Шаг 3: Пустой запрос (продолжить или запустить Spotify) ──────────────
-    if _is_spotify_installed():
-        _open_spotify_uri("spotify:")
-        time.sleep(1.5)
-        _focus_spotify_window()
+    # ── Шаг 3: Пустой запрос (продолжить или запустить музыку) ──────────────
+    if _is_spotify_running():
         _send_media_key("playpause")
-        return "Музыка включена, сэр."
-    else:
+        return "Продолжаю воспроизведение в Spotify, сэр."
+
+    # Если Spotify не открыт — открываем популярный музыкальный микс на YouTube
+    yt_url = _find_youtube_direct_url("популярная музыка топ треки") or "https://www.youtube.com/watch?v=jfKfPfyJRdk&autoplay=1"
+    try:
+        browser_control({"action": "go_to", "url": yt_url}, player=player)
+    except Exception:
         _send_media_key("playpause")
-        return "Воспроизведение, сэр."
+    return "Включаю музыку, сэр."
 
 
 def _pause_resume(player=None) -> str:

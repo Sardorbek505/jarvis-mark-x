@@ -182,8 +182,15 @@ def spotify_player(parameters: Dict[str, Any], player=None) -> str:
     if player:
         player.write_log(f"SYS: 🎵 Spotify API — action: {action}")
     
+    from actions.music_player import _is_spotify_running
+    spotify_is_active = _is_spotify_running()
+
     # Playback actions
     if action in ("play", "start", "включить", "запустить", "поставь"):
+        if not spotify_is_active:
+            from actions.music_player import music_player
+            return music_player(parameters=parameters, player=player)
+
         if query:
             res = spotify_api.play_query(query)
             if not res or any(k in res.lower() for k in ("запускается", "недоступен", "не нашёл", "не нашел", "ошибка", "failed")):
@@ -205,6 +212,9 @@ def spotify_player(parameters: Dict[str, Any], player=None) -> str:
             return res
 
     elif action in ("pause", "пауза"):
+        if not spotify_is_active:
+            from actions.music_player import music_player
+            return music_player(parameters={"action": "pause"}, player=player)
         res = spotify_api.pause()
         if not res or any(k in res.lower() for k in ("недоступен", "не удалось")):
             try:
@@ -215,6 +225,9 @@ def spotify_player(parameters: Dict[str, Any], player=None) -> str:
         return res
 
     elif action in ("resume", "продолжай", "продолжить", "играй"):
+        if not spotify_is_active:
+            from actions.music_player import music_player
+            return music_player(parameters={"action": "resume"}, player=player)
         res = spotify_api.resume()
         if not res or any(k in res.lower() for k in ("недоступен", "не удалось")):
             try:
@@ -225,6 +238,9 @@ def spotify_player(parameters: Dict[str, Any], player=None) -> str:
         return res
 
     elif action in ("next", "next_track", "skip", "следующий", "дальше"):
+        if not spotify_is_active:
+            from actions.music_player import music_player
+            return music_player(parameters={"action": "next"}, player=player)
         res = spotify_api.next_track()
         if not res or any(k in res.lower() for k in ("недоступен", "не удалось")):
             try:
@@ -235,6 +251,9 @@ def spotify_player(parameters: Dict[str, Any], player=None) -> str:
         return res
 
     elif action in ("prev", "previous", "prev_track", "предыдущий", "назад"):
+        if not spotify_is_active:
+            from actions.music_player import music_player
+            return music_player(parameters={"action": "prev"}, player=player)
         res = spotify_api.previous_track()
         if not res or any(k in res.lower() for k in ("недоступен", "не удалось")):
             try:
@@ -245,6 +264,9 @@ def spotify_player(parameters: Dict[str, Any], player=None) -> str:
         return res
 
     elif action in ("stop", "стоп", "остановить", "выключи"):
+        if not spotify_is_active:
+            from actions.music_player import music_player
+            return music_player(parameters={"action": "stop"}, player=player)
         res = spotify_api.pause()
         try:
             from actions.music_player import music_player

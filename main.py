@@ -44,7 +44,6 @@ import traceback
 import re
 import threading
 import time
-import random
 import subprocess
 import atexit
 from datetime import datetime
@@ -293,14 +292,14 @@ def _pick_input_device():
 CHUNK_SIZE        = 1024
 
 # Порог тишины для микрофона (RMS по int16).
-# 35.0 обеспечивает высокую чувствительность к обычной речи и шёпоту
-# без необходимости повышать голос или кричать в микрофон ноутбука.
-MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "35.0"))
+# 12.0 обеспечивает высокую чувствительность ко всем типам микрофонов (гарнитуры, USB, встроенные)
+# и улавливает даже спокойную речь и команды с расстояния.
+MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "12.0"))
 # Хвост тишины после речи — не косметика, а условие того, что тебе вообще
 # ответят. Конец фразы определяет VAD на стороне Gemini, и определить его он
 # может только по ПОЛУЧЕННОЙ тишине: когда гейт обрывает поток сразу за
 # последним громким кадром, сервер остаётся ждать продолжения фразы.
-MIC_HANGOVER_MS = int(os.getenv("MIC_HANGOVER_MS", "450"))
+MIC_HANGOVER_MS = int(os.getenv("MIC_HANGOVER_MS", "600"))
 _FRAME_MS = CHUNK_SIZE / SEND_SAMPLE_RATE * 1000
 MIC_HANGOVER_FRAMES = int(os.getenv(
     "MIC_HANGOVER_FRAMES", str(max(1, round(MIC_HANGOVER_MS / _FRAME_MS)))
@@ -1051,6 +1050,30 @@ TOOLS = [
             "required": ["provider"]
         }
     },
+    {
+        "name": "type_to_terminal",
+        "description": (
+            "Печатает текст или команду в активное окно терминала с Claude Code или консолью ИИ. "
+            "Автоматически проверяет блокировку экрана, находит окно терминала (например Smart Store), "
+            "проверяет происходящее глазами через зрение и отправляет команду с подтверждением. "
+            "Вызывай когда пользователь говорит: 'напиши клоду ...', 'скажи клоду продолжить', "
+            "'напиши в терминал ...', 'напечатай в терминале ...', 'отправь в консоль ...'."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "text": {
+                    "type": "STRING",
+                    "description": "Текст или команда для ввода в терминал (например: 'продолжай работу', 'yes', 'npm test')"
+                },
+                "press_enter": {
+                    "type": "BOOLEAN",
+                    "description": "True (по умолчанию) чтобы нажать клавишу Enter после ввода"
+                }
+            },
+            "required": ["text"]
+        }
+    },
 ]
 
 
@@ -1262,7 +1285,12 @@ class Jarvis:
         # Профиль пользователя (новый мозг)
         profile_str = self.user_profile.format_for_prompt()
 
-        parts = [time_ctx]
+        lang_anchor = (
+            "[ОСНОВНОЙ ЯЗЫК: РУССКИЙ]\n"
+            "Собеседник говорит по-русски (либо узбекский/казахский). Твоё имя: Джарвис (JARVIS).\n"
+            "Все входящие акустические фразы ('Čia Harvis', 'Harvis', 'Jarvis') расшифровывай и воспринимай строго как обращение 'Джарвис' на русском языке.\n\n"
+        )
+        parts = [lang_anchor, time_ctx]
         if mode_ctx:
             parts.append(mode_ctx)
         if profile_str:
@@ -1632,6 +1660,18 @@ class Jarvis:
                 self.ui.write_log(f"SYS: Голос переключён на {rus_name}")
                 result = {"status": "success", "voice": provider, "message": f"Голос переключён на {rus_name}"}
 
+            # ── Инструмент: ввод в терминал Claude Code ────────────────────
+            elif name == "type_to_terminal":
+                from actions.claude_terminal import execute_claude_typing
+                text = args.get("text", "")
+                press_enter = args.get("press_enter", True)
+                loop = asyncio.get_event_loop()
+                res = await loop.run_in_executor(
+                    None, lambda: execute_claude_typing(text, press_enter=press_enter)
+                )
+                self.ui.write_log(f"SYS: ⌨ Терминал: '{text}'")
+                result = res.get("text", "Готово, сэр.")
+
             # ── Инструмент: выключить ────────────────────────────────
             elif name == "shutdown_jarvis":
                 self.ui.write_log("SYS: Завершение работы...")
@@ -1787,15 +1827,34 @@ class Jarvis:
             except asyncio.QueueFull:
                 pass  # Drop audio frame silently to avoid flooding event loop
 
-        preroll = collections.deque(maxlen=10)
+        preroll = collections.deque(maxlen=30)
 
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
             if jarvis_speaking:
-                self._note_gate("Джарвис говорит сам")
-                preroll.clear()
-                return
+                # Перебивание (Barge-in): если пользователь заговорил отчетливо в микрофон
+                try:
+                    import numpy as np
+                    rms = float(np.sqrt(np.mean(np.square(indata.astype(np.float32)))))
+                except Exception:
+                    rms = 0.0
+
+                if rms > 140.0:
+                    with self._speaking_lock:
+                        self._is_speaking = False
+                    while not self.audio_in_queue.empty():
+                        try:
+                            self.audio_in_queue.get_nowait()
+                        except Exception:
+                            break
+                    self.set_speaking(False)
+                    jarvis_speaking = False
+                else:
+                    self._note_gate("Джарвис говорит сам")
+                    preroll.clear()
+                    return
+
             if self.ui.muted:
                 self._note_gate("микрофон выключен (Ctrl+M)")
                 preroll.clear()
@@ -1884,6 +1943,19 @@ class Jarvis:
             # молчать четыре минуты, каждый раз заново убеждаясь в том, что
             # уже известно. Один отказ — и остаток ответа договаривает Edge.
             fish_alive = tts_fish.is_configured()
+            if not fish_alive:
+                # Голос подменяется молча — и это уже стоило разбирательства.
+                # Если fish_alive False С САМОГО НАЧАЛА, ветка с сообщением
+                # «Fish молчит» ниже недостижима, и весь ответ звучит чужим
+                # голосом без единой строки в логе. Говорим об этом вслух и
+                # один раз за запуск, чтобы не сорить на каждом ответе.
+                if not getattr(self, "_fish_unconfigured_logged", False):
+                    self._fish_unconfigured_logged = True
+                    logger.warning(
+                        "Голос Fish выбран, но ключ не найден — отвечать будет "
+                        "Edge-TTS. Проверьте fish_api_key в %s", API_CONFIG
+                    )
+                    self.ui.write_log("SYS: ключ Fish не найден — голос звучит через Edge-TTS")
 
             async def _synth_fragment(fragment: str):
                 nonlocal fish_alive
@@ -2002,8 +2074,6 @@ class Jarvis:
                                     )
                                     if initiative:
                                         print(f"[Инициатива] {initiative}")
-                                        # Отправляем инициативное предложение
-                                        self._send_text_to_session(initiative)
 
                                 # Обучение из контекста
                                 preference = self.initiative_engine.should_learn_preference(full_in, "")
@@ -2020,9 +2090,6 @@ class Jarvis:
                                 proactive_suggestions = self.proactive_engine.get_proactive_suggestions(context)
                                 if proactive_suggestions:
                                     print(f"[Прогноз] Предложения: {proactive_suggestions}")
-                                    # Отправляем первое предложение (не навязчиво)
-                                    if proactive_suggestions and random.random() < 0.3:  # 30% шанс
-                                        self._send_text_to_session(proactive_suggestions[0])
 
                             raw_out = "".join(out_buf)
                             full_out = _clean_dialog_text(raw_out)

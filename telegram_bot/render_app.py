@@ -171,6 +171,7 @@ async def _build_tg_app():
         cmd_morning, cmd_evening, cmd_mode, cmd_profile, cmd_memstats, cmd_reindex,
         cmd_journal,
         cmd_ask, cmd_curiosity, cmd_remember, cmd_forget, cmd_facts,
+        cmd_claude, cmd_type, cmd_unlock_pwd,
         on_callback,
         handle_text, handle_voice, handle_photo, handle_document,
         _on_notification, _BOT_COMMANDS,
@@ -243,6 +244,9 @@ async def _build_tg_app():
     app.add_handler(CommandHandler("check",      cmd_check))
     app.add_handler(CommandHandler("morning",    cmd_morning))
     app.add_handler(CommandHandler("evening",    cmd_evening))
+    app.add_handler(CommandHandler("claude",     cmd_claude))
+    app.add_handler(CommandHandler("type",       cmd_type))
+    app.add_handler(CommandHandler("unlock_pwd", cmd_unlock_pwd))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
@@ -476,6 +480,33 @@ async def telegram_webhook(request: Request):
 async def health():
     """Keep-alive endpoint — ping every 5 min to prevent Render sleep."""
     return JSONResponse({"status": "ok", "pc": bridge.connected})
+
+
+@miniapp_server.app.get("/diag")
+async def diag():
+    """Diagnostic endpoint — check Gemini API health without exposing secrets."""
+    key = cfg.gemini_api_key or ""
+    result = {
+        "gemini_key_set": bool(key),
+        "gemini_key_prefix": key[:8] + "…" if len(key) > 8 else "(empty)",
+        "gemini_key_len": len(key),
+        "gemini_model": cfg.gemini_model,
+        "pc_connected": bridge.connected,
+        "bot_ready": _tg_app is not None,
+    }
+    # Quick Gemini ping
+    try:
+        from google import genai
+        from google.genai import types as gtypes
+        c = genai.Client(api_key=key)
+        r = c.models.generate_content(model=cfg.gemini_model, contents="Say OK",
+                                       config=gtypes.GenerateContentConfig(temperature=0.0))
+        result["gemini_ping"] = "ok"
+        result["gemini_response"] = (r.text or "")[:60]
+    except Exception as e:
+        result["gemini_ping"] = "fail"
+        result["gemini_error"] = f"{type(e).__name__}: {e}"[:200]
+    return JSONResponse(result)
 
 
 # Export for uvicorn
