@@ -45,6 +45,8 @@ import re
 import threading
 import time
 import random
+import subprocess
+import atexit
 from datetime import datetime
 import logging
 
@@ -1097,6 +1099,83 @@ class Jarvis:
             self._wake_detector = None
 
         self.ui.on_text_command = self._on_text_command
+
+        # Глобальные системные горячие клавиши (F8 / Ctrl+Shift+J — вызов, Ctrl+Shift+M — мьют)
+        try:
+            from core.hotkey_manager import GlobalHotkeyManager
+            self._hotkey_mgr = GlobalHotkeyManager(
+                on_wake=self._on_hotkey_wake,
+                on_mute=self._on_hotkey_mute,
+            )
+            self._hotkey_mgr.start()
+        except Exception as _e:
+            logger.debug("Hotkey init note: %s", _e)
+            self._hotkey_mgr = None
+
+        # Автоматический запуск мобильного Telegram-бота (@Aimyjarvisbot) в фоне
+        self._telegram_proc = self._start_telegram_bot()
+        atexit.register(self.cleanup)
+
+    def _on_hotkey_wake(self):
+        """Реакция на глобальный хоткей F8 / Ctrl+Shift+J из любого приложения или игры."""
+        logger.info("[Hotkey] Нажата горячая клавиша вызова Джарвиса (F8)")
+        if self.ui.muted:
+            self.ui.toggle_mute()
+            self.ui.write_log("SYS: ⚡ Микрофон активирован по горячей клавише F8.")
+        else:
+            self.ui.write_log("SYS: ⚡ Активация по горячей клавише F8.")
+        try:
+            self.ui.bring_to_front()
+        except Exception:
+            pass
+        try:
+            from core.ducking_controller import ducking_controller
+            ducking_controller.duck()
+        except Exception:
+            pass
+
+    def _on_hotkey_mute(self):
+        """Реакция на глобальный хоткей Ctrl+Shift+M из любого приложения."""
+        self.ui.toggle_mute()
+
+    def _start_telegram_bot(self):
+        """Запускает Telegram-бота в отдельном фоновом процессе при наличии токена."""
+        try:
+            from telegram_bot.config import load as load_config
+            cfg = load_config(require_bot=False)
+            if not cfg.telegram_token:
+                return None
+            bot_script = BASE_DIR / "telegram_bot" / "bot.py"
+            if not bot_script.exists():
+                return None
+            proc = subprocess.Popen(
+                [sys.executable, str(bot_script)],
+                cwd=str(BASE_DIR),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            logger.info("Telegram-бот (@Aimyjarvisbot) запущен в фоне (PID %d)", proc.pid)
+            self.ui.write_log("SYS: 📱 Telegram-бот (@Aimyjarvisbot) запущен в фоне.")
+            return proc
+        except Exception as exc:
+            logger.warning("Не удалось запустить Telegram-бот: %s", exc)
+            return None
+
+    def cleanup(self):
+        """Корректное освобождение системных ресурсов и дочерних процессов."""
+        if hasattr(self, "_hotkey_mgr") and self._hotkey_mgr:
+            try:
+                self._hotkey_mgr.stop()
+            except Exception:
+                pass
+            self._hotkey_mgr = None
+        if hasattr(self, "_telegram_proc") and self._telegram_proc:
+            try:
+                self._telegram_proc.terminate()
+            except Exception:
+                pass
+            self._telegram_proc = None
 
     # ── Текстовый ввод ────────────────────────────────────────────────────────
     def _send_text_to_session(self, text: str):
@@ -2253,6 +2332,7 @@ def main():
         except KeyboardInterrupt:
             print("\n🔴 Завершение работы...")
         finally:
+            jarvis.cleanup()
             summary = jarvis._latency.summary()
             if summary:
                 print(summary)
