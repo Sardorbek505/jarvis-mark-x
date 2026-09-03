@@ -39,6 +39,7 @@ if sys.platform == "win32":
 
 import asyncio
 import collections
+import json
 import traceback
 import re
 import threading
@@ -169,7 +170,33 @@ _THINKING_BUDGET = int(os.getenv("JARVIS_THINKING_BUDGET", "0"))
 # Цена голоса — секунда: Fish начинает звучать только когда текст готов
 # (первый кусок ~990 мс). Gemini в это время всё равно синтезирует Charon'а,
 # и этот звук мы выбрасываем — иначе они заговорили бы хором.
-_VOICE_PROVIDER = (os.getenv("JARVIS_VOICE") or "gemini").strip().lower()
+def _read_config_voice() -> str:
+    try:
+        if API_CONFIG.exists():
+            data = json.loads(API_CONFIG.read_text(encoding="utf-8"))
+            val = data.get("jarvis_voice") or data.get("voice_provider")
+            if val:
+                return str(val).strip().lower()
+    except Exception:
+        pass
+    return ""
+
+_VOICE_PROVIDER = (os.getenv("JARVIS_VOICE") or _read_config_voice() or "fish").strip().lower()
+
+def get_voice_provider() -> str:
+    global _VOICE_PROVIDER
+    return _VOICE_PROVIDER
+
+def set_voice_provider(provider: str):
+    global _VOICE_PROVIDER
+    _VOICE_PROVIDER = provider.strip().lower()
+    try:
+        if API_CONFIG.exists():
+            data = json.loads(API_CONFIG.read_text(encoding="utf-8"))
+            data["jarvis_voice"] = _VOICE_PROVIDER
+            API_CONFIG.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Не удалось сохранить jarvis_voice в конфиг: %s", exc)
 
 # За что принимаем «полную громкость» на индикаторе HUD. Не 32767: обычная
 # речь в метре от ноутбука даёт RMS порядка 1000-5000, и по полной шкале
@@ -1002,6 +1029,25 @@ TOOLS = [
             "required": ["action"]
         }
     },
+    {
+        "name": "switch_voice",
+        "description": (
+            "Переключает голос Джарвиса между киношным голосом Пола Беттани ('fish') и встроенным быстрым голосом ('gemini'). "
+            "Вызывай когда пользователь просит сменить голос: 'включи голос из фильма', 'говори как в кино', 'включи оригинальный голос', "
+            "'говори голосом Пола Беттани', 'верни быстрый голос', 'переключи на Gemini'."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "provider": {
+                    "type": "STRING",
+                    "description": "'fish' для канонического киношного голоса (Fish Audio) или 'gemini' для стандартного быстрого голоса Charon",
+                    "enum": ["fish", "gemini"]
+                }
+            },
+            "required": ["provider"]
+        }
+    },
 ]
 
 
@@ -1496,6 +1542,16 @@ class Jarvis:
                     None, lambda: sleep_timer(args, player=self.ui, bot=self)
                 )
 
+            # ── Инструмент: переключение голоса ───────────────────────────
+            elif name == "switch_voice":
+                provider = args.get("provider", "fish").strip().lower()
+                if provider not in ("fish", "gemini"):
+                    provider = "fish"
+                set_voice_provider(provider)
+                rus_name = "киношный дубляж Пола Беттани (Fish Audio)" if provider == "fish" else "стандартный быстрый голос Gemini"
+                self.ui.write_log(f"SYS: Голос переключён на {rus_name}")
+                result = {"status": "success", "voice": provider, "message": f"Голос переключён на {rus_name}"}
+
             # ── Инструмент: выключить ────────────────────────────────
             elif name == "shutdown_jarvis":
                 self.ui.write_log("SYS: Завершение работы...")
@@ -1805,7 +1861,7 @@ class Jarvis:
                     if response.data:
                         if self._turn_done_event and self._turn_done_event.is_set():
                             self._turn_done_event.clear()
-                        if _VOICE_PROVIDER == "fish":
+                        if get_voice_provider() == "fish":
                             # Говорит Fish — звук Gemini выбрасываем, иначе
                             # два голоса произнесут один ответ одновременно.
                             continue
@@ -1836,7 +1892,7 @@ class Jarvis:
                         if sc.turn_complete:
                             # С внешним голосом ход закрывает _speak_fish,
                             # когда звук реально пошёл: здесь готов только текст.
-                            if _VOICE_PROVIDER != "fish":
+                            if get_voice_provider() != "fish":
                                 self._latency.mark_turn_complete()
                             if self._turn_done_event:
                                 self._turn_done_event.set()
@@ -1894,7 +1950,7 @@ class Jarvis:
 
                             if full_out:
                                 self.ui.write_log(f"Джарвис: {full_out}")
-                                if _VOICE_PROVIDER == "fish":
+                                if get_voice_provider() == "fish":
                                     # Отдельной задачей: синтез идёт около
                                     # секунды, а приём в это время должен
                                     # продолжать читать сессию.
