@@ -398,25 +398,39 @@ _PC_WAKE_WORDS = (
 )
 
 
+_WAKE_REGEX = re.compile(
+    r"^(?:(?:эй|hey|хэй|слушай|тыңда|тында|eshit|ок|ok|а|ну|так|привет|салом|salom|сәлем|алло|короче)\s+)*(djarvis|джарвис|jarvis|жарвис|djarv|джарв|jarv)(?!['’]s\b)(?:[\s,.:!—?'’\"«»\-]|$)",
+    re.IGNORECASE,
+)
+
+
 def is_addressed_to_jarvis(text: str) -> bool:
     """Проверяет, обращается ли пользователь к Джарвису по имени.
 
     На ПК Джарвис отвечает ТОЛЬКО если фраза начинается с обращения
-    'Джарвис' (или содержит его среди первых слов). Без обращения — молчит.
+    'Джарвис' (или содержит его среди первых слов).
+    
+    Защищён от ложных срабатываний:
+    - Склонения в третьем лице ('Джарвиса нет', 'Джарвису пора', 'Джарвисом пользуюсь', "Jarvis's car")
+      считаются разговором О Джарвисе, а не обращением К нему, и игнорируются!
+    - Созвучные слова ('джаз', 'джем', 'джакузи', 'жара', 'жаркое') игнорируются.
     """
     if not text:
         return False
-    t = text.lower().strip().lstrip(" ,.:!-—?'\"«»")
-    for w in _PC_WAKE_WORDS:
-        if t.startswith(w):
-            return True
-    parts = t.split(maxsplit=3)
-    if len(parts) >= 2 and parts[0] in ("а", "ну", "так", "слушай", "эй", "хэй") and any(parts[1].startswith(w) for w in ("джарвис", "jarvis", "жарвис")):
+    t = text.lower().strip().lstrip(" ,.:!-—?'\"«»#@*()[]{}<>")
+    if not t:
+        return False
+
+    # 1. Проверка регулярным выражением с учётом границы слова и вводных обращений
+    if _WAKE_REGEX.search(t):
         return True
-    first_3_words = [p.strip(" ,.:!-—?'\"«»") for p in parts[:3]]
-    for word in first_3_words:
-        if word in ("джарвис", "jarvis", "жарвис"):
+
+    # 2. Проверка первых 3 слов на наличие прямого звательного имени (но не склонений!)
+    words = re.findall(r"[a-zA-Zа-яёА-ЯЁ0-9']+", t[:60])
+    for w in words[:3]:
+        if w in ("djarvis", "джарвис", "jarvis", "жарвис") and not w.endswith("'s"):
             return True
+
     return False
 
 
