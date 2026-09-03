@@ -53,7 +53,7 @@ def build_executable():
 
 
 def post_build():
-    print("[4/4] Проверка собранного пакета...")
+    print("[4/5] Проверка собранного пакета...")
     dist_jarvis = _BASE_DIR / "dist" / "JARVIS"
     exe_file = dist_jarvis / "JARVIS.exe"
 
@@ -63,10 +63,41 @@ def post_build():
         print("  [OK] СБОРКА УСПЕШНО ЗАВЕРШЕНА!")
         print(f"  Папка программы: {dist_jarvis}")
         print(f"  Исполняемый файл: {exe_file} ({size_mb:.1f} MB)")
-        print("  Теперь можно запускать JARVIS.exe или упаковать инсталлятором Inno Setup.")
         print("=======================================================\n")
     else:
-        print("\n[ERROR] Исполняемый файл JARVIS.exe не найден в dist/JARVIS.")
+        raise RuntimeError("Исполняемый файл JARVIS.exe не найден в dist/JARVIS.")
+
+
+def build_installer():
+    print("[5/5] Создание инсталлятора Inno Setup (JARVIS_Setup_v1.0.exe)...")
+    iss_file = _BASE_DIR / "scripts" / "installer.iss"
+    if not iss_file.exists():
+        print(f"  [WARN] Файл {iss_file} не найден. Пропуск создания установщика.")
+        return
+
+    iscc_candidates = [
+        shutil.which("iscc"),
+        r"C:\Users\User\AppData\Local\Programs\Inno Setup 6\ISCC.exe",
+        r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+        r"C:\Program Files\Inno Setup 6\ISCC.exe",
+    ]
+    iscc_exe = next((p for p in iscc_candidates if p and Path(p).exists()), None)
+    if not iscc_exe:
+        print("  [WARN] Компилятор Inno Setup (ISCC.exe) не найден. Установщик не создан.")
+        return
+
+    try:
+        print(f"  [OK] Запуск компилятора: {iscc_exe}")
+        subprocess.check_call([str(iscc_exe), str(iss_file)], cwd=str(_BASE_DIR / "scripts"))
+        setup_exe = _BASE_DIR / "dist" / "JARVIS_Setup_v1.0.exe"
+        if setup_exe.exists():
+            size_mb = setup_exe.stat().st_size / (1024 * 1024)
+            print("\n=======================================================")
+            print("  [OK] ИНСТАЛЛЯТОР УСПЕШНО СОЗДАН!")
+            print(f"  Файл инсталлятора: {setup_exe} ({size_mb:.1f} MB)")
+            print("=======================================================\n")
+    except Exception as exc:
+        print(f"  [ERROR] Ошибка при компиляции Inno Setup: {exc}")
 
 
 if __name__ == "__main__":
@@ -75,6 +106,7 @@ if __name__ == "__main__":
         clean_previous_builds()
         build_executable()
         post_build()
+        build_installer()
     except Exception as e:
         print(f"\n[ERROR] Сборка прервана с ошибкой: {e}")
         sys.exit(1)
