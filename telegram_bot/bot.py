@@ -71,6 +71,24 @@ memory = MemoryStore()
 
 _WD_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
+# ── Wake-word gate ────────────────────────────────────────────────────────────
+# Бот реагирует на свободный текст/голос ТОЛЬКО если сообщение начинается с
+# обращения к Джарвису. Слэш-команды (/screenshot, /claude …) — без ограничений.
+_WAKE_WORDS = (
+    "джарвис", "jarvis", "жарвис", "джарв", "jarv",
+    "эй джарвис", "hey jarvis", "хэй джарвис",
+)
+
+def _strip_wake_word(text: str) -> str | None:
+    """Если текст начинается с wake-word — возвращает текст без него (и без
+    ведущих запятых/пробелов). Если wake-word нет — возвращает None."""
+    low = text.lower().strip()
+    for w in _WAKE_WORDS:
+        if low.startswith(w):
+            rest = text[len(w):].lstrip(" ,.:!-—")
+            return rest if rest.strip() else text   # «Джарвис» без команды → передаём целиком
+    return None
+
 
 # Формат записи пары — общий с context_builder, чтобы копии не разошлись.
 _fmt_class = context_builder.fmt_class
@@ -1475,15 +1493,26 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     text = update.effective_message.text
     user_id = update.effective_user.id
-    await update.effective_message.chat.send_action("typing")
 
     try:
-        # 0. Onboarding in progress? Capture the answer first.
+        # 0. Onboarding in progress? Capture the answer first (no wake-word needed).
         if onboarding.is_active(user_id):
+            await update.effective_message.chat.send_action("typing")
             await memory.ensure_loaded(user_id)
             reply = await onboarding.handle(memory, user_id, text)
             await update.effective_message.reply_text(reply, parse_mode="Markdown")
             return
+
+        # ── Wake-word gate ────────────────────────────────────────────
+        # Бот реагирует ТОЛЬКО если сообщение начинается с "Джарвис".
+        # Без обращения — молча игнорируем. Слэш-команды не проходят
+        # сюда (MessageHandler с ~filters.COMMAND), так что они работают.
+        cleaned = _strip_wake_word(text)
+        if cleaned is None:
+            return  # не обращаются к Джарвису — молчим
+        text = cleaned  # «Джарвис, поставь музыку» → «поставь музыку»
+
+        await update.effective_message.chat.send_action("typing")
 
         # 0.5 If JARVIS asked a get-to-know-you question, save this as the answer
         #     (still falls through so JARVIS also replies naturally).
@@ -1583,20 +1612,26 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await msg.reply_text(reply, parse_mode="Markdown")
                 return
 
+            # ── Wake-word gate for voice ──────────────────────────────
+            # Если в голосовом не было обращения "Джарвис" — молчим и игнорируем.
+            if not transcript:
+                if getattr(gemini, "last_error", "") == "quota":
+                    await msg.reply_text(
+                        "🎙 Не могу распознать голос: исчерпан бесплатный лимит Gemini "
+                        "на распознавание речи. Напиши текстом — на текст лимит "
+                        "отдельный, — или попробуй голосом позже."
+                    )
+                return
+
+            cleaned = _strip_wake_word(transcript)
+            if cleaned is None:
+                # В голосовом нет слова "Джарвис" — молчим и игнорируем
+                return
+            transcript = cleaned  # «Джарвис, поставь музыку» → «поставь музыку»
+
             if transcript and _looks_like_pc_command(transcript):
                 await msg.reply_text(f"🎙 «{transcript}»")
                 await _run_pc(msg, transcript, user_id)
-                return
-
-            # Расшифровка не удалась из-за лимита — говорим правду. Иначе
-            # пустой текст уходил в модель, и та сочиняла «голосовое пришло
-            # пустым или не записалось», сваливая вину на микрофон владельца.
-            if not transcript and getattr(gemini, "last_error", "") == "quota":
-                await msg.reply_text(
-                    "🎙 Не могу распознать голос: исчерпан бесплатный лимит Gemini "
-                    "на распознавание речи. Напиши текстом — на текст лимит "
-                    "отдельный, — или попробуй голосом позже."
-                )
                 return
 
             # Otherwise — normal voice conversation. Voice in → voice out (mirror).

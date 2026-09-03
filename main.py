@@ -1162,27 +1162,39 @@ class Jarvis:
         self.ui.toggle_mute()
 
     def _start_telegram_bot(self):
-        """Запускает Telegram-бота в отдельном фоновом процессе при наличии токена."""
+        """Гарантирует единую связь с Telegram через PC Bridge (pc_server)."""
         try:
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                sock.bind(("127.0.0.1", 47821))
+                sock.close()
+                is_running = False
+            except OSError:
+                is_running = True
+
+            if is_running:
+                logger.info("PC Bridge уже подключён к Telegram (порт 47821 занят).")
+                self.ui.write_log("SYS: 🔗 Связь с Telegram активна (PC Bridge на связи).")
+                return None
+
             from telegram_bot.config import load as load_config
             cfg = load_config(require_bot=False)
-            if not cfg.telegram_token:
+            if not cfg.pc_link_url and not cfg.telegram_token:
                 return None
-            bot_script = BASE_DIR / "telegram_bot" / "bot.py"
-            if not bot_script.exists():
-                return None
+
             proc = subprocess.Popen(
-                [sys.executable, str(bot_script)],
+                [sys.executable, "-m", "telegram_bot.pc_server"],
                 cwd=str(BASE_DIR),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
-            logger.info("Telegram-бот (@Aimyjarvisbot) запущен в фоне (PID %d)", proc.pid)
-            self.ui.write_log("SYS: 📱 Telegram-бот (@Aimyjarvisbot) запущен в фоне.")
+            logger.info("PC Bridge к Telegram запущен в фоне (PID %d)", proc.pid)
+            self.ui.write_log("SYS: 🔗 Связь с Telegram подключена (PC Bridge запущен).")
             return proc
         except Exception as exc:
-            logger.warning("Не удалось запустить Telegram-бот: %s", exc)
+            logger.warning("Не удалось запустить PC Bridge: %s", exc)
             return None
 
     def cleanup(self):

@@ -29,8 +29,7 @@ memory/data.json
 memory/current_mode.json
 
 # Telegram Mini App — база памяти "второго мозга"
-config/jarvis_memory.db
-config/jarvis_memory.db-journal
+config/jarvis_memory.db*
 *.sqlite
 *.sqlite3
 
