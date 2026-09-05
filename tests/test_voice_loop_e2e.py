@@ -24,6 +24,7 @@
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -156,7 +157,7 @@ def стенд(tmp_path, monkeypatch):
                            monkeypatch=monkeypatch)
 
 
-async def _прогнать(стенд, frames, script, timeout=5.0):
+async def _прогнать(стенд, frames, script, timeout=5.0, wake=None):
     """Крутит все четыре задачи круга, пока ответ не доиграет."""
     j = стенд.jarvis
     session = _Session(script)
@@ -166,6 +167,16 @@ async def _прогнать(стенд, frames, script, timeout=5.0):
     j.out_queue = asyncio.Queue(maxsize=50)
     j._turn_done_event = asyncio.Event()
     j._loop = asyncio.get_event_loop()
+
+    if wake is None:
+        has_wake = any(
+            "джарвис" in (getattr(r.server_content.input_transcription, "text", "") or "").lower()
+            for r in script
+            if getattr(r, "server_content", None) and getattr(r.server_content, "input_transcription", None)
+        )
+        j._wake_active_until = time.monotonic() + 10.0 if has_wake else 0.0
+    else:
+        j._wake_active_until = time.monotonic() + 10.0 if wake else 0.0
 
     стенд.monkeypatch.setattr(
         jarvis_main.sd, "InputStream",

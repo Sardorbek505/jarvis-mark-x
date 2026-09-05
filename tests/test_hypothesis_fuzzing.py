@@ -5,7 +5,6 @@ and searches for unexpected crashes, hangs, or state inconsistencies.
 """
 
 import time
-import pytest
 from hypothesis import given, settings, strategies as st
 from main import is_addressed_to_jarvis
 from telegram_bot.bot import _clean_wake_word

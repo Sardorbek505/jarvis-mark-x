@@ -33,7 +33,11 @@ def _get_base_dir() -> Path:
 
 
 _BASE = _get_base_dir()
-_API_CONFIG = _BASE / "config" / "api_keys.json"
+try:
+    from core.paths import get_config_path
+    _API_CONFIG = get_config_path("api_keys.json")
+except Exception:
+    _API_CONFIG = _BASE / "config" / "api_keys.json"
 
 
 # ─── Google Calendar API (опционально) ─────────────────────────────────────────

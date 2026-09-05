@@ -182,97 +182,66 @@ def spotify_player(parameters: Dict[str, Any], player=None) -> str:
     if player:
         player.write_log(f"SYS: 🎵 Spotify API — action: {action}")
     
-    from actions.music_player import _is_spotify_running
-    spotify_is_active = _is_spotify_running()
-
     # Playback actions
     if action in ("play", "start", "включить", "запустить", "поставь"):
-        if not spotify_is_active:
+        res = spotify_api.play_query(query) if query else spotify_api.resume()
+        if res and not any(k in res.lower() for k in ("недоступен", "failed", "ошибка")):
+            return res
+        # Если API не ответил — пробуем через actions.music_player
+        try:
             from actions.music_player import music_player
             return music_player(parameters=parameters, player=player)
-
-        if query:
-            res = spotify_api.play_query(query)
-            if not res or any(k in res.lower() for k in ("запускается", "недоступен", "не нашёл", "не нашел", "ошибка", "failed")):
-                try:
-                    from actions.music_player import music_player
-                    return music_player(parameters=parameters, player=player)
-                except Exception as exc:
-                    _logger.debug("Откат на music_player не сработал: %s", exc, exc_info=True)
-                    return res or "Не удалось запустить воспроизведение, сэр."
-            return res
-        else:
-            res = spotify_api.resume()
-            if not res or any(k in res.lower() for k in ("запускается", "недоступен", "ошибка")):
-                try:
-                    from actions.music_player import music_player
-                    return music_player(parameters=parameters, player=player)
-                except Exception:
-                    return res or "Воспроизведение, сэр."
-            return res
+        except Exception as exc:
+            _logger.debug("Откат на music_player не сработал: %s", exc, exc_info=True)
+            return res or "Не удалось запустить музыку, сэр."
 
     elif action in ("pause", "пауза"):
-        if not spotify_is_active:
+        res = spotify_api.pause()
+        if res and "не удалось" not in res.lower() and "недоступен" not in res.lower():
+            return res
+        try:
             from actions.music_player import music_player
             return music_player(parameters={"action": "pause"}, player=player)
-        res = spotify_api.pause()
-        if not res or any(k in res.lower() for k in ("недоступен", "не удалось")):
-            try:
-                from actions.music_player import music_player
-                return music_player(parameters={"action": "pause"}, player=player)
-            except Exception:
-                return res or "Пауза, сэр."
-        return res
+        except Exception:
+            return res or "Пауза, сэр."
 
     elif action in ("resume", "продолжай", "продолжить", "играй"):
-        if not spotify_is_active:
+        res = spotify_api.resume()
+        if res and not any(k in res.lower() for k in ("недоступен", "не удалось")):
+            return res
+        try:
             from actions.music_player import music_player
             return music_player(parameters={"action": "resume"}, player=player)
-        res = spotify_api.resume()
-        if not res or any(k in res.lower() for k in ("недоступен", "не удалось")):
-            try:
-                from actions.music_player import music_player
-                return music_player(parameters={"action": "resume"}, player=player)
-            except Exception:
-                return res or "Продолжаю, сэр."
-        return res
+        except Exception:
+            return res or "Продолжаю, сэр."
 
     elif action in ("next", "next_track", "skip", "следующий", "дальше"):
-        if not spotify_is_active:
+        res = spotify_api.next_track()
+        if res and "не удалось" not in res.lower() and "недоступен" not in res.lower():
+            return res
+        try:
             from actions.music_player import music_player
             return music_player(parameters={"action": "next"}, player=player)
-        res = spotify_api.next_track()
-        if not res or any(k in res.lower() for k in ("недоступен", "не удалось")):
-            try:
-                from actions.music_player import music_player
-                return music_player(parameters={"action": "next"}, player=player)
-            except Exception:
-                return res or "Следующий трек, сэр."
-        return res
+        except Exception:
+            return res or "Следующий трек, сэр."
 
     elif action in ("prev", "previous", "prev_track", "предыдущий", "назад"):
-        if not spotify_is_active:
+        res = spotify_api.previous_track()
+        if res and "не удалось" not in res.lower() and "недоступен" not in res.lower():
+            return res
+        try:
             from actions.music_player import music_player
             return music_player(parameters={"action": "prev"}, player=player)
-        res = spotify_api.previous_track()
-        if not res or any(k in res.lower() for k in ("недоступен", "не удалось")):
-            try:
-                from actions.music_player import music_player
-                return music_player(parameters={"action": "prev"}, player=player)
-            except Exception:
-                return res or "Предыдущий трек, сэр."
-        return res
+        except Exception:
+            return res or "Предыдущий трек, сэр."
 
     elif action in ("stop", "стоп", "остановить", "выключи"):
-        if not spotify_is_active:
-            from actions.music_player import music_player
-            return music_player(parameters={"action": "stop"}, player=player)
-        res = spotify_api.pause()
+        spotify_api.pause()
         try:
             from actions.music_player import music_player
             return music_player(parameters={"action": "stop"}, player=player)
         except Exception:
-            return res or "Музыка остановлена, сэр."
+            return "Музыка остановлена, сэр."
     
     # Volume actions
     elif action in ("volume_up", "louder", "громче"):

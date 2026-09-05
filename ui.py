@@ -22,11 +22,11 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QBrush, QColor, QFont, QKeySequence, QPainter, QPen, QPixmap,
-    QShortcut, QTextCursor,
+    QPolygonF, QRadialGradient, QShortcut, QTextCursor,
 )
 from PyQt6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QPushButton, QSizePolicy, QSystemTrayIcon, QTextEdit,
+    QMainWindow, QMenu, QPushButton, QSizePolicy, QSystemTrayIcon, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
@@ -51,7 +51,11 @@ def _base_dir() -> Path:
 
 BASE_DIR = _base_dir()
 CONFIG_DIR = BASE_DIR / "config"
-API_FILE = CONFIG_DIR / "api_keys.json"
+try:
+    from core.paths import get_config_path
+    API_FILE = get_config_path("api_keys.json")
+except Exception:
+    API_FILE = CONFIG_DIR / "api_keys.json"
 
 _DEFAULT_W, _DEFAULT_H = 980, 700
 _MIN_W, _MIN_H = 820, 580
@@ -804,6 +808,312 @@ class SetupOverlay(QWidget):
         self.done.emit(key, self._sel_os)
 
 
+# ─── Плавающий виджет HUD (Stark Arc Reactor) ──────────────────────────────────
+class ArcReactorWidget(QWidget):
+    """
+    Компактный плавающий виджет HUD в стиле реактора Тони Старка (Stark Arc Reactor / Mini Dynamic Island).
+
+    Особенности:
+      - Безрамочное окно поверх всех приложений (Always-on-Top).
+      - Альфа-прозрачность фона (WA_TranslucentBackground).
+      - Свободное перетаскивание мышью в любую точку экрана.
+      - Неоновая 60 FPS анимация реактора:
+          • IDLE (ОЖИДАЕТ): медленное дыхание и мерцание лазурных дуг.
+          • LISTENING (СЛУШАЕТ): неоновый изумрудно-голубой отклик на звук микрофона (level).
+          • THINKING (ДУМАЕТ): быстрое золотое вращение сегментов реактора Mark VII.
+          • SPEAKING (ГОВОРИТ): звуковая волна и пульсация в такт речи ассистента.
+      - Клик — развернуть полное окно.
+      - Двойной клик — активация прослушивания (Wake).
+      - Правый клик — контекстное меню (Развернуть, Микрофон, Выход).
+    """
+    _state_sig = pyqtSignal(str)
+    _level_sig = pyqtSignal(float)
+
+    def __init__(self, face_path: str = "face.png", parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool |
+            Qt.WindowType.SubWindow
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFixedSize(140, 140)
+
+        self.on_restore = None
+        self.on_double_click = None
+        self.on_toggle_mute = None
+        self.on_quit = None
+
+        self.state = "ОЖИДАЕТ"
+        self.level = 0.0
+        self.muted = False
+
+        # Анимационные параметры
+        self._angle_coils = 0.0
+        self._angle_core = 0.0
+        self._breath = 0.0
+        self._pulse_r = 0.0
+        self._tick = 0
+
+        # Перетаскивание
+        self._drag_pos = None
+        self._press_pos = None
+        self._dragged = False
+
+        # Сигналы обновления из других потоков
+        self._state_sig.connect(self._apply_state)
+        self._level_sig.connect(self._apply_level)
+
+        # 60 FPS таймер
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._step)
+        self._timer.start(16)
+
+        # Позиционирование по умолчанию (правый верхний угол)
+        try:
+            screen = QApplication.primaryScreen().availableGeometry()
+            self.move(screen.width() - 160, 50)
+        except Exception:
+            pass
+
+    def set_state(self, state: str):
+        self._state_sig.emit(state)
+
+    def set_level(self, level: float):
+        self._level_sig.emit(float(level))
+
+    def _apply_state(self, state: str):
+        state_map = {
+            "IDLE": "ОЖИДАЕТ",
+            "LISTENING": "СЛУШАЕТ",
+            "THINKING": "ДУМАЕТ",
+            "SPEAKING": "ГОВОРИТ",
+            "PROCESSING": "ОБРАБОТКА",
+            "INITIALISING": "ИНИЦИАЛИЗАЦИЯ",
+            "MUTED": "ОТКЛЮЧЁН",
+        }
+        self.state = state_map.get(state.upper(), state)
+
+    def _apply_level(self, level: float):
+        # Быстрая атака, плавный спад
+        if level > self.level:
+            self.level = level
+        else:
+            self.level = self.level * 0.85 + level * 0.15
+
+    def _step(self):
+        self._tick += 1
+        st = self.state.upper()
+
+        # Дыхание
+        self._breath = 0.05 * math.sin(self._tick * 0.05)
+
+        # Плавный спад уровня звука
+        self.level *= 0.88
+
+        # Вращение сегментов в зависимости от состояния
+        if "ДУМАЕТ" in st or "THINKING" in st or "ОБРАБОТКА" in st:
+            self._angle_coils = (self._angle_coils + 5.0) % 360
+            self._angle_core = (self._angle_core - 3.5) % 360
+        elif "ГОВОРИТ" in st or "SPEAKING" in st:
+            self._angle_coils = (self._angle_coils + 2.0) % 360
+            self._angle_core = (self._angle_core - 1.5) % 360
+        elif "СЛУШАЕТ" in st or "LISTENING" in st:
+            self._angle_coils = (self._angle_coils + 1.2) % 360
+            self._angle_core = (self._angle_core - 0.8) % 360
+        else:
+            self._angle_coils = (self._angle_coils + 0.35) % 360
+            self._angle_core = (self._angle_core - 0.25) % 360
+
+        # Пульсация звуковой волны
+        if "ГОВОРИТ" in st or "SPEAKING" in st:
+            self._pulse_r += 1.8
+            if self._pulse_r > 68:
+                self._pulse_r = 25.0
+        elif "СЛУШАЕТ" in st or "LISTENING" in st:
+            self._pulse_r += 1.0
+            if self._pulse_r > 68:
+                self._pulse_r = 30.0
+        else:
+            self._pulse_r = 0.0
+
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self._press_pos = event.globalPosition().toPoint()
+            self._dragged = False
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton and self._drag_pos:
+            diff = event.globalPosition().toPoint() - self._press_pos
+            if diff.manhattanLength() > 4:
+                self._dragged = True
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if not self._dragged:
+                if callable(self.on_restore):
+                    self.on_restore()
+            self._drag_pos = None
+            event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if callable(self.on_double_click):
+                self.on_double_click()
+            event.accept()
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: #010d14;
+                color: #8ffcff;
+                border: 1px solid #0d3347;
+                font-family: 'Segoe UI', sans-serif;
+                font-size: 11px;
+                padding: 4px;
+            }}
+            QMenu::item {{
+                padding: 6px 20px;
+                border-radius: 3px;
+            }}
+            QMenu::item:selected {{
+                background-color: #001f2e;
+                color: #00d4ff;
+            }}
+        """)
+        act_restore = menu.addAction("🖥 Развернуть интерфейс")
+        act_mute = menu.addAction("🔊 Включить микрофон" if self.muted else "🔇 Выключить микрофон")
+        menu.addSeparator()
+        act_quit = menu.addAction("✕ Закрыть")
+
+        action = menu.exec(event.globalPos())
+        if action == act_restore and callable(self.on_restore):
+            self.on_restore()
+        elif action == act_mute and callable(self.on_toggle_mute):
+            self.on_toggle_mute()
+        elif action == act_quit and callable(self.on_quit):
+            self.on_quit()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        cx, cy = 70.0, 70.0
+        st = self.state.upper()
+
+        # Определение цветовой гаммы
+        if self.muted or "ОТКЛЮЧЁН" in st:
+            base_col = QColor("#ff3355")
+            glow_col = QColor(255, 51, 85, 90)
+            core_col = QColor("#ff6688")
+        elif "ДУМАЕТ" in st or "THINKING" in st or "ОБРАБОТКА" in st:
+            base_col = QColor("#ffcc00")
+            glow_col = QColor(255, 204, 0, 110)
+            core_col = QColor("#ffe066")
+        elif "СЛУШАЕТ" in st or "LISTENING" in st:
+            base_col = QColor("#00ff88")
+            glow_col = QColor(0, 255, 136, 120)
+            core_col = QColor("#66ffbb")
+        elif "ГОВОРИТ" in st or "SPEAKING" in st:
+            base_col = QColor("#ff6b00")
+            glow_col = QColor(255, 107, 0, 120)
+            core_col = QColor("#00d4ff")
+        else:  # IDLE / ОЖИДАЕТ
+            base_col = QColor("#00d4ff")
+            glow_col = QColor(0, 212, 255, 80)
+            core_col = QColor("#8ffcff")
+
+        # 1. Тёмная полупрозрачная кибер-подложка
+        p.setBrush(QBrush(QColor(1, 13, 20, 215)))
+        p.setPen(QPen(QColor(13, 51, 71, 200), 1.5))
+        p.drawEllipse(QPointF(cx, cy), 64.0, 64.0)
+
+        # 2. Внешняя пульсирующая волна (при речи / звуке)
+        if self._pulse_r > 0:
+            alpha = max(0, int(150 * (1.0 - (self._pulse_r / 68.0))))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(base_col.red(), base_col.green(), base_col.blue(), alpha), 1.5))
+            p.drawEllipse(QPointF(cx, cy), self._pulse_r, self._pulse_r)
+
+        # 3. Внешнее светящееся кольцо с рисками
+        outer_r = 58.0 + (self.level * 4.0)
+        p.setPen(QPen(glow_col, 2.0))
+        p.drawEllipse(QPointF(cx, cy), outer_r, outer_r)
+
+        # Риски по периметру
+        p.save()
+        p.translate(cx, cy)
+        p.setPen(QPen(QColor(base_col.red(), base_col.green(), base_col.blue(), 140), 1.2))
+        for i in range(12):
+            p.drawLine(0, int(-outer_r), 0, int(-outer_r + 4))
+            p.rotate(30)
+        p.restore()
+
+        # 4. Катушки реактора Старка (10 медных/энергетических катушек вокруг центра)
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(self._angle_coils)
+
+        coil_r = 44.0 + (self._breath * 15.0)
+        p.setPen(QPen(QColor(15, 64, 96, 180), 1.0))
+        p.setBrush(QBrush(QColor(base_col.red(), base_col.green(), base_col.blue(), 180)))
+
+        for i in range(10):
+            p.drawRoundedRect(QRectF(-4.5, -coil_r - 5, 9.0, 7.0), 1.5, 1.5)
+            p.rotate(36)
+        p.restore()
+
+        # 5. Среднее удерживающее кольцо
+        mid_r = 35.0
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(base_col.red(), base_col.green(), base_col.blue(), 190), 1.5))
+        p.drawEllipse(QPointF(cx, cy), mid_r, mid_r)
+
+        # Внутреннее вращающееся кольцо с пазами
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(self._angle_core)
+        p.setPen(QPen(QColor(core_col.red(), core_col.green(), core_col.blue(), 220), 2.5))
+        for arc_i in range(3):
+            p.drawArc(QRectF(-26, -26, 52, 52), int((arc_i * 120 + 10) * 16), int(70 * 16))
+        p.restore()
+
+        # 6. Центральное сияющее ядро дугового реактора
+        core_r = 16.0 + (self.level * 6.0) + (self._breath * 8.0)
+        grad = QRadialGradient(cx, cy, core_r)
+        grad.setColorAt(0.0, QColor(255, 255, 255, 250))
+        grad.setColorAt(0.45, core_col)
+        grad.setColorAt(0.85, QColor(base_col.red(), base_col.green(), base_col.blue(), 150))
+        grad.setColorAt(1.0, QColor(0, 0, 0, 0))
+
+        p.setBrush(QBrush(grad))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(cx, cy), core_r, core_r)
+
+        # 7. Фирменный треугольный элемент Mark I / Mark II в центре ядра
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(-self._angle_coils * 0.5)
+        p.setPen(QPen(QColor(0, 10, 18, 200), 1.8))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        tri_size = 7.0 + self.level * 2.0
+        triangle = QPolygonF([
+            QPointF(0, -tri_size),
+            QPointF(tri_size * 0.866, tri_size * 0.5),
+            QPointF(-tri_size * 0.866, tri_size * 0.5),
+        ])
+        p.drawPolygon(triangle)
+        p.restore()
+
+
 # ─── Главное окно ─────────────────────────────────────────────────────────────
 class MainWindow(QMainWindow):
     _log_sig   = pyqtSignal(str)
@@ -850,6 +1160,15 @@ class MainWindow(QMainWindow):
         self.muted = False        # см. комментарий выше — микрофон слушает сразу
         self.current_file: str | None = None
         self.on_text_command = None
+        self.on_wake = None
+
+        # ── Плавающий виджет HUD (Stark Arc Reactor) ────────────────
+        self._compact_mode = False
+        self._arc_reactor = ArcReactorWidget(face_path=face_path, parent=None)
+        self._arc_reactor.on_restore = lambda: self.set_compact_mode(False)
+        self._arc_reactor.on_double_click = self._on_reactor_double_click
+        self._arc_reactor.on_toggle_mute = self._toggle_mute
+        self._arc_reactor.on_quit = self.force_quit
 
         # ── Системный трей Windows ──────────────────────────────────
         try:
@@ -967,7 +1286,7 @@ class MainWindow(QMainWindow):
         # Кнопки внизу
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
-        for label, slot in [("ОЧИСТИТЬ", self._clear_log), ("ВЫХОД", self.close)]:
+        for label, slot in [("🛸 РЕАКТОР", self.toggle_compact_mode), ("ОЧИСТИТЬ", self._clear_log), ("ВЫХОД", self.close)]:
             b = QPushButton(label)
             b.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
             b.setFixedHeight(26)
@@ -990,6 +1309,7 @@ class MainWindow(QMainWindow):
         self._setup_done = False
 
         # ── Горячие клавиши ─────────────────────────────────────────
+        QShortcut(QKeySequence("Ctrl+H"), self).activated.connect(self.toggle_compact_mode)
         QShortcut(QKeySequence("Ctrl+M"), self).activated.connect(self._toggle_mute)
         QShortcut(QKeySequence("Ctrl+L"), self).activated.connect(self._clear_log)
 
@@ -1000,8 +1320,38 @@ class MainWindow(QMainWindow):
 
         self._log_sig.connect(self._log.append_log)
         self._state_sig.connect(self._apply_state)
+        self._state_sig.connect(self._arc_reactor.set_state)
         self._level_sig.connect(self._hud.feed_level)
+        self._level_sig.connect(self._arc_reactor.set_level)
         self._tool_sig.connect(self._hud.lock_on)
+
+    # ── Компактный режим виджета Arc Reactor ──────────────────────────────────
+    def _on_reactor_double_click(self):
+        """Двойной клик по реактору активирует распознавание голоса (Wake)."""
+        if callable(self.on_wake):
+            self.on_wake()
+        else:
+            self.set_compact_mode(False)
+
+    def set_compact_mode(self, enabled: bool):
+        """Переключение между главным окном и компактным виджетом дугового реактора."""
+        self._compact_mode = enabled
+        if enabled:
+            self.hide()
+            self._arc_reactor.muted = self.muted
+            self._arc_reactor.set_state(self._status_lbl.text())
+            self._arc_reactor.set_level(self._hud.level)
+            self._arc_reactor.show()
+            self._arc_reactor.raise_()
+        else:
+            self._arc_reactor.hide()
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+
+    def toggle_compact_mode(self):
+        """Инвертировать компактный режим (Главное окно <-> Arc Reactor)."""
+        self.set_compact_mode(not self._compact_mode)
 
     # ── Публичный API ──────────────────────────────────────────────────────────
     def write_log(self, text: str):
@@ -1095,13 +1445,19 @@ class MainWindow(QMainWindow):
     def _toggle_mute(self):
         self.muted = not self.muted
         self._hud.muted = self.muted
+        if hasattr(self, "_arc_reactor") and self._arc_reactor:
+            self._arc_reactor.muted = self.muted
         self._style_mute_btn()
         if self.muted:
             self.write_log("SYS: Микрофон отключён.")
             self._hud.state = "ОТКЛЮЧЁН"
+            if hasattr(self, "_arc_reactor") and self._arc_reactor:
+                self._arc_reactor.set_state("ОТКЛЮЧЁН")
         else:
             self.write_log("SYS: Микрофон включён.")
             self._hud.state = "СЛУШАЕТ"
+            if hasattr(self, "_arc_reactor") and self._arc_reactor:
+                self._arc_reactor.set_state("СЛУШАЕТ")
 
     def _style_mute_btn(self):
         if self.muted:
@@ -1162,7 +1518,9 @@ class MainWindow(QMainWindow):
             event.accept()
 
     def force_quit(self):
-        """Полное закрытие приложения по команде из меню трея."""
+        """Полное закрытие приложения по команде из меню трея или реактора."""
+        if hasattr(self, "_arc_reactor") and self._arc_reactor:
+            self._arc_reactor.hide()
         if hasattr(self, "tray") and self.tray:
             self.tray.hide()
         QApplication.quit()

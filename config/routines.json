@@ -1,0 +1,23 @@
+{
+  "relax": {
+    "name": "Отдых и расслабление",
+    "triggers": ["время отдыхать", "релакс", "сделай перерыв"],
+    "steps": [
+      {
+        "tool": "music_player",
+        "args": {
+          "action": "play",
+          "query": "chillout acoustic relax"
+        }
+      },
+      {
+        "tool": "computer_settings",
+        "args": {
+          "action": "громкость",
+          "value": "30"
+        }
+      }
+    ],
+    "response": "Включаю расслабляющую музыку и выставляю комфортную громкость. Приятного отдыха, сэр."
+  }
+}

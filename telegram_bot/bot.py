@@ -333,6 +333,9 @@ async def _apply_send_directives(update: Update, user_id: int, reply: str) -> st
     return clean
 
 
+_unauth_logged = set()
+
+
 def _is_authorized(update: Update) -> bool:
     uid = getattr(update.effective_user, "id", None)
     if uid is None:
@@ -340,6 +343,13 @@ def _is_authorized(update: Update) -> bool:
     if cfg.allowed_user_ids:
         return uid in cfg.allowed_user_ids
     # Защита от Fail-Open: если список пуст — доступ закрыт по умолчанию
+    if uid not in _unauth_logged:
+        _unauth_logged.add(uid)
+        logger.warning(
+            "TELEGRAM_ALLOWED_USERS не настроен в config/api_keys.json или env! "
+            "Отклонён запрос от пользователя %s (%s). Добавьте его ID в telegram_allowed_users.",
+            uid, getattr(update.effective_user, "username", None) or "без username"
+        )
     return False
 
 

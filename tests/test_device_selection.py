@@ -30,8 +30,8 @@ def test_pick_input_device_fallback_to_laptop_noise_cancelling(monkeypatch):
     monkeypatch.setenv("MIC_DEVICE", "")
 
     picked = jarvis_main._pick_input_device()
-    # Should pick AI Noise-cancelling (index 1) when no headphones are connected
-    assert picked == 1
+    # Should pick clean Realtek (index 0) over buggy ASUS utility
+    assert picked == 0
 
 
 def test_pick_input_device_manual_override(monkeypatch):

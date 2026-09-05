@@ -15,9 +15,8 @@ _BASE = Path(__file__).resolve().parent.parent
 if str(_BASE) not in sys.path:
     sys.path.insert(0, str(_BASE))
 
-import pytest
-from main import is_addressed_to_jarvis
-from telegram_bot.bot import _clean_wake_word
+from main import is_addressed_to_jarvis  # noqa: E402
+from telegram_bot.bot import _clean_wake_word  # noqa: E402
 
 
 # ─── ГЕНЕРАТОРЫ ТЕСТОВ ────────────────────────────────────────────────────────
@@ -237,8 +236,8 @@ if __name__ == "__main__":
     print(f"УСПЕШНО ПРОЙДЕНО:    {r['passed']:,}")
     print(f"ПРОВАЛЕНО:           {r['failed']}")
     print(f"ТОЧНОСТЬ:            {(r['passed']/r['total'])*100:.2f}%")
-    print(f"ЛОЖНЫЕ СРАБАТЫВАНИЯ: 0.000% (False Positives: 0)")
-    print(f"ЛОЖНЫЕ ПРОПУСКИ:     0.000% (False Negatives: 0)")
+    print("ЛОЖНЫЕ СРАБАТЫВАНИЯ: 0.000% (False Positives: 0)")
+    print("ЛОЖНЫЕ ПРОПУСКИ:     0.000% (False Negatives: 0)")
     print(f"ВРЕМЯ ВЫПОЛНЕНИЯ:    {r['duration_sec']:.3f} сек (скорость: {int(r['total']/r['duration_sec']):,} тестов/сек)")
     print("=" * 72)
     if r["failed"] == 0:

@@ -40,7 +40,11 @@ _OS = platform.system()
 
 # ─── Пути ─────────────────────────────────────────────────────────────────────
 _BASE = Path(__file__).resolve().parent.parent
-_API_CONFIG = _BASE / "config" / "api_keys.json"
+try:
+    from core.paths import get_config_path
+    _API_CONFIG = get_config_path("api_keys.json")
+except Exception:
+    _API_CONFIG = _BASE / "config" / "api_keys.json"
 
 # Кэш Spotify access token (срок 1 час)
 _SPOTIFY_TOKEN: Optional[str] = None
@@ -135,6 +139,7 @@ def _is_spotify_installed() -> bool:
             spotify_paths = [
                 r"C:\Program Files\Spotify\Spotify.exe",
                 r"C:\Program Files (x86)\Spotify\Spotify.exe",
+                r"%APPDATA%\Spotify\Spotify.exe",
                 r"%LOCALAPPDATA%\Spotify\Spotify.exe",
             ]
             for path in spotify_paths:
@@ -199,6 +204,16 @@ def _open_spotify_uri(uri: str) -> bool:
         return False
     try:
         if _OS == "Windows":
+            # Метод 0: локальный spotify_cli
+            cli = os.path.expandvars(r"%APPDATA%\Spotify\spotify_cli.exe")
+            if os.path.exists(cli):
+                try:
+                    res = subprocess.run([cli, "play", uri], capture_output=True, timeout=5)
+                    if res.returncode == 0:
+                        return True
+                except Exception:
+                    pass
+
             # Метод 1: os.startfile (прямой запуск через системную ассоциацию)
             try:
                 os.startfile(uri)
@@ -493,8 +508,8 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
 
     # ── Шаг 2: Обработка запроса трека ─────────────────────────────────────
     if query:
-        # Способ 1: Если Spotify РЕАЛЬНО запущен в системе — играем в нём
-        if _is_spotify_running():
+        # Способ 1: Spotify (основной плеер)
+        if _is_spotify_installed() or _is_spotify_running():
             track_uri = _spotify_search_track_uri(query)
             if track_uri and _open_spotify_uri(track_uri):
                 time.sleep(1.0)
@@ -503,7 +518,7 @@ def _play(query: str = "", playlist_url: str = "", player=None) -> str:
                 _send_media_key("playpause")
                 return f"Включаю «{query}» в Spotify, сэр."
 
-            if _is_spotify_installed() and _ui_automation_search(query, player):
+            if _ui_automation_search(query, player):
                 return f"Включаю «{query}» в Spotify, сэр."
 
         # Способ 2 (Основной/Надёжный): Прямой запуск через YouTube с гарантированным звуком
@@ -612,5 +627,15 @@ def music_player(parameters: dict, player=None) -> str:
 
     elif action in ("volume_down", "quieter", "тише"):
         return _volume("down", player)
+
+    elif action in ("now_playing", "current_track", "what_playing", "что_играет", "трек", "песня"):
+        try:
+            from core.media_session_manager import MediaSessionManager
+            speech = MediaSessionManager.get_now_playing_speech()
+            if player:
+                player.write_log(f"SYS: 🎵 {speech}")
+            return speech
+        except Exception as e:
+            return "Не удалось получить информацию о текущем треке, сэр."
 
     return f"Не понял команду: «{action}»."

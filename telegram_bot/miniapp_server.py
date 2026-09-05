@@ -27,8 +27,13 @@ MINIAPP_DIR = Path(__file__).parent / "miniapp"
 _DEFAULT_TZ = os.getenv("TIMEZONE", "Asia/Almaty")
 _DEFAULT_CITY = os.getenv("DEFAULT_CITY", "Шымкент")
 
-# Shared secret — the home PC must present this to link. Set via env on Render.
-PC_LINK_TOKEN = os.getenv("PC_LINK_TOKEN", "")
+# Shared secret — the home PC must present this to link. Set via env on Render or api_keys.json.
+try:
+    from telegram_bot.config import load as _load_cfg
+    _cfg = _load_cfg(require_bot=False)
+    PC_LINK_TOKEN = (os.getenv("PC_LINK_TOKEN") or _cfg.pc_link_token or "").strip()
+except Exception:
+    PC_LINK_TOKEN = os.getenv("PC_LINK_TOKEN", "").strip()
 
 _PC_KEYWORDS = [
     "play", "stop", "pause", "next", "prev", "volume",
@@ -155,8 +160,12 @@ async def broadcast_pc_status(online: bool):
 
 @app.websocket("/pc-link")
 async def pc_link(ws: WebSocket):
-    token = ws.query_params.get("token", "")
-    if PC_LINK_TOKEN and token != PC_LINK_TOKEN:
+    token = ws.query_params.get("token", "").strip()
+    if not PC_LINK_TOKEN:
+        logger.warning("PC link rejected — PC_LINK_TOKEN is not configured on server")
+        await ws.close(code=1008)
+        return
+    if token != PC_LINK_TOKEN:
         await ws.close(code=1008)
         logger.warning("PC link rejected — bad token")
         return

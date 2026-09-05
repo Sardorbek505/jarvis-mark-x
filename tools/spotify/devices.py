@@ -104,8 +104,10 @@ class SpotifyDevices:
         for device in devices:
             name = device.get('name', '').lower()
             device_type = device.get('type', '').lower()
-            if 'desktop' in device_type or 'spotify' in name:
+            if any(t in device_type for t in ('computer', 'desktop', 'pc')) or 'spotify' in name:
                 return device
+        if devices:
+            return devices[0]
         return None
     
     def launch_spotify_desktop(self) -> bool:
@@ -124,10 +126,15 @@ class SpotifyDevices:
                 appdata = os.environ.get('APPDATA', '')
                 exe = os.path.join(appdata, 'Spotify', 'Spotify.exe')
                 if appdata and os.path.exists(exe):
-                    subprocess.Popen([exe])
+                    subprocess.Popen([exe], cwd=os.path.dirname(exe))
                     return True
-                # 2. Fall back to the spotify: URI protocol handler.
-                #    Works for the Microsoft Store version too.
+                # 2. Local AppData location
+                local_appdata = os.environ.get('LOCALAPPDATA', '')
+                local_exe = os.path.join(local_appdata, 'Spotify', 'Spotify.exe')
+                if local_appdata and os.path.exists(local_exe):
+                    subprocess.Popen([local_exe], cwd=os.path.dirname(local_exe))
+                    return True
+                # 3. Fall back to the spotify: URI protocol handler.
                 os.startfile('spotify:')  # type: ignore[attr-defined]
                 return True
             elif system == 'Darwin':  # macOS
@@ -142,36 +149,36 @@ class SpotifyDevices:
             print(f"[SpotifyDevices] Failed to launch Spotify: {e}")
             return False
     
-    def ensure_active_device(self, max_wait: int = 8) -> Optional[Dict[str, Any]]:
+    def ensure_active_device(self, max_wait: int = 5) -> Optional[Dict[str, Any]]:
         """
-        Ensure there's an active device.  If none is found, launch the desktop
-        app and wait briefly (2 s), then return whatever is available.
-
-        Spotify takes ~20 s to register as a device after first launch, so we
-        do NOT block for the full max_wait on the first attempt — callers should
-        show a "launching, retry in 20 s" message when we return None.
+        Ensure there's an active device. If none is active, find available desktop device
+        and transfer playback to it. If none is found, launch Spotify and wait up to max_wait sec.
         """
         # Check for existing active device
         active = self.get_active_device()
         if active:
             return active
 
-        # Check for desktop device (not active but available)
+        # Check for desktop device (not active but available in cluster)
         desktop = self.get_desktop_device()
         if desktop:
-            return self.transfer_playback(desktop['id'])
+            transferred = self.transfer_playback(desktop['id'])
+            if transferred:
+                return transferred
+            return desktop
 
-        # No device available — launch desktop app then check quickly
+        # No device available — launch desktop app then check with polling
         print("[SpotifyDevices] No device found, launching desktop app...")
         self.launch_spotify_desktop()
 
-        for _ in range(1):
-            time.sleep(0.5)
+        for _ in range(max(1, int(max_wait))):
+            time.sleep(1.0)
             devices = self.list_devices(force_refresh=True)
             if devices:
                 desktop = self.get_desktop_device()
                 if desktop:
-                    return desktop
+                    transferred = self.transfer_playback(desktop['id'])
+                    return transferred or desktop
 
         return None
     

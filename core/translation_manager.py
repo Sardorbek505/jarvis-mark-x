@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Модуль для перевода в реальном времени
 """
@@ -420,30 +421,31 @@ class TranslationManager:
 
 
 # ─── Удобные функции ───────────────────────────────────────────────────────────────
-def translate_text(text: str, target_lang: str = "english") -> str:
+def _get_api_key() -> str:
+    try:
+        from core.paths import get_config_path
+        p = get_config_path("api_keys.json")
+    except Exception:
+        p = _BASE / "config" / "api_keys.json"
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f).get("gemini_api_key", "")
+    except Exception:
+        return ""
+
+
+def translate_text(text: str, target_lang: str = "en") -> str:
     """
-    Переводит текст.
+    Быстрый перевод текста.
     
     Args:
         text: Текст для перевода
-        target_lang: Целевой язык
+        target_lang: Целевой язык (en/ru/uz/...)
         
     Returns:
         Переведённый текст
     """
-    import json
-    from pathlib import Path
-    
-    _BASE = Path(__file__).parent.parent
-    api_key_file = _BASE / "config" / "api_keys.json"
-    
-    try:
-        with open(api_key_file, "r", encoding="utf-8") as f:
-            api_key = json.load(f).get("gemini_api_key", "")
-    except Exception:
-        api_key = ""
-    
-    manager = TranslationManager(api_key)
+    manager = TranslationManager(_get_api_key())
     return manager.translate(text, target_lang)
 
 
@@ -457,19 +459,7 @@ def get_translation_history(date_range: str = "all") -> List[Dict[str, Any]]:
     Returns:
         Список переводов
     """
-    import json
-    from pathlib import Path
-    
-    _BASE = Path(__file__).parent.parent
-    api_key_file = _BASE / "config" / "api_keys.json"
-    
-    try:
-        with open(api_key_file, "r", encoding="utf-8") as f:
-            api_key = json.load(f).get("gemini_api_key", "")
-    except Exception:
-        api_key = ""
-    
-    manager = TranslationManager(api_key)
+    manager = TranslationManager(_get_api_key())
     
     if date_range == "today":
         return manager.history.get_today_translations()
@@ -487,19 +477,7 @@ def search_translations(query: str) -> List[Dict[str, Any]]:
     Returns:
         Список найденных переводов
     """
-    import json
-    from pathlib import Path
-
-    _BASE = Path(__file__).parent.parent
-    api_key_file = _BASE / "config" / "api_keys.json"
-
-    try:
-        with open(api_key_file, "r", encoding="utf-8") as f:
-            api_key = json.load(f).get("gemini_api_key", "")
-    except Exception:
-        api_key = ""
-
-    manager = TranslationManager(api_key)
+    manager = TranslationManager(_get_api_key())
     return manager.history.search_translations(query)
 
 
@@ -531,7 +509,7 @@ _KNOWN_LANGUAGES = [
 
 
 def resolve_language_code(value: str) -> Optional[str]:
-    """Название языка на любом из языков → код ISO. None, если не узнали.
+    """Название языка на любом из языков -> код ISO. None, если не узнали.
 
     Принимает «english», «English», «английский», «en» и то, что пользователь
     сам дописал в target_languages. Сначала смотрим в настройки — там могут

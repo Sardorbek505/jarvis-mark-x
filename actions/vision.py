@@ -21,32 +21,52 @@ def _get_api_key() -> str:
     return load_api_keys().get("gemini_api_key", "").strip()
 
 
+_QT_APP = None
+
+
+def _get_qt_app():
+    """Возвращает существующий или создает постоянный экземпляр QApplication."""
+    global _QT_APP
+    try:
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            if _QT_APP is None:
+                _QT_APP = QApplication(sys.argv)
+            app = _QT_APP
+        return app
+    except Exception as e:
+        logger.debug("QApplication initialization error: %s", e)
+        return None
+
+
 # ── Захват экрана ─────────────────────────────────────────────────────────────
 def capture_screen_jpeg(max_size: int = 1280, quality: int = 80) -> bytes | None:
-    """Делает снимок основного экрана, масштабирует и возвращает JPEG-байты."""
-    # 1. Сначала пробуем нативный захват через PyQt6 (наиболее стабильно на Windows)
+    """Делает снимок основного экрана в RAM, масштабирует и возвращает JPEG-байты."""
+    # 1. Сначала пробуем нативный захват через PyQt6 (наиболее стабильно и быстро на Windows)
     try:
         from PyQt6.QtCore import QBuffer, QIODevice, Qt
         from PyQt6.QtGui import QGuiApplication
-        from PyQt6.QtWidgets import QApplication
 
-        _app = QApplication.instance() or QApplication(sys.argv)
-        del _app
-        screen = QGuiApplication.primaryScreen()
-        if screen:
-            pix = screen.grabWindow(0)
-            if not pix.isNull():
-                if max(pix.width(), pix.height()) > max_size:
-                    pix = pix.scaled(
-                        max_size,
-                        max_size,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                buf = QBuffer()
-                buf.open(QIODevice.OpenModeFlag.WriteOnly)
-                pix.save(buf, "JPEG", quality)
-                return bytes(buf.data())
+        app = _get_qt_app()
+        if app:
+            screen = QGuiApplication.primaryScreen()
+            if screen:
+                pix = screen.grabWindow(0)
+                if not pix.isNull():
+                    if max(pix.width(), pix.height()) > max_size:
+                        pix = pix.scaled(
+                            max_size,
+                            max_size,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                    buf = QBuffer()
+                    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                    pix.save(buf, "JPEG", quality)
+                    data = bytes(buf.data())
+                    if data:
+                        return data
     except Exception as e:
         logger.debug("PyQt6 screen grab error: %s", e)
 
@@ -91,25 +111,26 @@ def capture_active_window_jpeg(max_size: int = 1280, quality: int = 80) -> bytes
                 if win and win.width > 50 and win.height > 50:
                     from PyQt6.QtCore import QBuffer, QIODevice, Qt
                     from PyQt6.QtGui import QGuiApplication
-                    from PyQt6.QtWidgets import QApplication
 
-                    _app = QApplication.instance() or QApplication(sys.argv)
-                    del _app
-                    screen = QGuiApplication.primaryScreen()
-                    if screen:
-                        pix = screen.grabWindow(0, win.left, win.top, win.width, win.height)
-                        if not pix.isNull():
-                            if max(pix.width(), pix.height()) > max_size:
-                                pix = pix.scaled(
-                                    max_size,
-                                    max_size,
-                                    Qt.AspectRatioMode.KeepAspectRatio,
-                                    Qt.TransformationMode.SmoothTransformation,
-                                )
-                            buf = QBuffer()
-                            buf.open(QIODevice.OpenModeFlag.WriteOnly)
-                            pix.save(buf, "JPEG", quality)
-                            return bytes(buf.data())
+                    app = _get_qt_app()
+                    if app:
+                        screen = QGuiApplication.primaryScreen()
+                        if screen:
+                            pix = screen.grabWindow(0, win.left, win.top, win.width, win.height)
+                            if not pix.isNull():
+                                if max(pix.width(), pix.height()) > max_size:
+                                    pix = pix.scaled(
+                                        max_size,
+                                        max_size,
+                                        Qt.AspectRatioMode.KeepAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation,
+                                    )
+                                buf = QBuffer()
+                                buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                                pix.save(buf, "JPEG", quality)
+                                data = bytes(buf.data())
+                                if data:
+                                    return data
             except Exception as e:
                 logger.debug("Active window grab via pygetwindow failed: %s", e)
     except Exception:

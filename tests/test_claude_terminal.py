@@ -1,10 +1,7 @@
-import os
 import unittest
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from actions.claude_terminal import (
-    is_screen_locked,
     read_unlock_password,
     save_unlock_password,
     find_terminal_window,

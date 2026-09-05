@@ -13,9 +13,35 @@ from .search import SpotifySearch
 from .devices import SpotifyDevices
 from .moods import SpotifyMoods
 
+import logging
+import os
+import re
+import subprocess
+
+_logger = logging.getLogger(__name__)
+
+
+def _run_spotify_cli(args: list) -> Optional[str]:
+    """Выполняет команду через локальный spotify_cli.exe, если он установлен."""
+    cli_paths = [
+        os.path.expandvars(r"%APPDATA%\Spotify\spotify_cli.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Spotify\spotify_cli.exe"),
+    ]
+    cli = next((p for p in cli_paths if os.path.exists(p)), None)
+    if not cli:
+        return None
+    try:
+        res = subprocess.run([cli] + args, capture_output=True, text=True, timeout=5)
+        if res.returncode == 0:
+            return res.stdout.strip()
+    except Exception as exc:
+        _logger.debug("spotify_cli error: %s", exc)
+    return None
+
+
 _NO_DEVICE_MSG = (
     "Spotify запускается на ПК. "
-    "Подождите 20 секунд и повторите команду."
+    "Подождите несколько секунд и повторите команду."
 )
 
 
@@ -193,10 +219,22 @@ class SpotifyController:
         Returns:
             True if successful
         """
-        # Ensure device is active
+        # 1. Попытка через локальный spotify_cli (мгновенно, локальный IPC)
+        cli_out = _run_spotify_cli(["play", uri])
+        if cli_out is not None:
+            import time
+            time.sleep(0.3)
+            return True
+
+        # 2. Через Spotify Web API
         device = self.ensure_device()
         if not device:
-            return False
+            # 3. Fallback: запуск через протокол spotify:
+            try:
+                os.startfile(uri)
+                return True
+            except Exception:
+                return False
         
         # Play track — append device_id as query param to avoid 404
         device_id = device.get('id', '') if device else ''
@@ -205,12 +243,16 @@ class SpotifyController:
         result = self._api_request(endpoint, method='PUT', data=data)
 
         if result is not None:  # {} on 204 No Content = success
-            # Give Spotify a moment to start playback
             import time
             time.sleep(0.5)
             return True
 
-        return False
+        # Если API не сработало, запускаем через протокол
+        try:
+            os.startfile(uri)
+            return True
+        except Exception:
+            return False
 
     def play_context(self, uri: str) -> bool:
         """
@@ -222,10 +264,21 @@ class SpotifyController:
         Returns:
             True if successful
         """
-        # Ensure device is active
+        # 1. Попытка через локальный spotify_cli
+        cli_out = _run_spotify_cli(["play", uri])
+        if cli_out is not None:
+            import time
+            time.sleep(0.3)
+            return True
+
+        # 2. Через Spotify Web API
         device = self.ensure_device()
         if not device:
-            return False
+            try:
+                os.startfile(uri)
+                return True
+            except Exception:
+                return False
 
         # Play context — append device_id as query param to avoid 404
         device_id = device.get('id', '') if device else ''
@@ -234,12 +287,15 @@ class SpotifyController:
         result = self._api_request(endpoint, method='PUT', data=data)
 
         if result is not None:
-            # Give Spotify a moment to start playback
             import time
             time.sleep(0.5)
             return True
 
-        return False
+        try:
+            os.startfile(uri)
+            return True
+        except Exception:
+            return False
     
     def play_query(self, query: str) -> str:
         """
@@ -252,7 +308,27 @@ class SpotifyController:
         Returns:
             Response message
         """
+        query = (query or "").strip()
+
+        # ── Если запрос пустой ("включи музыку", "поставь песню") ───────────────
+        if not query:
+            # 1. Пробуем продолжить текущий трек
+            res = self.resume()
+            if res and not any(k in res.lower() for k in ("запускается", "недоступен", "не удалось")):
+                return res
+            # 2. Если ничего не стояло на паузе — включаем топ-плейлист
+            top_playlist = "spotify:playlist:61fB55pH3MSaVFU4z51AWy"
+            if self.play_context(top_playlist):
+                return "Включаю вашу любимую музыку в Spotify, сэр."
+            return "Включаю музыку, сэр."
+
         if not self._refresh_components():
+            # Если API недоступно, но CLI работает — ищем через CLI
+            cli_res = _run_spotify_cli(["search", query])
+            if cli_res:
+                m = re.search(r"(spotify:track:[a-zA-Z0-9]+)", cli_res)
+                if m and self.play_track(m.group(1)):
+                    return f"Включил {query} в Spotify, сэр."
             return "Spotify недоступен, сэр."
         
         # Check cache first
@@ -293,10 +369,7 @@ class SpotifyController:
 
         track = self.search.search_track(query)
         if not track:
-            # Трека нет — только теперь пробуем чужие плейлисты. Раньше этот
-            # поиск стоял ПЕРЕД поиском трека и включал первый попавшийся
-            # результат: на просьбу поставить песню находился похоже названный
-            # плейлист незнакомого человека, а до трека дело не доходило.
+            # Трека нет — только теперь пробуем чужие плейлисты.
             if self.search:
                 playlists = self.search.search_playlists(query, limit=5)
                 if playlists:
@@ -322,11 +395,14 @@ class SpotifyController:
     
     def pause(self) -> str:
         """Pause playback."""
+        cli_out = _run_spotify_cli(["pause"])
+        if cli_out is not None:
+            return "Пауза, сэр."
+
         if not self._refresh_components():
             return "Spotify недоступен, сэр."
         
         result = self._api_request('/me/player/pause', method='PUT')
-        
         if result is not None:
             return "Пауза, сэр."
         
@@ -334,6 +410,10 @@ class SpotifyController:
     
     def resume(self) -> str:
         """Resume playback."""
+        cli_out = _run_spotify_cli(["resume"])
+        if cli_out is not None:
+            return "Продолжаю, сэр."
+
         if not self._refresh_components():
             return "Spotify недоступен, сэр."
 
@@ -352,11 +432,14 @@ class SpotifyController:
     
     def next_track(self) -> str:
         """Skip to next track."""
+        cli_out = _run_spotify_cli(["next"])
+        if cli_out is not None:
+            return "Следующий трек, сэр."
+
         if not self._refresh_components():
             return "Spotify недоступен, сэр."
         
         result = self._api_request('/me/player/next', method='POST')
-        
         if result is not None:
             return "Следующий трек, сэр."
         
@@ -364,11 +447,14 @@ class SpotifyController:
     
     def previous_track(self) -> str:
         """Go to previous track."""
+        cli_out = _run_spotify_cli(["previous"])
+        if cli_out is not None:
+            return "Предыдущий трек, сэр."
+
         if not self._refresh_components():
             return "Spotify недоступен, сэр."
         
         result = self._api_request('/me/player/previous', method='POST')
-        
         if result is not None:
             return "Предыдущий трек, сэр."
         
@@ -447,6 +533,16 @@ class SpotifyController:
     
     def now_playing(self) -> str:
         """Get currently playing track info."""
+        cli_out = _run_spotify_cli(["now-playing"])
+        if cli_out:
+            lines = [line.strip() for line in cli_out.splitlines() if line.strip()]
+            if lines and "Status: Playing" in cli_out:
+                track_line = lines[0].split("spotify:")[0].strip()
+                return f"Сейчас играет: {track_line}, сэр."
+            elif lines and "Status: Paused" in cli_out:
+                track_line = lines[0].split("spotify:")[0].strip()
+                return f"Сейчас на паузе: {track_line}, сэр."
+
         if not self._refresh_components():
             return "Spotify недоступен, сэр."
         

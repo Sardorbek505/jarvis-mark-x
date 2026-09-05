@@ -26,7 +26,11 @@ from core.onboarding import ensure_gemini_key
 _logger = logging.getLogger("JARVIS")
 
 _BASE = Path(__file__).resolve().parent.parent
-_CONFIG = _BASE / "config" / "api_keys.json"
+try:
+    from core.paths import get_config_path
+    _CONFIG = get_config_path("api_keys.json")
+except Exception:
+    _CONFIG = _BASE / "config" / "api_keys.json"
 
 
 def headless_requested(argv: list[str] | None = None) -> bool:
@@ -48,6 +52,7 @@ class HeadlessUI:
     def __init__(self, config_path: Path | None = None):
         self.muted = False
         self.on_text_command = None
+        self.on_wake = None
         self.state = "INIT"
         self.logs: list[str] = []
         self._config_path = config_path or _CONFIG
@@ -84,6 +89,10 @@ class HeadlessUI:
     def bring_to_front(self) -> None:
         """В headless окна нет — заглушка."""
         pass
+
+    def set_compact_mode(self, enabled: bool) -> None:
+        """В headless окна нет — заглушка."""
+        self._compact_mode = enabled
 
     # ── то, что зовёт main() ──────────────────────────────────────────────────
 

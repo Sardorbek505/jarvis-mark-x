@@ -27,8 +27,8 @@ _BASE = Path(__file__).resolve().parent.parent
 if str(_BASE) not in sys.path:
     sys.path.insert(0, str(_BASE))
 
-from main import is_addressed_to_jarvis
-from telegram_bot.bot import _clean_wake_word
+from main import is_addressed_to_jarvis  # noqa: E402
+from telegram_bot.bot import _clean_wake_word  # noqa: E402
 
 
 # ─── ГЕНЕРАЦИЯ ПОТОКОВ ТЕСТОВ ──────────────────────────────────────────────────
@@ -314,19 +314,19 @@ if __name__ == "__main__":
     report = run_500000_tests()
 
     print("\n" + "-" * 76)
-    print(f"  [1/3] ПК НЕГАТИВНЫЕ ТЕСТЫ (250K БЕЗ 'Джарвис' -> 100% ИГНОР):")
+    print("  [1/3] ПК НЕГАТИВНЫЕ ТЕСТЫ (250K БЕЗ 'Джарвис' -> 100% ИГНОР):")
     print(f"        Пройдено: {report['neg_passed']:,} / {report['neg_total']:,}  ({(report['neg_passed']/report['neg_total'])*100:.2f}%)  [{report['neg_time_sec']:.2f} сек]")
-    print(f"  [2/3] ПК ПОЗИТИВНЫЕ ТЕСТЫ (200K С 'Джарвис'   -> 100% ОТВЕТ):")
+    print("  [2/3] ПК ПОЗИТИВНЫЕ ТЕСТЫ (200K С 'Джарвис'   -> 100% ОТВЕТ):")
     print(f"        Пройдено: {report['pos_passed']:,} / {report['pos_total']:,}  ({(report['pos_passed']/report['pos_total'])*100:.2f}%)  [{report['pos_time_sec']:.2f} сек]")
-    print(f"  [3/3] TELEGRAM ТЕСТЫ (50K КОМАНД           -> БЕЗ ИГНОРА):")
+    print("  [3/3] TELEGRAM ТЕСТЫ (50K КОМАНД           -> БЕЗ ИГНОРА):")
     print(f"        Пройдено: {report['tg_passed']:,} / {report['tg_total']:,}   ({(report['tg_passed']/report['tg_total'])*100:.2f}%)  [{report['tg_time_sec']:.2f} сек]")
     print("-" * 76)
     print(f"  ИТОГО ПРОВЕРЕНО:     {report['total_run']:,} тестов")
     print(f"  УСПЕШНО ПРОЙДЕНО:    {report['total_passed']:,}")
     print(f"  ПРОВАЛЕНО:           {report['total_failed']}")
     print(f"  ТОЧНОСТЬ (ACCURACY): {(report['total_passed']/report['total_run'])*100:.4f}%")
-    print(f"  FALSE POSITIVE RATE: 0.0000% (Ложные включения: 0)")
-    print(f"  FALSE NEGATIVE RATE: 0.0000% (Ложные пропуски: 0)")
+    print("  FALSE POSITIVE RATE: 0.0000% (Ложные включения: 0)")
+    print("  FALSE NEGATIVE RATE: 0.0000% (Ложные пропуски: 0)")
     print(f"  ОБЩЕЕ ВРЕМЯ:         {report['total_time_sec']:.3f} сек")
     print(f"  СКОРОСТЬ:            {int(report['total_run']/report['total_time_sec']):,} проверок/сек")
     print("=" * 76)

@@ -89,18 +89,18 @@ def _volume(mode: str, value: str, player) -> str:
     try:
         if _OS == "Windows":
             if mode == "mute":
-                _ps_volume("mute")
+                _win_volume("mute")
                 msg = "Звук выключен."
             elif mode == "set" and value.isdigit():
-                _ps_volume("set", int(value))
+                _win_volume("set", int(value))
                 msg = f"Громкость установлена: {value}%."
             elif mode == "up":
                 v = int(value) if value.isdigit() else 10
-                _ps_volume("up", v)
+                _win_volume("up", v)
                 msg = f"Громкость увеличена на {v}%."
             else:
                 v = int(value) if value.isdigit() else 10
-                _ps_volume("down", v)
+                _win_volume("down", v)
                 msg = f"Громкость уменьшена на {v}%."
 
         elif _OS == "Darwin":
@@ -139,6 +139,40 @@ def _volume(mode: str, value: str, player) -> str:
 
     except Exception as e:
         return f"Ошибка управления громкостью: {e}"
+
+
+def _win_volume(mode: str, val: int = 10):
+    """Мгновенное управление громкостью Windows через Win32 API keybd_event (лаг < 1 мс)."""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        VK_VOLUME_MUTE = 0xAD
+        VK_VOLUME_DOWN = 0xAE
+        VK_VOLUME_UP = 0xAF
+        KEYEVENTF_KEYUP = 0x0002
+
+        def press(vk: int):
+            user32.keybd_event(vk, 0, 0, 0)
+            user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
+
+        if mode == "mute":
+            press(VK_VOLUME_MUTE)
+        elif mode == "set":
+            for _ in range(50):
+                press(VK_VOLUME_DOWN)
+            steps = max(0, min(50, val // 2))
+            for _ in range(steps):
+                press(VK_VOLUME_UP)
+        elif mode == "up":
+            steps = max(1, val // 2)
+            for _ in range(steps):
+                press(VK_VOLUME_UP)
+        else:
+            steps = max(1, val // 2)
+            for _ in range(steps):
+                press(VK_VOLUME_DOWN)
+    except Exception:
+        _ps_volume(mode, val)
 
 
 def _ps_volume(mode: str, val: int = 10):

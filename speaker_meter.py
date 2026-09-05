@@ -80,19 +80,25 @@ class SpeakerMeter:
         while not self._stop.is_set():
             try:
                 self._peak = float(meter.GetPeakValue())
+                if misses > 0:
+                    logger.info("Связь с динамиками восстановлена")
                 misses = 0
             except Exception as exc:
+                self._peak = 0.0
                 misses += 1
                 if misses == 1:
                     logger.warning("Чтение уровня динамиков сорвалось: %s", exc)
-                if misses > 20:
-                    # Устройство сменилось — пересоздаём, а не глохнем навсегда.
+                elif misses % 60 == 0:
+                    # Устройство сменилось или уснуло — пробуем переподключиться
                     try:
-                        meter = self._make_meter()
+                        new_meter = self._make_meter()
+                        val = float(new_meter.GetPeakValue())
+                        meter = new_meter
+                        self._peak = val
                         misses = 0
-                        logger.info("Измеритель динамиков пересоздан")
+                        logger.info("Измеритель динамиков пересоздан и активен")
                     except Exception:
-                        self._peak = 0.0
+                        pass
             self._stop.wait(self._poll)
         try:
             comtypes.CoUninitialize()

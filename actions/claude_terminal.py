@@ -9,10 +9,8 @@
 5. Напечатать нужную команду/текст через буфер обмена (гарантия точной раскладки) и нажать Enter.
 6. Сделать контрольный скриншот и отправить подтверждение с фото пользователю в Telegram.
 """
-import asyncio
 import base64
 import ctypes
-from ctypes import wintypes
 import logging
 import os
 from pathlib import Path

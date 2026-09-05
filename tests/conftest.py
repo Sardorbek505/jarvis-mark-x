@@ -12,6 +12,11 @@ import pytest_asyncio
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+try:
+    import onnxruntime  # noqa: F401
+except Exception:
+    pass
+
 from telegram_bot import memory_store  # noqa: E402
 
 
