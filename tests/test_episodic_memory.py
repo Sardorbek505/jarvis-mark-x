@@ -1,6 +1,5 @@
 """Unit tests for EpisodicMemory hybrid RAG and Fast-Path memory commands."""
 
-import pytest
 from unittest.mock import patch
 from core.episodic_memory import EpisodicMemory
 from core.fast_command_router import FastCommandRouter
@@ -21,6 +20,26 @@ def test_episodic_memory_profile_summary():
     summary = EpisodicMemory.get_profile_summary()
     assert isinstance(summary, str)
     assert len(summary) > 10
+
+
+def test_episodic_memory_deduplication():
+    # Первое сохранение
+    res1 = EpisodicMemory.save_fact("уникальный тестовый факт номер 77123")
+    assert "Запомнил" in res1
+
+    # Повторное сохранение того же факта
+    res2 = EpisodicMemory.save_fact("уникальный тестовый факт номер 77123")
+    assert "уже есть в памяти" in res2 or "Запомнил" in res2
+
+    # Проверяем в БД, что запись не продублировалась
+    conn = EpisodicMemory._get_db()
+    assert conn is not None
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM facts WHERE fact = ?", ("уникальный тестовый факт номер 77123",))
+    count = cur.fetchone()[0]
+    conn.close()
+    assert count == 1
+
 
 
 def test_fast_router_save_fact():

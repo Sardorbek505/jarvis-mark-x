@@ -1,7 +1,6 @@
 """Unit tests for Smart Routines Engine and Fast-Path execution."""
 
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from core.routines_engine import RoutinesEngine
 from core.fast_command_router import FastCommandRouter
 
@@ -28,7 +27,7 @@ def test_routine_morning_execution():
         assert "Доброе утро" in res
         assert "Ташкенте" in res
         assert "Встреча в 14:00" in res
-        assert any("Доброе утро" in l for l in player.logs)
+        assert any("Доброе утро" in line for line in player.logs)
 
 
 def test_routine_work_execution():
@@ -38,7 +37,7 @@ def test_routine_work_execution():
 
         res = RoutinesEngine.execute("work", player=player)
         assert "Рабочий режим активирован" in res
-        assert any("Я за работу" in l for l in player.logs)
+        assert any("Я за работу" in line for line in player.logs)
 
 
 def test_routine_movie_execution():
@@ -46,7 +45,7 @@ def test_routine_movie_execution():
     res = RoutinesEngine.execute("movie", player=player)
     assert "Режим кинотеатра активирован" in res
     assert player.compact_mode is True
-    assert any("Режим кинотеатра" in l for l in player.logs)
+    assert any("Режим кинотеатра" in line for line in player.logs)
 
 
 def test_routine_bedtime_execution():

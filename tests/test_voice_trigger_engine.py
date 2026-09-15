@@ -1,4 +1,4 @@
-"""Тесты акустического тракта: VoiceTriggerEngine, AECPipeline, DuckingController, KWS.
+"""Тесты акустического тракта: AECPipeline, DuckingController, KWS.
 
 Тесты намеренно проверяют РЕЗУЛЬТАТ, а не факт «не упало». Прошлая версия
 ограничивалась `assert erle >= 0.0` — условие, истинное всегда, потому что
@@ -17,17 +17,29 @@ import pytest
 from core.ducking_controller import DuckingController, DuckingState
 from core.aec_pipeline import AECPipeline
 from core.wake_detector import WakeWordDetector2Stage
-from core.voice_trigger_engine import VoiceTriggerEngine
 
 SR = 16000
 
 
 def _silent_controller(**kwargs) -> DuckingController:
-    """Контроллер, не трогающий реальную громкость системы."""
+    """Контроллер, не трогающий реальную громкость системы.
+
+    Мастер-громкости мало: `set_state` поднимает список аудиосессий Windows
+    через pycaw и дальше на КАЖДОМ шаге фейдера дёргает COM, меняя громкость
+    реально запущенных приложений. Тест из-за этого, во-первых, лез в звук
+    пользователя, во-вторых, зависел от того, сколько программ играют: с
+    открытым Spotify и браузером перечисление сессий не укладывалось в
+    отведённые 200 мс, и переход RESTORING -> IDLE не успевал произойти.
+    Глушим весь COM-путь — проверяется машина состояний, а не pycaw.
+    """
     dc = DuckingController(**kwargs)
     dc._endpoint_volume = None
     dc._original_volume = 1.0
     dc._current_volume = 1.0
+    dc._discover_sessions = lambda: None
+    dc._apply_session_ducking = lambda ratio: None
+    dc._finish_restore_sessions = lambda: None
+    dc._saved_session_vols = {}
     return dc
 
 
@@ -318,43 +330,8 @@ def test_onnxruntime_survives_qt_import():
     importlib.reload(onnxruntime)          # падает, если DLL уже сломаны Qt
     assert hasattr(onnxruntime, "InferenceSession")
 
-
-# ─── VoiceTriggerEngine ───────────────────────────────────────────────────────
-def test_voice_trigger_engine_lifecycle():
-    """Проверка жизненного цикла VoiceTriggerEngine."""
-    wake_events = []
-    clean_frames = []
-
-    vte = VoiceTriggerEngine(
-        on_wake=lambda: wake_events.append(True),
-        on_clean_audio=lambda pcm: clean_frames.append(pcm),
-        enable_aec=True,
-        enable_ducking=False,
-    )
-    try:
-        dummy_mic = np.random.randint(-1000, 1000, 1024, dtype=np.int16).tobytes()
-        dummy_ref = np.zeros(1024, dtype=np.int16).tobytes()
-
-        vte._running = True
-        vte._handle_raw_frame(dummy_mic, dummy_ref, time.perf_counter())
-
-        assert len(clean_frames) == 1
-        assert len(clean_frames[0]) == len(dummy_mic)
-    finally:
-        vte.stop()
-
-
-def test_voice_trigger_engine_drops_frames_when_stopped():
-    """Остановленный движок не должен пропускать кадры дальше по тракту."""
-    clean_frames = []
-    vte = VoiceTriggerEngine(
-        on_clean_audio=lambda pcm: clean_frames.append(pcm),
-        enable_aec=False,
-        enable_ducking=False,
-    )
-    try:
-        vte._running = False
-        vte._handle_raw_frame(b"\x00\x00" * 512, b"\x00\x00" * 512, time.perf_counter())
-        assert clean_frames == []
-    finally:
-        vte.stop()
+# VoiceTriggerEngine удалён: это была вторая реализация того же тракта, что и
+# core/audio_pipeline.py, со своим захватом микрофона. В рантайме её никто не
+# создавал, а её start() открыл бы второй поток на то же устройство.
+# Захват, AEC, KWS и barge-in проверяются здесь по отдельности выше и в сборке —
+# в tests/test_runtime_wiring.py и tests/test_audio_gateway_gating.py.

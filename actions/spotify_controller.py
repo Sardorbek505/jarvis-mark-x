@@ -29,44 +29,49 @@ class SpotifyAPI:
         self._load_credentials()
     
     def _load_credentials(self) -> None:
-        """Load Spotify credentials from config."""
-        # Get absolute path to config file
-        script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        config_file = os.path.join(script_dir, "config", "api_keys.json")
-        
-        if not os.path.exists(config_file):
-            print("[SpotifyAPI] Config file not found (Spotify will be disabled)")
-            print(f"[SpotifyAPI] Expected config at: {config_file}")
-            return
-        
+        """Load Spotify credentials from config using core.paths."""
+        config = {}
         try:
-            with open(config_file, 'r') as f:
-                config = json.load(f)
-            
-            client_id = config.get('spotify_client_id', '').strip()
-            client_secret = config.get('spotify_client_secret', '').strip()
-            redirect_uri = config.get('spotify_redirect_uri', 'http://127.0.0.1:8888/callback')
-            refresh_token = config.get('spotify_refresh_token', '').strip()
-            
-            if not client_id or not client_secret:
-                print("[SpotifyAPI] Missing Spotify credentials")
-                return
-            
+            from core.paths import load_api_keys
+            config = load_api_keys()
+        except Exception as exc:
+            _logger.debug("Failed to load api_keys via core.paths: %s", exc)
+
+        if not config:
+            script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            config_file = os.path.join(script_dir, "config", "api_keys.json")
+            if os.path.exists(config_file):
+                try:
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                except Exception as e:
+                    _logger.debug("Failed to read fallback config: %s", e)
+
+        client_id = config.get('spotify_client_id', '').strip()
+        client_secret = config.get('spotify_client_secret', '').strip()
+        redirect_uri = config.get('spotify_redirect_uri', 'http://127.0.0.1:8888/callback')
+        refresh_token = config.get('spotify_refresh_token', '').strip()
+
+        if not client_id or not client_secret:
+            _logger.debug("[SpotifyAPI] Missing Spotify credentials")
+            return
+
+        try:
             # Initialize controller
             self.controller = SpotifyController(client_id, client_secret, redirect_uri)
-            
+
             # Set refresh token if available
             if refresh_token:
                 self.controller.set_refresh_token(refresh_token)
-            
+
             # Check if ready
             if self.controller.is_ready():
-                print("[SpotifyAPI] [OK] Controller ready")
+                _logger.info("[SpotifyAPI] Controller ready")
             else:
-                print("[SpotifyAPI] [WARN] Controller not authenticated")
-                
+                _logger.warning("[SpotifyAPI] Controller not authenticated")
+
         except Exception as e:
-            print(f"[SpotifyAPI] Failed to load credentials: {e}")
+            _logger.error(f"[SpotifyAPI] Failed to initialize controller: {e}")
     
     def is_ready(self) -> bool:
         """Check if Spotify API is ready."""

@@ -82,6 +82,7 @@ _KW = {
         "заблокируй", "заблокировать", "заблок", "блокировка", "заблокируй экран", "заблокировать экран", "lock screen", "lock pc", "lock",
         "выключи компьютер", "выключи пк", "shutdown пк", "shutdown компьютер", "shutdown",
         "перезагрузи компьютер", "перезагрузи пк", "restart пк", "restart", "reboot",
+        "усыпи", "спящий режим", "отправь в сон", "сон", "sleep", "suspend", "гибернация",
         "системная информация", "системная громкость", "sysinfo",
         "батарея", "battery", "заряд аккумулятора",
     ],
@@ -226,6 +227,9 @@ async def _execute(text: str) -> dict:
             if any(k in tl for k in ["заблокируй", "заблокировать", "lock screen", "lock pc"]):
                 from actions.computer_settings import computer_settings
                 return _r(await asyncio.to_thread(computer_settings, {"action": "lock"}))
+            if any(k in tl for k in ["усыпи", "спящий", "отправь в сон", "сон", "sleep", "suspend", "гибернац"]):
+                from actions.computer_settings import computer_settings
+                return _r(await asyncio.to_thread(computer_settings, {"action": "sleep"}))
             if any(k in tl for k in ["выключи компьютер", "выключи пк", "shutdown пк", "shutdown компьютер"]):
                 from actions.computer_settings import computer_settings
                 return _r(await asyncio.to_thread(computer_settings, {"action": "shutdown"}))
@@ -355,16 +359,27 @@ def _r(text: str, image_b64: str = None, unknown: bool = False) -> dict:
 
 _VK_ENTER = 0x0D
 _VK_SPACE = 0x20
-_UNLOCK_FILE = Path(__file__).resolve().parent.parent / "config" / "unlock_secret.txt"
+_UNLOCK_FILE_PRIMARY = Path(__file__).resolve().parent.parent / "config" / "unlock_password.txt"
+_UNLOCK_FILE_LEGACY = Path(__file__).resolve().parent.parent / "config" / "unlock_secret.txt"
 
 
 def _read_unlock_password() -> str:
     try:
-        if _UNLOCK_FILE.exists():
-            return _UNLOCK_FILE.read_text(encoding="utf-8").strip() or "э"
-    except Exception as exc:
-        logger.debug("Подавлено исключение: %s", exc, exc_info=True)
-    return "э"
+        from actions.claude_terminal import read_unlock_password
+        pwd = read_unlock_password()
+        if pwd:
+            return pwd
+    except Exception:
+        pass
+    for p in (_UNLOCK_FILE_PRIMARY, _UNLOCK_FILE_LEGACY):
+        try:
+            if p.exists():
+                val = p.read_text(encoding="utf-8").strip()
+                if val:
+                    return val
+        except Exception as exc:
+            logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+    return ""
 
 
 def _send_input(wVk: int = 0, wScan: int = 0, flags: int = 0):
@@ -426,13 +441,19 @@ def _do_unlock() -> dict:
         pw = _read_unlock_password()
         _press_vk(_VK_SPACE)
         time.sleep(0.4)
-        for ch in pw:
-            _type_char(ch)
-            time.sleep(0.03)
-        time.sleep(0.2)
-        _press_vk(_VK_ENTER)
-        return _r("🔓 Отправил: пробел → пароль → Enter. Если это был защищённый "
-                  "локскрин Windows — ввод туда не проходит (используй RustDesk).")
+        if pw:
+            for ch in pw:
+                _type_char(ch)
+                time.sleep(0.03)
+            time.sleep(0.2)
+            _press_vk(_VK_ENTER)
+            return _r("🔓 Отправил: пробел → пароль → Enter. Если это был защищённый "
+                      "локскрин Windows — ввод туда не проходит (используй RustDesk).")
+        else:
+            _press_vk(_VK_ENTER)
+            return _r("🔓 Отправил сигнал пробуждения (пробел → Enter). "
+                      "💡 Чтобы автоматически вводить PIN/пароль Windows, "
+                      "сохраните его командой: /unlock_pwd <ваш_пин>")
     except Exception as e:
         return _r(f"❌ Не смог отправить разблокировку: {e}")
 
@@ -474,11 +495,28 @@ def _launch_jarvis() -> dict:
 
 
 async def _do_screenshot() -> dict:
+    # 1. Попытка быстрого захвата экрана напрямую в RAM без мусора на диске
+    try:
+        from actions.vision import capture_screen_jpeg
+        jpeg_bytes = await asyncio.to_thread(capture_screen_jpeg, 1280, 75)
+        if jpeg_bytes:
+            image_b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+            return {"text": "Скриншот ✅", "image_b64": image_b64}
+    except Exception as e:
+        logger.debug("RAM capture failed: %s, falling back to computer_settings", e)
+
+    # 2. Фолбэк через computer_settings с удалением файла с Desktop после кодирования
     from actions.computer_settings import computer_settings
     msg = await asyncio.to_thread(computer_settings, {"action": "screenshot"})
     path = msg.split(":", 1)[-1].strip() if ":" in msg else None
     if path and os.path.exists(path):
-        image_b64 = _encode_image(path)
+        try:
+            image_b64 = _encode_image(path)
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
         if image_b64:
             return {"text": "Скриншот ✅", "image_b64": image_b64}
     return _r(msg)

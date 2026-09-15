@@ -1,8 +1,6 @@
 """Тесты для быстрых команд без имени (Spotterless Quick Commands, как у Алисы)."""
 
 import json
-from unittest.mock import MagicMock
-import pytest
 from core.wake_detector import WakeWordDetector2Stage
 
 

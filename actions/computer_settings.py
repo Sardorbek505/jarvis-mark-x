@@ -16,7 +16,8 @@ def computer_settings(parameters: dict, response=None, player=None) -> str:
 
     # --- СКРИНШОТ ---
     if any(k in action for k in ["скриншот", "screenshot", "снимок экрана", "захват экрана"]):
-        return _screenshot(player)
+        is_temp = bool(parameters.get("temp") or parameters.get("temporary"))
+        return _screenshot(player, temp=is_temp)
 
     # --- ГРОМКОСТЬ ---
     if any(k in action for k in ["громкость", "volume", "звук"]):
@@ -46,27 +47,36 @@ def computer_settings(parameters: dict, response=None, player=None) -> str:
     if any(k in action for k in ["заблок", "lock", "экран"]):
         return _lock(player)
 
-    # --- ВЫКЛЮЧЕНИЕ ---
+    # --- СПЯЩИЙ РЕЖИМ / СОН ---
+    if any(k in action for k in ["сон", "усыпи", "спящий", "sleep", "suspend", "гибернац", "hibernate"]):
+        return _sleep(action, player)
+
+    # --- ВЫКЛЮЧЕНИЕ / ПЕРЕЗАГРУЗКА ---
     if any(k in action for k in ["выключ", "shutdown", "перезагруз", "restart", "reboot"]):
         return _power(action, player)
 
     return f"Действие не распознано: {action}"
 
 
-def _screenshot(player) -> str:
+def _screenshot(player, temp: bool = False) -> str:
     ts = time.strftime("%Y%m%d_%H%M%S")
-    home = os.path.expanduser("~")
-    path = os.path.join(home, f"Desktop/screenshot_{ts}.png")
+    if temp:
+        import tempfile
+        path = os.path.join(tempfile.gettempdir(), f"screenshot_{ts}.png")
+    else:
+        home = os.path.expanduser("~")
+        path = os.path.join(home, "Desktop", f"screenshot_{ts}.png")
     try:
         if _OS == "Windows":
             # PowerShell screenshot
+            safe_path = path.replace("\\", "\\\\")
             ps_cmd = (
                 f'Add-Type -AssemblyName System.Windows.Forms; '
                 f'[System.Windows.Forms.Screen]::PrimaryScreen | Out-Null; '
                 f'$bmp = New-Object System.Drawing.Bitmap([System.Windows.Forms.SystemInformation]::PrimaryMonitorSize.Width, [System.Windows.Forms.SystemInformation]::PrimaryMonitorSize.Height); '
                 f'$g = [System.Drawing.Graphics]::FromImage($bmp); '
                 f'$g.CopyFromScreen(0,0,0,0,$bmp.Size); '
-                f'$bmp.Save("{path}")'
+                f'$bmp.Save("{safe_path}")'
             )
             subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, timeout=10)
         elif _OS == "Darwin":
@@ -135,6 +145,13 @@ def _volume(mode: str, value: str, player) -> str:
 
         if player:
             player.write_log(f"SYS: {msg}")
+        try:
+            from core.ducking_controller import get_ducking_controller
+            dc = get_ducking_controller()
+            if dc:
+                dc.sync_baseline_volume()
+        except Exception:
+            pass
         return msg
 
     except Exception as e:
@@ -250,6 +267,21 @@ def _lock(player) -> str:
         return "Экран заблокирован."
     except Exception as e:
         return f"Ошибка блокировки: {e}"
+
+
+def _sleep(action: str, player) -> str:
+    try:
+        if _OS == "Windows":
+            subprocess.Popen(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
+        elif _OS == "Darwin":
+            subprocess.Popen(["pmset", "sleepnow"])
+        else:
+            subprocess.Popen(["systemctl", "suspend"])
+        if player:
+            player.write_log("SYS: Перевод компьютера в спящий режим.")
+        return "Перевожу компьютер в спящий режим."
+    except Exception as e:
+        return f"Ошибка перехода в спящий режим: {e}"
 
 
 def _power(action: str, player) -> str:

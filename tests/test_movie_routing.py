@@ -1,9 +1,18 @@
-"""Unit tests for Smart Universal Cinema & Media Routing and Stark Arc Reactor HUD."""
+"""Маршрутизация фильмов: movie_player → оркестратор, парсер → провайдер, fast-path.
+
+Раньше тесты здесь проверяли заглушку `browser_control`, которую movie_player
+звал «для legacy-тестов», — настоящий запуск шёл мимо неё, и зелёные тесты
+ничего не говорили о реальной работе. Теперь проверяется то, что происходит
+на самом деле: кому movie_player отдаёт запрос и какой провайдер выбирает парсер.
+"""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
+
+from actions.movie_player import movie_player
 from core.fast_command_router import FastCommandRouter
-from actions.movie_player import movie_player, _play
+from core.media.models import MediaType, parse_media_request
 
 
 def test_movie_player_empty_title():
@@ -11,70 +20,54 @@ def test_movie_player_empty_title():
     assert "Назовите фильм" in res
 
 
-def test_movie_player_youtube_routing():
-    browser_calls = []
-    with patch("actions.movie_player.browser_control", lambda p, player=None: browser_calls.append(p)), \
-         patch("actions.movie_player._focus_movie_player", return_value=True), \
-         patch("actions.movie_player._fullscreen", return_value="ok"), \
-         patch("actions.movie_player.time.sleep", return_value=None):
-
-        res = movie_player({"action": "play", "platform": "youtube", "title": "Inception Trailer"})
-        assert "YouTube" in res
-        assert len(browser_calls) == 1
-        assert "youtube.com/results" in browser_calls[0]["url"]
-        assert "Inception%20Trailer" in browser_calls[0]["url"]
-
-
-def test_movie_player_kinopoisk_routing():
-    browser_calls = []
-    with patch("actions.movie_player.browser_control", lambda p, player=None: browser_calls.append(p)), \
-         patch("actions.movie_player._focus_movie_player", return_value=True), \
-         patch("actions.movie_player.time.sleep", return_value=None):
-
-        res = movie_player({"action": "play", "platform": "kinopoisk", "title": "Интерстеллар"})
-        assert "Кинопоиске" in res
-        assert len(browser_calls) == 1
-        assert "kinopoisk.ru" in browser_calls[0]["url"]
-
-
-def test_movie_player_vkvideo_routing():
-    browser_calls = []
-    with patch("actions.movie_player.browser_control", lambda p, player=None: browser_calls.append(p)), \
-         patch("actions.movie_player._focus_movie_player", return_value=True), \
-         patch("actions.movie_player._fullscreen", return_value="ok"), \
-         patch("actions.movie_player.time.sleep", return_value=None):
-
+def test_movie_player_play_delegates_to_orchestrator_once():
+    orch = MagicMock()
+    orch.play_media.return_value = "Включаю «Гладиатор» на VK Видео, сэр."
+    with patch("actions.movie_player.get_media_orchestrator", return_value=orch):
         res = movie_player({"action": "play", "platform": "vkvideo", "title": "Гладиатор"})
-        assert "VK Видео" in res
-        assert len(browser_calls) == 1
-        assert "vkvideo.ru" in browser_calls[0]["url"]
+
+    orch.play_media.assert_called_once()
+    title, params = orch.play_media.call_args.args
+    assert title == "Гладиатор"
+    assert params["platform"] == "vkvideo"
+    assert res == "Включаю «Гладиатор» на VK Видео, сэр."
 
 
-def test_movie_player_auto_detection_trailer():
-    browser_calls = []
-    with patch("actions.movie_player.browser_control", lambda p, player=None: browser_calls.append(p)), \
-         patch("actions.movie_player._focus_movie_player", return_value=True), \
-         patch("actions.movie_player._fullscreen", return_value="ok"), \
-         patch("actions.movie_player.time.sleep", return_value=None):
+@pytest.mark.parametrize(
+    "title,params,expected_provider",
+    [
+        ("Inception Trailer", {"platform": "youtube"}, "youtube"),
+        ("Интерстеллар", {"platform": "kinopoisk"}, "kinopoisk"),
+        ("Гладиатор", {"platform": "vkvideo"}, "vkvideo"),
+        ("трейлер Аватар 3", {}, "youtube"),
+        ("на ютубе клип Linkin Park", {}, "youtube"),
+        ("на кинопоиске Дюна 2", {}, "kinopoisk"),
+        ("Интерстеллар", {}, "vk"),
+    ],
+)
+def test_parser_picks_provider(title, params, expected_provider):
+    assert parse_media_request(title, params).provider == expected_provider
 
-        # Запрос трейлера без указания платформы должен автоматически уйти на YouTube
-        res = movie_player({"action": "play", "title": "трейлер Аватар 3"})
-        assert "YouTube" in res
-        assert "youtube.com" in browser_calls[0]["url"]
+
+def test_explicit_music_type_is_not_turned_into_movie():
+    """«Linkin Park» без слова «песня» — музыка, если так сказал вызывающий."""
+    req = parse_media_request("Linkin Park", {"media_type": "music"})
+    assert req.media_type == MediaType.MUSIC
+    assert req.provider == "spotify"
 
 
-def test_movie_player_auto_detection_in_title():
-    browser_calls = []
-    with patch("actions.movie_player.browser_control", lambda p, player=None: browser_calls.append(p)), \
-         patch("actions.movie_player._focus_movie_player", return_value=True), \
-         patch("actions.movie_player._fullscreen", return_value="ok"), \
-         patch("actions.movie_player.time.sleep", return_value=None):
+def test_music_player_sends_music_query_as_string():
+    """play_media ждёт строку; объект MediaRequest превращался в фильм."""
+    from actions.music_player import music_player
 
-        res = movie_player({"action": "play", "title": "на ютубе клип Linkin Park"})
-        assert "YouTube" in res
+    orch = MagicMock()
+    orch.play_media.return_value = "Включаю Linkin Park, сэр."
+    with patch("actions.music_player.get_media_orchestrator", return_value=orch):
+        music_player({"action": "play", "query": "Linkin Park"})
 
-        res_kp = movie_player({"action": "play", "title": "на кинопоиске Дюна 2"})
-        assert "Кинопоиске" in res_kp
+    query, params = orch.play_media.call_args.args
+    assert query == "Linkin Park"
+    assert params["media_type"] == "music"
 
 
 # ─── Fast-Path тесты ─────────────────────────────────────────────────────────

@@ -14,9 +14,29 @@ _logger = logging.getLogger(__name__)
 
 
 _BROWSERS = {
-    "chrome": ["google-chrome", "chrome", "chromium"],
+    "yandex": [
+        os.path.expandvars(r"%LOCALAPPDATA%\Yandex\YandexBrowser\Application\browser.exe"),
+        r"C:\Program Files\Yandex\YandexBrowser\Application\browser.exe",
+        r"C:\Program Files (x86)\Yandex\YandexBrowser\Application\browser.exe",
+        "browser.exe",
+        "browser",
+    ],
+    "chrome": [
+        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        "google-chrome",
+        "chrome",
+        "chromium",
+    ],
     "firefox": ["firefox"],
-    "edge": ["msedge", "microsoft-edge"],
+    "edge": [
+        os.path.expandvars(r"%PROGRAMFILES(X86)%\Microsoft\Edge\Application\msedge.exe"),
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        "msedge",
+        "microsoft-edge",
+    ],
     "safari": ["safari"],
     "opera": ["opera"],
     "brave": ["brave-browser", "brave"],
@@ -52,21 +72,30 @@ def _open_url(url: str, browser: str | None = None):
     if browser:
         candidates = _BROWSERS.get(browser.lower(), [browser])
         for cmd in candidates:
-            if shutil.which(cmd):
-                subprocess.Popen([cmd, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return
+            if shutil.which(cmd) or (os.path.isabs(cmd) and os.path.exists(cmd)):
+                try:
+                    subprocess.Popen([cmd, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return
+                except Exception as exc:
+                    _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 
     # Дефолтный браузер
     if sys.platform == "win32":
-        # Метод 1: os.startfile (прямой запуск через системную ассоциацию)
+        import webbrowser
+        try:
+            if webbrowser.open(url, new=2, autoraise=True):
+                return
+        except Exception as exc:
+            _logger.debug("webbrowser.open failed: %s", exc)
+
+        # Метод 2: os.startfile (прямой запуск через системную ассоциацию)
         try:
             os.startfile(url)
             return
         except Exception as exc:
-            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
-        # Метод 2: cmd.exe через список аргументов (shell=False) —
-        # безопасно, поскольку URL передаётся как отдельный аргумент,
-        # а не интерполируется в shell-строку.
+            _logger.debug("os.startfile failed: %s", exc)
+
+        # Метод 3: cmd.exe через список аргументов (shell=False)
         try:
             subprocess.Popen(
                 ["cmd.exe", "/c", "start", "", url],
@@ -76,7 +105,7 @@ def _open_url(url: str, browser: str | None = None):
             )
             return
         except Exception as exc:
-            _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+            _logger.debug("cmd start failed: %s", exc)
     elif sys.platform == "darwin":
         subprocess.Popen(["open", url])
     else:

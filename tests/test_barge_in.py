@@ -1,5 +1,4 @@
 import asyncio
-import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
 import time
@@ -16,7 +15,10 @@ def jarvis_instance():
          patch("main.Jarvis._start_telegram_bot", return_value=None):
         j = Jarvis(ui)
         if j._wake_detector:
-            j._wake_detector.process_pcm.return_value = False
+            if hasattr(j._wake_detector.process_pcm, "return_value"):
+                j._wake_detector.process_pcm.return_value = False
+            else:
+                j._wake_detector.process_pcm = MagicMock(return_value=False)
         j.audio_in_queue = asyncio.Queue()
         j.out_queue = asyncio.Queue()
         try:
@@ -24,7 +26,8 @@ def jarvis_instance():
         except RuntimeError:
             j._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(j._loop)
-        return j
+        yield j
+        j.cleanup()
 
 
 def test_interrupt_speech_resets_state_and_drains_queue(jarvis_instance):
@@ -70,7 +73,7 @@ async def test_start_speech_registers_task_and_updates_epoch(jarvis_instance):
     j = jarvis_instance
     initial_epoch = getattr(j, "_speech_epoch", 0)
 
-    with patch.object(j, "_speak_fish", return_value=None) as mock_speak:
+    with patch.object(j, "_speak_fish", return_value=None):
         task = j._start_speech("Привет мир")
         assert task is not None
         assert j._speech_epoch == initial_epoch + 1
@@ -122,38 +125,6 @@ def test_quick_command_triggers_barge_in(jarvis_instance):
         assert j._is_speaking is False
         assert j.audio_in_queue.empty()
 
-
-def test_check_barge_in_adaptive_threshold(jarvis_instance):
-    j = jarvis_instance
-    # 1. Quiet noise frame (RMS = 100.0) -> No interrupt
-    noise_frame = (np.ones(512, dtype=np.int16) * 100)
-    should, reason = j._check_barge_in(noise_frame)
-    assert should is False
-    assert reason == ""
-
-    # 2. Strong voice frame (RMS = 500.0) with quiet speaker -> Barge-in triggered
-    voice_frame = (np.ones(512, dtype=np.int16) * 500)
-    should, reason = j._check_barge_in(voice_frame)
-    assert should is True
-    assert reason == "voice-rms-barge-in"
-
-    # 3. Loud speaker active (peak = 0.5) -> dynamic threshold = 0.5 * 2400 = 1200
-    # Voice frame with RMS = 500 is now suppressed (preventing false echo triggers)
-    mock_meter = MagicMock()
-    mock_meter.peak = 0.5
-    j._speaker_meter = mock_meter
-    should, reason = j._check_barge_in(voice_frame)
-    assert should is False
-
-    # 4. Louder voice (RMS = 1400 > 1200) cuts through even when assistant speaks loudly
-    loud_voice = (np.ones(512, dtype=np.int16) * 1400)
-    should, reason = j._check_barge_in(loud_voice)
-    assert should is True
-    assert reason == "voice-rms-barge-in"
-
-    # 5. Quiet voice with wake-word / stop detected by wake_detector
-    j._wake_detector = MagicMock()
-    j._wake_detector.process_pcm.return_value = True
-    should, reason = j._check_barge_in(noise_frame)
-    assert should is True
-    assert reason == "wake-word-barge-in"
+# Порог перебивания больше не считается в main.Jarvis: за barge-in отвечает
+# AudioPipeline, который решает по очищенному от эха сигналу.
+# Проверки перенесены в tests/test_audio_gateway_gating.py.

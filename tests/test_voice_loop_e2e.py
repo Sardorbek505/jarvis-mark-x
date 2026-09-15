@@ -126,9 +126,38 @@ class _Session:
 
 # ─── Сборка стенда ────────────────────────────────────────────────────────────
 
-def _loud(value=4000):
-    """Кадр заведомо громче порога MIC_RMS_THRESHOLD (250)."""
-    return np.full((jarvis_main.CHUNK_SIZE, 1), value, dtype=np.int16)
+def _речеподобный(n: int, sr: int = 16000, seed: int = 0) -> np.ndarray:
+    """Сигнал с формантами и слоговой огибающей.
+
+    Постоянный уровень (`np.full(..., 4000)`) громкий, но не речь: нейросетевой
+    эндпоинтинг его справедливо отвергает. Сквозной тест обязан гонять по тракту
+    то, что тракт и должен пропускать.
+    """
+    rng = np.random.default_rng(seed)
+    t = np.arange(n) / sr
+    sig = np.zeros(n)
+    for f, a in ((120, 0.5), (350, 0.35), (900, 0.2), (2400, 0.1)):
+        sig += a * np.sin(2 * np.pi * f * t + rng.uniform(0, 6.28))
+    env = 0.6 + 0.4 * np.sin(2 * np.pi * 4.5 * t)
+    return np.clip(sig * env * 9000, -32768, 32767).astype(np.int16)
+
+
+def _loud(seed=0):
+    """Кадр, который тракт обязан признать речью и пропустить в облако."""
+    return _речеподобный(jarvis_main.CHUNK_SIZE, seed=seed).reshape(-1, 1)
+
+
+def _фраза(кадров: int = 12):
+    """Реплика длиной ~0.8 с.
+
+    Пара кадров — это 128 мс: ни человек, ни нейросетевой VAD такое фразой не
+    считают, у Silero на этом отрезке ещё не раскачалось рекуррентное состояние.
+    Сквозной тест обязан подавать на вход то, что бывает в жизни.
+    """
+    # Кадры обязаны отличаться: настоящая речь не повторяет кадр в кадр,
+    # а на строго периодическом сигнале Silero упирается в 0.48 и не
+    # переходит порог — это артефакт синтетики, а не поведение тракта.
+    return [_loud(seed=i) for i in range(кадров)]
 
 
 def _quiet():
@@ -143,6 +172,10 @@ def стенд(tmp_path, monkeypatch):
     monkeypatch.setattr(jarvis_main, "BASE_DIR", tmp_path)
     monkeypatch.setattr(jarvis_main, "_IGNORE_SPEAKERS", False)
     monkeypatch.setattr(jarvis_main, "_pick_input_device", lambda: None)
+    # Опорный поток колонок для AEC — настоящее WASAPI-устройство. Стенду оно
+    # не нужно и не должно быть нужно: здесь проверяется маршрут кадра, а не
+    # звуковая карта. Реальный loopback проверяется отдельно, на живом железе.
+    monkeypatch.setattr(jarvis_main.Jarvis, "_start_aec_reference", lambda self: None)
     # Тракт озвучки закрепляем явно: по умолчанию говорит Fish, и тогда звук
     # Gemini намеренно выбрасывается. Тесты ниже проверяют именно путь Gemini,
     # поэтому провайдер тут не «как настроено у владельца», а заданный.
@@ -185,6 +218,32 @@ async def _прогнать(стенд, frames, script, timeout=5.0, wake=None):
 
     expected_audio = sum(1 for r in script if r.data)
 
+    # Ждать только звук — мало: приём хода и воспроизведение идут в разных
+    # задачах, и обработка конца хода (запись ответа в лог, окно продолжения
+    # диалога) может ещё не случиться, когда последний кадр уже доиграл.
+    # Раньше это не вылезало лишь потому, что весь конец хода выполнялся
+    # синхронно в одном тике; любой await внутри — и группа снималась раньше.
+    expected_said = ""
+    for r in script:
+        текст = getattr(getattr(r, "server_content", None), "output_transcription", None)
+        if текст is not None and getattr(текст, "text", ""):
+            expected_said = текст.text
+
+    def ход_доигран():
+        # Микрофонная ветка идёт через фоновый воркер и call_soon_threadsafe,
+        # то есть заведомо медленнее, чем приём готового ответа из заглушки.
+        # Ответ доигрывает за десятки миллисекунд, и без этой проверки группа
+        # снималась раньше, чем речь успевала доехать до сессии. Раньше это
+        # не вылезало только потому, что первый же кадр считался речью по
+        # порогу громкости; нейросетевому VAD нужно несколько кадров.
+        if frames and not session.sent:
+            return False
+        if len(стенд.out.written) < expected_audio:
+            return False
+        if not expected_said:
+            return True
+        return any(str(log).startswith("Джарвис:") for log in стенд.ui.logs)
+
     async def круг():
         async with asyncio.TaskGroup() as tg:
             tg.create_task(j._send_realtime())
@@ -193,8 +252,7 @@ async def _прогнать(стенд, frames, script, timeout=5.0, wake=None):
             tg.create_task(j._play_audio())
 
             deadline = asyncio.get_event_loop().time() + timeout
-            while (len(стенд.out.written) < expected_audio
-                   and asyncio.get_event_loop().time() < deadline):
+            while not ход_доигран() and asyncio.get_event_loop().time() < deadline:
                 await asyncio.sleep(0.01)
 
             raise asyncio.CancelledError    # снимаем всю группу разом
@@ -211,13 +269,13 @@ async def _прогнать(стенд, frames, script, timeout=5.0, wake=None):
 async def test_полный_круг_голос_доходит_туда_и_обратно(стенд):
     """Кадр с микрофона уезжает в облако, ответ доигрывается в динамики."""
     script = [
-        _resp(heard="джарвис, включи музыку"),
+        _resp(heard="джарвис, расскажи интересную историю"),
         _resp(data=b"\x01\x02" * 100),
         _resp(data=b"\x03\x04" * 100),
         _resp(said="Разумеется, сэр.", turn_complete=True),
     ]
 
-    session = await _прогнать(стенд, [_loud(), _loud()], script)
+    session = await _прогнать(стенд, _фраза(), script)
 
     assert session.sent, "кадры микрофона не дошли до сессии"
     assert all(m["mime_type"] == "audio/pcm" for m in session.sent)
@@ -239,12 +297,12 @@ async def test_тишина_в_облако_не_уходит(стенд):
 async def test_замер_задержки_срабатывает_на_живом_круге(стенд):
     """Секундомер должен получить цифры от реального прохода, а не в тесте на себя."""
     script = [
-        _resp(heard="джарвис, какая погода"),
+        _resp(heard="джарвис, как твои дела"),
         _resp(data=b"\x05\x06" * 100),
         _resp(said="Плюс двадцать, сэр.", turn_complete=True),
     ]
 
-    await _прогнать(стенд, [_loud()], script)
+    await _прогнать(стенд, _фраза(), script)
 
     stats = стенд.jarvis._latency._stats
     assert stats["answered"].count == 1, "задержка ответа не замерена"
@@ -279,7 +337,7 @@ async def test_расшифровка_и_ответ_попадают_в_окно
         _resp(said="Здравствуйте, сэр.", turn_complete=True),
     ]
 
-    await _прогнать(стенд, [_loud()], script)
+    await _прогнать(стенд, _фраза(), script)
 
     logs = " | ".join(стенд.ui.logs)
     assert "привет" in logs, "сказанное пользователем не показано"
@@ -296,7 +354,7 @@ async def test_с_голосом_fish_звук_gemini_не_играет(стен
     monkeypatch.setattr(jarvis_main, "_VOICE_PROVIDER", "fish")
     сказанное = []
 
-    async def поддельный_fish(self, text):
+    async def поддельный_fish(self, text, *args, **kwargs):
         сказанное.append(text)
     monkeypatch.setattr(jarvis_main.Jarvis, "_speak_fish", поддельный_fish)
 
@@ -306,7 +364,7 @@ async def test_с_голосом_fish_звук_gemini_не_играет(стен
         _resp(said="Всё в норме, сэр.", turn_complete=True),
     ]
 
-    await _прогнать(стенд, [_loud()], script)
+    await _прогнать(стенд, _фраза(), script)
 
     assert стенд.out.written == [], "звук Gemini не должен доходить до динамиков"
     assert сказанное == ["Всё в норме, сэр."], "Fish должен получить текст ответа"
@@ -321,7 +379,7 @@ async def test_без_обращения_джарвис_на_пк_молчит(�
         _resp(said="Включаю трек.", turn_complete=True),
     ]
 
-    await _прогнать(стенд, [_loud()], script)
+    await _прогнать(стенд, _фраза(), script)
 
     # Звук не воспроизводится, в логах отметка об игноре
     assert стенд.out.written == [], "без слова Джарвис звук не должен проигрываться"
@@ -365,19 +423,9 @@ def test_хвост_тишины_заведомо_длиннее_окна_vad():
     )
 
 
-def test_точка_отсчёта_замера_только_громкий_кадр(стенд):
-    """Кадры хвоста уходят в облако, но «человек договорил» — не про них.
-
-    Пока отсчёт вёлся и от них, из задержки вычиталась длина собственного
-    хвоста, и «слышит» выходило отрицательным — цифра лучше правды.
-    """
-    j = стенд.jarvis
-
-    assert j._is_loud_enough(_loud()), "громкий кадр обязан уехать"
-    assert j._frame_was_loud, "громкий кадр — законная точка отсчёта"
-
-    assert j._is_loud_enough(_quiet()), "кадр хвоста тоже уезжает в облако"
-    assert not j._frame_was_loud, "но точкой отсчёта служить не должен"
+# Порог тишины и «хвост» после громкого кадра переехали из main.Jarvis
+# в AudioPipeline (единый воркер вместо работы в аудиоколбэке).
+# Проверка хвоста — в tests/test_audio_gateway_gating.py.
 
 
 @pytest.mark.asyncio
@@ -391,3 +439,56 @@ async def test_молчание_пользователя_не_рождает_з�
     await _прогнать(стенд, [_quiet()], script)
 
     assert стенд.jarvis._latency._stats["answered"].count == 0
+
+
+@pytest.mark.asyncio
+async def test_шумовой_переспрос_получает_короткое_окно(стенд):
+    """После «не разобрал, повторите» окно продолжения обязано быть коротким.
+
+    Живой сбой: Джарвис ловил шорох, извинялся, извинение открывало обычное
+    окно на 4 секунды, за это время снова ловился шорох — и так по кругу,
+    вперемешку с галлюцинациями на случайных языках.
+
+    Таймаут считается на конце хода, а окно открывается позже — по факту
+    окончания воспроизведения. Раньше посчитанное значение туда не доезжало.
+    """
+    script = [
+        _resp(heard="джарвис"),
+        # Кадр звука обязателен: стенд крутит круг, пока не доиграет ответ.
+        # Без него задачи снимаются раньше, чем ход дойдёт до turn_complete.
+        _resp(data=b"\x01\x02" * 20),
+        _resp(said="Прошу прощения, я не разобрал из-за фонового шума. Повторить?",
+              turn_complete=True),
+    ]
+    await _прогнать(стенд, _фраза(), script, timeout=2.0)
+
+    j = стенд.jarvis
+    assert j._followup_timeout == 2.0, "шумовой переспрос открыл обычное окно"
+    assert j._pending_question is False, "извинение не должно считаться вопросом к пользователю"
+
+
+@pytest.mark.asyncio
+async def test_обычный_ответ_получает_нормальное_окно(стенд):
+    """Содержательный ответ по-прежнему держит окно продолжения диалога."""
+    script = [
+        _resp(heard="джарвис, какая сегодня дата"),
+        _resp(data=b"\x01\x02" * 20),
+        _resp(said="Шестое сентября, сэр.", turn_complete=True),
+    ]
+    await _прогнать(стенд, _фраза(), script, timeout=2.0)
+
+    assert стенд.jarvis._followup_timeout == 3.5
+
+
+@pytest.mark.asyncio
+async def test_вопрос_джарвиса_держит_окно_дольше(стенд):
+    """Если Джарвис сам задал вопрос, у пользователя больше времени ответить."""
+    script = [
+        _resp(heard="джарвис, удали файл"),
+        _resp(data=b"\x01\x02" * 20),
+        _resp(said="Вы уверены, сэр?", turn_complete=True),
+    ]
+    await _прогнать(стенд, _фраза(), script, timeout=2.0)
+
+    assert стенд.jarvis._followup_timeout == 6.0
+    assert стенд.jarvis._pending_question is True

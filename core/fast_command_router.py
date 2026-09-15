@@ -14,9 +14,27 @@
 
 import logging
 import re
-from typing import Optional, Tuple
+from enum import Enum
+from typing import Optional
 
 logger = logging.getLogger("jarvis-fast-router")
+
+
+class ExecutionStatus(str, Enum):
+    """Статус фактического исполнения команды в системе."""
+    SUCCESS = "SUCCESS"
+    PARTIAL_SUCCESS = "PARTIAL_SUCCESS"
+    FAILED = "FAILED"
+    UNAVAILABLE = "UNAVAILABLE"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+class CommandCategory(str, Enum):
+    """Категория команды по уровню локальной автономности."""
+    LOCAL_SAFE = "LOCAL_SAFE"                    # Безопасные локальные действия (звук, экран, память)
+    LOCAL_CONTEXT_DEPENDENT = "LOCAL_CONTEXT_DEPENDENT"  # Зависят от активного плеера/окна (пауза, перемотка)
+    LLM_REQUIRED = "LLM_REQUIRED"                # Требуют облачного интеллекта Gemini
+
 
 # Шаблоны очистки обращения по имени
 _WAKE_PREFIX_RE = re.compile(
@@ -37,13 +55,29 @@ def normalize_command_text(text: str) -> str:
 class FastCommandResult(tuple):
     """Результат выполнения быстрой команды. Совместим с распаковкой (handled, text)."""
 
-    def __new__(cls, handled: bool, text: Optional[str] = None, is_action: bool = False):
+    def __new__(
+        cls,
+        handled: bool,
+        text: Optional[str] = None,
+        is_action: bool = False,
+        status: ExecutionStatus = ExecutionStatus.SUCCESS,
+        category: CommandCategory = CommandCategory.LOCAL_SAFE,
+    ):
         return super().__new__(cls, (handled, text))
 
-    def __init__(self, handled: bool, text: Optional[str] = None, is_action: bool = False):
+    def __init__(
+        self,
+        handled: bool,
+        text: Optional[str] = None,
+        is_action: bool = False,
+        status: ExecutionStatus = ExecutionStatus.SUCCESS,
+        category: CommandCategory = CommandCategory.LOCAL_SAFE,
+    ):
         self.handled = handled
         self.text = text
         self.is_action = is_action
+        self.status = status
+        self.category = category
 
 
 def _trigger_action_feedback():
@@ -69,111 +103,289 @@ class FastCommandRouter:
         """
         clean = normalize_command_text(text)
         if not clean:
-            return FastCommandResult(False, None, is_action=False)
+            return FastCommandResult(
+                False,
+                None,
+                is_action=False,
+                status=ExecutionStatus.NOT_APPLICABLE,
+                category=CommandCategory.LLM_REQUIRED,
+            )
 
         # ── 1. Пауза / Стоп ──────────────────────────────────────────────────
         if re.match(r"^(пауза|стоп|остановись|останови|останови музыку|поставь на паузу|замолчи|тихо|заткнись)$", clean):
             try:
                 from actions.music_player import _send_media_key
-                _send_media_key("playpause")
-                _trigger_action_feedback()
-                logger.info("Fast-Path: ⏯ Пауза/Стоп исполнена локально")
-                if player:
-                    player.write_log("SYS: ⏯ Fast-Path: Пауза")
-                return FastCommandResult(True, "Поставил на паузу, сэр.", is_action=True)
+                ok = _send_media_key("playpause")
+                if ok is not False:
+                    _trigger_action_feedback()
+                    logger.info("Fast-Path: ⏯ Пауза/Стоп исполнена локально")
+                    if player:
+                        player.write_log("SYS: ⏯ Fast-Path: Пауза")
+                    return FastCommandResult(
+                        True,
+                        "Поставил на паузу, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.SUCCESS,
+                        category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                    )
+                else:
+                    return FastCommandResult(
+                        True,
+                        "Не удалось поставить воспроизведение на паузу: медиа-плеер не отвечает, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.FAILED,
+                        category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                    )
             except Exception as e:
                 logger.error("Fast-Path pause error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка выполнения команды паузы: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
 
         # ── 2. Возобновление / Играй ──────────────────────────────────────────
         if re.match(r"^(продолжи|продолжай|возобнови|играй|запусти музыку|вруби музыку)$", clean):
             try:
                 from actions.music_player import _send_media_key
-                _send_media_key("playpause")
-                _trigger_action_feedback()
-                logger.info("Fast-Path: ⏯ Возобновление музыки исполнено локально")
-                if player:
-                    player.write_log("SYS: ⏯ Fast-Path: Воспроизведение")
-                return FastCommandResult(True, "Продолжаю воспроизведение, сэр.", is_action=True)
+                ok = _send_media_key("playpause")
+                if ok is not False:
+                    _trigger_action_feedback()
+                    logger.info("Fast-Path: ⏯ Возобновление музыки исполнено локально")
+                    if player:
+                        player.write_log("SYS: ⏯ Fast-Path: Воспроизведение")
+                    return FastCommandResult(
+                        True,
+                        "Продолжаю воспроизведение, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.SUCCESS,
+                        category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                    )
+                else:
+                    return FastCommandResult(
+                        True,
+                        "Не удалось возобновить воспроизведение: медиа-плеер не отвечает, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.FAILED,
+                        category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                    )
             except Exception as e:
                 logger.error("Fast-Path resume error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка возобновления воспроизведения: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
 
         # ── 3. Следующий трек ─────────────────────────────────────────────────
         if re.match(r"^(следующий( трек| песню)?|дальше|переключи( трек)?|некст)$", clean):
             try:
                 from actions.music_player import _send_media_key
-                _send_media_key("next")
-                _trigger_action_feedback()
-                logger.info("Fast-Path: ⏭ Следующий трек исполнен локально")
-                if player:
-                    player.write_log("SYS: ⏭ Fast-Path: Следующий трек")
-                return FastCommandResult(True, "Включаю следующий трек, сэр.", is_action=True)
+                ok = _send_media_key("next")
+                if ok is not False:
+                    _trigger_action_feedback()
+                    logger.info("Fast-Path: ⏭ Следующий трек исполнен локально")
+                    if player:
+                        player.write_log("SYS: ⏭ Fast-Path: Следующий трек")
+                    return FastCommandResult(
+                        True,
+                        "Включаю следующий трек, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.SUCCESS,
+                        category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                    )
+                else:
+                    return FastCommandResult(
+                        True,
+                        "Не удалось переключить трек, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.FAILED,
+                        category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                    )
             except Exception as e:
                 logger.error("Fast-Path next track error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка переключения трека: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
 
         # ── 4. Предыдущий трек ────────────────────────────────────────────────
         if re.match(r"^(предыдущий( трек| песню)?|назад)$", clean):
             try:
                 from actions.music_player import _send_media_key
-                _send_media_key("prev")
-                _trigger_action_feedback()
-                logger.info("Fast-Path: ⏮ Предыдущий трек исполнен локально")
-                if player:
-                    player.write_log("SYS: ⏮ Fast-Path: Предыдущий трек")
-                return FastCommandResult(True, "Включаю предыдущий трек, сэр.", is_action=True)
+                ok = _send_media_key("prev")
+                if ok is not False:
+                    _trigger_action_feedback()
+                    logger.info("Fast-Path: ⏮ Предыдущий трек исполнен локально")
+                    if player:
+                        player.write_log("SYS: ⏮ Fast-Path: Предыдущий трек")
+                    return FastCommandResult(
+                        True,
+                        "Включаю предыдущий трек, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.SUCCESS,
+                        category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                    )
+                else:
+                    return FastCommandResult(
+                        True,
+                        "Не удалось вернуться к предыдущему треку, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.FAILED,
+                        category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                    )
             except Exception as e:
                 logger.error("Fast-Path prev track error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка перехода к предыдущему треку: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
 
         # ── 5. Громкость: Тише ────────────────────────────────────────────────
         if re.match(r"^((?:сделай\s+)?(?:по)?тише|убавь(?:\s+(?:звук|громкость))?|приглуши(?:\s+звук)?)$", clean):
             try:
                 from actions.computer_settings import computer_settings
                 res = computer_settings({"action": "громкость", "description": "тише", "value": "10"}, player=player)
+                if "ошибка" in (res or "").lower():
+                    return FastCommandResult(
+                        True,
+                        f"Не удалось уменьшить громкость: {res}",
+                        is_action=True,
+                        status=ExecutionStatus.FAILED,
+                        category=CommandCategory.LOCAL_SAFE,
+                    )
                 _trigger_action_feedback()
                 logger.info("Fast-Path: 🔉 Громкость уменьшена")
                 if player:
                     player.write_log("SYS: 🔉 Fast-Path: Громкость тише")
-                return FastCommandResult(True, "Сделал тише, сэр.", is_action=True)
+                return FastCommandResult(
+                    True,
+                    "Сделал тише, сэр.",
+                    is_action=True,
+                    status=ExecutionStatus.SUCCESS,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
             except Exception as e:
                 logger.error("Fast-Path volume down error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка уменьшения громкости: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
         # ── 6. Громкость: Громче ──────────────────────────────────────────────
         if re.match(r"^((?:сделай\s+)?(?:по)?громче|прибавь(?:\s+(?:звук|громкость))?|увеличь\s+громкость)$", clean):
             try:
                 from actions.computer_settings import computer_settings
                 res = computer_settings({"action": "громкость", "description": "громче", "value": "10"}, player=player)
+                if "ошибка" in (res or "").lower():
+                    return FastCommandResult(
+                        True,
+                        f"Не удалось увеличить громкость: {res}",
+                        is_action=True,
+                        status=ExecutionStatus.FAILED,
+                        category=CommandCategory.LOCAL_SAFE,
+                    )
                 _trigger_action_feedback()
                 logger.info("Fast-Path: 🔊 Громкость увеличена")
                 if player:
                     player.write_log("SYS: 🔊 Fast-Path: Громкость громче")
-                return FastCommandResult(True, "Сделал громче, сэр.", is_action=True)
+                return FastCommandResult(
+                    True,
+                    "Сделал громче, сэр.",
+                    is_action=True,
+                    status=ExecutionStatus.SUCCESS,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
             except Exception as e:
                 logger.error("Fast-Path volume up error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка увеличения громкости: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
         # ── 7. Без звука (Mute) ───────────────────────────────────────────────
         if re.match(r"^(без\s+звука|выключи\s+звук|заглуши\s+звук|мьют)$", clean):
             try:
                 from actions.computer_settings import computer_settings
                 res = computer_settings({"action": "громкость", "description": "без звука"}, player=player)
+                if "ошибка" in (res or "").lower():
+                    return FastCommandResult(
+                        True,
+                        f"Не удалось отключить звук: {res}",
+                        is_action=True,
+                        status=ExecutionStatus.FAILED,
+                        category=CommandCategory.LOCAL_SAFE,
+                    )
                 _trigger_action_feedback()
                 logger.info("Fast-Path: 🔇 Звук заглушен")
                 if player:
                     player.write_log("SYS: 🔇 Fast-Path: Звук выключен")
-                return FastCommandResult(True, "Звук отключен, сэр.", is_action=True)
+                return FastCommandResult(
+                    True,
+                    "Звук отключен, сэр.",
+                    is_action=True,
+                    status=ExecutionStatus.SUCCESS,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
             except Exception as e:
                 logger.error("Fast-Path mute error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка отключения звука: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
         # ── 8. Полный экран видео (Fullscreen) ────────────────────────────────
         if re.match(r"^((разверни|сделай|включи)?\s*(на весь экран|полный экран)|во весь экран)$", clean):
             try:
                 from actions.movie_player import movie_player
-                movie_player({"action": "fullscreen"}, player=player)
+                res = movie_player({"action": "fullscreen"}, player=player)
+                if "не удалось" in (res or "").lower() or "ошибка" in (res or "").lower():
+                    return FastCommandResult(
+                        True,
+                        "Окно видеоплеера не найдено для разворачивания, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.UNAVAILABLE,
+                        category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                    )
                 _trigger_action_feedback()
                 logger.info("Fast-Path: ⛶ Полный экран видео")
                 if player:
                     player.write_log("SYS: ⛶ Fast-Path: Полный экран")
-                return FastCommandResult(True, "Развернул на полный экран, сэр.", is_action=True)
+                return FastCommandResult(
+                    True,
+                    "Развернул на полный экран, сэр.",
+                    is_action=True,
+                    status=ExecutionStatus.SUCCESS,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
             except Exception as e:
                 logger.error("Fast-Path fullscreen error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка переключения экрана: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
 
         # ── 9. Перемотка фильма / видео вперед ────────────────────────────────
         m_fwd = re.match(
@@ -186,12 +398,33 @@ class FastCommandRouter:
                 val = int(m_fwd.group(1)) if m_fwd.group(1) else 10
                 unit = m_fwd.group(2) or "сек"
                 is_min = "мин" in unit
-                movie_player({"action": "seek_forward", "seconds": 0 if is_min else val, "minutes": val if is_min else 0}, player=player)
+                resp = movie_player({"action": "seek_forward", "seconds": 0 if is_min else val, "minutes": val if is_min else 0}, player=player)
+                if "не удалось" in (resp or "").lower() or "ошибка" in (resp or "").lower():
+                    return FastCommandResult(
+                        True,
+                        "Окно видеоплеера не найдено для перемотки, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.UNAVAILABLE,
+                        category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                    )
                 _trigger_action_feedback()
                 logger.info("Fast-Path: ⏩ Перемотка вперед (%s %s)", val, unit)
-                return FastCommandResult(True, f"Перемотал вперёд на {val} {'мин.' if is_min else 'сек.'}, сэр.", is_action=True)
+                return FastCommandResult(
+                    True,
+                    f"Перемотал вперёд на {val} {'мин.' if is_min else 'сек.'}, сэр.",
+                    is_action=True,
+                    status=ExecutionStatus.SUCCESS,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
             except Exception as e:
                 logger.error("Fast-Path seek forward error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка перемотки видео: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
 
         # ── 10. Перемотка фильма / видео назад ────────────────────────────────
         m_back = re.match(
@@ -204,23 +437,65 @@ class FastCommandRouter:
                 val = int(m_back.group(1)) if m_back.group(1) else 10
                 unit = m_back.group(2) or "сек"
                 is_min = "мин" in unit
-                movie_player({"action": "seek_back", "seconds": 0 if is_min else val, "minutes": val if is_min else 0}, player=player)
+                resp = movie_player({"action": "seek_back", "seconds": 0 if is_min else val, "minutes": val if is_min else 0}, player=player)
+                if "не удалось" in (resp or "").lower() or "ошибка" in (resp or "").lower():
+                    return FastCommandResult(
+                        True,
+                        "Окно видеоплеера не найдено для перемотки, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.UNAVAILABLE,
+                        category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                    )
                 _trigger_action_feedback()
                 logger.info("Fast-Path: ⏪ Перемотка назад (%s %s)", val, unit)
-                return FastCommandResult(True, f"Перемотал назад на {val} {'мин.' if is_min else 'сек.'}, сэр.", is_action=True)
+                return FastCommandResult(
+                    True,
+                    f"Перемотал назад на {val} {'мин.' if is_min else 'сек.'}, сэр.",
+                    is_action=True,
+                    status=ExecutionStatus.SUCCESS,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
             except Exception as e:
                 logger.error("Fast-Path seek back error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка перемотки видео назад: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
 
         # ── 11. Выключить экран / монитор ─────────────────────────────────────
         if re.match(r"^((выключи|погаси)\s+(экран|монитор|дисплей))$", clean):
             try:
                 from actions.computer_settings import computer_settings
-                computer_settings({"action": "заблокировать экран"}, player=player)
+                res = computer_settings({"action": "заблокировать экран"}, player=player)
+                if "ошибка" in (res or "").lower():
+                    return FastCommandResult(
+                        True,
+                        f"Не удалось выключить экран: {res}",
+                        is_action=True,
+                        status=ExecutionStatus.FAILED,
+                        category=CommandCategory.LOCAL_SAFE,
+                    )
                 _trigger_action_feedback()
                 logger.info("Fast-Path: 💻 Экран заблокирован / погашен")
-                return FastCommandResult(True, "Экран выключен, сэр.", is_action=True)
+                return FastCommandResult(
+                    True,
+                    "Экран выключен, сэр.",
+                    is_action=True,
+                    status=ExecutionStatus.SUCCESS,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
             except Exception as e:
                 logger.error("Fast-Path screen off error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка блокировки экрана: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
         # ── 12. Что сейчас играет? ───────────────────────────────────────────
         if re.match(
@@ -230,12 +505,27 @@ class FastCommandRouter:
             try:
                 from core.media_session_manager import MediaSessionManager
                 speech = MediaSessionManager.get_now_playing_speech()
+                is_active = speech and "ничего не играет" not in speech.lower() and "не удалось" not in speech.lower()
+                status = ExecutionStatus.SUCCESS if is_active else ExecutionStatus.UNAVAILABLE
                 logger.info("Fast-Path: 🎵 'Что сейчас играет': %s", speech)
                 if player:
                     player.write_log(f"SYS: 🎵 {speech}")
-                return FastCommandResult(True, speech, is_action=False)
+                return FastCommandResult(
+                    True,
+                    speech,
+                    is_action=False,
+                    status=status,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
             except Exception as e:
                 logger.error("Fast-Path now playing error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Не удалось определить играющий трек: {e}",
+                    is_action=False,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
 
         # ── 13. Зрение: Посмотри на экран / Что на экране ───────────────────
         m_vision = re.match(
@@ -260,9 +550,24 @@ class FastCommandRouter:
                     player.write_log(f"SYS: 👁 Fast-Path: Зрение экрана ('{query}')")
                 from actions.vision import analyze_vision
                 speech = analyze_vision(prompt=query, source="screen")
-                return FastCommandResult(True, speech, is_action=False)
+                is_failed = not speech or "не удалось" in speech.lower() or "ошибка" in speech.lower()
+                status = ExecutionStatus.FAILED if is_failed else ExecutionStatus.SUCCESS
+                return FastCommandResult(
+                    True,
+                    speech,
+                    is_action=False,
+                    status=status,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
             except Exception as e:
                 logger.error("Fast-Path screen vision error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка анализа экрана: {e}",
+                    is_action=False,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
         # ── 14. Зрение: Посмотри в камеру ────────────────────────────────────
         m_cam = re.match(
@@ -283,9 +588,24 @@ class FastCommandRouter:
                     player.write_log(f"SYS: 📷 Fast-Path: Зрение камеры ('{query}')")
                 from actions.vision import analyze_vision
                 speech = analyze_vision(prompt=query, source="camera")
-                return FastCommandResult(True, speech, is_action=False)
+                is_failed = not speech or "не удалось" in speech.lower() or "ошибка" in speech.lower()
+                status = ExecutionStatus.FAILED if is_failed else ExecutionStatus.SUCCESS
+                return FastCommandResult(
+                    True,
+                    speech,
+                    is_action=False,
+                    status=status,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
             except Exception as e:
                 logger.error("Fast-Path camera vision error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка снимка камеры: {e}",
+                    is_action=False,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
         # ── 15. Медиа / Видео: YouTube ───────────────────────────────────────
         m_yt = re.match(
@@ -299,9 +619,24 @@ class FastCommandRouter:
                 _trigger_action_feedback()
                 logger.info("Fast-Path: 🎬 Запуск на YouTube: '%s'", title_query)
                 resp = movie_player({"action": "play", "platform": "youtube", "title": title_query}, player=player)
-                return FastCommandResult(True, resp, is_action=True)
+                is_err = not resp or "не удалось" in resp.lower() or "ошибка" in resp.lower()
+                status = ExecutionStatus.FAILED if is_err else ExecutionStatus.SUCCESS
+                return FastCommandResult(
+                    True,
+                    resp,
+                    is_action=True,
+                    status=status,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
             except Exception as e:
                 logger.error("Fast-Path YouTube play error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка запуска YouTube: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
 
         # ── 16. Медиа / Видео: Трейлер фильма ────────────────────────────────
         m_tr = re.match(
@@ -315,9 +650,24 @@ class FastCommandRouter:
                 _trigger_action_feedback()
                 logger.info("Fast-Path: 🎬 Запуск трейлера: '%s'", title_query)
                 resp = movie_player({"action": "play", "platform": "youtube", "title": title_query}, player=player)
-                return FastCommandResult(True, resp, is_action=True)
+                is_err = not resp or "не удалось" in resp.lower() or "ошибка" in resp.lower()
+                status = ExecutionStatus.FAILED if is_err else ExecutionStatus.SUCCESS
+                return FastCommandResult(
+                    True,
+                    resp,
+                    is_action=True,
+                    status=status,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
             except Exception as e:
                 logger.error("Fast-Path trailer play error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка запуска трейлера: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
 
         # ── 17. Медиа / Кино: Кинопоиск ──────────────────────────────────────
         m_kp = re.match(
@@ -331,9 +681,24 @@ class FastCommandRouter:
                 _trigger_action_feedback()
                 logger.info("Fast-Path: 🎬 Запуск на Кинопоиске: '%s'", title_query)
                 resp = movie_player({"action": "play", "platform": "kinopoisk", "title": title_query}, player=player)
-                return FastCommandResult(True, resp, is_action=True)
+                is_err = not resp or "не удалось" in resp.lower() or "ошибка" in resp.lower()
+                status = ExecutionStatus.FAILED if is_err else ExecutionStatus.SUCCESS
+                return FastCommandResult(
+                    True,
+                    resp,
+                    is_action=True,
+                    status=status,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
             except Exception as e:
                 logger.error("Fast-Path Kinopoisk play error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка открытия Кинопоиска: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
 
         # ── 18. Медиа / Фильм: Фильм / Сериал / Кино ─────────────────────────
         m_film = re.match(
@@ -347,9 +712,24 @@ class FastCommandRouter:
                 _trigger_action_feedback()
                 logger.info("Fast-Path: 🎬 Запуск фильма/сериала: '%s'", title_query)
                 resp = movie_player({"action": "play", "platform": "auto", "title": title_query}, player=player)
-                return FastCommandResult(True, resp, is_action=True)
+                is_err = not resp or "не удалось" in resp.lower() or "ошибка" in resp.lower()
+                status = ExecutionStatus.FAILED if is_err else ExecutionStatus.SUCCESS
+                return FastCommandResult(
+                    True,
+                    resp,
+                    is_action=True,
+                    status=status,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
             except Exception as e:
                 logger.error("Fast-Path film play error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка запуска фильма: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
 
         # ── 19. Медиа / Видео: VK Видео ──────────────────────────────────────
         m_vk = re.match(
@@ -363,9 +743,24 @@ class FastCommandRouter:
                 _trigger_action_feedback()
                 logger.info("Fast-Path: 🎬 Запуск на VK Видео: '%s'", title_query)
                 resp = movie_player({"action": "play", "platform": "vkvideo", "title": title_query}, player=player)
-                return FastCommandResult(True, resp, is_action=True)
+                is_err = not resp or "не удалось" in resp.lower() or "ошибка" in resp.lower()
+                status = ExecutionStatus.FAILED if is_err else ExecutionStatus.SUCCESS
+                return FastCommandResult(
+                    True,
+                    resp,
+                    is_action=True,
+                    status=status,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
             except Exception as e:
                 logger.error("Fast-Path VK Video play error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка запуска VK Видео: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                )
 
         # ── 20. Компактный режим / Виджет реактора ───────────────────────────
         if re.match(
@@ -376,12 +771,33 @@ class FastCommandRouter:
                 _trigger_action_feedback()
                 if player and hasattr(player, "set_compact_mode"):
                     player.set_compact_mode(True)
-                logger.info("Fast-Path: 🛸 Переход в компактный режим (HUD виджет)")
-                if player and hasattr(player, "write_log"):
-                    player.write_log("SYS: 🛸 Fast-Path: Компактный виджет Arc Reactor")
-                return FastCommandResult(True, "Перешёл в компактный режим реактора, сэр.", is_action=True)
+                    logger.info("Fast-Path: 🛸 Переход в компактный режим (HUD виджет)")
+                    if hasattr(player, "write_log"):
+                        player.write_log("SYS: 🛸 Fast-Path: Компактный виджет Arc Reactor")
+                    return FastCommandResult(
+                        True,
+                        "Перешёл в компактный режим реактора, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.SUCCESS,
+                        category=CommandCategory.LOCAL_SAFE,
+                    )
+                else:
+                    return FastCommandResult(
+                        True,
+                        "Интерфейс не поддерживает компактный режим, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.UNAVAILABLE,
+                        category=CommandCategory.LOCAL_SAFE,
+                    )
             except Exception as e:
                 logger.error("Fast-Path compact mode error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка переключения в компактный режим: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
         if re.match(
             r"^(?:развернись|разверни\s+интерфейс|разверни\s+окно|полный\s+режим|открой\s+окно|главное\s+окно)$",
@@ -391,12 +807,33 @@ class FastCommandRouter:
                 _trigger_action_feedback()
                 if player and hasattr(player, "set_compact_mode"):
                     player.set_compact_mode(False)
-                logger.info("Fast-Path: 🖥 Возврат в полный интерфейс")
-                if player and hasattr(player, "write_log"):
-                    player.write_log("SYS: 🖥 Fast-Path: Полный интерфейс")
-                return FastCommandResult(True, "Развернул полный интерфейс, сэр.", is_action=True)
+                    logger.info("Fast-Path: 🖥 Возврат в полный интерфейс")
+                    if hasattr(player, "write_log"):
+                        player.write_log("SYS: 🖥 Fast-Path: Полный интерфейс")
+                    return FastCommandResult(
+                        True,
+                        "Развернул полный интерфейс, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.SUCCESS,
+                        category=CommandCategory.LOCAL_SAFE,
+                    )
+                else:
+                    return FastCommandResult(
+                        True,
+                        "Интерфейс не поддерживает разворачивание, сэр.",
+                        is_action=True,
+                        status=ExecutionStatus.UNAVAILABLE,
+                        category=CommandCategory.LOCAL_SAFE,
+                    )
             except Exception as e:
                 logger.error("Fast-Path full mode error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка разворачивания интерфейса: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
         # ── 21. Умные сценарии автоматизации (Routines) ───────────────────────
         if re.match(r"^(?:доброе\s+утро|утренний\s+брифинг|привет\s+джарвис)$", clean):
@@ -404,36 +841,96 @@ class FastCommandRouter:
                 from core.routines_engine import RoutinesEngine
                 _trigger_action_feedback()
                 speech = RoutinesEngine.execute("morning", player=player)
-                return FastCommandResult(True, speech, is_action=False)
+                raw_st = getattr(speech, "status", ExecutionStatus.SUCCESS)
+                status = ExecutionStatus(getattr(raw_st, "value", raw_st))
+                return FastCommandResult(
+                    True,
+                    speech,
+                    is_action=False,
+                    status=status,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
             except Exception as e:
                 logger.error("Fast-Path morning routine error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка выполнения утреннего сценария: {e}",
+                    is_action=False,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
         if re.match(r"^(?:я\s+за\s+работу|пора\s+работать|начинаем\s+работу|рабочий\s+режим)$", clean):
             try:
                 from core.routines_engine import RoutinesEngine
                 _trigger_action_feedback()
                 speech = RoutinesEngine.execute("work", player=player)
-                return FastCommandResult(True, speech, is_action=True)
+                raw_st = getattr(speech, "status", ExecutionStatus.SUCCESS)
+                status = ExecutionStatus(getattr(raw_st, "value", raw_st))
+                return FastCommandResult(
+                    True,
+                    speech,
+                    is_action=True,
+                    status=status,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
             except Exception as e:
                 logger.error("Fast-Path work routine error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка запуска рабочего режима: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
         if re.match(r"^(?:режим\s+кинотеатра|время\s+кино|кинотеатр)$", clean):
             try:
                 from core.routines_engine import RoutinesEngine
                 _trigger_action_feedback()
                 speech = RoutinesEngine.execute("movie", player=player)
-                return FastCommandResult(True, speech, is_action=True)
+                raw_st = getattr(speech, "status", ExecutionStatus.SUCCESS)
+                status = ExecutionStatus(getattr(raw_st, "value", raw_st))
+                return FastCommandResult(
+                    True,
+                    speech,
+                    is_action=True,
+                    status=status,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
             except Exception as e:
                 logger.error("Fast-Path movie routine error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка режима кинотеатра: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
         if re.match(r"^(?:спокойной\s+ночи|я\s+спать|отбой)$", clean):
             try:
                 from core.routines_engine import RoutinesEngine
                 _trigger_action_feedback()
                 speech = RoutinesEngine.execute("bedtime", player=player)
-                return FastCommandResult(True, speech, is_action=True)
+                raw_st = getattr(speech, "status", ExecutionStatus.SUCCESS)
+                status = ExecutionStatus(getattr(raw_st, "value", raw_st))
+                return FastCommandResult(
+                    True,
+                    speech,
+                    is_action=True,
+                    status=status,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
             except Exception as e:
                 logger.error("Fast-Path bedtime routine error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка сценария отбоя: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
         # ── 22. Долгосрочная эпизодическая память (Episodic Memory RAG) ───────
         # Сохранение нового факта
@@ -446,9 +943,22 @@ class FastCommandRouter:
                 resp = EpisodicMemory.save_fact(fact_text)
                 if player and hasattr(player, "write_log"):
                     player.write_log(f"SYS: 🧠 Память: «{fact_text}»")
-                return FastCommandResult(True, resp, is_action=True)
+                return FastCommandResult(
+                    True,
+                    resp,
+                    is_action=True,
+                    status=ExecutionStatus.SUCCESS,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
             except Exception as e:
                 logger.error("Fast-Path memory save error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка сохранения факта: {e}",
+                    is_action=True,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
         # Сводка профиля пользователя
         if re.match(r"^(?:что\s+ты\s+обо\s+мне\s+знаешь|расскажи\s+обо\s+мне|мои\s+факты|мои\s+заметки|что\s+ты\s+помнишь)$", clean):
@@ -456,10 +966,23 @@ class FastCommandRouter:
                 from core.episodic_memory import EpisodicMemory
                 summary = EpisodicMemory.get_profile_summary()
                 if player and hasattr(player, "write_log"):
-                    player.write_log(f"SYS: 🧠 Сводка профиля")
-                return FastCommandResult(True, summary, is_action=False)
+                    player.write_log("SYS: 🧠 Сводка профиля")
+                return FastCommandResult(
+                    True,
+                    summary,
+                    is_action=False,
+                    status=ExecutionStatus.SUCCESS,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
             except Exception as e:
                 logger.error("Fast-Path profile summary error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка получения сводки: {e}",
+                    is_action=False,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
         # Поиск и извлечение воспоминаний по запросу
         m_recall = re.match(
@@ -473,8 +996,27 @@ class FastCommandRouter:
                 speech = EpisodicMemory.recall(sub_query)
                 if player and hasattr(player, "write_log"):
                     player.write_log(f"SYS: 🧠 Поиск в памяти («{sub_query}»)")
-                return FastCommandResult(True, speech, is_action=False)
+                return FastCommandResult(
+                    True,
+                    speech,
+                    is_action=False,
+                    status=ExecutionStatus.SUCCESS,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
             except Exception as e:
                 logger.error("Fast-Path memory recall error: %s", e)
+                return FastCommandResult(
+                    True,
+                    f"Ошибка поиска в памяти: {e}",
+                    is_action=False,
+                    status=ExecutionStatus.FAILED,
+                    category=CommandCategory.LOCAL_SAFE,
+                )
 
-        return FastCommandResult(False, None, is_action=False)
+        return FastCommandResult(
+            False,
+            None,
+            is_action=False,
+            status=ExecutionStatus.NOT_APPLICABLE,
+            category=CommandCategory.LLM_REQUIRED,
+        )

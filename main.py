@@ -38,9 +38,9 @@ if sys.platform == "win32":
         sys.stderr = io.StringIO()
 
 import asyncio
-import collections
 import json
 import traceback
+import random
 import re
 import threading
 import time
@@ -48,6 +48,7 @@ import subprocess
 import atexit
 from datetime import datetime
 import logging
+from typing import Optional
 
 # Configure logging
 logging.basicConfig(
@@ -81,7 +82,6 @@ except Exception as _onnx_exc:
 
 from ui import JarvisUI
 from memory.memory_manager import load_memory, update_memory, format_memory_for_prompt
-from core.emotion_analyzer import EmotionAnalyzer
 from core.user_profile import UserProfile
 from core.initiative_engine import InitiativeEngine
 from core.proactive_engine import ProactiveEngine
@@ -97,7 +97,6 @@ from actions.browser_control import browser_control
 from actions.file_controller import file_controller
 from actions.modes import set_mode, get_current_mode
 from actions.movie_player import movie_player
-from actions.spotify_controller import spotify_player
 from actions.window_control import window_control
 from actions.calendar import calendar
 from actions.obsidian import obsidian_action
@@ -110,6 +109,12 @@ from core import (
     set_default_language,
     set_learning_mode
 )
+from core.command_context import PendingGeminiTurn
+
+# Ходы, ответ Gemini на которые не озвучивается и инструменты не исполняются:
+# реплику забрал локальный контроллер или она была не к Джарвису.
+_SILENT_ROUTES = ("LOCAL", "DISCARDED")
+
 
 
 # ─── Пути и константы ─────────────────────────────────────────────────────────
@@ -379,6 +384,10 @@ def _clean_dialog_text(text: str) -> str:
     text = _CTRL_RE.sub("", text)
     text = _NOISE_TOKENS_RE.sub("", text)
     text = re.sub(r"[\x00-\x08\x0b-\x1f]", "", text)
+
+    # Убираем системные заголовки и метаданные в скобках ([ТЕКУЩЕЕ ВРЕМЯ ...], [CURRENT TIME ...])
+    text = re.sub(r"\[(?:ТЕКУЩЕЕ ВРЕМЯ|ВРЕМЯ|ДАТА|CURRENT TIME|TIME|DATE|SYS)[^\]]*\]\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^\[[A-ZА-ЯЁ\s_0-9—:,-]{3,60}\]\s*", "", text)
 
     # Убираем звуки-паразиты и заминки
     for filler in ("э-э-э", "м-м-м", "э-м-м", "м-э-м", "э-э", "м-м", "а-а"):
@@ -732,7 +741,15 @@ TOOLS = [
                 },
                 "title": {
                     "type": "STRING",
-                    "description": "Название фильма для воспроизведения на vkvideo.ru (для action=play)"
+                    "description": "Название фильма или сериала (для action=play)"
+                },
+                "season": {
+                    "type": "NUMBER",
+                    "description": "Номер сезона для сериалов (например 1, 2)"
+                },
+                "episode": {
+                    "type": "NUMBER",
+                    "description": "Номер серии (например 1, 5)"
                 },
                 "seconds": {
                     "type": "NUMBER",
@@ -1215,7 +1232,6 @@ class Jarvis:
         self._is_speaking    = False
         self._speaking_lock  = threading.Lock()
         self._active_synth_tasks = 0
-        self._speaker_meter  = None   # см. _listen_audio: не слушаем свои динамики
         self._turn_done_event: asyncio.Event | None = None
 
         # Новый мозг ДЖАРВИС
@@ -1224,6 +1240,7 @@ class Jarvis:
         self.proactive_engine = ProactiveEngine(BASE_DIR)
         self.team_engine = TeamCollaborationEngine(BASE_DIR)
         self.last_user_text = ""
+        self._followup_timeout = None
 
         # Секундомер голосового хода. Пишет в лог задержку от конца речи до
         # первого звука ответа при JARVIS_DEBUG_UI=1.
@@ -1231,24 +1248,49 @@ class Jarvis:
             sink=self.ui.write_log if os.getenv("JARVIS_DEBUG_UI") == "1" else None
         )
 
-        # 2-Stage KWS: ловит «Джарвис», когда микрофонный шлюз закрыт музыкой.
-        #
-        # AEC здесь СОЗНАТЕЛЬНО не поднимается. Раньше строка `self._aec =
-        # AECPipeline()` тут была, а в логе значилось «AEC подключён» — но поле
-        # больше нигде не читалось: эхоподавление в живом тракте не работало,
-        # лог вводил в заблуждение при разборе проблем со звуком.
-        # Чтобы включить его по-настоящему, микрофонному циклу нужен опорный
-        # поток колонок (WASAPI loopback) — сейчас его нет: speaker_meter.py
-        # отдаёт только скалярный уровень, не PCM. См. core/audio_capture.py.
+        # ── ConversationStateMachine — центральный источник истины lifecycle ──
+        from core.conversation_state import ConversationState, ConversationStateMachine
+        self.state_machine = ConversationStateMachine()
+        self._wire_state_machine_listeners()
+
+        # Опорный поток колонок для AEC поднимается лениво, вместе с микрофоном.
+        self._aec_reference = None
+
+        # ── AudioPipeline — неблокирующий конвейер (AEC, VAD, KWS, Barge-in) ──
         try:
-            from core.wake_detector import WakeWordDetector2Stage
-            self._wake_detector = WakeWordDetector2Stage(
+            from core.audio_pipeline import AudioPipeline
+            self.audio_pipeline = AudioPipeline(
+                state_machine=self.state_machine,
+                on_wake=self._on_wake_spotted,
                 on_quick_command=self._handle_quick_command,
+                on_speech_frame=self._on_speech_frame,
+                on_barge_in=lambda reason: self.interrupt_speech(reason),
+                on_level=lambda lvl: self._push_level(lvl),
+                gateway_active_provider=lambda: (
+                    time.monotonic() < getattr(self, "_wake_active_until", 0.0)
+                    or time.monotonic() < getattr(self, "_hotkey_active_until", 0.0)
+                ),
+                ref_provider=self._aec_reference_window,
+                on_silence_timeout=self._on_listen_silence_timeout,
+                rms_threshold=MIC_RMS_THRESHOLD,
+                hangover_frames=MIC_HANGOVER_FRAMES,
+                enable_aec=True,
+                enable_ducking=True,
             )
-            logger.info("WakeWord: 2-Stage KWS подключён к JarvisBot (включая быстрые команды)")
+            self.audio_pipeline.start()
+            self._wake_detector = self.audio_pipeline.wake_detector
+            logger.info("AudioPipeline: подключён к Jarvis (KWS, VAD, Barge-in)")
         except Exception as _e:
-            logger.debug("WakeWord init note: %s", _e)
-            self._wake_detector = None
+            logger.debug("AudioPipeline init note: %s", _e)
+            self.audio_pipeline = None
+            try:
+                from core.wake_detector import WakeWordDetector2Stage
+                self._wake_detector = WakeWordDetector2Stage(
+                    on_quick_command=self._handle_quick_command,
+                    state_provider=lambda: self.state_machine.state if hasattr(self, "state_machine") else ConversationState.STANDBY,
+                )
+            except Exception:
+                self._wake_detector = None
 
         self.ui.on_text_command = self._on_text_command
         if hasattr(self.ui, "on_wake"):
@@ -1266,17 +1308,198 @@ class Jarvis:
             logger.debug("Hotkey init note: %s", _e)
             self._hotkey_mgr = None
 
+        self._wake_active_until = 0.0    # Окно активности после слова «Джарвис»
         self._hotkey_active_until = 0.0  # Окно активности при нажатии F8 или вводе текста
+        self._fast_command_thread = None  # Поток исполнения текущей быстрой команды
+        self._speech_prefetch = None      # (текст, задача) — синтез первой фразы наперёд
+        self._streaming_speech_active = False
+        self._streaming_queue: Optional[asyncio.Queue] = None
+        self._streamed_chunks_indices: set[int] = set()
+
+        # ── CommandOrchestrator — оркестратор многошаговых и контекстных команд ──
+        from core.command_orchestrator import CommandOrchestrator
+        self.command_orchestrator = CommandOrchestrator()
+        self._active_speech_command_id = None
+        self._active_speech_turn_id = 0
+        self._current_utterance_id: str = ""
+        self._current_generation_id: int = 0
+        self._active_speech_generation_id: int = 0
+        self._pending_gemini_turn: Optional[PendingGeminiTurn] = None
 
         # Автоматический запуск мобильного Telegram-бота (@Aimyjarvisbot) в фоне
         self._telegram_proc = self._start_telegram_bot()
         atexit.register(self.cleanup)
 
+    def _begin_new_utterance(self) -> str:
+        """Создаёт новый utterance_id и инициализирует буфер карантина ответа Gemini."""
+        import uuid
+        self._current_utterance_id = f"utt_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+        self._current_generation_id = getattr(self, "_current_generation_id", 0) + 1
+        self._pending_gemini_turn = PendingGeminiTurn(
+            utterance_id=self._current_utterance_id,
+            generation_id=self._current_generation_id,
+        )
+        self._streaming_speech_active = False
+        self._streaming_queue = None
+        self._streamed_chunks_indices = set()
+        return self._current_utterance_id
+
+
+    def _wire_state_machine_listeners(self):
+        """Подключение слушателей изменения состояния к интерфейсу и регуляторам."""
+        def _on_state_change(old_state, new_state, reason=""):
+            logger.info("[State] %s -> %s (%s)", old_state.name, new_state.name, reason or "unspecified")
+            from core.conversation_state import ConversationState
+            if new_state == ConversationState.STANDBY:
+                self._wake_active_until = 0.0
+                self._hotkey_active_until = 0.0
+                if self.ui and hasattr(self.ui, "set_state"):
+                    self.ui.set_state("IDLE")
+                try:
+                    from core.ducking_controller import ducking_controller
+                    ducking_controller.restore()
+                except Exception:
+                    pass
+            elif new_state == ConversationState.LISTENING:
+                if self.ui and hasattr(self.ui, "set_state"):
+                    self.ui.set_state("LISTENING")
+                try:
+                    from core.ducking_controller import ducking_controller, DuckingState
+                    ducking_controller.set_state(DuckingState.LISTENING)
+                except Exception:
+                    pass
+            elif new_state == ConversationState.THINKING:
+                if self.ui and hasattr(self.ui, "set_state"):
+                    self.ui.set_state("THINKING")
+            elif new_state == ConversationState.EXECUTING:
+                if self.ui and hasattr(self.ui, "set_state"):
+                    self.ui.set_state("EXECUTING")
+            elif new_state == ConversationState.SPEAKING:
+                if self.ui and hasattr(self.ui, "set_state"):
+                    self.ui.set_state("SPEAKING")
+                try:
+                    from core.ducking_controller import ducking_controller, DuckingState
+                    ducking_controller.set_state(DuckingState.SPEAKING)
+                except Exception:
+                    pass
+            elif new_state == ConversationState.FOLLOW_UP:
+                if self.ui and hasattr(self.ui, "set_state"):
+                    self.ui.set_state("LISTENING")
+                try:
+                    from core.ducking_controller import ducking_controller, DuckingState
+                    ducking_controller.set_state(DuckingState.LISTENING)
+                except Exception:
+                    pass
+            elif new_state == ConversationState.INTERRUPTED:
+                if self.ui and hasattr(self.ui, "set_state"):
+                    self.ui.set_state("LISTENING")
+            elif new_state == ConversationState.RECONNECTING:
+                if self.ui and hasattr(self.ui, "set_state"):
+                    self.ui.set_state("RECONNECTING")
+
+        self.state_machine.subscribe(_on_state_change)
+
+    def _on_wake_spotted(self):
+        """Реакция на фиксацию ключевого слова 'Джарвис'."""
+        self._begin_new_utterance()
+        self._pending_gemini_turn.addressed = True
+        self._wake_active_until = time.monotonic() + 8.0
+        self._chime_until = 0.0
+
+        try:
+            from core.wakeword import play_activation_chime
+            play_activation_chime()
+        except Exception:
+            pass
+        if self.ui and hasattr(self.ui, "bring_to_front"):
+            try:
+                self.ui.bring_to_front()
+            except Exception:
+                pass
+
+    def _on_speech_frame(self, frame_bytes: bytes):
+        """Отправка кадра речи пользователя в очередь исходящего аудио для Gemini."""
+        if not self.out_queue or not getattr(self, "_loop", None) or not self._loop.is_running():
+            return
+        self._loop.call_soon_threadsafe(
+            self._put_nowait_safe,
+            {"data": frame_bytes, "mime_type": "audio/pcm"},
+        )
+
+    def _put_nowait_safe(self, item):
+        """Отправка в out_queue с защитой от переполнения (в потоке цикла событий)."""
+        if not self.out_queue:
+            return
+        try:
+            self.out_queue.put_nowait(item)
+        except asyncio.QueueFull:
+            pass
+
+    def _drain_out_queue(self):
+        """Опустошает очередь исходящего аудио. Только в потоке цикла событий."""
+        if not self.out_queue:
+            return
+        while not self.out_queue.empty():
+            try:
+                self.out_queue.get_nowait()
+            except Exception:
+                break
+
+    def _drain_out_queue_threadsafe(self):
+        """Опустошение out_queue из любого потока.
+
+        `asyncio.Queue` не потокобезопасна: её `get_nowait()` из аудиоворкера
+        рвёт внутренние счётчики и будит ожидающих в чужом потоке.
+        """
+        if not self.out_queue:
+            return
+        loop = getattr(self, "_loop", None)
+        if loop and loop.is_running() and threading.current_thread() is not threading.main_thread():
+            loop.call_soon_threadsafe(self._drain_out_queue)
+        else:
+            self._drain_out_queue()
+
     def _handle_quick_command(self, cmd: str):
-        """Мгновенное локальное исполнение быстрой команды без слова 'Джарвис'."""
+        """Быстрая команда без слова «Джарвис». Вызывается из аудиоворкера.
+
+        Само исполнение уходит в отдельный поток. Роутер выглядит мгновенным
+        только на медиа-клавишах: «полный экран», «перемотай», «включи фильм»
+        идут в `actions/movie_player.py`, где есть паузы до 2 секунд, а
+        «посмотри на экран» — вообще снимок экрана и запрос к модели. Пока это
+        крутилось прямо в воркере, конвейер на всё это время переставал
+        разбирать кадры: ограниченная очередь (100 кадров ≈ 3 с) переполнялась,
+        звук терялся, ключевое слово и перебивание не работали.
+        """
         logger.info("[Spotterless] ⚡ Быстрая команда: '%s'", cmd)
         # Если Джарвис говорит сам — немедленно прерываем речь
         self.interrupt_speech("quick-command-barge-in")
+
+        sm = getattr(self, "state_machine", None)
+        if sm:
+            from core.conversation_state import ConversationState
+            # Из ожидания в исполнение напрямую нельзя: пользователь всё-таки
+            # что-то сказал, поэтому проходим через LISTENING.
+            if sm.state == ConversationState.STANDBY:
+                sm.transition_to(ConversationState.LISTENING, reason="quick command heard")
+            sm.transition_to(ConversationState.EXECUTING, reason=f"fast path: {cmd}")
+
+        # Single-execution guarantee: сбрасываем out_queue, чтобы та же фраза
+        # не ушла в облако и не выполнилась вторым заходом.
+        # asyncio.Queue не потокобезопасна, а сюда мы приходим из аудиоворкера,
+        # поэтому чистим строго в потоке цикла событий.
+        self._drain_out_queue_threadsafe()
+
+        thread = threading.Thread(
+            target=self._run_quick_command,
+            args=(cmd, sm),
+            name="JARVIS-FastCommand",
+            daemon=True,
+        )
+        self._fast_command_thread = thread
+        thread.start()
+
+    def _run_quick_command(self, cmd: str, sm):
+        """Собственно исполнение быстрой команды — в отдельном потоке."""
         try:
             from core.fast_command_router import FastCommandRouter
             res = FastCommandRouter.match_and_execute(cmd, player=self.ui)
@@ -1294,22 +1517,50 @@ class Jarvis:
                         ducking_controller.restore()
                     except Exception:
                         pass
+                    if sm:
+                        from core.conversation_state import ConversationState
+                        sm.transition_to(ConversationState.STANDBY)
                 # Если это не физическое действие, а информационный ответ (напр. трек) — озвучиваем
                 elif resp:
+                    if sm:
+                        from core.conversation_state import ConversationState
+                        sm.transition_to(ConversationState.SPEAKING)
                     if getattr(self, "_loop", None) and self._loop.is_running() and get_voice_provider() == "fish":
                         asyncio.run_coroutine_threadsafe(self._async_start_speech(resp), self._loop)
+                elif sm:
+                    from core.conversation_state import ConversationState
+                    sm.transition_to(ConversationState.STANDBY)
+            else:
+                if sm:
+                    from core.conversation_state import ConversationState
+                    sm.transition_to(ConversationState.STANDBY)
         except Exception as exc:
             logger.error("Ошибка исполнения быстрой команды: %s", exc)
+            if sm:
+                from core.conversation_state import ConversationState
+                sm.transition_to(ConversationState.STANDBY)
 
     def _on_hotkey_wake(self):
         """Реакция на глобальный хоткей F8 / Ctrl+Shift+J из любого приложения или игры."""
         logger.info("[Hotkey] Нажата горячая клавиша вызова Джарвиса (F8)")
+        self._begin_new_utterance()
+        self._pending_gemini_turn.addressed = True
         self._hotkey_active_until = time.monotonic() + 10.0
+
+        # Снимаем мьют ДО перехода: из MUTED сразу в LISTENING нельзя, сначала
+        # надо вернуться в STANDBY — иначе переход отклонялся и машина
+        # оставалась в MUTED при живом микрофоне.
         if self.ui.muted:
             self.ui.toggle_mute()
             self.ui.write_log("SYS: ⚡ Микрофон активирован по горячей клавише F8.")
         else:
             self.ui.write_log("SYS: ⚡ Активация по горячей клавише F8.")
+        sm = getattr(self, "state_machine", None)
+        if sm:
+            from core.conversation_state import ConversationState
+            if sm.state == ConversationState.MUTED:
+                sm.transition_to(ConversationState.STANDBY, reason="unmuted by hotkey")
+            sm.transition_to(ConversationState.LISTENING, reason="hotkey wake")
         try:
             self.ui.bring_to_front()
         except Exception:
@@ -1323,6 +1574,13 @@ class Jarvis:
     def _on_hotkey_mute(self):
         """Реакция на глобальный хоткей Ctrl+Shift+M из любого приложения."""
         self.ui.toggle_mute()
+        sm = getattr(self, "state_machine", None)
+        if sm:
+            from core.conversation_state import ConversationState
+            if self.ui.muted:
+                sm.transition_to(ConversationState.MUTED)
+            else:
+                sm.transition_to(ConversationState.STANDBY)
         try:
             from core.earcons import play_mute_earcon
             play_mute_earcon(self.ui.muted)
@@ -1375,6 +1633,15 @@ class Jarvis:
 
     def cleanup(self):
         """Корректное освобождение системных ресурсов и дочерних процессов."""
+        thread = getattr(self, "_fast_command_thread", None)
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+        if hasattr(self, "audio_pipeline") and self.audio_pipeline:
+            try:
+                self.audio_pipeline.stop()
+            except Exception:
+                pass
+            self.audio_pipeline = None
         if hasattr(self, "_hotkey_mgr") and self._hotkey_mgr:
             try:
                 self._hotkey_mgr.stop()
@@ -1382,11 +1649,17 @@ class Jarvis:
                 pass
             self._hotkey_mgr = None
         if hasattr(self, "_telegram_proc") and self._telegram_proc:
-            try:
-                self._telegram_proc.terminate()
-            except Exception:
-                pass
+            proc = self._telegram_proc
             self._telegram_proc = None
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1.5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=1.0)
+            except Exception as e:
+                logger.debug("Telegram process cleanup error: %s", e)
 
     # ── Текстовый ввод ────────────────────────────────────────────────────────
     def _send_text_to_session(self, text: str):
@@ -1408,9 +1681,54 @@ class Jarvis:
     def _on_text_command(self, text: str):
         # Normalize text before sending
         text = self._normalize_input_text(text)
-        if text:
-            self._hotkey_active_until = time.monotonic() + 15.0
-            self._send_text_to_session(text)
+        if not text:
+            return
+
+        self._begin_new_utterance()
+        self._pending_gemini_turn.addressed = True  # напечатанное всегда адресовано Джарвису
+        self._hotkey_active_until = time.monotonic() + 15.0
+        if self.ui and hasattr(self.ui, "write_log"):
+            self.ui.write_log(f"Вы: {text}")
+
+        # 1. FastCommandRouter: проверка быстрых директивных команд
+        from core.fast_command_router import FastCommandRouter
+        fast_res = FastCommandRouter.match_and_execute(text, self.ui)
+        if fast_res[0]:
+            if fast_res[1] and self.ui:
+                self.ui.write_log(f"Джарвис: {fast_res[1]}")
+            return
+
+        # 2. CommandOrchestrator: проверка многошаговых и контекстных команд
+        orch_res = None
+        if hasattr(self, "command_orchestrator"):
+            from core.command_orchestrator import RoutingDecision
+            orch_res = self.command_orchestrator.process_user_text(text, player=self.ui)
+            if orch_res.decision != RoutingDecision.NEEDS_LLM and orch_res.decision != RoutingDecision.IGNORED:
+                if orch_res.decision == RoutingDecision.CONSUMED_ACTION:
+                    msg = orch_res.executed_result or "Готово, сэр."
+                    if self.ui:
+                        self.ui.write_log(f"Джарвис: {msg}")
+                    if get_voice_provider() == "fish":
+                        self._start_speech(msg, command_id=orch_res.command_id, turn_id=orch_res.turn_id)
+                elif orch_res.decision == RoutingDecision.CONSUMED_CLARIFICATION:
+                    prompt = orch_res.prompt_to_user or "Уточните, сэр."
+                    if self.ui:
+                        self.ui.write_log(f"Джарвис: {prompt}")
+                    self._wake_active_until = time.monotonic() + 15.0
+                    if get_voice_provider() == "fish":
+                        self._start_speech(prompt, command_id=orch_res.command_id, turn_id=orch_res.turn_id)
+                elif orch_res.decision == RoutingDecision.CONSUMED_CANCEL:
+                    cancel_msg = orch_res.prompt_to_user or "Отменено, сэр."
+                    if self.ui:
+                        self.ui.write_log(f"Джарвис: {cancel_msg}")
+                    if get_voice_provider() == "fish":
+                        self._start_speech(cancel_msg, command_id=orch_res.command_id, turn_id=orch_res.turn_id)
+                return
+
+        # 3. Gemini Live session fallback
+        out_query = orch_res.cleaned_text if (orch_res and orch_res.cleaned_text) else text
+        self._send_text_to_session(out_query)
+
 
     def _normalize_input_text(self, text: str) -> str:
         """Normalize user input text for better intent parsing."""
@@ -1420,25 +1738,84 @@ class Jarvis:
     def set_speaking(self, value: bool):
         with self._speaking_lock:
             self._is_speaking = value
+        sm = getattr(self, "state_machine", None)
         if value:
-            self.ui.set_state("SPEAKING")
-            try:
-                from core.ducking_controller import ducking_controller, DuckingState
-                ducking_controller.set_state(DuckingState.SPEAKING)
-            except Exception:
-                pass
-        elif not self.ui.muted:
-            self.ui.set_state("LISTENING")
-            try:
-                from core.ducking_controller import ducking_controller, DuckingState
-                # Если активно окно ожидания ответа (Follow-up), удерживаем приглушение (LISTENING),
-                # иначе плавно возвращаем нормальную громкость музыки
-                if time.monotonic() < getattr(self, "_wake_active_until", 0.0):
-                    ducking_controller.set_state(DuckingState.LISTENING)
+            if sm:
+                from core.conversation_state import ConversationState
+                if sm.can_transition_to(ConversationState.SPEAKING):
+                    sm.transition_to(ConversationState.SPEAKING)
                 else:
-                    ducking_controller.set_state(DuckingState.RESTORING)
+                    sm.transition_to(ConversationState.SPEAKING, force=True)
+            else:
+                self.ui.set_state("SPEAKING")
+                try:
+                    from core.ducking_controller import ducking_controller, DuckingState
+                    ducking_controller.set_state(DuckingState.SPEAKING)
+                except Exception:
+                    pass
+        else:
+            if sm:
+                from core.conversation_state import ConversationState
+                if sm.state in (ConversationState.SPEAKING, ConversationState.FOLLOW_UP):
+                    if time.monotonic() < getattr(self, "_wake_active_until", 0.0):
+                        rem_time = max(1.0, self._wake_active_until - time.monotonic())
+                        sm.start_follow_up(timeout_sec=rem_time)
+                    else:
+                        if sm.state != ConversationState.STANDBY:
+                            sm.transition_to(ConversationState.STANDBY)
+            elif not self.ui.muted:
+                self.ui.set_state("LISTENING")
+                try:
+                    from core.ducking_controller import ducking_controller, DuckingState
+                    if time.monotonic() < getattr(self, "_wake_active_until", 0.0):
+                        ducking_controller.set_state(DuckingState.LISTENING)
+                    else:
+                        ducking_controller.set_state(DuckingState.RESTORING)
+                except Exception:
+                    pass
+
+    def _abort_playback(self):
+        """Снимает задачи синтеза и опустошает буфер воспроизведения.
+
+        Только в потоке цикла событий: и таски, и `asyncio.Queue` принадлежат ему.
+        """
+        self._streaming_speech_active = False
+        if getattr(self, "_streaming_queue", None) is not None:
+            while not self._streaming_queue.empty():
+                try:
+                    self._streaming_queue.get_nowait()
+                except Exception:
+                    break
+            try:
+                self._streaming_queue.put_nowait(None)
             except Exception:
                 pass
+            self._streaming_queue = None
+
+        for task in list(getattr(self, "_active_speech_tasks", set())):
+            if not task.done():
+                task.cancel()
+        if hasattr(self, "_active_speech_tasks"):
+            self._active_speech_tasks.clear()
+
+        self._clear_audio_in_queue()
+
+    def _clear_audio_in_queue(self):
+        """Очищает очередь воспроизведения аудио."""
+        if self.audio_in_queue:
+            while not self.audio_in_queue.empty():
+                try:
+                    self.audio_in_queue.get_nowait()
+                except Exception:
+                    break
+
+    def _abort_playback_threadsafe(self):
+        """Прерывание воспроизведения из любого потока."""
+        loop = getattr(self, "_loop", None)
+        if loop and loop.is_running() and threading.current_thread() is not threading.main_thread():
+            loop.call_soon_threadsafe(self._abort_playback)
+        else:
+            self._abort_playback()
 
     def interrupt_speech(self, reason: str = "barge-in"):
         """Мгновенное аппаратное и программное прерывание речи Джарвиса на полуслове (Barge-In)."""
@@ -1449,26 +1826,30 @@ class Jarvis:
             self._is_speaking = False
             self._active_synth_tasks = 0
             self._speech_epoch = getattr(self, "_speech_epoch", 0) + 1
+            self._current_generation_id = getattr(self, "_current_generation_id", 0) + 1
+            self._active_speech_generation_id = self._current_generation_id
             self._interrupted_turn = True
             self._wake_active_until = time.monotonic() + 8.0
+            if getattr(self, "_pending_gemini_turn", None):
+                self._pending_gemini_turn.clear()
 
-        # 1. Отмена всех активных асинхронных задач генерации речи (Fish / Edge-TTS)
-        tasks = list(getattr(self, "_active_speech_tasks", set()))
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        if hasattr(self, "_active_speech_tasks"):
-            self._active_speech_tasks.clear()
+        # State transition to INTERRUPTED
+        sm = getattr(self, "state_machine", None)
+        if sm:
+            from core.conversation_state import ConversationState
+            # Из STANDBY перебивать нечего — переход туда и не нужен.
+            if sm.state != ConversationState.STANDBY:
+                sm.transition_to(ConversationState.INTERRUPTED, reason=reason)
 
-        # 2. Немедленная очистка буфера воспроизведения
-        if self.audio_in_queue:
-            while not self.audio_in_queue.empty():
-                try:
-                    self.audio_in_queue.get_nowait()
-                except Exception:
-                    break
+        self._drop_speech_prefetch()
 
-        # 3. Переключение интерфейса и даккинга в режим прослушивания
+        # 1. Отмена задач синтеза и очистка буфера воспроизведения.
+        self._abort_playback_threadsafe()
+
+        # 2. Переход в LISTENING
+        if sm:
+            from core.conversation_state import ConversationState
+            sm.transition_to(ConversationState.LISTENING, reason="listen after barge-in")
         self.set_speaking(False)
         if self.ui:
             self.ui.set_state("LISTENING")
@@ -1481,34 +1862,14 @@ class Jarvis:
         except Exception:
             pass
 
-    def _check_barge_in(self, indata: np.ndarray) -> tuple[bool, str]:
-        """Проверяет необходимость аппаратного/программного прерывания речи Джарвиса.
-
-        Возвращает (should_interrupt, reason).
-        """
-        try:
-            rms = float(np.sqrt(np.mean(np.square(indata.astype(np.float32)))))
-        except Exception:
-            rms = 0.0
-
-        is_speaker_active = (
-            self._speaker_meter is not None
-            and getattr(self._speaker_meter, "peak", 0.0) > _SPEAKER_GATE
-        )
-        speaker_peak = float(getattr(self._speaker_meter, "peak", 0.0)) if self._speaker_meter else 0.0
-        # Динамический адаптивный порог: предотвращает ложные прерывания собственным эхом
-        barge_threshold = max(350.0, speaker_peak * 2400.0) if is_speaker_active else 200.0
-
-        if rms > barge_threshold:
-            return True, "voice-rms-barge-in"
-
-        pcm_bytes = indata.tobytes()
-        if self._wake_detector and self._wake_detector.process_pcm(pcm_bytes):
-            return True, "wake-word-barge-in"
-
-        return False, ""
-
-    def _start_speech(self, text: str):
+    def _start_speech(
+        self,
+        text: str,
+        command_id: Optional[str] = None,
+        turn_id: int = 0,
+        generation_id: Optional[int] = None,
+        utterance_id: Optional[str] = None,
+    ):
         """Запускает воспроизведение речи с регистрацией в менеджере прерываний."""
         if not text:
             return None
@@ -1516,19 +1877,286 @@ class Jarvis:
             self._active_speech_tasks = set()
         self._speech_epoch = getattr(self, "_speech_epoch", 0) + 1
         epoch = self._speech_epoch
+        self._active_speech_command_id = command_id
+        self._active_speech_turn_id = turn_id
+        gen_id = generation_id if generation_id is not None else getattr(self, "_current_generation_id", 0)
+        self._active_speech_generation_id = gen_id
+        self._active_speech_utterance_id = utterance_id or getattr(self, "_current_utterance_id", "")
         self._interrupted_turn = False
         try:
-            import inspect
-            sig = inspect.signature(self._speak_fish)
-            if "epoch" in sig.parameters:
-                task = asyncio.create_task(self._speak_fish(text, epoch=epoch))
-            else:
-                task = asyncio.create_task(self._speak_fish(text))
+            task = asyncio.create_task(
+                self._speak_fish(
+                    text,
+                    epoch=epoch,
+                    generation_id=gen_id,
+                )
+            )
         except Exception:
             task = asyncio.create_task(self._speak_fish(text, epoch=epoch))
         self._active_speech_tasks.add(task)
         task.add_done_callback(lambda t: getattr(self, "_active_speech_tasks", set()).discard(t))
         return task
+
+
+    def _maybe_prefetch_speech(self, raw_text: str):
+        """Запускает синтез первой фразы, не дожидаясь конца генерации.
+
+        Замер на этой машине: тёплый запрос к Fish — около 690 мс и почти не
+        зависит от длины текста (это сетевой round-trip, а не генерация звука).
+        Раньше он стартовал только на turn_complete, то есть после того, как
+        модель договорила ВЕСЬ ответ. Здесь запрос уходит, как только первая
+        фраза окончательно сформирована, и его время прячется за генерацией
+        остатка.
+
+        Именно предзагрузка, а не ранняя проигровка: играть до конца хода нельзя,
+        иначе сломается барж-ин и придётся озвучивать переспрос, который позже
+        решено было укоротить.
+        """
+        if self._speech_prefetch is not None or getattr(self, "_streaming_speech_active", False) or get_voice_provider() != "fish":
+            return
+        loop = getattr(self, "_loop", None)
+        if not loop or not loop.is_running():
+            return
+        cleaned = _clean_dialog_text(raw_text)
+        if not cleaned:
+            return
+        chunks = _split_for_speech(cleaned)
+        # Пока кусок один, он ещё может дорасти и слиться со следующей фразой —
+        # тогда предзагруженный текст не совпадёт с тем, что будут озвучивать.
+        # Начиная со второго куска первый уже окончателен.
+        if len(chunks) < 2:
+            return
+        try:
+            from telegram_bot import tts_fish
+            if not tts_fish.is_configured():
+                return
+            task = asyncio.create_task(
+                tts_fish.speak_pcm(chunks[0], sample_rate=RECV_SAMPLE_RATE)
+            )
+            self._speech_prefetch = (chunks[0], task)
+            logger.info("TTS: синтез первой фразы запущен наперёд (%d симв)", len(chunks[0]))
+        except Exception as e:
+            logger.debug("Speech prefetch note: %s", e)
+
+    def _take_prefetched_speech(self, fragment: str):
+        """Отдаёт заранее запущенную задачу синтеза, если текст совпал."""
+        pre = self._speech_prefetch
+        if not pre or pre[0] != fragment:
+            return None
+        self._speech_prefetch = None
+        return pre[1]
+
+    def _drop_speech_prefetch(self):
+        """Снимает предзагрузку: ход отменён или начался новый."""
+        pre = getattr(self, "_speech_prefetch", None)
+        self._speech_prefetch = None
+        if pre and not pre[1].done():
+            pre[1].cancel()
+        self._streaming_speech_active = False
+        if getattr(self, "_streaming_queue", None) is not None:
+            while not self._streaming_queue.empty():
+                try:
+                    self._streaming_queue.get_nowait()
+                except Exception:
+                    break
+            try:
+                self._streaming_queue.put_nowait(None)
+            except Exception:
+                pass
+            self._streaming_queue = None
+
+    def _maybe_stream_speech(self, raw_text: str):
+        """Запускает потоковый синтез и воспроизведение предложений по мере генерации ответа Gemini."""
+        if get_voice_provider() != "fish":
+            return
+        loop = getattr(self, "_loop", None)
+        if not loop or not loop.is_running():
+            return
+        pt = getattr(self, "_pending_gemini_turn", None)
+        if pt:
+            if pt.routed_to in _SILENT_ROUTES or pt.routed_to == "LOCAL":
+                return
+            if not pt.arbitrated:
+                return
+
+        cleaned = _clean_dialog_text(raw_text)
+        if not cleaned:
+            return
+        chunks = _split_for_speech(cleaned)
+        if len(chunks) < 2:
+            return
+
+        try:
+            from telegram_bot import tts_fish
+            if not tts_fish.is_configured():
+                return
+        except Exception:
+            return
+
+        # Если стриминг ещё не запущен для текущей реплики:
+        if not getattr(self, "_streaming_speech_active", False):
+            self._streaming_speech_active = True
+            self._streaming_queue = asyncio.Queue()
+            self._streamed_chunks_indices = set()
+
+            self._speech_epoch = getattr(self, "_speech_epoch", 0) + 1
+            epoch = self._speech_epoch
+            gen_id = getattr(self, "_current_generation_id", 0)
+            self._active_speech_generation_id = gen_id
+            self._active_speech_utterance_id = getattr(self, "_current_utterance_id", "")
+            self._interrupted_turn = False
+
+            task = asyncio.create_task(
+                self._run_streaming_speech(
+                    self._streaming_queue,
+                    epoch=epoch,
+                    generation_id=gen_id,
+                )
+            )
+            if not hasattr(self, "_active_speech_tasks"):
+                self._active_speech_tasks = set()
+            self._active_speech_tasks.add(task)
+            task.add_done_callback(lambda t: getattr(self, "_active_speech_tasks", set()).discard(t))
+            logger.info("TTS Stream: стриминг речи запущен (epoch=%d, gen=%d)", epoch, gen_id)
+
+        # Отправляем все готовые завершённые куски (кроме последнего, т.к. он ещё может дописываться)
+        for idx in range(len(chunks) - 1):
+            if idx not in self._streamed_chunks_indices:
+                self._streamed_chunks_indices.add(idx)
+                if self._streaming_queue is not None:
+                    self._streaming_queue.put_nowait(chunks[idx])
+                    logger.info("TTS Stream: чанк #%d отправлен в очередь (%d симв): '%.30s...'",
+                                idx, len(chunks[idx]), chunks[idx])
+
+    async def _run_streaming_speech(
+        self,
+        queue: asyncio.Queue,
+        epoch: int | None = None,
+        generation_id: int | None = None,
+    ):
+        """Фоновый потребитель очереди предложений: синтезирует и воспроизводит чанки по мере готовности."""
+        with getattr(self, "_speaking_lock", threading.Lock()):
+            self._active_synth_tasks = getattr(self, "_active_synth_tasks", 0) + 1
+        self.set_speaking(True)
+
+        if epoch is None:
+            epoch = getattr(self, "_speech_epoch", 0)
+
+        if generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id:
+            if hasattr(self, "_latency") and hasattr(self._latency, "mark_turn_complete"):
+                self._latency.mark_turn_complete()
+            with getattr(self, "_speaking_lock", threading.Lock()):
+                self._active_synth_tasks = max(0, getattr(self, "_active_synth_tasks", 1) - 1)
+            return
+
+        try:
+            from telegram_bot import tts_fish
+            from telegram_bot import tts_edge
+
+            fish_alive = tts_fish.is_configured()
+            if not fish_alive and not getattr(self, "_fish_unconfigured_logged", False):
+                self._fish_unconfigured_logged = True
+                logger.warning(
+                    "Голос Fish выбран, но ключ не найден — отвечать будет "
+                    "Edge-TTS. Проверьте fish_api_key в %s", API_CONFIG
+                )
+                if hasattr(self, "ui") and hasattr(self.ui, "write_log"):
+                    self.ui.write_log("SYS: ключ Fish не найден — голос звучит через Edge-TTS")
+
+            async def _synth_fragment(fragment: str):
+                nonlocal fish_alive
+                if getattr(self, "_speech_epoch", 0) != epoch or not getattr(self, "_is_speaking", False):
+                    return None
+                if generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id:
+                    return None
+
+                taker = getattr(self, "_take_prefetched_speech", None)
+                prefetched = taker(fragment) if taker else None
+                if prefetched is not None:
+                    try:
+                        pcm = await prefetched
+                        if pcm:
+                            return pcm
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        logger.debug("Prefetched speech unusable: %s", e)
+
+                if fish_alive:
+                    pcm = await tts_fish.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+                    if pcm:
+                        return pcm
+                    fish_alive = False
+                    if hasattr(self, "ui") and hasattr(self.ui, "write_log"):
+                        self.ui.write_log("SYS: Fish молчит — остаток ответа озвучит Edge-TTS")
+
+                if getattr(self, "_speech_epoch", 0) != epoch or not getattr(self, "_is_speaking", False):
+                    return None
+                if generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id:
+                    return None
+                return await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+
+            step = CHUNK_SIZE * 2
+            spoken = 0
+            chunks_count = 0
+
+            while True:
+                if getattr(self, "_speech_epoch", 0) != epoch or not getattr(self, "_is_speaking", False):
+                    break
+                if generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id:
+                    break
+
+                try:
+                    fragment = await asyncio.wait_for(queue.get(), timeout=20.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    break
+
+                if fragment is None:
+                    # Маркер завершения стрима
+                    break
+
+                synth_started = time.perf_counter()
+                pcm = await _synth_fragment(fragment)
+                logger.info(
+                    "TTS Stream: фрагмент #%d синтезирован за %.0f мс (%d симв, %.1f с звука)",
+                    chunks_count, (time.perf_counter() - synth_started) * 1000,
+                    len(fragment), (len(pcm) / 2 / RECV_SAMPLE_RATE) if pcm else 0.0,
+                )
+                if getattr(self, "_speech_epoch", 0) != epoch or not getattr(self, "_is_speaking", False):
+                    break
+
+                if not pcm:
+                    if getattr(self, "_speech_epoch", 0) == epoch and getattr(self, "_is_speaking", False):
+                        if hasattr(self, "ui") and hasattr(self.ui, "write_log"):
+                            self.ui.write_log("SYS: синтез речи недоступен — ответ остался текстом")
+                    break
+
+                if not spoken and hasattr(self, "_latency") and hasattr(self._latency, "mark_answer_audio"):
+                    self._latency.mark_answer_audio()
+                spoken += len(pcm)
+                chunks_count += 1
+
+                if self.audio_in_queue:
+                    for j in range(0, len(pcm), step):
+                        if getattr(self, "_speech_epoch", 0) != epoch or not getattr(self, "_is_speaking", False):
+                            break
+                        if generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id:
+                            break
+                        try:
+                            self.audio_in_queue.put_nowait(pcm[j:j + step])
+                        except asyncio.QueueFull:
+                            await self.audio_in_queue.put(pcm[j:j + step])
+
+            if spoken and getattr(self, "_speech_epoch", 0) == epoch:
+                logger.info("Голос Fish (stream): %.1f с звука, %d фрагмент(ов)",
+                            spoken / 2 / RECV_SAMPLE_RATE, chunks_count)
+            if hasattr(self, "_latency") and hasattr(self._latency, "mark_turn_complete"):
+                self._latency.mark_turn_complete()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            with getattr(self, "_speaking_lock", threading.Lock()):
+                self._active_synth_tasks = max(0, getattr(self, "_active_synth_tasks", 1) - 1)
 
     async def _async_start_speech(self, text: str):
         self._start_speech(text)
@@ -1555,7 +2183,8 @@ class Jarvis:
         time_ctx = (
             f"[ТЕКУЩЕЕ ВРЕМЯ И ДАТА]\n"
             f"Сейчас: {time_str}\n"
-            f"Используй для точного расчёта напоминаний.\n\n"
+            f"Используй исключительно для точного расчёта напоминаний и дат.\n"
+            f"КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выводить строку '[ТЕКУЩЕЕ ВРЕМЯ ...]' или любые другие теги в квадратных скобках вслух или в текст!\n\n"
         )
 
         # Текущий режим (если активен) — для контекста при перезапуске
@@ -1574,24 +2203,41 @@ class Jarvis:
 
         wake_anchor = (
             "[ПРОТОКОЛ АКТИВАЦИИ И ВЫЗОВА]\n"
-            "Твоё имя: Джарвис (JARVIS). Все входящие реплики уже активированы ключевым словом «Джарвис» или кнопкой вызова и адресованы непосредственно тебе.\n"
-            "Немедленно и безукоризненно исполняй команды сэра (включай музыку, открывай кино, переключай окна, отвечай на вопросы) без лишних задержек.\n"
-            "Если входящий аудиофрагмент — неразборчивый шум комнаты или тишина, сохраняй спокойное молчание.\n\n"
+            "Твоё имя: Джарвис (JARVIS). Собеседник говорит по-русски.\n"
+            "Если пользователь обратился к тебе только по имени ('Джарвис', 'Jarvis') или позвал без конкретного вопроса/команды, коротко и вежливо откликнись голосом: 'Да, сэр?', 'Слушаю вас', 'На связи' или 'Да?' и жди указаний.\n"
+            "Когда к тебе обращаются с вопросом или поручением — отвечай чётко и по существу.\n"
+            "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО реагировать на фоновый шум комнаты, покашливания, вздохи или случайные обрывки звуков.\n"
+            "НИКОГДА не говори фразы вроде 'я не расслышал', 'не мог бы повторить', 'из-за шума не могу разобрать'.\n"
+            "Если входящий аудиофрагмент — фоновый шум или тишина БЕЗ обращения к тебе по имени, СОХРАНЯЙ ПОЛНОЕ МОЛЧАНИЕ (пустой ответ)!\n"
+            "Никогда не выводи вслух и в текст системные теги, заголовки в скобках [ТЕКУЩЕЕ ВРЕМЯ ...] и метаданные.\n\n"
         )
         lang_anchor = (
             "[ОСНОВНОЙ ЯЗЫК: РУССКИЙ]\n"
             "Собеседник говорит по-русски (либо узбекский/казахский). Твоё имя: Джарвис (JARVIS).\n"
             "Все входящие акустические фразы ('Čia Harvis', 'Harvis', 'Jarvis') расшифровывай и воспринимай строго как обращение 'Джарвис' на русском языке.\n\n"
         )
+        # Подгрузка заметок Obsidian в системный контекст
+        try:
+            from actions.obsidian import get_recent_obsidian_notes
+            obsidian_ctx = get_recent_obsidian_notes(limit=3)
+        except Exception:
+            obsidian_ctx = ""
+
         parts = [lang_anchor, wake_anchor, time_ctx]
         if mode_ctx:
             parts.append(mode_ctx)
         if profile_str:
             parts.append(profile_str)
+        if obsidian_ctx:
+            parts.append(obsidian_ctx)
         if mem_str:
             parts.append(mem_str)
         parts.append(sys_prompt)
 
+        # Все инструменты объявляются модели. Раньше фильмы, музыка, приложения,
+        # настройки ПК и окна вырезались отсюда «в пользу локального контроллера»,
+        # а он понимает лишь узкий набор фраз — всё остальное модель физически
+        # не могла выполнить и отвечала словами вместо действия.
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             output_audio_transcription={},
@@ -1610,7 +2256,7 @@ class Jarvis:
                     silence_duration_ms=_VAD_SILENCE_MS,
                     prefix_padding_ms=_VAD_PREFIX_MS,
                     end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
-                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
                 ),
             ),
             speech_config=types.SpeechConfig(
@@ -1632,7 +2278,14 @@ class Jarvis:
         name = fc.name
         args = dict(fc.args or {})
         logger.info(f"🔧 Tool: {name} {args}")
+
+        # Двойное исполнение отсекается в цикле приёма: если ход уже забрал
+        # локальный контроллер, tool_call туда не доходит. Безусловная блокировка
+        # локальных инструментов здесь стояла раньше и ломала всё, что локальные
+        # регулярки не узнали: громкость, окна, музыку по имени исполнителя —
+        # Gemini отвечала «готово», а действие не выполнялось вовсе.
         self.ui.set_state("THINKING")
+
 
         # Необратимое — только после подтверждения.
         #
@@ -1778,10 +2431,11 @@ class Jarvis:
                 )
                 result = r or "Готово."
 
-            # ── Инструмент: Spotify music-плеер ──────────────────────
+            # ── Инструмент: музыкальный плеер ──────────────────────
             elif name == "music_player":
+                from actions.music_player import music_player
                 r = await loop.run_in_executor(
-                    None, lambda: spotify_player(parameters=args, player=self.ui)
+                    None, lambda: music_player(parameters=args, player=self.ui)
                 )
                 result = r or "Готово."
 
@@ -1997,6 +2651,11 @@ class Jarvis:
             else:
                 result = f"Неизвестный инструмент: {name}"
 
+        except asyncio.TimeoutError:
+            result = f"Таймаут выполнения инструмента '{name}' (превышено время ожидания)."
+            logger.warning("Tool %s timed out internally", name)
+            if hasattr(self, "ui") and hasattr(self.ui, "write_log"):
+                self.ui.write_log(f"SYS: ⏱ Таймаут инструмента '{name}'")
         except Exception as e:
             result = f"Ошибка инструмента '{name}': {e}"
             traceback.print_exc()
@@ -2049,39 +2708,6 @@ class Jarvis:
 
     # ── Захват микрофона ──────────────────────────────────────────────────────
 
-    def _note_gate(self, reason: str | None):
-        """Копит причины, по которым кадры не уезжают, и раз в несколько
-        секунд пишет сводку. Зовётся из аудио-колбэка — только счётчики.
-
-        Без этого «Джарвис меня не слышит» неотличимо от «Джарвис завис»:
-        все три отказа в callback молчаливые, и глухой микрофон выглядит
-        ровно как исправный.
-        """
-        now = time.monotonic()
-        if reason is None:
-            self._gate_passed = getattr(self, "_gate_passed", 0) + 1
-        else:
-            counts = getattr(self, "_gate_counts", None)
-            if counts is None:
-                counts = self._gate_counts = {}
-            counts[reason] = counts.get(reason, 0) + 1
-
-        last = getattr(self, "_gate_reported_at", 0.0)
-        if now - last < _GATE_REPORT_SEC:
-            return
-        self._gate_reported_at = now
-
-        counts = getattr(self, "_gate_counts", {}) or {}
-        passed = getattr(self, "_gate_passed", 0)
-        self._gate_counts, self._gate_passed = {}, 0
-        if not counts or passed:
-            return          # что-то доезжает — значит слух работает
-        top = max(counts.items(), key=lambda kv: kv[1])
-        if top[0].startswith("тихо"):
-            logger.debug("Микрофон: тишина в комнате (RMS < %s, %d кадров)", MIC_RMS_THRESHOLD, top[1])
-        else:
-            logger.info("Микрофон гейт: %s (%d кадров)", top[0], top[1])
-
     def _push_level(self, value: float):
         """Отдаёт громкость окну. Зовётся из аудио-потока, поэтому дёшево и
         молча: замер для красоты не имеет права ни тормозить звук, ни падать."""
@@ -2090,184 +2716,138 @@ class Jarvis:
         except Exception as exc:
             logger.debug("Уровень в HUD не ушёл: %s", exc, exc_info=True)
 
-    def _is_loud_enough(self, indata) -> bool:
-        """Пропускать ли кадр в облако.
+    def _start_aec_reference(self):
+        """Поднимает опорный поток колонок (WASAPI loopback) для эхоподавления.
 
-        Раньше в Gemini Live уходил КАЖДЫЙ кадр с микрофона, пока Джарвис не
-        говорит сам: тишина, шум вентилятора, разговоры в комнате — всё
-        непрерывным потоком. Это и квоту жгло, и в облако уезжало то, что туда
-        никто не отправлял осознанно.
-
-        Порог с «хвостом»: после громкого кадра ещё несколько тихих проходят,
-        иначе обрезаются окончания слов.
+        Без него AECPipeline не выполняется ни разу: вычитать из микрофона
+        нечего. Микрофонный поток остаётся за sounddevice в `_listen_audio` —
+        здесь открывается ТОЛЬКО loopback.
         """
+        if self._aec_reference is not None:
+            return
         try:
-            rms = float(np.sqrt(np.mean(np.square(indata.astype(np.float32)))))
-        except Exception:
-            self._frame_was_loud = True
-            return True          # не смогли посчитать — лучше пропустить, чем оглохнуть
+            from core.audio_capture import AudioCaptureEngine
+            engine = AudioCaptureEngine()
+            engine.start(reference_only=True)
+            if getattr(engine, "reference_active", False):
+                self._aec_reference = engine
+                logger.info("AEC: опорный поток колонок поднят, эхоподавление активно")
+            else:
+                engine.stop()
+                logger.warning(
+                    "AEC: опорный поток колонок недоступен — эхоподавление выключено, "
+                    "перебивание работает только по ключевому слову"
+                )
+        except Exception as e:
+            logger.warning("AEC: не удалось поднять опорный поток (%s), эхоподавление выключено", e)
 
-        # HUD дышит этим числом. Раньше он «реагировал» на random.uniform и
-        # выглядел одинаково в тишине и на крике. _MIC_FULL_SCALE — не предел
-        # int16, а громкость обычной речи в метре от ноутбука: масштабируя по
-        # 32767, мы получили бы почти неподвижную полоску.
-        self._push_level(min(1.0, rms / _MIC_FULL_SCALE))
-        if rms >= MIC_RMS_THRESHOLD:
-            self._quiet_frames = 0
-            self._frame_was_loud = True
-            return True
-        self._quiet_frames = getattr(self, "_quiet_frames", MIC_HANGOVER_FRAMES) + 1
-        self._frame_was_loud = False
-        return self._quiet_frames <= MIC_HANGOVER_FRAMES
+    def _on_listen_silence_timeout(self):
+        """Пользователь замолчал надолго — закрываем окно активности.
+
+        Без этого шлюз держался до конца таймера wake-слова, и всё это время
+        комнатный шум выше порога уезжал в Gemini Live. На непрерывном шуме
+        модель начинает выдавать реплики на случайных языках, а извинения
+        «не разобрал, повторите» открывают новое окно — и петля не кончается.
+        """
+        self._wake_active_until = 0.0
+        self._hotkey_active_until = 0.0
+        logger.info("Dialog: тишина затянулась — шлюз закрыт, жду обращения по имени")
+
+    def _aec_reference_window(self, timestamp: float, n_bytes: int) -> bytes:
+        """Опорный кадр колонок под текущий кадр микрофона.
+
+        Вызывается прямо из аудиоколбэка, поэтому делает только срез кольцевого
+        буфера. Часы — `perf_counter()`, те же, которыми помечается буфер
+        в AudioCaptureEngine (`timestamp` конвейера идёт по monotonic и здесь
+        не годится).
+        """
+        engine = self._aec_reference
+        if engine is None:
+            return b""
+        try:
+            return engine.ref_window(time.perf_counter(), n_bytes)
+        except Exception:
+            return b""
 
     async def _listen_audio(self):
         print("[ДЖАРВИС] 🎤 Микрофон запущен")
-        loop = asyncio.get_event_loop()
 
-        if self._speaker_meter is None and _IGNORE_SPEAKERS:
-            from speaker_meter import SpeakerMeter
-            meter = SpeakerMeter()
-            if meter.start():
-                self._speaker_meter = meter
-                logger.info("Speaker meter started successfully (loopback active)")
-            else:
-                logger.info("Speaker meter unavailable, capturing all audio")
-
-        def _put_nowait_safe(item):
-            try:
-                self.out_queue.put_nowait(item)
-            except asyncio.QueueFull:
-                pass  # Drop audio frame silently to avoid flooding event loop
-
-        preroll = collections.deque(maxlen=10)
+        # Опорный поток колонок поднимается в фоне: открытие WASAPI-устройства
+        # занимает сотни миллисекунд, и делать это на пути к микрофону нельзя —
+        # ровно на это время Джарвис оставался бы глухим при каждом старте.
+        # До готовности loopback `_aec_reference_window` отдаёт пустоту, и AEC
+        # честно считается неактивным.
+        threading.Thread(
+            target=self._start_aec_reference,
+            name="JARVIS-AECReference",
+            daemon=True,
+        ).start()
 
         def callback(indata, frames, time_info, status):
-            with self._speaking_lock:
-                jarvis_speaking = self._is_speaking
-            if jarvis_speaking:
-                # Перебивание (Barge-in): пользователь заговорил в микрофон во время речи Джарвиса
-                should_interrupt, reason = self._check_barge_in(indata)
-                if should_interrupt:
-                    self.interrupt_speech(reason)
-                    jarvis_speaking = False
-                else:
-                    self._note_gate("Джарвис говорит сам")
-                    preroll.clear()
-                    return
-
-            if self.ui.muted:
-                self._note_gate("микрофон выключен (Ctrl+M)")
-                preroll.clear()
-                return
-
-            if getattr(self, "_tool_in_progress", False):
-                preroll.clear()
-                return
-
-            if time.monotonic() < getattr(self, "_chime_until", 0.0):
-                preroll.clear()
-                return
-
-            pcm_bytes = indata.tobytes()
-
-            # Обновление индикатора уровня звука в окне приложения (HUD)
-            loud = self._is_loud_enough(indata)
-
-            # Локальный детектор ключевого слова 'Джарвис' (Hybrid Vosk + openWakeWord)
-            wake_spotted = False
-            if self._wake_detector:
-                if self._wake_detector.process_pcm(pcm_bytes):
-                    wake_spotted = True
-                    logger.info("WakeWord: 🔔 Ключевое слово 'Джарвис' зафиксировано!")
-                    self._wake_active_until = time.monotonic() + 8.0
-                    self._chime_until = time.monotonic() + 0.25
+            if status:
+                logger.debug("PortAudio status: %s", status)
+            mic_pcm = indata.tobytes()
+            # Гарантированно неблокирующий вызов: кладёт в bounded-очередь pipeline.
+            # Никакой обработки здесь быть не должно — PortAudio ждёт возврата за
+            # единицы миллисекунд.
+            if getattr(self, "audio_pipeline", None):
+                # Секундомер отмечается по факту ЗАХВАТА громкого кадра, а не по
+                # отправке из воркера: иначе задержка обработки в очереди выпадала
+                # бы из замера, а расшифровка могла прийти раньше первой отметки —
+                # и метрика «слышит» просто не считалась.
+                if self._latency.enabled:
                     try:
-                        from core.wakeword import play_activation_chime
-                        play_activation_chime()
+                        rms = float(np.sqrt(np.mean(np.square(indata.astype(np.float32)))))
+                        if rms >= MIC_RMS_THRESHOLD:
+                            self._latency.mark_voice_frame()
                     except Exception:
                         pass
-                    try:
-                        from core.ducking_controller import ducking_controller
-                        ducking_controller.duck()
-                    except Exception:
-                        pass
-
-            # Pre-Cloud Gating: проверяем, открыт ли голосовой шлюз (слово «Джарвис» или клавиша F8)
-            is_active = (
-                time.monotonic() < getattr(self, "_wake_active_until", 0.0)
-                or time.monotonic() < getattr(self, "_hotkey_active_until", 0.0)
-            )
-
-            # Если шлюз закрыт (IDLE) — звук остаётся строго локально, в облако отправляется 0 байт
-            if not is_active:
-                if getattr(self, "_was_wake_active", False):
-                    self._was_wake_active = False
-                    try:
-                        from core.ducking_controller import ducking_controller, DuckingState
-                        if ducking_controller.state != DuckingState.IDLE:
-                            ducking_controller.restore()
-                    except Exception:
-                        pass
-                self._note_gate("шлюз закрыт (ожидание слова Джарвис)")
-                preroll.append(pcm_bytes)
-                return
+                self.audio_pipeline.push_frame(mic_pcm)
             else:
-                self._was_wake_active = True
+                self._push_level(min(1.0, float(np.sqrt(np.mean(np.square(indata.astype(np.float32))))) / _MIC_FULL_SCALE))
 
-            # Если шлюз открыт, но текущий кадр тише порога
-            if not loud:
-                self._note_gate("тихо для порога MIC_RMS_THRESHOLD")
-                preroll.append(pcm_bytes)
-                return
+        backoff = 1.0
+        max_backoff = 10.0
 
-            self._note_gate(None)
-            if self._frame_was_loud:
-                self._latency.mark_voice_frame()
+        while True:
+            try:
+                device_idx = _pick_input_device()
+                with sd.InputStream(
+                    samplerate=SEND_SAMPLE_RATE,
+                    channels=CHANNELS,
+                    dtype="int16",
+                    blocksize=CHUNK_SIZE,
+                    device=device_idx,
+                    latency="low",
+                    callback=callback,
+                ):
+                    print("[ДЖАРВИС] 🎤 Поток микрофона открыт")
+                    backoff = 1.0  # Сброс backoff при успешном открытии
+                    sm = getattr(self, "state_machine", None)
+                    if sm:
+                        from core.conversation_state import ConversationState
+                        if sm.state == ConversationState.RECONNECTING:
+                            sm.transition_to(ConversationState.STANDBY)
 
-            # Стробирование Chime: во время воспроизведения звукового сигнала готовности
-            # подменяем кадр тишиной, чтобы собственный звук колокольчика не попадал в облако
-            if time.monotonic() < getattr(self, "_chime_until", 0.0):
-                pcm_bytes = b"\x00" * len(pcm_bytes)
+                    while True:
+                        await asyncio.sleep(0.5)
 
-            # Сброс предбуфера (pre-roll) в облако в момент активации или начала речи
-            if wake_spotted or getattr(self, "_quiet_frames", MIC_HANGOVER_FRAMES + 1) > MIC_HANGOVER_FRAMES:
-                try:
-                    from core.ducking_controller import ducking_controller
-                    ducking_controller.duck()
-                except Exception:
-                    pass
-                while preroll:
-                    loop.call_soon_threadsafe(
-                        _put_nowait_safe,
-                        {"data": preroll.popleft(), "mime_type": "audio/pcm"},
-                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("Microphone device error: %s. Reconnecting in %.1fs...", e, backoff)
+                if self.ui and hasattr(self.ui, "write_log"):
+                    self.ui.write_log(f"SYS: Сбой микрофона ({e}). Переподключение через {backoff:.1f}с...")
+                sm = getattr(self, "state_machine", None)
+                if sm:
+                    from core.conversation_state import ConversationState
+                    if sm.state != ConversationState.RECONNECTING:
+                        sm.transition_to(ConversationState.RECONNECTING)
 
-            loop.call_soon_threadsafe(
-                _put_nowait_safe,
-                {"data": pcm_bytes, "mime_type": "audio/pcm"},
-            )
+                await asyncio.sleep(backoff)
+                backoff = min(max_backoff, backoff * 2.0)
 
-        try:
-            with sd.InputStream(
-                samplerate=SEND_SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="int16",
-                blocksize=CHUNK_SIZE,
-                device=_pick_input_device(),
-                latency="low",
-                callback=callback,
-            ):
-                print("[ДЖАРВИС] 🎤 Поток микрофона открыт")
-                while True:
-                    await asyncio.sleep(0.1)
-        except Exception as e:
-            logger.error(f"Microphone error: {e}")
-            traceback.print_exc()
-            # Don't raise - let the task be recreated
-            # Brief pause before attempting to continue
-            await asyncio.sleep(1)
-
-    async def _speak_fish(self, text: str, epoch: int | None = None):
+    async def _speak_fish(self, text: str, epoch: int | None = None, generation_id: int | None = None):
         """Озвучивает готовый ответ голосом Джарвиса из Telegram-бота."""
         with self._speaking_lock:
             self._active_synth_tasks += 1
@@ -2275,6 +2855,10 @@ class Jarvis:
 
         if epoch is None:
             epoch = getattr(self, "_speech_epoch", 0)
+
+        if generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id:
+            self._latency.mark_turn_complete()
+            return
 
         try:
             from telegram_bot import tts_fish
@@ -2299,6 +2883,23 @@ class Jarvis:
                 nonlocal fish_alive
                 if getattr(self, "_speech_epoch", 0) != epoch or not self._is_speaking:
                     return None
+                if generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id:
+                    return None
+                # Первая фраза могла быть заказана ещё во время генерации ответа.
+                # getattr, а не прямой вызов: _speak_fish намеренно работает и с
+                # минимальным носителем состояния (см. tests/test_fish_fallback.py),
+                # как и остальные обращения к состоянию в этой функции.
+                taker = getattr(self, "_take_prefetched_speech", None)
+                prefetched = taker(fragment) if taker else None
+                if prefetched is not None:
+                    try:
+                        pcm = await prefetched
+                        if pcm:
+                            return pcm
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        logger.debug("Prefetched speech unusable: %s", e)
                 if fish_alive:
                     pcm = await tts_fish.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
                     if pcm:
@@ -2306,6 +2907,8 @@ class Jarvis:
                     fish_alive = False
                     self.ui.write_log("SYS: Fish молчит — остаток ответа озвучит Edge-TTS")
                 if getattr(self, "_speech_epoch", 0) != epoch or not self._is_speaking:
+                    return None
+                if generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id:
                     return None
                 return await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
 
@@ -2317,10 +2920,11 @@ class Jarvis:
             spoken = 0
 
             for i in range(len(chunks)):
-                if getattr(self, "_speech_epoch", 0) != epoch or not self._is_speaking:
+                if getattr(self, "_speech_epoch", 0) != epoch or not self._is_speaking or (generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id):
                     if pending and not pending.done():
                         pending.cancel()
                     break
+
 
                 try:
                     pcm = await pending
@@ -2361,6 +2965,173 @@ class Jarvis:
             with self._speaking_lock:
                 self._active_synth_tasks = max(0, self._active_synth_tasks - 1)
 
+    # ── Арбитраж владения репликой ────────────────────────────────────────────
+    async def _arbitrate_if_input_ready(self, pt, in_buf: list, out_buf: list) -> None:
+        """Арбитраж в момент, когда модель начала отвечать (текст или tool_call).
+
+        К этому моменту фраза пользователя закончена и расшифрована целиком —
+        обрывков вроде «Джар» уже нет, — а ждать turn_complete не нужно: с
+        голосом Fish это стоило ~8 с, пока Gemini генерирует свой ответ целиком.
+        """
+        if not pt or pt.arbitrated or not in_buf:
+            return
+        full = _clean_dialog_text("".join(in_buf))
+        if full:
+            await self._arbitrate_turn(full, out_buf, in_buf)
+
+    async def _arbitrate_turn(self, full_in: str, out_buf: list, in_buf: list) -> bool:
+        """
+        Строгий арбитраж владения репликой (Single Ownership).
+        FastCommandRouter -> CommandOrchestrator -> Gemini.
+        Возвращает True если реплика обработана локально, False если передана Gemini.
+        """
+        pt = getattr(self, "_pending_gemini_turn", None)
+        if pt and pt.arbitrated:
+            return pt.routed_to == "LOCAL"
+
+        is_hotkey = time.monotonic() < getattr(self, "_hotkey_active_until", 0.0)
+        is_wake = time.monotonic() < getattr(self, "_wake_active_until", 0.0)
+        has_active_cmd = (
+            hasattr(self, "command_orchestrator")
+            and self.command_orchestrator.has_active_command()
+        )
+        was_addressed = bool(pt and pt.addressed)
+        is_active = is_addressed_to_jarvis(full_in) or was_addressed or is_hotkey or is_wake or has_active_cmd
+        if is_hotkey:
+            self._hotkey_active_until = 0.0
+
+        if not is_active:
+            if pt:
+                pt.arbitrated = True
+                pt.routed_to = "DISCARDED"
+                pt.clear()
+            self.ui.write_log(f"Игнор (не к Джарвису): {full_in}")
+            out_buf.clear()
+            self._clear_audio_in_queue()
+            return False
+
+        print(f"[ДЖАРВИС] 🎤 Арбитраж реплики: '{full_in}'")
+        self.ui.write_log(f"Вы: {full_in}")
+        self.last_user_text = full_in
+
+        # 1. Fast-Path: мгновенное детерминированное исполнение команд управления
+        from core.fast_command_router import FastCommandRouter
+        fast_res = await asyncio.to_thread(FastCommandRouter.match_and_execute, full_in, self.ui)
+        fast_handled, fast_resp = fast_res
+        if fast_handled:
+            if pt:
+                pt.arbitrated = True
+                pt.routed_to = "LOCAL"
+                pt.clear()
+            self._drop_speech_prefetch()
+            self._clear_audio_in_queue()
+            self._wake_active_until = 0.0
+            sm = getattr(self, "state_machine", None)
+            if sm:
+                from core.conversation_state import ConversationState
+                sm.transition_to(ConversationState.EXECUTING)
+
+            if getattr(fast_res, "is_action", False):
+                try:
+                    from core.ducking_controller import ducking_controller
+                    ducking_controller.restore()
+                except Exception:
+                    pass
+                if sm:
+                    from core.conversation_state import ConversationState
+                    sm.transition_to(ConversationState.STANDBY)
+            elif fast_resp:
+                self.ui.write_log(f"Джарвис: {fast_resp}")
+                if not getattr(fast_res, "is_action", False) and get_voice_provider() == "fish":
+                    if sm:
+                        from core.conversation_state import ConversationState
+                        sm.transition_to(ConversationState.SPEAKING)
+                    self._start_speech(fast_resp)
+                elif sm:
+                    from core.conversation_state import ConversationState
+                    sm.transition_to(ConversationState.STANDBY)
+            elif sm:
+                from core.conversation_state import ConversationState
+                sm.transition_to(ConversationState.STANDBY)
+            return True
+
+        # 2. CommandOrchestrator: строгое исполнение и маршрутизация команд
+        if hasattr(self, "command_orchestrator"):
+            from core.command_orchestrator import RoutingDecision
+            orch_res = await asyncio.to_thread(self.command_orchestrator.process_user_text, full_in, self.ui)
+            if orch_res.decision != RoutingDecision.NEEDS_LLM and orch_res.decision != RoutingDecision.IGNORED:
+                if pt:
+                    pt.arbitrated = True
+                    pt.routed_to = "LOCAL"
+                    pt.clear()
+                self._drop_speech_prefetch()
+                self._clear_audio_in_queue()
+                sm = getattr(self, "state_machine", None)
+
+                if orch_res.decision == RoutingDecision.CONSUMED_ACTION:
+                    resp_text = orch_res.executed_result or "Готово, сэр."
+                    self.ui.write_log(f"Джарвис: {resp_text}")
+                    self._wake_active_until = 0.0
+                    if sm:
+                        from core.conversation_state import ConversationState
+                        sm.transition_to(ConversationState.SPEAKING)
+                    if get_voice_provider() == "fish":
+                        self._start_speech(resp_text, command_id=orch_res.command_id, turn_id=orch_res.turn_id)
+                    elif sm:
+                        from core.conversation_state import ConversationState
+                        sm.transition_to(ConversationState.STANDBY)
+
+                elif orch_res.decision == RoutingDecision.CONSUMED_CLARIFICATION:
+                    prompt_text = orch_res.prompt_to_user or "Уточните, сэр."
+                    self.ui.write_log(f"Джарвис: {prompt_text}")
+                    self._wake_active_until = time.monotonic() + 15.0
+                    if sm:
+                        from core.conversation_state import ConversationState
+                        sm.transition_to(ConversationState.SPEAKING)
+                    if get_voice_provider() == "fish":
+                        self._start_speech(prompt_text, command_id=orch_res.command_id, turn_id=orch_res.turn_id)
+                    elif sm:
+                        from core.conversation_state import ConversationState
+                        sm.start_follow_up(timeout_sec=12.0)
+
+                elif orch_res.decision == RoutingDecision.CONSUMED_CANCEL:
+                    cancel_text = orch_res.prompt_to_user or "Команда отменена, сэр."
+                    self.ui.write_log(f"Джарвис: {cancel_text}")
+                    self._wake_active_until = 0.0
+                    if sm:
+                        from core.conversation_state import ConversationState
+                        sm.transition_to(ConversationState.SPEAKING)
+                    if get_voice_provider() == "fish":
+                        self._start_speech(cancel_text, command_id=orch_res.command_id, turn_id=orch_res.turn_id)
+                    elif sm:
+                        from core.conversation_state import ConversationState
+                        sm.transition_to(ConversationState.STANDBY)
+                return True
+
+            elif orch_res.decision == RoutingDecision.NEEDS_LLM:
+                if pt:
+                    pt.arbitrated = True
+                    pt.routed_to = "GEMINI"
+                    if get_voice_provider() != "fish":
+                        if pt.audio_chunks:
+                            self._latency.mark_answer_audio()
+                            for chunk in pt.audio_chunks:
+                                try:
+                                    self.audio_in_queue.put_nowait(chunk)
+                                except Exception:
+                                    pass
+                            pt.audio_chunks.clear()
+                        self.set_speaking(True)
+                    else:
+                        self._maybe_prefetch_speech(pt.full_output_text())
+                        self._maybe_stream_speech(pt.full_output_text())
+                return False
+
+        if pt and not pt.arbitrated:
+            pt.arbitrated = True
+            pt.routed_to = "GEMINI"
+        return False
+
     # ── Получение ответа от Gemini ────────────────────────────────────────────
     async def _receive_audio(self):
         print("[ДЖАРВИС] 👂 Приём запущен")
@@ -2369,169 +3140,186 @@ class Jarvis:
 
         try:
             while True:
+                if self._pending_gemini_turn is None:
+                    self._begin_new_utterance()
+
                 async for response in self.session.receive():
+                    has_active_cmd = (
+                        hasattr(self, "command_orchestrator")
+                        and self.command_orchestrator.has_active_command()
+                    )
+                    from core.command_context import CommandState
+                    is_collecting = (
+                        has_active_cmd
+                        and getattr(getattr(self.command_orchestrator, "active_command", None), "state", None) == CommandState.COLLECTING_PARAMETERS
+                    )
+                    pt = self._pending_gemini_turn
+
+                    # 1. Приём аудиопотока модели (Quarantine Buffer)
                     if response.data:
                         if self._turn_done_event and self._turn_done_event.is_set():
                             self._turn_done_event.clear()
-                        # Если обращение к Джарвису не зафиксировано — отбрасываем аудио
-                        current_speech = " ".join(in_buf)
-                        is_hotkey = time.monotonic() < getattr(self, "_hotkey_active_until", 0.0)
-                        is_wake = time.monotonic() < getattr(self, "_wake_active_until", 0.0)
-                        if not (is_addressed_to_jarvis(current_speech) or is_hotkey or is_wake):
+
+                        # Во время сбора параметров — Gemini в режиме STT-only, аудио подавляется
+                        if is_collecting:
                             continue
+
+                        # Адресованность решает арбитраж, а не таймер окна: до
+                        # решения звук копится в карантине pt, после — либо
+                        # играет (GEMINI), либо выбрасывается (LOCAL/DISCARDED).
                         if getattr(self, "_interrupted_turn", False):
                             continue
-                        if get_voice_provider() == "fish":
-                            # Говорит Fish — звук Gemini выбрасываем, иначе
-                            # два голоса произнесут один ответ одновременно.
+                        if pt and pt.routed_to in _SILENT_ROUTES:
                             continue
-                        self.set_speaking(True)
-                        self._latency.mark_answer_audio()
-                        try:
-                            self.audio_in_queue.put_nowait(response.data)
-                        except asyncio.QueueFull:
-                            # _play_audio не успевает — дропаем старейший
-                            # фрейм, чтобы освободить место под новый.
-                            try:
-                                self.audio_in_queue.get_nowait()
-                                self.audio_in_queue.put_nowait(response.data)
-                            except (asyncio.QueueEmpty, asyncio.QueueFull):
-                                pass
+                        if get_voice_provider() == "fish":
+                            if pt:
+                                pt.clear()
+                            continue
 
+                        if pt and pt.routed_to == "GEMINI":
+                            self.set_speaking(True)
+                            self._latency.mark_answer_audio()
+                            try:
+                                self.audio_in_queue.put_nowait(response.data)
+                            except asyncio.QueueFull:
+                                try:
+                                    self.audio_in_queue.get_nowait()
+                                    self.audio_in_queue.put_nowait(response.data)
+                                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                                    pass
+                        else:
+                            if pt:
+                                pt.add_audio(response.data)
+
+                    # 2. Обработка сообщений сервера (транскрипции, завершение хода)
                     if response.server_content:
                         sc = response.server_content
 
                         if sc.output_transcription and sc.output_transcription.text:
-                            out_buf.append(sc.output_transcription.text)
+                            txt_out = sc.output_transcription.text
+                            if not is_collecting:
+                                await self._arbitrate_if_input_ready(pt, in_buf, out_buf)
+                                if pt and pt.routed_to in _SILENT_ROUTES:
+                                    pass
+                                elif pt and pt.routed_to == "GEMINI":
+                                    out_buf.append(txt_out)
+                                    self._maybe_prefetch_speech("".join(out_buf))
+                                    self._maybe_stream_speech("".join(out_buf))
+                                else:
+                                    out_buf.append(txt_out)
+                                    if pt:
+                                        pt.add_text(txt_out)
+                                    self._maybe_stream_speech("".join(out_buf))
 
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = sc.input_transcription.text
                             in_buf.append(txt)
                             self._latency.mark_transcript()
                             print(f"[ДЖАРВИС] 🎤 Фрагмент: '{txt}'")
+                            # Арбитраж здесь НЕ делаем: расшифровка идёт кусками по
+                            # слогу. По обрывку «Джар» реплика признавалась «не к
+                            # Джарвису» и выбрасывалась целиком, а по «включи сериал»
+                            # запускалось уточнение, и договорённое название терялось.
+                            # Решение — когда модель начала отвечать или в turn_complete.
 
                         if sc.turn_complete:
                             self._interrupted_turn = False
-                            # С внешним голосом ход закрывает _speak_fish,
-                            # когда звук реально пошёл: здесь готов только текст.
-                            if get_voice_provider() != "fish":
-                                self._latency.mark_turn_complete()
                             if self._turn_done_event:
                                 self._turn_done_event.set()
 
                             raw_in = "".join(in_buf)
                             full_in = _clean_dialog_text(raw_in)
-                            in_buf = []
+                            in_buf.clear()
 
-                            # Строгая проверка: только команды с обращением «Джарвис», активным wake-word или по F8
-                            is_hotkey = time.monotonic() < getattr(self, "_hotkey_active_until", 0.0)
-                            is_wake = time.monotonic() < getattr(self, "_wake_active_until", 0.0)
-                            is_active = is_addressed_to_jarvis(full_in) or is_hotkey or is_wake
-                            if is_hotkey:
-                                self._hotkey_active_until = 0.0
-
-                            if not is_active:
-                                if full_in:
-                                    print(f"[ДЖАРВИС] 🔇 Игнорирую: нет обращения 'Джарвис' ('{full_in}')")
-                                    self.ui.write_log(f"🔇 [Игнор]: '{full_in}' (нет обращения 'Джарвис')")
-                                out_buf = []
-                                while not self.audio_in_queue.empty():
-                                    try:
-                                        self.audio_in_queue.get_nowait()
-                                    except Exception:
-                                        break
+                            is_local = False
+                            if not pt or not pt.arbitrated:
+                                is_local = await self._arbitrate_turn(full_in, out_buf, in_buf)
+                            # DISCARDED тоже молчит: раньше «не к Джарвису» ответ
+                            # всё равно доходил до озвучки через ветку хода Gemini.
+                            if is_local or (pt and pt.routed_to in _SILENT_ROUTES):
+                                out_buf.clear()
+                                self._clear_audio_in_queue()
+                                self._begin_new_utterance()
                                 continue
 
-                            if full_in:
-                                print(f"[ДЖАРВИС] 🎤 Полная фраза: '{full_in}'")
-                                self.ui.write_log(f"Вы: {full_in}")
-                                self.last_user_text = full_in
-
-                                # Fast-Path: мгновенное локальное исполнение команд управления (< 2 мс)
-                                from core.fast_command_router import FastCommandRouter
-                                fast_res = FastCommandRouter.match_and_execute(full_in, player=self.ui)
-                                fast_handled, fast_resp = fast_res
-                                if fast_handled:
-                                    self._wake_active_until = 0.0  # Действие выполнено — шлюз немедленно закрывается
-                                    if getattr(fast_res, "is_action", False):
+                            # Ход Gemini: воспроизведение ответа
+                            if get_voice_provider() != "fish":
+                                if pt and pt.audio_chunks:
+                                    self.set_speaking(True)
+                                    self._latency.mark_answer_audio()
+                                    for chunk in pt.audio_chunks:
                                         try:
-                                            from core.ducking_controller import ducking_controller
-                                            ducking_controller.restore()
+                                            self.audio_in_queue.put_nowait(chunk)
                                         except Exception:
                                             pass
-                                    if fast_resp:
-                                        self.ui.write_log(f"Джарвис: {fast_resp}")
-                                        # Только информационные запросы (напр. "что сейчас играет?") озвучиваются голосом.
-                                        # Физические действия (пауза, громкость, экран) сопровождаются ультракоротким
-                                        # фирменным звуковым щелчком (Earcon) без раздражающей болтовни.
-                                        if not getattr(fast_res, "is_action", False) and get_voice_provider() == "fish":
-                                            self._start_speech(fast_resp)
-                                    out_buf = []
-                                    while not self.audio_in_queue.empty():
-                                        try:
-                                            self.audio_in_queue.get_nowait()
-                                        except Exception:
-                                            break
-                                    continue
-
-                                # Анализ эмоций (новый мозг)
-                                emotion_result = EmotionAnalyzer.analyze(full_in)
-                                if emotion_result["emotion"] != "neutral":
-                                    print(f"[Эмоции] {emotion_result['emotion']} (confidence: {emotion_result['confidence']:.2f})")
-                                    self.user_profile.update_context(emotion=emotion_result["emotion"])
-
-                                    # Проверяем инициативу
-                                    mode_state = get_current_mode()
-                                    current_mode = mode_state.get("mode", "normal")
-                                    initiative = self.initiative_engine.should_show_initiative(
-                                        emotion_result,
-                                        self.user_profile.get_full_profile(),
-                                        current_mode
-                                    )
-                                    if initiative:
-                                        print(f"[Инициатива] {initiative}")
-
-                                    # Обучение из контекста
-                                    preference = self.initiative_engine.should_learn_preference(full_in, "")
-                                    if preference:
-                                        self.user_profile.update_preference(preference["type"], preference["value"])
-                                        print(f"[Обучение] Выучил предпочтение: {preference['type']} = {preference['value']}")
-
-                                    # Прогнозирование потребностей (новый мозг)
-                                    context = {
-                                        "current_activity": self.user_profile.get_context().get("current_activity"),
-                                        "mode": get_current_mode().get("mode", "normal"),
-                                        "last_emotion": emotion_result.get("emotion") if emotion_result else "neutral"
-                                    }
-                                    proactive_suggestions = self.proactive_engine.get_proactive_suggestions(context)
-                                    if proactive_suggestions:
-                                        print(f"[Прогноз] Предложения: {proactive_suggestions}")
+                                self._latency.mark_turn_complete()
 
                             raw_out = "".join(out_buf)
                             full_out = _clean_dialog_text(raw_out)
-                            out_buf = []
+                            out_buf.clear()
 
                             if full_out:
                                 self.ui.write_log(f"Джарвис: {full_out}")
-                                if get_voice_provider() == "fish":
-                                    # Отдельной задачей: синтез идёт около
-                                    # секунды, а приём в это время должен
-                                    # продолжать читать сессию.
-                                    self._start_speech(full_out)
-                                if full_out.strip().endswith("?") or getattr(self, "_pending_destructive", None):
-                                    self._wake_active_until = time.monotonic() + 7.0
-                                    logger.info("Dialog: ожидание ответа пользователя (шлюз открыт на 7 секунд)")
+                                is_noise_or_apology = any(p in full_out.lower() for p in (
+                                    "не распознал", "не разобрал", "не расслышал", "фонового шума",
+                                    "повторить", "вызов, сэр", "чем могу быть полезен"
+                                ))
+                                if is_noise_or_apology:
+                                    self._pending_question = False
+                                    timeout = 2.0
                                 else:
-                                    # Режим непрерывного диалога (Follow-up mode, как у Алисы и Siri):
-                                    # информационный ответ удерживает шлюз 4 секунды для продолжения диалога
-                                    self._wake_active_until = time.monotonic() + 4.0
-                                    logger.info("Dialog: Follow-up окно активно 4 секунды (непрерывный диалог)")
+                                    self._pending_question = bool(full_out.strip().endswith("?") or getattr(self, "_pending_destructive", None))
+                                    timeout = 6.0 if getattr(self, "_pending_question", False) else 3.5
+                                self._followup_timeout = timeout
+                                self.last_user_text = ""
 
+                                if get_voice_provider() == "fish":
+                                    if getattr(self, "_streaming_speech_active", False) and self._streaming_queue is not None:
+                                        final_chunks = _split_for_speech(full_out)
+                                        for idx, ch in enumerate(final_chunks):
+                                            if idx not in self._streamed_chunks_indices:
+                                                self._streamed_chunks_indices.add(idx)
+                                                self._streaming_queue.put_nowait(ch)
+                                                logger.info("TTS Stream (turn_complete): финальный чанк #%d (%d симв)", idx, len(ch))
+                                        self._streaming_queue.put_nowait(None)
+                                    else:
+                                        self._start_speech(full_out)
+                                else:
+                                    self._wake_active_until = time.monotonic() + timeout
+                                    sm = getattr(self, "state_machine", None)
+                                    if sm:
+                                        sm.start_follow_up(timeout_sec=timeout)
+                            elif getattr(self, "_streaming_speech_active", False) and self._streaming_queue is not None:
+                                self._streaming_queue.put_nowait(None)
+
+                            self._begin_new_utterance()
+
+                    # 3. Инструменты модели: строгая защита от double execution
                     if response.tool_call:
-                        current_user_text = full_in or " ".join(in_buf) or self.last_user_text
+                        # Решить владение ДО исполнения: иначе инструмент успевал
+                        # отработать на фразе, которую потом признавали «не к Джарвису».
+                        if not is_collecting:
+                            await self._arbitrate_if_input_ready(pt, in_buf, out_buf)
+                        is_local_turn = bool(pt and pt.routed_to in _SILENT_ROUTES)
+                        if is_collecting or is_local_turn:
+                            logger.info("[SAFETY] Подавлен tool_call Gemini (%s) в пользу локального контроллера",
+                                        [fc.name for fc in response.tool_call.function_calls])
+                            responses = [
+                                types.FunctionResponse(
+                                    id=fc.id,
+                                    name=fc.name,
+                                    response={"result": "ignored_local_ownership"}
+                                )
+                                for fc in response.tool_call.function_calls
+                            ]
+                            await self.session.send_tool_response(function_responses=responses)
+                            continue
+
+                        current_user_text = full_in or " ".join(in_buf)
                         is_hotkey = time.monotonic() < getattr(self, "_hotkey_active_until", 0.0)
                         is_wake = time.monotonic() < getattr(self, "_wake_active_until", 0.0)
-                        is_active = is_addressed_to_jarvis(current_user_text) or is_hotkey or is_wake
+                        owned_by_gemini = bool(pt and (pt.routed_to == "GEMINI" or pt.addressed))
+                        is_active = (is_addressed_to_jarvis(current_user_text) if current_user_text else False) or is_hotkey or is_wake or owned_by_gemini
                         if not is_active:
                             logger.info(f"[ДЖАРВИС] 🔇 Инструменты заблокированы — нет обращения 'Джарвис' (фраза: '{current_user_text}')")
                             responses = [
@@ -2545,9 +3333,7 @@ class Jarvis:
                             await self.session.send_tool_response(function_responses=responses)
                             continue
 
-                        # Продлеваем окно активности на время выполнения инструмента
                         self._wake_active_until = time.monotonic() + 15.0
-                        # Защита от коллизии WebSocket: ставим флаг выполнения инструмента и очищаем очередь аудио
                         self._tool_in_progress = True
                         while not self.out_queue.empty():
                             try:
@@ -2559,18 +3345,25 @@ class Jarvis:
                             responses = []
                             for fc in response.tool_call.function_calls:
                                 print(f"[ДЖАРВИС] 📞 {fc.name}")
-                                # Джарвис у Старка не работает молча: HUD всегда
-                                # показывает, на что наведён.
                                 try:
                                     self.ui.lock_on(fc.name)
                                 except Exception as exc:
                                     logger.debug("Прицел не встал: %s", exc, exc_info=True)
                                 _tool_started = time.perf_counter()
                                 try:
-                                    fr = await self._execute_tool(fc)
+                                    fr = await asyncio.wait_for(self._execute_tool(fc), timeout=25.0)
+                                except asyncio.TimeoutError:
+                                    logger.warning("Tool %s timed out after 25s", fc.name)
+                                    if hasattr(self, "ui") and hasattr(self.ui, "write_log"):
+                                        self.ui.write_log(f"SYS: ⏱ Таймаут инструмента '{fc.name}' (25с)")
+                                    if not self.ui.muted:
+                                        self.ui.set_state("LISTENING")
+                                    fr = types.FunctionResponse(
+                                        id=fc.id,
+                                        name=fc.name,
+                                        response={"result": f"Таймаут выполнения инструмента '{fc.name}' (25 сек). Действие прервано."}
+                                    )
                                 finally:
-                                    # Медленный инструмент — самая частая причина
-                                    # паузы, которую слышно как «завис».
                                     self._latency.add_tool(
                                         fc.name,
                                         int((time.perf_counter() - _tool_started) * 1000),
@@ -2580,6 +3373,7 @@ class Jarvis:
                         finally:
                             self._tool_in_progress = False
                             self._wake_active_until = 0.0
+
 
         except Exception as e:
             logger.warning("Приём оборвался: %s", e)
@@ -2645,9 +3439,62 @@ class Jarvis:
                         else:
                             is_busy = (getattr(self, "_active_synth_tasks", 0) > 0) or (not self.audio_in_queue.empty())
 
-                        if not is_busy:
+                        # «Ответ закончен» — событие ОДНОКРАТНОЕ: только когда Джарвис
+                        # действительно говорил и замолчал. Без этой проверки блок
+                        # срабатывал на каждом холостом тике (10 раз в секунду) и сразу
+                        # после «Джарвис» захлопывал окно прослушивания: LISTENING ->
+                        # STANDBY в ту же миллисекунду, команда до модели не доходила.
+                        if not is_busy and getattr(self, "_is_speaking", False):
+                            cmd_id = getattr(self, "_active_speech_command_id", None)
+                            t_id = getattr(self, "_active_speech_turn_id", 0)
+                            has_active_cmd = (
+                                hasattr(self, "command_orchestrator")
+                                and self.command_orchestrator.has_active_command()
+                            )
+
+                            # Проверка на устаревший колбэк (команда была отменена или перебита)
+                            is_stale = False
+                            if cmd_id and hasattr(self, "command_orchestrator"):
+                                is_stale = self.command_orchestrator.is_stale_callback(cmd_id, t_id)
+                                if is_stale:
+                                    logger.warning(
+                                        "[Playback] Окончание TTS проигнорировано: команда %s (turn %d) устарела",
+                                        cmd_id, t_id
+                                    )
+
+                            sm = getattr(self, "state_machine", None)
+                            if not is_stale and has_active_cmd:
+                                # Идёт многошаговый диалог (сбор параметров): щедрое окно 12-15 сек
+                                timeout = 12.0
+                                self._wake_active_until = time.monotonic() + timeout
+                                if sm:
+                                    from core.conversation_state import ConversationState
+                                    sm.start_follow_up(timeout_sec=timeout)
+                                logger.info("Dialog: TTS завершён, активен сбор параметров. Follow-up окно: %.1f с", timeout)
+                            elif not is_stale:
+                                timeout = getattr(self, "_followup_timeout", None)
+                                if timeout is None and getattr(self, "_pending_question", False):
+                                    timeout = 6.0
+                                
+                                if timeout and timeout > 0:
+                                    self._wake_active_until = time.monotonic() + timeout
+                                    if sm:
+                                        from core.conversation_state import ConversationState
+                                        if sm.state in (ConversationState.SPEAKING, ConversationState.EXECUTING):
+                                            sm.start_follow_up(timeout_sec=timeout)
+                                    logger.info("Dialog: Физическое воспроизведение завершено, Follow-up окно активно %.1f с", timeout)
+                                else:
+                                    # Режим Алисы (Strict Wake-word): после ответа сразу возвращаемся в STANDBY
+                                    self._wake_active_until = 0.0
+                                    if sm:
+                                        from core.conversation_state import ConversationState
+                                        sm.transition_to(ConversationState.STANDBY, reason="answer finished (alice mode)")
+                                    logger.info("Dialog: Ответ завершён -> STANDBY (ожидание слова 'Джарвис')")
+
+                            # Снятие флага говорения ПОСЛЕ установки follow-up окна и таймеров
                             if getattr(self, "_is_speaking", False):
                                 self.set_speaking(False)
+
                             if self._turn_done_event and self._turn_done_event.is_set():
                                 self._turn_done_event.clear()
                         continue
@@ -2688,6 +3535,42 @@ class Jarvis:
                         logger.debug("Закрытие потока вывода: %s", exc)
 
     # ── Основной цикл ─────────────────────────────────────────────────────────
+    # Переподключение к Gemini Live: экспоненциальная пауза с джиттером.
+    # Верхнего предела по числу попыток нет намеренно — домашний ассистент
+    # обязан пережить получасовое падение интернета. Ограничена ПАУЗА, а после
+    # RECONNECT_LOUD_AFTER неудач пользователю говорят об этом вслух один раз.
+    RECONNECT_MAX_DELAY_SEC = 60.0
+    RECONNECT_LOUD_AFTER = 5
+
+    def _reconnect_delay(self, retry_count: int, fast_first: bool = False) -> float:
+        """Пауза перед следующей попыткой подключения.
+
+        Джиттер нужен, чтобы после массового обрыва (перезапуск сервера Google)
+        клиенты не ломились обратно синхронным залпом.
+        """
+        if fast_first and retry_count <= 2:
+            base = 0.3
+        else:
+            base = min(2.0 ** max(retry_count - (2 if fast_first else 0), 1),
+                       self.RECONNECT_MAX_DELAY_SEC)
+        return base * random.uniform(0.8, 1.2)
+
+    def _note_reconnect(self, retry_count: int, delay: float):
+        """Единая реакция интерфейса и машины состояний на переподключение."""
+        logger.info("Reconnecting to Gemini in %.1fs (attempt %d)", delay, retry_count)
+        if retry_count >= 3:
+            self.ui.write_log(f"SYS: связь с Gemini оборвалась — попытка {retry_count}…")
+        if retry_count == self.RECONNECT_LOUD_AFTER:
+            self.ui.write_log(
+                "SYS: ⚠️ Gemini недоступен уже несколько попыток. "
+                "Продолжаю пробовать реже — проверьте интернет и ключ API."
+            )
+        self.ui.set_state("RECONNECTING")
+        sm = getattr(self, "state_machine", None)
+        if sm:
+            from core.conversation_state import ConversationState
+            sm.transition_to(ConversationState.RECONNECTING, reason="gemini reconnect", force=True)
+
     async def run(self):
         client = genai.Client(
             api_key=_get_api_key(),
@@ -2695,8 +3578,6 @@ class Jarvis:
         )
 
         retry_count = 0
-        max_retry_delay = 60  # Maximum delay between retries (seconds)
-        max_retries = 5  # Maximum number of retry attempts
 
         while True:
             try:
@@ -2720,6 +3601,8 @@ class Jarvis:
 
                         print("[ДЖАРВИС] ✅ Подключён.")
                         self.ui.set_state("IDLE")
+                        if hasattr(self, "state_machine") and self.state_machine:
+                            self.state_machine.reset_to_standby(reason="connected")
                         try:
                             from core.wakeword import play_activation_chime
                             play_activation_chime()
@@ -2774,20 +3657,23 @@ class Jarvis:
                     elif "1011" in error_msg:
                         print("[ДЖАРВИС] ⚠️ Server shutdown (1011) - нормальный перезапуск")
                         retry_count += 1
-                        delay = 0.3 if retry_count <= 2 else min(2 ** (retry_count - 2), 10)
-                        logger.info(f"Waiting {delay}s before retry {retry_count}...")
-                        if retry_count >= 3:
-                            self.ui.write_log(f"SYS: связь с Gemini оборвалась — попытка {retry_count}…")
-                        self.ui.set_state("RECONNECTING")
+                        delay = self._reconnect_delay(retry_count, fast_first=True)
+                        self._note_reconnect(retry_count, delay)
                         await asyncio.sleep(delay)
                         continue
                     
+                    self.set_speaking(False)
+                    sm = getattr(self, "state_machine", None)
+                    if sm:
+                        from core.conversation_state import ConversationState
+                        if sm.state != ConversationState.RECONNECTING:
+                            sm.transition_to(ConversationState.RECONNECTING, reason="live api reconnect")
+                    elif hasattr(self, "ui") and hasattr(self.ui, "set_state"):
+                        self.ui.set_state("RECONNECTING")
                     retry_count += 1
-                    delay = min(2 ** retry_count, 10)
-                    print(f"[ДЖАРВИС] ⏸️ Ожидаю {delay} сек перед попыткой {retry_count}...")
-                    if retry_count >= 3:
-                        self.ui.write_log(f"SYS: переподключение к Gemini (попытка {retry_count})…")
-                    self.ui.set_state("RECONNECTING")
+                    delay = self._reconnect_delay(retry_count)
+                    print(f"[ДЖАРВИС] ⏸️ Ожидаю {delay:.1f} сек перед попыткой {retry_count}...")
+                    self._note_reconnect(retry_count, delay)
                     await asyncio.sleep(delay)
                     continue
 
@@ -2807,13 +3693,16 @@ class Jarvis:
                     break  # Exit the reconnect loop
                 
                 self.set_speaking(False)
-                self.ui.set_state("THINKING")
+                sm = getattr(self, "state_machine", None)
+                if sm:
+                    from core.conversation_state import ConversationState
+                    if sm.state != ConversationState.RECONNECTING:
+                        sm.transition_to(ConversationState.RECONNECTING, reason="network exception")
+                elif hasattr(self, "ui") and hasattr(self.ui, "set_state"):
+                    self.ui.set_state("RECONNECTING")
                 retry_count += 1
-                delay = min(2 ** retry_count, 10)
-                logger.info(f"Reconnecting in {delay}s (attempt {retry_count})...")
-                if retry_count >= 3:
-                    self.ui.write_log(f"SYS: связь с Gemini оборвалась (попытка {retry_count})…")
-                self.ui.set_state("RECONNECTING")
+                delay = self._reconnect_delay(retry_count)
+                self._note_reconnect(retry_count, delay)
                 await asyncio.sleep(delay)
 
 

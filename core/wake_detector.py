@@ -2,10 +2,9 @@
 
 Архитектура:
   1. Vosk Russian Acoustic Model (KWS на русском языке):
-     Мгновенная потоковая детекция русского одиночного обращения:
+     Потоковая детекция русского одиночного обращения:
      «Джарвис» / «Джервис» / «Жарвис» / «Jarvis».
-     Работает полностью локально на CPU (8 мс на кадр, <10% одного ядра),
-     без задержек и с нулевой вероятностью пропуска.
+     Работает полностью локально на CPU без сетевых вызовов.
 
   2. openWakeWord ONNX Streaming ('hey_jarvis'):
      Потоковый нейросетевой детектор английских и двухсловных обращений:
@@ -17,7 +16,7 @@ import logging
 import os
 import threading
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 import numpy as np
 
 logger = logging.getLogger("jarvis-kws")
@@ -52,6 +51,7 @@ class WakeWordDetector2Stage:
         on_wake: Optional[Callable[[float], None]] = None,
         on_quick_command: Optional[Callable[[str], None]] = None,
         enable_spotterless: bool = True,
+        state_provider: Optional[Callable[[], Any]] = None,
     ):
         self.threshold_stage1 = threshold_stage1
         self.threshold_stage2 = threshold_stage2
@@ -59,6 +59,7 @@ class WakeWordDetector2Stage:
         self.on_wake = on_wake
         self.on_quick_command = on_quick_command
         self.enable_spotterless = enable_spotterless
+        self.state_provider = state_provider
 
         self._lock = threading.Lock()
         self._last_wake_time = 0.0
@@ -91,10 +92,7 @@ class WakeWordDetector2Stage:
                 if os.path.exists(cache_dir):
                     self._vosk_model = vosk.Model(cache_dir)
             if self._vosk_model:
-                # KWS-грамматика промышленного стандарта (как у Яндекс.Алисы):
-                # 1. Точность 99%+ на «Джарвис» без ложных срабатываний.
-                # 2. Посторонняя речь в комнате гарантированно уходит в [unk].
-                # 3. Скорость отклика < 5 мс (минимальный граф переходов Kaldi).
+                # KWS-грамматика для детекции ключевых слов и быстрых команд
                 kws_words = [
                     "джарвис", "джервис",
                     "пауза", "стоп", "останови", "остановись",
@@ -133,6 +131,29 @@ class WakeWordDetector2Stage:
         except Exception as e:
             logger.warning("Wake Word ONNX model init fallback: %s", e)
 
+    def _is_spotterless_allowed(self, is_urgent_stop: bool = False) -> bool:
+        """Проверяет, разрешены ли spotterless-команды в текущем состоянии жизненного цикла."""
+        if not self.enable_spotterless or not self.on_quick_command:
+            return False
+        if self.state_provider is None:
+            return True
+        try:
+            curr_state = self.state_provider()
+            state_name = curr_state.name if hasattr(curr_state, "name") else str(curr_state).upper()
+            # В STANDBY споттерлесс полностью заблокирован — реакция только на wake word
+            if state_name == "STANDBY":
+                return False
+            # Во время SPEAKING разрешены только экстренные команды остановки
+            if state_name == "SPEAKING":
+                return is_urgent_stop
+            # В режимах FOLLOW_UP и LISTENING споттерлесс разрешён
+            if state_name in ("FOLLOW_UP", "LISTENING"):
+                return True
+            return False
+        except Exception as err:
+            logger.debug("state_provider error: %s", err)
+            return False
+
     def process_pcm(self, pcm_bytes: bytes) -> bool:
         """
         Потоковая обработка PCM-чанка (16 кГц mono int16).
@@ -157,7 +178,7 @@ class WakeWordDetector2Stage:
             arr = np.frombuffer(pcm_bytes, dtype=np.int16)
             rms_energy = float(np.sqrt(np.mean(np.square(arr.astype(np.float32)))))
 
-            # 1. Потоковая проверка через Vosk (KWS grammar, < 5 мс, точность как у Алисы)
+            # 1. Потоковая проверка через Vosk (KWS grammar)
             # Vosk обязан получать все фреймы (включая тишину), чтобы закрывать акустические слова
             if self._vosk_rec:
                 detected_vosk = False
@@ -176,32 +197,30 @@ class WakeWordDetector2Stage:
                             detected_vosk = True
                             matched_word = w
                             break
-                    if not detected_vosk and (
-                        self.enable_spotterless
-                        and self.on_quick_command
-                        and (now - self._last_quick_command_time >= self.quick_command_cooldown)
-                    ):
+                    if not detected_vosk and (now - self._last_quick_command_time >= self.quick_command_cooldown):
                         word_list = raw_text.split()
                         if 1 <= len(word_list) <= 3:
                             try:
                                 from core.fast_command_router import normalize_command_text
                                 clean = normalize_command_text(raw_text)
-                                if clean in {
-                                    "пауза", "стоп", "останови", "остановись",
-                                    "продолжи", "продолжай", "возобнови", "играй",
-                                    "следующий", "дальше", "некст", "назад", "предыдущий",
-                                    "тише", "потише", "сделай тише", "убавь звук",
-                                    "громче", "погромче", "сделай громче", "прибавь звук",
-                                    "без звука", "полный экран", "на весь экран",
-                                } or any(clean.startswith(p) for p in ("перемотай", "отмотай")):
-                                    self._last_quick_command_time = now
-                                    self._vosk_rec.Reset()
-                                    logger.info("Wake Word: [SPOTTERLESS QUICK COMMAND] '%s'", clean)
-                                    try:
-                                        self.on_quick_command(clean)
-                                    except Exception as e:
-                                        logger.error("on_quick_command error: %s", e)
-                                    return False
+                                is_urgent = clean in {"пауза", "стоп", "останови", "остановись", "замолчи", "тихо"}
+                                if self._is_spotterless_allowed(is_urgent_stop=is_urgent):
+                                    if clean in {
+                                        "пауза", "стоп", "останови", "остановись",
+                                        "продолжи", "продолжай", "возобнови", "играй",
+                                        "следующий", "дальше", "некст", "назад", "предыдущий",
+                                        "тише", "потише", "сделай тише", "убавь звук",
+                                        "громче", "погромче", "сделай громче", "прибавь звук",
+                                        "без звука", "полный экран", "на весь экран",
+                                    } or any(clean.startswith(p) for p in ("перемотай", "отмотай")):
+                                        self._last_quick_command_time = now
+                                        self._vosk_rec.Reset()
+                                        logger.info("Wake Word: [SPOTTERLESS QUICK COMMAND] '%s'", clean)
+                                        try:
+                                            self.on_quick_command(clean)
+                                        except Exception as e:
+                                            logger.error("on_quick_command error: %s", e)
+                                        return False
                             except Exception as e:
                                 logger.debug("Spotterless parse note: %s", e)
                 else:
@@ -214,8 +233,7 @@ class WakeWordDetector2Stage:
                             matched_word = w
                             break
                     if not detected_vosk and (
-                        self.enable_spotterless
-                        and self.on_quick_command
+                        self._is_spotterless_allowed(is_urgent_stop=True)
                         and (now - self._last_quick_command_time >= self.quick_command_cooldown)
                         and partial in {"пауза", "стоп"}
                     ):

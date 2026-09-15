@@ -1,6 +1,5 @@
 """Тесты для быстрого локального роутера FastCommandRouter."""
 
-import pytest
 from core.fast_command_router import FastCommandRouter, normalize_command_text
 
 

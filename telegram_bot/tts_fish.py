@@ -160,8 +160,9 @@ async def speak_pcm(text: str, sample_rate: int = 24000) -> bytes | None:
     if not text or not is_configured():
         return None
     try:
+        pcm_latency = os.getenv("FISH_LATENCY", "balanced").strip()
         raw = await asyncio.to_thread(
-            _request, text, "wav", "balanced", sample_rate)
+            _request, text, "wav", pcm_latency, sample_rate)
     except urllib.error.HTTPError as e:
         detail = e.read(200).decode("utf-8", "replace")
         logger.warning("Fish PCM: HTTP %s — %s", e.code, detail)

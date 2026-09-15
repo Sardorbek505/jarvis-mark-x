@@ -12,7 +12,7 @@ import asyncio
 import logging
 import platform
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 logger = logging.getLogger("jarvis-media-session")
 

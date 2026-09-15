@@ -1,7 +1,6 @@
 """JARVIS Mark X — Тесты звукового дизайна и звуковых сигналов (Earcons)."""
 
 import numpy as np
-import pytest
 from core.earcons import (
     _synthesize_earcon,
     play_earcon,

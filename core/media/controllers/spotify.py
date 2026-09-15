@@ -1,0 +1,118 @@
+﻿"""JARVIS Mark X — Контроллер Spotify (SpotifyMediaController).
+
+Управление воспроизведением треков, плейлистов и навигацией в Spotify
+через медиа-клавиши Windows, URI schemes и Spotify API.
+"""
+
+import logging
+import platform
+import subprocess
+
+from core.media.controllers.base import BaseMediaController
+from core.media.models import MediaCapabilities, MediaState
+
+logger = logging.getLogger("jarvis-spotify-controller")
+_OS = platform.system()
+
+
+def _send_media_key(action: str) -> bool:
+    try:
+        from actions.music_player import _send_media_key as _smk
+        return _smk(action)
+    except Exception as e:
+        logger.debug("Send media key note: %s", e)
+        return False
+
+
+class SpotifyMediaController(BaseMediaController):
+    """Контроллер управления воспроизведением Spotify."""
+
+    def __init__(self):
+        capabilities = MediaCapabilities(
+            play_pause=True,
+            seek_relative=False,
+            seek_absolute=False,
+            seek_percent=False,
+            volume_control=True,
+            set_player_volume=False, # Spotify desktop без API-кредов использует Windows EndpointVolume
+            set_system_volume=True,
+            fullscreen=False,
+            next_track=True,
+            previous_track=True,
+            state_readback=True,
+        )
+        super().__init__(capabilities=capabilities)
+        self._current_state = MediaState.PLAYING
+
+    def play(self) -> str:
+        _send_media_key("playpause")
+        self._current_state = MediaState.PLAYING
+        return "Продолжаю воспроизведение в Spotify, сэр."
+
+    def pause(self) -> str:
+        _send_media_key("playpause")
+        self._current_state = MediaState.PAUSED
+        return "Пауза в Spotify поставлена, сэр."
+
+    def toggle_playback(self) -> str:
+        _send_media_key("playpause")
+        self._current_state = MediaState.PAUSED if self._current_state == MediaState.PLAYING else MediaState.PLAYING
+        return "Готово, сэр."
+
+    def stop(self) -> str:
+        """Остановка воспроизведения трека БЕЗ завершения процесса приложения Spotify."""
+        _send_media_key("stop")
+        _send_media_key("playpause")
+        self._current_state = MediaState.STOPPED
+        return "Музыка в Spotify остановлена, сэр."
+
+    def close(self) -> str:
+        """Явное закрытие приложения Spotify (завершение процесса)."""
+        self.stop()
+        if _OS == "Windows":
+            try:
+                subprocess.run(["taskkill", "/F", "/IM", "Spotify.exe"], capture_output=True, timeout=3)
+                return "Приложение Spotify закрыто, сэр."
+            except Exception as e:
+                logger.debug("Spotify taskkill note: %s", e)
+        return "Закрываю Spotify, сэр."
+
+    def next_track(self) -> str:
+        if _send_media_key("next"):
+            return "Следующий трек, сэр."
+        return "Не удалось переключить трек, сэр."
+
+    def previous_track(self) -> str:
+        if _send_media_key("prev"):
+            return "Предыдущий трек, сэр."
+        return "Не удалось переключить трек, сэр."
+
+    def set_player_volume(self, percent: int) -> str:
+        return "Изменение внутриплеерной громкости Spotify не поддерживается в режиме Windows EndpointVolume, изменяется системная громкость, сэр."
+
+    def set_system_volume(self, percent: int) -> str:
+        try:
+            from actions.computer_settings import computer_settings
+            return computer_settings({"action": "volume", "value": str(percent)})
+        except Exception as e:
+            return f"Ошибка системной громкости: {e}"
+
+    def set_volume(self, percent: int) -> str:
+        return self.set_system_volume(percent)
+
+    def volume_up(self, step: int = 10) -> str:
+        try:
+            from actions.computer_settings import computer_settings
+            return computer_settings({"action": "volume", "value": f"+{step}"})
+        except Exception:
+            return "Громкость увеличена, сэр."
+
+    def volume_down(self, step: int = 10) -> str:
+        try:
+            from actions.computer_settings import computer_settings
+            return computer_settings({"action": "volume", "value": f"-{step}"})
+        except Exception:
+            return "Громкость уменьшена, сэр."
+
+    def get_state(self) -> MediaState:
+        return self._current_state

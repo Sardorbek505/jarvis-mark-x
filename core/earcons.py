@@ -12,7 +12,7 @@
 
 import logging
 import threading
-from typing import Dict, Optional
+from typing import Dict
 import numpy as np
 
 logger = logging.getLogger("jarvis-earcons")
@@ -91,6 +91,11 @@ def play_earcon(kind: str, async_play: bool = True):
         return
 
     def _play_task():
+        # Боевой код не должен знать, что он под тестами. Здесь стояла проверка
+        # `if "PYTEST_CURRENT_TEST" in os.environ: return` — она гасила
+        # воспроизведение под pytest, из-за чего тест на вызов sounddevice
+        # проверял пустоту и был обречён падать. Тест и так подменяет
+        # sounddevice, реального звука в прогоне нет.
         try:
             import sounddevice as sd
             sd.play(audio, SAMPLE_RATE)

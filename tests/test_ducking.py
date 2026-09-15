@@ -134,3 +134,95 @@ def test_follow_up_window_holds_ducking_state():
         j._wake_active_until = 0.0
         j.set_speaking(False)
         mock_set_state.assert_called_with(DuckingState.RESTORING)
+
+
+def test_ducking_disabled_via_env():
+    """Проверка полного отключения через JARVIS_ENABLE_DUCKING=false."""
+    with patch.dict(os.environ, {"JARVIS_ENABLE_DUCKING": "false"}):
+        dc = DuckingController(duck_ratio=0.2)
+        try:
+            assert dc.enabled is False
+            spotify_session = MagicMock()
+            spotify_session.ProcessId = 1111
+            spotify_session.Process.name.return_value = "spotify.exe"
+            vol_ctl = MagicMock()
+            vol_ctl.GetMasterVolume.return_value = 0.90
+            spotify_session._ctl.QueryInterface.return_value = vol_ctl
+
+            with patch("pycaw.pycaw.AudioUtilities.GetAllSessions", return_value=[spotify_session]):
+                dc.duck()
+                time.sleep(0.03)
+                # Никаких сохранений и вызовов изменения громкости быть не должно
+                assert len(dc._saved_session_vols) == 0
+                vol_ctl.SetMasterVolume.assert_not_called()
+        finally:
+            dc.close()
+
+
+def test_fade_ratio_not_polluted_by_master_volume():
+    """Проверка, что начальный множитель затухания равен 1.0, даже если мастер-громкость системы 25%."""
+    dc = DuckingController(duck_ratio=0.4, attack_ms=20.0)
+    try:
+        # Имитируем системную общую громкость Windows на уровне 25%
+        dc._current_volume = 0.25
+        dc._applied_ratio = 1.0
+
+        dc._begin_fade(0.40, 50.0)
+        # _fade_start_vol должен быть 1.0 (множитель сессии), а не 0.25 (системный мастер)
+        assert dc._fade_start_vol == pytest.approx(1.0, rel=1e-2)
+        assert dc._fade_target == pytest.approx(0.40, rel=1e-2)
+    finally:
+        dc.close()
+
+
+def test_watchdog_auto_restore_on_hang():
+    """Сторожевой таймер должен автоматически вернуть звук, если ассистент завис в LISTENING."""
+    dc = DuckingController(duck_ratio=0.2, attack_ms=10.0, release_ms=10.0, max_duck_duration_sec=0.08)
+    try:
+        spotify_session = MagicMock()
+        spotify_session.ProcessId = 2222
+        spotify_session.Process.name.return_value = "spotify.exe"
+        vol_ctl = MagicMock()
+        vol_ctl.GetMasterVolume.return_value = 0.80
+        spotify_session._ctl.QueryInterface.return_value = vol_ctl
+
+        with patch("pycaw.pycaw.AudioUtilities.GetAllSessions", return_value=[spotify_session]):
+            dc.duck()
+            time.sleep(0.03)
+            assert 2222 in dc._saved_session_vols
+
+            # Ждём срабатывания сторожевого таймера (> 0.08 сек)
+            time.sleep(0.12)
+
+            # Сессия должна быть восстановлена, а состояние сброшено в IDLE
+            assert len(dc._saved_session_vols) == 0
+            assert dc.state == DuckingState.IDLE
+            assert vol_ctl.SetMasterVolume.call_args[0][0] == pytest.approx(0.80, rel=1e-2)
+    finally:
+        dc.close()
+
+
+def test_restore_all_sessions_now_immediate():
+    """Функция restore_all_sessions_now должна мгновенно и синхронно возвращать звук всех приложений."""
+    dc = DuckingController(duck_ratio=0.3, attack_ms=10.0)
+    try:
+        spotify_session = MagicMock()
+        spotify_session.ProcessId = 3333
+        spotify_session.Process.name.return_value = "spotify.exe"
+        vol_ctl = MagicMock()
+        vol_ctl.GetMasterVolume.return_value = 0.75
+        spotify_session._ctl.QueryInterface.return_value = vol_ctl
+
+        with patch("pycaw.pycaw.AudioUtilities.GetAllSessions", return_value=[spotify_session]):
+            dc.duck()
+            time.sleep(0.02)
+            assert 3333 in dc._saved_session_vols
+
+            # Вызываем немедленное восстановление
+            dc.restore_all_sessions_now()
+            assert len(dc._saved_session_vols) == 0
+            assert dc.state == DuckingState.IDLE
+            assert vol_ctl.SetMasterVolume.call_args[0][0] == pytest.approx(0.75, rel=1e-2)
+    finally:
+        dc.close()
+

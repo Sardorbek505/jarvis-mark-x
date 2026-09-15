@@ -40,62 +40,61 @@ def test_send_key_rejects_unknown_key_without_raising():
     assert send_key("no-such-key") is False
 
 
-def test_play_with_track_uri_does_not_raise(monkeypatch):
-    """Путь «нашли Spotify URI» доходит до ответа, а не падает NameError."""
-    monkeypatch.setattr(music_player, "_spotify_search_track_uri", lambda q: "spotify:track:xyz")
-    monkeypatch.setattr(music_player, "_open_spotify_uri", lambda uri: True)
-    monkeypatch.setattr(music_player, "_focus_spotify_window", lambda: True)
-    monkeypatch.setattr(music_player, "_send_key", lambda key: True)
-    monkeypatch.setattr(music_player, "_send_media_key", lambda action: True)
-    monkeypatch.setattr(music_player.time, "sleep", lambda s: None)
+def _fake_orchestrator(monkeypatch, answer="Включаю «X», сэр."):
+    calls = []
 
-    answer = music_player._play(query="Bohemian Rhapsody")
-    assert "Bohemian Rhapsody" in answer
+    class _Orch:
+        def play_media(self, raw_query, parameters=None):
+            calls.append((raw_query, parameters))
+            return answer
+
+    monkeypatch.setattr(music_player, "get_media_orchestrator", lambda: _Orch())
+    return calls
 
 
-def test_youtube_fallback_reports_success_when_tab_opened(monkeypatch):
-    """Промах по клавише не должен превращаться в «не удалось воспроизвести».
+def test_play_passes_query_as_string_and_marks_it_music(monkeypatch):
+    """play_media ждёт СТРОКУ: объект MediaRequest там разбирался заново и
+    становился фильмом — музыка уходила искаться на VK Видео (стенд 10.09.2026)."""
+    calls = _fake_orchestrator(monkeypatch)
 
-    Вкладка открыта и играет — значит ответ пользователю положительный.
-    """
-    monkeypatch.setattr(music_player, "_spotify_search_track_uri", lambda q: None)
-    monkeypatch.setattr(music_player, "_is_spotify_installed", lambda: False)
-    monkeypatch.setattr(music_player, "_find_youtube_direct_url", lambda q: "https://youtu.be/x")
-    monkeypatch.setattr(music_player, "browser_control", lambda *a, **k: "ok")
-    monkeypatch.setattr(music_player, "_send_key", lambda key: False)      # клавиша не прошла
-    monkeypatch.setattr(music_player, "_send_media_key", lambda action: False)
-    monkeypatch.setattr(music_player.time, "sleep", lambda s: None)
+    music_player.music_player({"action": "play", "query": "Bohemian Rhapsody"})
+
+    assert len(calls) == 1
+    raw_query, parameters = calls[0]
+    assert raw_query == "Bohemian Rhapsody"
+    assert parameters["media_type"] == "music"
+
+
+def test_legacy_play_uses_the_same_orchestrator_path(monkeypatch):
+    calls = _fake_orchestrator(monkeypatch)
 
     answer = music_player._play(query="Smells Like Teen Spirit")
+
     assert "Не удалось" not in answer
-    assert "Smells Like Teen Spirit" in answer
+    assert calls[0][0] == "Smells Like Teen Spirit"
+    assert calls[0][1]["media_type"] == "music"
 
 
-def test_youtube_fallback_reports_failure_when_browser_fails(monkeypatch):
-    """А вот если браузер не открылся — честно сообщаем о провале."""
-    def _boom(*a, **k):
-        raise RuntimeError("browser is gone")
+def test_legacy_play_reports_failure_when_orchestrator_raises(monkeypatch):
+    class _Orch:
+        def play_media(self, raw_query, parameters=None):
+            raise RuntimeError("browser is gone")
 
-    monkeypatch.setattr(music_player, "_spotify_search_track_uri", lambda q: None)
-    monkeypatch.setattr(music_player, "_is_spotify_installed", lambda: False)
-    monkeypatch.setattr(music_player, "_find_youtube_direct_url", lambda q: "https://youtu.be/x")
-    monkeypatch.setattr(music_player, "browser_control", _boom)
-    monkeypatch.setattr(music_player.time, "sleep", lambda s: None)
+    monkeypatch.setattr(music_player, "get_media_orchestrator", lambda: _Orch())
 
     assert "Не удалось" in music_player._play(query="что угодно")
 
 
-def test_playlist_with_non_spotify_url_does_not_raise(monkeypatch):
-    """Не-спотифаевская ссылка на плейлист: `spotify_opened` был не определён.
+def test_spotify_helpers_are_real_functions_not_stubs():
+    """Провайдер Spotify импортирует хелперы отсюда; лямбды-заглушки «для тестов»
+    заставляли его рапортовать «Воспроизведение запущено», ничего не включив."""
+    import actions.spotify_desktop as sd
 
-    Ветка `if uri:` не выполнялась, и следующая строка читала переменную,
-    которой ещё нет, — UnboundLocalError вместо открытия ссылки в браузере.
-    """
-    monkeypatch.setattr(music_player, "_https_to_spotify_uri", lambda url: None)
-    monkeypatch.setattr(music_player, "browser_control", lambda *a, **k: "ok")
-    monkeypatch.setattr(music_player, "_focus_spotify_window", lambda: True)
-    monkeypatch.setattr(music_player, "_send_media_key", lambda action: True)
-    monkeypatch.setattr(music_player.time, "sleep", lambda s: None)
+    for name in ("_spotify_search_track_uri", "_open_spotify_uri", "_focus_spotify_window",
+                 "_https_to_spotify_uri", "_ui_automation_search", "_send_media_key",
+                 "_is_spotify_installed", "_is_spotify_running", "_find_youtube_direct_url"):
+        assert getattr(music_player, name) is getattr(sd, name)
+        assert getattr(sd, name).__name__ != "<lambda>"
 
-    answer = music_player._play(playlist_url="https://music.yandex.ru/users/x/playlists/1")
-    assert "Не удалось" not in answer
+    assert sd._https_to_spotify_uri("https://open.spotify.com/track/abc?si=1") == "spotify:track:abc"
+    assert sd._open_spotify_uri("evil; rm -rf /") is False

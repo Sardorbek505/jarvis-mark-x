@@ -10,6 +10,21 @@ Pillow>=10.0.0
 
 # Аудио
 sounddevice>=0.4.6
+numpy>=1.24.0
+
+# Локальное распознавание ключевого слова «Джарвис» (2-Stage KWS).
+# Без vosk и openwakeword детектор не поднимается, и Джарвис реагирует
+# только на горячую клавишу — это не опциональные пакеты.
+vosk>=0.3.45
+openwakeword>=0.6.0
+onnxruntime>=1.16.0
+
+# Эхоподавление и приглушение фона (только Windows).
+# pyaudiowpatch даёт WASAPI loopback — опорный сигнал колонок для AEC,
+# без него эхоподавление не выполняется; pycaw управляет громкостью сессий.
+pyaudiowpatch>=0.2.12.5; sys_platform == "win32"
+pycaw>=20230407; sys_platform == "win32"
+comtypes>=1.2.0; sys_platform == "win32"
 
 # Системный мониторинг
 psutil>=5.9.0

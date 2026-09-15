@@ -1,6 +1,5 @@
 """Тесты для менеджера медиа-сессий Windows GSMTC (Что сейчас играет)."""
 
-import pytest
 from unittest.mock import patch
 from core.media_session_manager import MediaSessionManager, _clean_app_name
 from core.fast_command_router import FastCommandRouter

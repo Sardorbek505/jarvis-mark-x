@@ -1,9 +1,8 @@
 """Unit tests for ArcReactorWidget floating HUD."""
 
-import sys
 import pytest
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt, QPointF
+from PyQt6.QtCore import Qt
 
 
 @pytest.fixture(scope="module")

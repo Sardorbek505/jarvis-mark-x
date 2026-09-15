@@ -5,19 +5,19 @@
   2. Гибридный поиск (Hybrid Retrieval):
      - Лексический поиск по ключевым словам и фразам (BM25/TF-IDF token matching)
        по таблицам facts, notes, profile, tasks, habits.
-     - Семантический поиск по 768-мерным векторным эмбеддингам (embeddings)
+     - Семантический поиск по векторным эмбеддингам (embeddings)
        с косинусным сходством в RAM.
-  3. Мгновенный отклик (< 5 мс) на ПК без задержек сети для типовых воспоминаний:
+  3. Быстрый отклик на локальном ПК без сетевых запросов для типовых воспоминаний:
      - «Что ты обо мне знаешь?»
      - «Где мои [ключи/документы]?»
      - «Какой мой любимый [кофе/фильм]?»
      - «Запомни, что [факт]»
 """
 
+import contextlib
 import json
 import logging
 import math
-import os
 import re
 import sqlite3
 from datetime import datetime
@@ -82,10 +82,38 @@ class EpisodicMemory:
     _vector_cache: Optional[List[Dict]] = None
 
     @classmethod
+    @contextlib.contextmanager
+    def _db(cls):
+        """Соединение с базой, которое закрывается при ЛЮБОМ исходе.
+
+        Раньше `conn.close()` стоял последней строкой внутри `try`, поэтому любая
+        ошибка запроса (в первую очередь `database is locked` при параллельной
+        работе телеграм-бота) оставляла соединение открытым навсегда. Утечка
+        копилась за время работы процесса и сама же удерживала блокировки.
+        """
+        conn = cls._get_db()
+        try:
+            yield conn
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception as e:
+                    logger.debug("DB close note: %s", e)
+
+    @classmethod
     def _get_db(cls) -> Optional[sqlite3.Connection]:
         try:
-            if _DB_PATH.exists():
-                return sqlite3.connect(str(_DB_PATH))
+            _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(_DB_PATH), timeout=10.0)
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA busy_timeout=5000;")
+            # Гарантируем наличие базовых таблиц
+            conn.execute("CREATE TABLE IF NOT EXISTS facts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, fact TEXT, ts TEXT);")
+            conn.execute("CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, text TEXT, created_at TEXT);")
+            conn.execute("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, title TEXT, due TEXT, done INTEGER DEFAULT 0);")
+            conn.execute("CREATE TABLE IF NOT EXISTS profile (user_id INTEGER PRIMARY KEY, name TEXT, about TEXT, goals TEXT, preferences TEXT);")
+            return conn
         except Exception as e:
             logger.debug("Database connect error: %s", e)
         return None
@@ -104,24 +132,37 @@ class EpisodicMemory:
         uid = _get_owner_uid()
         now_iso = datetime.now().isoformat()
 
-        # 1. Запись в SQLite
-        conn = cls._get_db()
-        if conn:
-            try:
+        # 1. Запись в SQLite с дедупликацией
+        with cls._db() as conn:
+            if conn:
+              try:
                 cur = conn.cursor()
                 if category in ("notes", "заметки"):
+                    cur.execute(
+                        "SELECT id FROM notes WHERE user_id = ? AND lower(text) = lower(?) LIMIT 1",
+                        (uid, fact_text),
+                    )
+                    if cur.fetchone():
+                        logger.info("EpisodicMemory: Заметка уже существует в памяти: '%s'", fact_text)
+                        return f"Запомнил, эта заметка уже есть в памяти, сэр: «{fact_text}»."
                     cur.execute(
                         "INSERT INTO notes (user_id, text, created_at) VALUES (?, ?, ?)",
                         (uid, fact_text, now_iso),
                     )
                 else:
                     cur.execute(
+                        "SELECT id FROM facts WHERE user_id = ? AND lower(fact) = lower(?) LIMIT 1",
+                        (uid, fact_text),
+                    )
+                    if cur.fetchone():
+                        logger.info("EpisodicMemory: Факт уже существует в памяти: '%s'", fact_text)
+                        return f"Запомнил, этот факт уже есть в памяти, сэр: «{fact_text}»."
+                    cur.execute(
                         "INSERT INTO facts (user_id, fact, ts) VALUES (?, ?, ?)",
                         (uid, fact_text, now_iso),
                     )
                 conn.commit()
-                conn.close()
-            except Exception as e:
+              except Exception as e:
                 logger.error("Error saving fact to SQLite: %s", e)
 
         # 2. Запись в data.json
@@ -157,9 +198,9 @@ class EpisodicMemory:
         uid = _get_owner_uid()
 
         # 1. Поиск по SQLite (facts, notes, tasks, profile)
-        conn = cls._get_db()
-        if conn:
-            try:
+        with cls._db() as conn:
+            if conn:
+              try:
                 cur = conn.cursor()
 
                 # Таблица facts
@@ -197,8 +238,7 @@ class EpisodicMemory:
                             if score > 0.2:
                                 candidates.append((score + 0.15, field_name, str(val)))
 
-                conn.close()
-            except Exception as e:
+              except Exception as e:
                 logger.debug("Error querying SQLite memory: %s", e)
 
         # 2. Поиск по data.json и user_profile.json
@@ -259,14 +299,14 @@ class EpisodicMemory:
         uid = _get_owner_uid()
         parts = []
 
-        conn = cls._get_db()
         facts_list = []
         notes_list = []
         tasks_list = []
         profile_info = {}
 
-        if conn:
-            try:
+        with cls._db() as conn:
+            if conn:
+              try:
                 cur = conn.cursor()
                 cur.execute("SELECT fact FROM facts WHERE user_id = ? ORDER BY id DESC LIMIT 10", (uid,))
                 facts_list = [r[0] for r in cur.fetchall()]
@@ -286,8 +326,7 @@ class EpisodicMemory:
                         "goals": p_row[2],
                         "preferences": p_row[3],
                     }
-                conn.close()
-            except Exception as e:
+              except Exception as e:
                 logger.debug("Error getting profile summary: %s", e)
 
         # Имя

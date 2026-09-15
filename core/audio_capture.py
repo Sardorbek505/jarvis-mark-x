@@ -50,13 +50,18 @@ class AudioCaptureEngine:
         self,
         on_frame: Optional[Callable[[bytes, bytes, float], None]] = None,
         mic_device_index: Optional[int] = None,
+        on_error: Optional[Callable[[Exception], None]] = None,
     ):
         self.on_frame = on_frame
         self.mic_device_index = mic_device_index
+        self.on_error = on_error
         self._running = False
         self._pyaudio = None
         self._mic_stream = None
         self._loopback_stream = None
+        self._reconnect_attempts: int = 0
+        # Поднялся ли опорный поток колонок. Без него AEC нечего вычитать.
+        self.reference_active: bool = False
 
         self._ref_lock = threading.Lock()
         self._ref_buffer = bytearray()
@@ -75,6 +80,16 @@ class AudioCaptureEngine:
             if len(self._ref_buffer) > self._max_ref_bytes:
                 del self._ref_buffer[:-self._max_ref_bytes]
             self._ref_end_time = ts
+
+    def ref_window(self, ts: float, n_bytes: int) -> bytes:
+        """Публичный доступ к опорному окну для внешнего аудиотракта.
+
+        `main.py` держит собственный поток микрофона (sounddevice), а сюда
+        обращается только за опорным сигналом колонок — без него AECPipeline
+        нечего вычитать и эхоподавления не существует.
+        Часы должны совпадать с теми, которыми помечается буфер: `time.perf_counter()`.
+        """
+        return self._ref_window(ts, n_bytes)
 
     def _ref_window(self, ts: float, n_bytes: int) -> bytes:
         """Опорный сигнал за то же окно времени, что и кадр микрофона.
@@ -140,11 +155,18 @@ class AudioCaptureEngine:
             logger.debug("Loopback device discovery note: %s", e)
         return None
 
-    def start(self):
-        """Запуск захвата микрофона и опорного потока."""
+    def start(self, reference_only: bool = False):
+        """Запуск захвата.
+
+        `reference_only=True` поднимает ТОЛЬКО опорный поток колонок (WASAPI
+        loopback) и не трогает микрофон. Это нужно рантайму `main.py`: он держит
+        свой микрофонный поток на sounddevice, а отсюда берёт лишь опорный
+        сигнал для AEC — открывать второй поток на то же устройство нельзя.
+        """
         if self._running:
             return
         self._running = True
+        self.reference_active = False
 
         try:
             import pyaudiowpatch as pyaudio
@@ -183,9 +205,18 @@ class AudioCaptureEngine:
                     stream_callback=_lb_callback,
                 )
                 self._loopback_stream.start_stream()
+                self.reference_active = True
                 logger.info("Acoustic Front-End: Loopback Reference active on [%s]", loopback_dev["name"])
             except Exception as e:
                 logger.debug("Loopback stream init note: %s", e)
+        else:
+            logger.warning(
+                "Acoustic Front-End: WASAPI loopback устройство не найдено — "
+                "опорного сигнала колонок нет, AEC работать не будет"
+            )
+
+        if reference_only:
+            return
 
         # 2. Запуск потока микрофона
         def _mic_callback(in_data, frame_count, time_info, status):
@@ -212,9 +243,37 @@ class AudioCaptureEngine:
                 stream_callback=_mic_callback,
             )
             self._mic_stream.start_stream()
+            self._reconnect_attempts = 0
             logger.info("Acoustic Front-End: Microphone stream active at 16000 Hz")
         except Exception as e:
             logger.error("Failed to open microphone stream: %s", e)
+            if self.on_error:
+                try:
+                    self.on_error(e)
+                except Exception as err:
+                    logger.debug("on_error callback note: %s", err)
+
+    def is_active(self) -> bool:
+        """Проверяет, активен ли микрофонный поток."""
+        return bool(self._running and self._mic_stream and self._mic_stream.is_active())
+
+    def reconnect(self, max_retries: int = 5, initial_backoff: float = 0.5) -> bool:
+        """Перезапуск аудиопотоков при сбое с экспоненциальным backoff."""
+        logger.info("AudioCaptureEngine: Reconnecting audio streams...")
+        self.stop()
+        backoff = initial_backoff
+        for attempt in range(1, max_retries + 1):
+            time.sleep(backoff)
+            try:
+                self.start()
+                if self.is_active():
+                    logger.info("AudioCaptureEngine: Reconnected on attempt %d", attempt)
+                    return True
+            except Exception as e:
+                logger.warning("AudioCaptureEngine: Reconnect attempt %d failed: %s", attempt, e)
+            backoff = min(backoff * 2.0, 5.0)
+        logger.error("AudioCaptureEngine: Failed to reconnect after %d attempts", max_retries)
+        return False
 
     def stop(self):
         """Остановка аудиозахвата."""
@@ -225,14 +284,17 @@ class AudioCaptureEngine:
                 self._mic_stream.close()
             except Exception:
                 pass
+            self._mic_stream = None
         if self._loopback_stream:
             try:
                 self._loopback_stream.stop_stream()
                 self._loopback_stream.close()
             except Exception:
                 pass
+            self._loopback_stream = None
         if self._pyaudio:
             try:
                 self._pyaudio.terminate()
             except Exception:
                 pass
+            self._pyaudio = None

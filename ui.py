@@ -183,6 +183,12 @@ class HudCanvas(QWidget):
         self._particles: list[list[float]] = []
         self._face_px: QPixmap | None = None
 
+        # Старковские эффекты HUD: бут-анимация, дискретное кольцо мышления, джиттер сканлиний
+        self._boot_progress = 0.0
+        self._thinking_angle = 0.0
+        self._glitch_offset_x = 0.0
+        self._glitch_offset_y = 0.0
+
         self._load_face(face_path)
 
         self._tmr = QTimer(self)
@@ -310,6 +316,20 @@ class HudCanvas(QWidget):
             self._blink = not self._blink
             self._blink_tick = 0
 
+        # Анимационные фазы Старка
+        if self._boot_progress < 1.0:
+            self._boot_progress = min(1.0, self._boot_progress + 0.022)
+
+        if self.state in ("ДУМАЕТ", "THINKING"):
+            self._thinking_angle = (self._thinking_angle + 7.5) % 360
+
+        if self.state in ("RECONNECTING", "ПЕРЕПОДКЛЮЧЕНИЕ"):
+            self._glitch_offset_x = random.uniform(-4, 4) if random.random() < 0.35 else 0.0
+            self._glitch_offset_y = random.uniform(-3, 3) if random.random() < 0.35 else 0.0
+        else:
+            self._glitch_offset_x = 0.0
+            self._glitch_offset_y = 0.0
+
         self.update()
 
     def paintEvent(self, _):
@@ -321,6 +341,23 @@ class HudCanvas(QWidget):
         cx, cy = W / 2, H / 2
         fw = min(W, H)
 
+        is_reconnecting = self.state in ("RECONNECTING", "ПЕРЕПОДКЛЮЧЕНИЕ")
+        is_thinking = self.state in ("ДУМАЕТ", "THINKING")
+
+        # При потере связи — красная палитра и джиттер
+        pri_col = C.RED if is_reconnecting else (C.MUTED_C if self.muted else C.PRI)
+
+        p.save()
+        if is_reconnecting and (self._glitch_offset_x or self._glitch_offset_y):
+            p.translate(self._glitch_offset_x, self._glitch_offset_y)
+
+        # Телеметрия в стиле Старка: вывод моноширинных системных метрик в углы холста
+        snap = _metrics.snapshot()
+        p.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        p.setPen(QPen(qcol(C.TEXT_DIM, 220), 1))
+        p.drawText(QRectF(14, 12, 240, 20), Qt.AlignmentFlag.AlignLeft, f"SYS.CPU // {snap['cpu']:04.1f}%")
+        p.drawText(QRectF(W - 254, 12, 240, 20), Qt.AlignmentFlag.AlignRight, f"SYS.MEM // {snap['mem']:04.1f}%  NET: {snap['net']:03.1f}M")
+
         # Точечная сетка
         p.setPen(QPen(qcol(C.PRI_GHO), 1))
         for x in range(0, W, 48):
@@ -328,7 +365,6 @@ class HudCanvas(QWidget):
                 p.drawPoint(x, y)
 
         r_face = fw * 0.31
-        pri_col = C.MUTED_C if self.muted else C.PRI
 
         # Ореол (halo glow)
         for i in range(10):
@@ -361,6 +397,16 @@ class HudCanvas(QWidget):
                 p.drawArc(rect, int(angle * 16), int(arc_l * 16))
                 angle += arc_l + gap
 
+        # СЕГМЕНТИРОВАННОЕ КОЛЬЦО МЫШЛЕНИЯ (дискретные щелчки при ДУМАЕТ)
+        if is_thinking:
+            t_r = fw * 0.36
+            t_rect = QRectF(cx - t_r, cy - t_r, t_r * 2, t_r * 2)
+            step_angle = math.floor(self._thinking_angle / 30.0) * 30.0
+            p.setPen(QPen(qcol(C.ACC2, 230), 2.5))
+            for seg in range(0, 360, 30):
+                if (seg // 30) % 2 == 0:
+                    p.drawArc(t_rect, int((step_angle + seg) * 16), int(18 * 16))
+
         # Сканеры
         sr = fw * 0.50
         sa = min(255, int(self._halo * 1.5))
@@ -374,7 +420,7 @@ class HudCanvas(QWidget):
 
         # Деления
         t_out, t_in = fw * 0.497, fw * 0.474
-        p.setPen(QPen(qcol(C.PRI, 140), 1))
+        p.setPen(QPen(qcol(pri_col if is_reconnecting else C.PRI, 140), 1))
         for deg in range(0, 360, 10):
             rad = math.radians(deg)
             inn = t_in if deg % 30 == 0 else t_in + 6
@@ -385,7 +431,7 @@ class HudCanvas(QWidget):
 
         # Прицельная сетка
         ch_r, gap_h = fw * 0.51, fw * 0.16
-        p.setPen(QPen(qcol(C.PRI, int(self._halo * 0.5)), 1))
+        p.setPen(QPen(qcol(pri_col, int(self._halo * 0.5)), 1))
         p.drawLine(QPointF(cx - ch_r, cy), QPointF(cx - gap_h, cy))
         p.drawLine(QPointF(cx + gap_h, cy), QPointF(cx + ch_r, cy))
         p.drawLine(QPointF(cx, cy - ch_r), QPointF(cx, cy - gap_h))
@@ -393,7 +439,7 @@ class HudCanvas(QWidget):
 
         # Угловые скобки
         bl = 24
-        bc = qcol(C.PRI, 210)
+        bc = qcol(pri_col, 210)
         hl = cx - fw // 2
         hr = cx + fw // 2
         ht = cy - fw // 2
@@ -402,6 +448,26 @@ class HudCanvas(QWidget):
         for bx, by, dx, dy in [(hl,ht,1,1),(hr,ht,-1,1),(hl,hb,1,-1),(hr,hb,-1,-1)]:
             p.drawLine(QPointF(bx, by), QPointF(bx + dx * bl, by))
             p.drawLine(QPointF(bx, by), QPointF(bx, by + dy * bl))
+
+        # Сканлинии помех для RECONNECTING
+        if is_reconnecting:
+            p.setPen(QPen(qcol(C.RED, 45), 1))
+            for ly in range(0, H, 6):
+                p.drawLine(QPointF(0, ly), QPointF(W, ly))
+
+        # Анимация бута (line-drawing) при запуске
+        if self._boot_progress < 1.0:
+            bp = self._boot_progress
+            p.setPen(QPen(qcol(C.PRI, int(255 * (1.0 - bp))), 2))
+            boot_r = fw * 0.44
+            p.drawArc(QRectF(cx - boot_r, cy - boot_r, boot_r * 2, boot_r * 2), 0, int(360 * 16 * bp))
+            p.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
+            typed_len = int(len("JARVIS MARK-X // INITIALIZING CORE SYSTEMS...") * bp)
+            boot_txt = "JARVIS MARK-X // INITIALIZING CORE SYSTEMS..."[:typed_len]
+            p.setPen(QPen(qcol(C.PRI, 220), 1))
+            p.drawText(QRectF(0, cy + boot_r + 10, W, 20), Qt.AlignmentFlag.AlignCenter, boot_txt)
+
+        p.restore()
 
         # Лицо / орбита
         if self._face_px:
@@ -971,23 +1037,23 @@ class ArcReactorWidget(QWidget):
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
-        menu.setStyleSheet(f"""
-            QMenu {{
+        menu.setStyleSheet("""
+            QMenu {
                 background-color: #010d14;
                 color: #8ffcff;
                 border: 1px solid #0d3347;
                 font-family: 'Segoe UI', sans-serif;
                 font-size: 11px;
                 padding: 4px;
-            }}
-            QMenu::item {{
+            }
+            QMenu::item {
                 padding: 6px 20px;
                 border-radius: 3px;
-            }}
-            QMenu::item:selected {{
+            }
+            QMenu::item:selected {
                 background-color: #001f2e;
                 color: #00d4ff;
-            }}
+            }
         """)
         act_restore = menu.addAction("🖥 Развернуть интерфейс")
         act_mute = menu.addAction("🔊 Включить микрофон" if self.muted else "🔇 Выключить микрофон")
@@ -1123,6 +1189,7 @@ class MainWindow(QMainWindow):
     # из другого потока — это падение, а не подтормаживание.
     _level_sig = pyqtSignal(float)
     _tool_sig  = pyqtSignal(str)
+    _bring_to_front_sig = pyqtSignal()
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1324,6 +1391,7 @@ class MainWindow(QMainWindow):
         self._level_sig.connect(self._hud.feed_level)
         self._level_sig.connect(self._arc_reactor.set_level)
         self._tool_sig.connect(self._hud.lock_on)
+        self._bring_to_front_sig.connect(self._on_bring_to_front)
 
     # ── Компактный режим виджета Arc Reactor ──────────────────────────────────
     def _on_reactor_double_click(self):
@@ -1367,6 +1435,26 @@ class MainWindow(QMainWindow):
     def lock_on(self, tool: str):
         """Навести прицел на инструмент, который сейчас выполняется."""
         self._tool_sig.emit(str(tool))
+
+    def _on_bring_to_front(self):
+        try:
+            if getattr(self, "_compact_mode", False) and hasattr(self, "_arc_reactor"):
+                self._arc_reactor.show()
+                self._arc_reactor.raise_()
+                self._arc_reactor.activateWindow()
+            else:
+                self.showNormal()
+                self.raise_()
+                self.activateWindow()
+        except Exception:
+            pass
+
+    def bring_to_front(self):
+        """Разворачивает окно и выводит на передний план (потокобезопасно)."""
+        try:
+            self._bring_to_front_sig.emit()
+        except Exception:
+            pass
 
     def wait_for_api_key(self):
         """Блокирует поток до получения API-ключа. Пропускает если ключ уже есть."""
@@ -1542,15 +1630,6 @@ class JarvisUI(MainWindow):
     def root(self):
         """Псевдо-атрибут для совместимости — возвращает приложение."""
         return self._app
-
-    def bring_to_front(self):
-        """Разворачивает окно и выводит на передний план."""
-        try:
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
-        except Exception:
-            pass
 
     def toggle_mute(self) -> bool:
         """Переключает режим микрофона и обновляет интерфейс."""

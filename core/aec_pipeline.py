@@ -190,7 +190,7 @@ class AECPipeline:
         # хуже, чем отсутствие эхоподавления вовсе. Заметили — сбрасываем
         # адаптацию и отдаём кадр как есть.
         linear_power = float(np.mean(np.square(clean_arr, dtype=np.float64)))
-        if not np.isfinite(linear_power) or linear_power > _DIVERGENCE_RATIO * mic_power:
+        if not np.isfinite(linear_power) or (mic_power > 1e-4 and linear_power > _DIVERGENCE_RATIO * mic_power):
             logger.warning("AEC: фильтр разошёлся — сброс адаптации")
             self.reset()
             return mic_bytes, 0.0

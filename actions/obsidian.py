@@ -78,11 +78,29 @@ def _unique_path(folder: Path, slug: str) -> Path:
 
 
 def _write_md(path: Path, text: str) -> None:
-    """Атомарная запись markdown: пишем в .tmp → replace()."""
+    """Атомарная запись markdown: пишем в .tmp → replace() с защитой от Windows file locking."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    for _ in range(3):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:
+            import time
+            time.sleep(0.05)
+        except OSError:
+            break
+    # Если replace() заблокирован Windows-процессом (например, открыт в Obsidian),
+    # пишем напрямую в файл и удаляем временный
+    try:
+        path.write_text(text, encoding="utf-8")
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
 
 
 def _strip_frontmatter(text: str) -> str:
@@ -247,3 +265,29 @@ def obsidian_action(parameters: dict, player=None) -> str:
         "Не понял действие для базы знаний. "
         "Доступно: записать, добавить в дневник, найти, прочитать, список."
     )
+
+
+def get_recent_obsidian_notes(limit: int = 3) -> str:
+    """Возвращает форматированный блок с последними заметками для инъекции в системный промпт."""
+    try:
+        cfg = _config()
+        vault = Path(cfg["vault_path"])
+        if not vault.exists():
+            return ""
+        notes: list[str] = []
+        all_files = sorted(_iter_notes(vault), key=lambda p: p.stat().st_mtime, reverse=True)
+        for path in all_files:
+            if len(notes) >= limit:
+                break
+            try:
+                text = _strip_frontmatter(path.read_text(encoding="utf-8")).strip()
+                if text:
+                    notes.append(f"• {path.stem}: {text[:250]}")
+            except Exception:
+                continue
+        if notes:
+            return "[ПОСЛЕДНИЕ ЗАМЕТКИ ИЗ OBSIDIAN V-A-U-L-T]\n" + "\n".join(notes) + "\n\n"
+    except Exception as e:
+        _logger.debug("get_recent_obsidian_notes note: %s", e)
+    return ""
+

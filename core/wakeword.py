@@ -22,17 +22,16 @@ def generate_chime_pcm(sample_rate: int = 24000) -> bytes:
     try:
         import numpy as np
 
-        # Тон 1: 587 Гц (D5), 0.06 сек
-        # Тон 2: 880 Гц (A5), 0.12 сек
-        t1 = np.linspace(0, 0.06, int(sample_rate * 0.06), False)
-        t2 = np.linspace(0, 0.12, int(sample_rate * 0.12), False)
+        # Тон 1: 587 Гц (D5), 0.07 сек с плавным нарастанием
+        # Тон 2: 880 Гц (A5), 0.14 сек с экспоненциальным затуханием
+        t1 = np.linspace(0, 0.07, int(sample_rate * 0.07), False)
+        t2 = np.linspace(0, 0.14, int(sample_rate * 0.14), False)
 
-        tone1 = 0.25 * np.sin(2 * np.pi * 587 * t1)
-        tone2 = 0.35 * np.sin(2 * np.pi * 880 * t2)
+        env1 = np.sin(np.linspace(0, np.pi / 2, len(t1)))
+        tone1 = 0.50 * np.sin(2 * np.pi * 587 * t1) * env1
 
-        # Плавное затухание (Envelope)
-        decay2 = np.exp(-t2 * 25)
-        tone2 = tone2 * decay2
+        decay2 = np.exp(-t2 * 18)
+        tone2 = 0.65 * np.sin(2 * np.pi * 880 * t2) * decay2
 
         combined = np.concatenate([tone1, tone2])
         int16_data = (combined * 32767).astype(np.int16)
@@ -60,7 +59,16 @@ def play_activation_chime():
 
 
 class WakeWordDetector:
-    """Детектор активационного слова с поддержкой переключения режимов и VoiceTriggerEngine."""
+    """Текстовая проверка обращения по имени и ручной триггер пробуждения.
+
+    Собственного аудиотракта здесь больше нет. Раньше класс поднимал
+    VoiceTriggerEngine со своим захватом микрофона — вторую реализацию того же,
+    что делает AudioPipeline в боевом рантайме. Никто её не вызывал, но
+    `start()` открыл бы ВТОРОЙ поток микрофона поверх уже открытого в
+    `main._listen_audio`: конфликт за устройство и два независимых детектора
+    с разными настройками. Единственный владелец захвата и KWS —
+    `core/audio_pipeline.py`.
+    """
 
     WAKE_KEYWORDS = ("джарвис", "jarvis", "слушай", "компьютер")
 
@@ -73,43 +81,10 @@ class WakeWordDetector:
         self.mode = mode
         self.on_wake = on_wake
         self.device_index = device_index
-        self._running = False
-        self._vte = None
-
-        try:
-            from core.voice_trigger_engine import VoiceTriggerEngine
-            self._vte = VoiceTriggerEngine(
-                on_wake=self._on_engine_wake,
-                mic_device_index=self.device_index,
-            )
-        except Exception as e:
-            logger.debug("VoiceTriggerEngine init fallback: %s", e)
-
-    def _on_engine_wake(self):
-        if self.on_wake:
-            self.on_wake()
 
     def set_mode(self, mode: WakeWordMode):
         self.mode = mode
         logger.info("WakeWord mode switched to: %s", self.mode.value)
-        if self.mode == WakeWordMode.WAKE_WORD and self._vte and not self._running:
-            self.start()
-        elif self.mode != WakeWordMode.WAKE_WORD and self._running:
-            self.stop()
-
-    def start(self):
-        """Запуск локального нейросетевого детектора ключевого слова."""
-        if self._vte and not self._running:
-            self._running = True
-            self._vte.start()
-            logger.info("WakeWordDetector: VoiceTriggerEngine запущен")
-
-    def stop(self):
-        """Остановка детектора."""
-        if self._vte and self._running:
-            self._running = False
-            self._vte.stop()
-            logger.info("WakeWordDetector: VoiceTriggerEngine остановлен")
 
     def trigger_wake(self):
         """Принудительно триггерит пробуждение (например, по горячей клавише Push-to-Talk)."""
