@@ -35,6 +35,8 @@ class _StreamingStub:
         self._take_prefetched_speech = jarvis_main.Jarvis._take_prefetched_speech.__get__(self, jarvis_main.Jarvis)
         self._maybe_stream_speech = jarvis_main.Jarvis._maybe_stream_speech.__get__(self, jarvis_main.Jarvis)
         self._run_streaming_speech = jarvis_main.Jarvis._run_streaming_speech.__get__(self, jarvis_main.Jarvis)
+        self._iter_fragment_audio = jarvis_main.Jarvis._iter_fragment_audio.__get__(self, jarvis_main.Jarvis)
+        self._push_fragment_audio = jarvis_main.Jarvis._push_fragment_audio.__get__(self, jarvis_main.Jarvis)
         self._abort_playback = jarvis_main.Jarvis._abort_playback.__get__(self, jarvis_main.Jarvis)
         self._clear_audio_in_queue = jarvis_main.Jarvis._clear_audio_in_queue.__get__(self, jarvis_main.Jarvis)
 
@@ -50,12 +52,12 @@ async def test_streaming_speech_starts_on_first_chunk(monkeypatch):
 
     async def fake_speak_pcm(fragment, sample_rate=24000):
         spoken_fragments.append(fragment)
-        return fake_pcm_data
+        yield fake_pcm_data
 
     from telegram_bot import tts_fish
     monkeypatch.setattr(jarvis_main, "get_voice_provider", lambda: "fish")
     monkeypatch.setattr(tts_fish, "is_configured", lambda: True)
-    monkeypatch.setattr(tts_fish, "speak_pcm", fake_speak_pcm)
+    monkeypatch.setattr(tts_fish, "stream_pcm", fake_speak_pcm)
 
     # 1. Поступает начало фразы: 1 неполное предложение -> стриминг не должен запускаться
     stub._maybe_stream_speech("Здравствуйте, сэр")
@@ -70,8 +72,12 @@ async def test_streaming_speech_starts_on_first_chunk(monkeypatch):
     assert stub._streaming_queue is not None
     assert 0 in stub._streamed_chunks_indices
 
-    # Даём фоновой таске прокрутиться и синтезировать чанк 0
-    await asyncio.sleep(0.05)
+    # Даём фоновой таске прокрутиться и синтезировать чанк 0 (первый импорт
+    # edge_tts в процессе может занять больше фиксированных 50 мс)
+    for _ in range(100):
+        if not stub.audio_in_queue.empty():
+            break
+        await asyncio.sleep(0.02)
 
     assert "Здравствуйте, сэр." in spoken_fragments
     assert not stub.audio_in_queue.empty(), "Аудио первого предложения должно поступить в audio_in_queue"
@@ -103,12 +109,12 @@ async def test_streaming_speech_aborts_on_barge_in(monkeypatch):
 
     async def slow_speak_pcm(fragment, sample_rate=24000):
         await asyncio.sleep(1.0)
-        return b"\x01\x02" * 1024
+        yield b"\x01\x02" * 1024
 
     from telegram_bot import tts_fish
     monkeypatch.setattr(jarvis_main, "get_voice_provider", lambda: "fish")
     monkeypatch.setattr(tts_fish, "is_configured", lambda: True)
-    monkeypatch.setattr(tts_fish, "speak_pcm", slow_speak_pcm)
+    monkeypatch.setattr(tts_fish, "stream_pcm", slow_speak_pcm)
 
     stub._maybe_stream_speech("Здравствуйте, сэр. Я вас внимательно слушаю.")
     assert stub._streaming_speech_active

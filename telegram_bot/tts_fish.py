@@ -16,8 +16,10 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import urllib.error
 import urllib.request
+from typing import AsyncIterator
 from functools import lru_cache
 from pathlib import Path
 
@@ -92,8 +94,9 @@ def is_configured() -> bool:
     return bool(_key())
 
 
-def _request(text: str, fmt: str = "opus", latency: str | None = None,
-             sample_rate: int | None = None) -> bytes:
+def _open_response(text: str, fmt: str = "opus", latency: str | None = None,
+                   sample_rate: int | None = None):
+    """Открывает HTTP-ответ Fish, не читая тело: звук приходит потоком."""
     payload = {
         "text": text[:_MAX_CHARS],
         "reference_id": _voice_id(),
@@ -108,7 +111,12 @@ def _request(text: str, fmt: str = "opus", latency: str | None = None,
         "Content-Type": "application/json",
         "model": _MODEL,
     })
-    return urllib.request.urlopen(req, timeout=_TIMEOUT_SEC).read()
+    return urllib.request.urlopen(req, timeout=_TIMEOUT_SEC)
+
+
+def _request(text: str, fmt: str = "opus", latency: str | None = None,
+             sample_rate: int | None = None) -> bytes:
+    return _open_response(text, fmt, latency, sample_rate).read()
 
 
 def _pcm_from_wav(data: bytes) -> bytes | None:
@@ -176,3 +184,82 @@ async def speak_pcm(text: str, sample_rate: int = 24000) -> bytes | None:
         logger.warning("Fish PCM: неожиданный ответ (%d байт)", len(raw))
         return None
     return pcm
+
+
+# Сколько байт читать за раз из потока Fish: 4096 = ~85 мс звука при 24 кГц
+# int16, меньше — лишние переключения, больше — дольше ждём первый кусок.
+_STREAM_READ_BYTES = 4096
+
+
+def _split_wav_header(buffer: bytes) -> tuple[bytes, bytes] | None:
+    """(заголовок, начало сэмплов), когда в буфере уже виден чанк 'data'."""
+    if len(buffer) >= 4 and not buffer.startswith(b"RIFF"):
+        raise ValueError("ответ Fish — не WAV")
+    idx = buffer.find(b"data", 12)
+    if idx < 0 or len(buffer) < idx + 8:
+        return None
+    return buffer[: idx + 8], buffer[idx + 8:]
+
+
+async def stream_pcm(text: str, sample_rate: int = 24000) -> AsyncIterator[bytes]:
+    """Тот же голос, что speak_pcm, но сэмплы отдаются по мере прихода.
+
+    Замер 15.09.2026 (фраза 116 символов, balanced): первый байт 4.2 с, весь
+    файл 7.3 с — speak_pcm заставлял ждать всё, здесь звук идёт с первого куска.
+    Чтение сети — в отдельном потоке, куски проталкиваются в очередь цикла.
+    Пусто (ни одного куска) означает отказ Fish, как None у speak_pcm.
+    """
+    text = (text or "").strip()
+    if not text or not is_configured():
+        return
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    pcm_latency = os.getenv("FISH_LATENCY", "balanced").strip()
+
+    def _push(item):
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, item)
+        except RuntimeError:
+            pass  # цикл уже закрыт — слушать некому
+
+    def _reader():
+        header = b""
+        carry = b""
+        started = False
+        try:
+            resp = _open_response(text, "wav", pcm_latency, sample_rate)
+            with resp:
+                while True:
+                    raw = resp.read(_STREAM_READ_BYTES)
+                    if not raw:
+                        break
+                    if not started:
+                        header += raw
+                        split = _split_wav_header(header)
+                        if split is None:
+                            continue
+                        raw = split[1]
+                        started = True
+                    # int16: нечётный хвост переносим в следующий кусок
+                    raw = carry + raw
+                    if len(raw) % 2:
+                        carry, raw = raw[-1:], raw[:-1]
+                    else:
+                        carry = b""
+                    if raw:
+                        _push(raw)
+        except urllib.error.HTTPError as e:
+            detail = e.read(200).decode("utf-8", "replace")
+            logger.warning("Fish stream: HTTP %s — %s", e.code, detail)
+        except Exception as e:
+            logger.warning("Fish stream: %s: %s", type(e).__name__, e)
+        finally:
+            _push(None)
+
+    threading.Thread(target=_reader, name="fish-stream", daemon=True).start()
+    while True:
+        item = await queue.get()
+        if item is None:
+            return
+        yield item

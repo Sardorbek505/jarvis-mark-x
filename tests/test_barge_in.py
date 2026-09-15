@@ -94,8 +94,13 @@ async def test_speak_fish_aborts_immediately_on_barge_in(jarvis_instance):
         await asyncio.sleep(0.05)
         return b"\x00" * 4800
 
+    async def fake_stream_pcm(fragment, sample_rate=24000):
+        await asyncio.sleep(0.05)
+        yield b"\x00" * 4800
+
     with patch("telegram_bot.tts_fish.is_configured", return_value=True), \
          patch("telegram_bot.tts_fish.speak_pcm", side_effect=fake_speak_pcm), \
+         patch("telegram_bot.tts_fish.stream_pcm", side_effect=fake_stream_pcm), \
          patch("main._split_for_speech", return_value=["Фрагмент 1", "Фрагмент 2", "Фрагмент 3"]):
 
         speak_task = asyncio.create_task(j._speak_fish("Текст", epoch=epoch))

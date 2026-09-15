@@ -164,6 +164,12 @@ _VAD_PREFIX_MS = int(os.getenv("VAD_PREFIX_MS", "120"))
 # стоит только если он начнёт путаться в многошаговых просьбах.
 _THINKING_BUDGET = int(os.getenv("JARVIS_THINKING_BUDGET", "0"))
 
+# Сколько ждать первый звук от Fish, прежде чем параллельно поднять Edge-TTS.
+# Бесплатный тариф Fish (s2.1-pro-free) за один вечер 15.09.2026 плавал от
+# 0.9 с до 11 с на первый байт; на 11 с диалог разваливается целиком. Хедж,
+# а не замена: кто отдал звук первым, тот и говорит, второй отменяется.
+_TTS_FIRST_AUDIO_TIMEOUT_SEC = float(os.getenv("JARVIS_TTS_FIRST_AUDIO_TIMEOUT", "3"))
+
 # Чей голос звучит из динамиков: "fish" — тот самый Джарвис, которым говорит
 # Telegram-бот (тот же ключ, голос и модель, telegram_bot/tts_fish.py),
 # "gemini" — встроенный пресет Charon.
@@ -2028,6 +2034,146 @@ class Jarvis:
                     logger.info("TTS Stream: чанк #%d отправлен в очередь (%d симв): '%.30s...'",
                                 idx, len(chunks[idx]), chunks[idx])
 
+    async def _iter_fragment_audio(self, fragment: str, epoch: int, generation_id, voice: dict):
+        """Сэмплы одного фрагмента ответа по мере готовности.
+
+        Порядок: заранее заказанная первая фраза → поток Fish → Edge-TTS.
+        `voice["fish_alive"]` общий на весь ответ: отказавший Fish опрашивается
+        один раз, остаток договаривает Edge. Пусто = озвучить нечем.
+        """
+        def _stale() -> bool:
+            if getattr(self, "_speech_epoch", 0) != epoch or not getattr(self, "_is_speaking", False):
+                return True
+            return generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id
+
+        if _stale():
+            return
+
+        from telegram_bot import tts_fish
+        from telegram_bot import tts_edge
+
+        async def _edge() -> bytes | None:
+            return await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+
+        # Источник Fish: заранее заказанная первая фраза (задача с целым PCM)
+        # либо поток. Оба проходят через один хедж по первому звуку.
+        taker = getattr(self, "_take_prefetched_speech", None)
+        prefetched = taker(fragment) if taker else None
+        fish = None
+        if prefetched is not None:
+            first_task = prefetched
+        elif voice.get("fish_alive"):
+            fish = tts_fish.stream_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+            first_task = asyncio.ensure_future(fish.__anext__())
+        else:
+            if _stale():
+                return
+            pcm = await _edge()
+            if pcm:
+                yield pcm
+            return
+
+        async def _close_fish():
+            if not first_task.done():
+                first_task.cancel()
+                await asyncio.gather(first_task, return_exceptions=True)
+            if fish is not None:
+                await fish.aclose()
+
+        edge_task = None
+        try:
+            done, _ = await asyncio.wait({first_task}, timeout=_TTS_FIRST_AUDIO_TIMEOUT_SEC)
+            if not done:
+                logger.warning(
+                    "TTS: Fish молчит %.0f с — параллельно поднимаю Edge-TTS", _TTS_FIRST_AUDIO_TIMEOUT_SEC
+                )
+                edge_task = asyncio.ensure_future(_edge())
+                done, _ = await asyncio.wait({first_task, edge_task}, return_when=asyncio.FIRST_COMPLETED)
+
+            if edge_task is not None and edge_task in done and first_task not in done:
+                try:
+                    pcm = edge_task.result()
+                except Exception as e:
+                    logger.debug("Edge hedge unusable: %s", e)
+                    pcm = None
+                if pcm:
+                    await _close_fish()
+                    if not _stale():
+                        if hasattr(self, "ui") and hasattr(self.ui, "write_log"):
+                            self.ui.write_log("SYS: Fish тормозит — фразу озвучил Edge-TTS")
+                        yield pcm
+                    return
+                # Edge тоже промолчал — остаётся дождаться Fish
+                logger.warning("TTS: Edge не дал звука — жду Fish")
+                await asyncio.wait({first_task})
+
+            try:
+                first_pcm = first_task.result()
+            except (StopAsyncIteration, asyncio.CancelledError):
+                first_pcm = None
+            except Exception as e:
+                logger.debug("Fish first audio unusable: %s", e)
+                first_pcm = None
+            if edge_task is not None:
+                edge_task.cancel()
+            if not first_pcm:
+                voice["fish_alive"] = False
+                if hasattr(self, "ui") and hasattr(self.ui, "write_log"):
+                    self.ui.write_log("SYS: Fish молчит — остаток ответа озвучит Edge-TTS")
+                if _stale():
+                    return
+                pcm = await _edge()
+                if pcm:
+                    yield pcm
+                return
+
+            if _stale():
+                return
+            yield first_pcm
+            if fish is not None:
+                async for pcm in fish:
+                    if _stale():
+                        return
+                    yield pcm
+        finally:
+            await _close_fish()
+            if edge_task is not None and not edge_task.done():
+                edge_task.cancel()
+
+    async def _push_fragment_audio(self, fragment: str, epoch: int, generation_id, voice: dict) -> int:
+        """Гонит сэмплы фрагмента в очередь воспроизведения. Возвращает байты."""
+        step = CHUNK_SIZE * 2
+        pushed = 0
+        started = time.perf_counter()
+        first_at = None
+        async for pcm in self._iter_fragment_audio(fragment, epoch, generation_id, voice):
+            if first_at is None:
+                first_at = time.perf_counter()
+                if not pushed and hasattr(self, "_latency") and hasattr(self._latency, "mark_answer_audio"):
+                    self._latency.mark_answer_audio()
+            if not self.audio_in_queue:
+                pushed += len(pcm)
+                continue
+            for j in range(0, len(pcm), step):
+                if getattr(self, "_speech_epoch", 0) != epoch or not getattr(self, "_is_speaking", False):
+                    return pushed
+                if generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id:
+                    return pushed
+                piece = pcm[j:j + step]
+                try:
+                    self.audio_in_queue.put_nowait(piece)
+                except asyncio.QueueFull:
+                    await self.audio_in_queue.put(piece)
+                pushed += len(piece)
+        logger.info(
+            "TTS: фрагмент (%d симв) — первый звук через %.0f мс, весь %.0f мс, %.1f с звука",
+            len(fragment),
+            ((first_at - started) * 1000) if first_at else -1,
+            (time.perf_counter() - started) * 1000,
+            pushed / 2 / RECV_SAMPLE_RATE,
+        )
+        return pushed
+
     async def _run_streaming_speech(
         self,
         queue: asyncio.Queue,
@@ -2051,7 +2197,6 @@ class Jarvis:
 
         try:
             from telegram_bot import tts_fish
-            from telegram_bot import tts_edge
 
             fish_alive = tts_fish.is_configured()
             if not fish_alive and not getattr(self, "_fish_unconfigured_logged", False):
@@ -2063,40 +2208,7 @@ class Jarvis:
                 if hasattr(self, "ui") and hasattr(self.ui, "write_log"):
                     self.ui.write_log("SYS: ключ Fish не найден — голос звучит через Edge-TTS")
 
-            async def _synth_fragment(fragment: str):
-                nonlocal fish_alive
-                if getattr(self, "_speech_epoch", 0) != epoch or not getattr(self, "_is_speaking", False):
-                    return None
-                if generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id:
-                    return None
-
-                taker = getattr(self, "_take_prefetched_speech", None)
-                prefetched = taker(fragment) if taker else None
-                if prefetched is not None:
-                    try:
-                        pcm = await prefetched
-                        if pcm:
-                            return pcm
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as e:
-                        logger.debug("Prefetched speech unusable: %s", e)
-
-                if fish_alive:
-                    pcm = await tts_fish.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
-                    if pcm:
-                        return pcm
-                    fish_alive = False
-                    if hasattr(self, "ui") and hasattr(self.ui, "write_log"):
-                        self.ui.write_log("SYS: Fish молчит — остаток ответа озвучит Edge-TTS")
-
-                if getattr(self, "_speech_epoch", 0) != epoch or not getattr(self, "_is_speaking", False):
-                    return None
-                if generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id:
-                    return None
-                return await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
-
-            step = CHUNK_SIZE * 2
+            voice = {"fish_alive": fish_alive}
             spoken = 0
             chunks_count = 0
 
@@ -2115,37 +2227,18 @@ class Jarvis:
                     # Маркер завершения стрима
                     break
 
-                synth_started = time.perf_counter()
-                pcm = await _synth_fragment(fragment)
-                logger.info(
-                    "TTS Stream: фрагмент #%d синтезирован за %.0f мс (%d симв, %.1f с звука)",
-                    chunks_count, (time.perf_counter() - synth_started) * 1000,
-                    len(fragment), (len(pcm) / 2 / RECV_SAMPLE_RATE) if pcm else 0.0,
-                )
+                pushed = await self._push_fragment_audio(fragment, epoch, generation_id, voice)
                 if getattr(self, "_speech_epoch", 0) != epoch or not getattr(self, "_is_speaking", False):
                     break
 
-                if not pcm:
+                if not pushed:
                     if getattr(self, "_speech_epoch", 0) == epoch and getattr(self, "_is_speaking", False):
                         if hasattr(self, "ui") and hasattr(self.ui, "write_log"):
                             self.ui.write_log("SYS: синтез речи недоступен — ответ остался текстом")
                     break
 
-                if not spoken and hasattr(self, "_latency") and hasattr(self._latency, "mark_answer_audio"):
-                    self._latency.mark_answer_audio()
-                spoken += len(pcm)
+                spoken += pushed
                 chunks_count += 1
-
-                if self.audio_in_queue:
-                    for j in range(0, len(pcm), step):
-                        if getattr(self, "_speech_epoch", 0) != epoch or not getattr(self, "_is_speaking", False):
-                            break
-                        if generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id:
-                            break
-                        try:
-                            self.audio_in_queue.put_nowait(pcm[j:j + step])
-                        except asyncio.QueueFull:
-                            await self.audio_in_queue.put(pcm[j:j + step])
 
             if spoken and getattr(self, "_speech_epoch", 0) == epoch:
                 logger.info("Голос Fish (stream): %.1f с звука, %d фрагмент(ов)",
@@ -2862,7 +2955,6 @@ class Jarvis:
 
         try:
             from telegram_bot import tts_fish
-            from telegram_bot import tts_edge
 
             chunks = _split_for_speech(text)
             if not chunks or getattr(self, "_speech_epoch", 0) != epoch or not self._is_speaking:
@@ -2879,81 +2971,30 @@ class Jarvis:
                     )
                     self.ui.write_log("SYS: ключ Fish не найден — голос звучит через Edge-TTS")
 
-            async def _synth_fragment(fragment: str):
-                nonlocal fish_alive
-                if getattr(self, "_speech_epoch", 0) != epoch or not self._is_speaking:
-                    return None
-                if generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id:
-                    return None
-                # Первая фраза могла быть заказана ещё во время генерации ответа.
-                # getattr, а не прямой вызов: _speak_fish намеренно работает и с
-                # минимальным носителем состояния (см. tests/test_fish_fallback.py),
-                # как и остальные обращения к состоянию в этой функции.
-                taker = getattr(self, "_take_prefetched_speech", None)
-                prefetched = taker(fragment) if taker else None
-                if prefetched is not None:
-                    try:
-                        pcm = await prefetched
-                        if pcm:
-                            return pcm
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as e:
-                        logger.debug("Prefetched speech unusable: %s", e)
-                if fish_alive:
-                    pcm = await tts_fish.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
-                    if pcm:
-                        return pcm
-                    fish_alive = False
-                    self.ui.write_log("SYS: Fish молчит — остаток ответа озвучит Edge-TTS")
-                if getattr(self, "_speech_epoch", 0) != epoch or not self._is_speaking:
-                    return None
-                if generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id:
-                    return None
-                return await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
-
-            def synth(fragment: str):
-                return asyncio.create_task(_synth_fragment(fragment))
-
-            pending = synth(chunks[0])
-            step = CHUNK_SIZE * 2
+            voice = {"fish_alive": fish_alive}
             spoken = 0
 
-            for i in range(len(chunks)):
+            for i, fragment in enumerate(chunks):
                 if getattr(self, "_speech_epoch", 0) != epoch or not self._is_speaking or (generation_id is not None and getattr(self, "_active_speech_generation_id", None) != generation_id):
-                    if pending and not pending.done():
-                        pending.cancel()
                     break
 
+                # Следующий фрагмент заказываем целиком, пока звучит текущий:
+                # его время прячется за воспроизведением, а первый — потоком.
+                if i + 1 < len(chunks) and voice["fish_alive"] and getattr(self, "_speech_prefetch", None) is None and hasattr(self, "_take_prefetched_speech"):
+                    self._speech_prefetch = (
+                        chunks[i + 1],
+                        asyncio.create_task(tts_fish.speak_pcm(chunks[i + 1], sample_rate=RECV_SAMPLE_RATE)),
+                    )
 
-                try:
-                    pcm = await pending
-                except asyncio.CancelledError:
-                    break
-
+                pushed = await self._push_fragment_audio(fragment, epoch, generation_id, voice)
                 if getattr(self, "_speech_epoch", 0) != epoch or not self._is_speaking:
                     break
 
-                pending = synth(chunks[i + 1]) if i + 1 < len(chunks) else None
-
-                if not pcm:
+                if not pushed:
                     if getattr(self, "_speech_epoch", 0) == epoch and self._is_speaking:
                         self.ui.write_log("SYS: синтез речи недоступен — ответ остался текстом")
-                    if pending and not pending.done():
-                        pending.cancel()
                     break
-
-                if not spoken:
-                    self._latency.mark_answer_audio()
-                spoken += len(pcm)
-
-                for j in range(0, len(pcm), step):
-                    if getattr(self, "_speech_epoch", 0) != epoch or not self._is_speaking:
-                        break
-                    try:
-                        self.audio_in_queue.put_nowait(pcm[j:j + step])
-                    except asyncio.QueueFull:
-                        await self.audio_in_queue.put(pcm[j:j + step])
+                spoken += pushed
 
             if spoken and getattr(self, "_speech_epoch", 0) == epoch:
                 logger.info("Голос Fish: %.1f с звука, %d фрагмент(ов) на %d символов",

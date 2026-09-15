@@ -38,6 +38,10 @@ class _Stub:
     def set_speaking(self, value: bool) -> None:
         self._is_speaking = value
 
+    # Общий тракт озвучки фрагмента — тот же, что у боевого Jarvis
+    _iter_fragment_audio = jarvis_main.Jarvis._iter_fragment_audio
+    _push_fragment_audio = jarvis_main.Jarvis._push_fragment_audio
+
 
 def _speak(stub: _Stub, text: str) -> None:
     bound = jarvis_main.Jarvis._speak_fish.__get__(stub, jarvis_main.Jarvis)
@@ -55,12 +59,18 @@ def _wire(monkeypatch, *, configured: bool, fish_pcm: bytes | None):
         fish_calls.append(fragment)
         return fish_pcm
 
+    async def fake_fish_stream(fragment, sample_rate=24000):
+        fish_calls.append(fragment)
+        if fish_pcm:
+            yield fish_pcm
+
     async def fake_edge(fragment, sample_rate=24000):
         edge_calls.append(fragment)
         return b"\x00\x01" * 600
 
     monkeypatch.setattr(tts_fish, "is_configured", lambda: configured)
     monkeypatch.setattr(tts_fish, "speak_pcm", fake_fish)
+    monkeypatch.setattr(tts_fish, "stream_pcm", fake_fish_stream)
     monkeypatch.setattr(tts_edge, "speak_pcm", fake_edge)
     return fish_calls, edge_calls
 
@@ -96,3 +106,124 @@ def test_live_fish_never_falls_back(monkeypatch):
 
     assert len(fish_calls) == len(jarvis_main._split_for_speech(_TEXT))
     assert edge_calls == []
+
+
+# ── Хедж по первому звуку ─────────────────────────────────────────────────────
+#
+# 15.09.2026 бесплатный Fish отдавал первый байт через 11 с — ответы не
+# дозвучивали вовсе. Если за JARVIS_TTS_FIRST_AUDIO_TIMEOUT Fish молчит,
+# параллельно поднимается Edge; кто первый — тот говорит.
+
+
+def _wire_hedge(monkeypatch, *, fish_delay: float, edge_delay: float):
+    from telegram_bot import tts_edge, tts_fish
+
+    calls = {"fish": 0, "edge": 0, "fish_closed": False}
+
+    async def slow_fish(fragment, sample_rate=24000):
+        calls["fish"] += 1
+        try:
+            await asyncio.sleep(fish_delay)
+            yield b"\x0f\x0f" * 600
+        finally:
+            calls["fish_closed"] = True
+
+    async def edge(fragment, sample_rate=24000):
+        calls["edge"] += 1
+        await asyncio.sleep(edge_delay)
+        return b"\x0e\x0e" * 600
+
+    monkeypatch.setattr(tts_fish, "is_configured", lambda: True)
+    monkeypatch.setattr(tts_fish, "stream_pcm", slow_fish)
+    monkeypatch.setattr(tts_edge, "speak_pcm", edge)
+    monkeypatch.setattr(jarvis_main, "_TTS_FIRST_AUDIO_TIMEOUT_SEC", 0.05)
+    return calls
+
+
+def _drain(stub: _Stub) -> bytes:
+    out = b""
+    while not stub.audio_in_queue.empty():
+        out += stub.audio_in_queue.get_nowait()
+    return out
+
+
+def test_slow_fish_is_hedged_by_edge(monkeypatch):
+    calls = _wire_hedge(monkeypatch, fish_delay=1.0, edge_delay=0.01)
+    stub = _Stub()
+
+    _speak(stub, "Все системы в норме, сэр.")
+
+    audio = _drain(stub)
+    assert audio.startswith(b"\x0e\x0e"), "фразу должен был озвучить Edge"
+    assert calls["edge"] == 1
+    assert calls["fish_closed"], "поток Fish не закрыт после проигрыша"
+    assert any("Edge" in line for line in stub.logs)
+
+
+def test_fast_fish_keeps_its_voice_and_cancels_edge(monkeypatch):
+    calls = _wire_hedge(monkeypatch, fish_delay=0.0, edge_delay=1.0)
+    stub = _Stub()
+
+    _speak(stub, "Все системы в норме, сэр.")
+
+    audio = _drain(stub)
+    assert audio.startswith(b"\x0f\x0f"), "голос должен остаться Fish"
+    assert calls["edge"] == 0, "Edge поднят, хотя Fish ответил вовремя"
+
+
+def test_fish_wins_race_after_timeout_if_it_answers_first(monkeypatch):
+    calls = _wire_hedge(monkeypatch, fish_delay=0.08, edge_delay=1.0)
+    stub = _Stub()
+
+    _speak(stub, "Все системы в норме, сэр.")
+
+    audio = _drain(stub)
+    assert audio.startswith(b"\x0f\x0f"), "Fish опоздал к таймауту, но ответил раньше Edge — говорить должен он"
+    assert calls["edge"] == 1
+
+
+def test_slow_prefetched_fish_is_hedged_too(monkeypatch):
+    """Первая фраза, заказанная наперёд, ждёт Fish тем же таймаутом, а не вечно.
+
+    Стенд 15.09.2026: стрим уже хеджировался, а предзаказ висел 13 с.
+    """
+    calls = _wire_hedge(monkeypatch, fish_delay=1.0, edge_delay=0.01)
+    from telegram_bot import tts_fish
+
+    async def slow_full(fragment, sample_rate=24000):
+        await asyncio.sleep(1.0)
+        return b"\x0f\x0f" * 600
+
+    monkeypatch.setattr(tts_fish, "speak_pcm", slow_full)
+    stub = _Stub()
+    stub._take_prefetched_speech = jarvis_main.Jarvis._take_prefetched_speech.__get__(stub, jarvis_main.Jarvis)
+
+    async def run():
+        stub._speech_prefetch = ("Все системы в норме, сэр.", asyncio.create_task(slow_full("x")))
+        bound = jarvis_main.Jarvis._speak_fish.__get__(stub, jarvis_main.Jarvis)
+        await bound("Все системы в норме, сэр.")
+
+    asyncio.run(run())
+
+    audio = _drain(stub)
+    assert audio.startswith(b"\x0e\x0e"), "предзаказ Fish должен был уступить Edge по таймауту"
+    assert calls["edge"] == 1
+
+
+def test_empty_edge_hedge_falls_back_to_fish(monkeypatch):
+    """Edge выиграл гонку, но вернул пустоту (NoAudioReceived) — ждём Fish, а не молчим."""
+    calls = _wire_hedge(monkeypatch, fish_delay=0.15, edge_delay=0.01)
+    from telegram_bot import tts_edge
+
+    async def empty_edge(fragment, sample_rate=24000):
+        calls["edge"] += 1
+        return None
+
+    monkeypatch.setattr(tts_edge, "speak_pcm", empty_edge)
+    stub = _Stub()
+
+    _speak(stub, "Все системы в норме, сэр.")
+
+    audio = _drain(stub)
+    assert audio.startswith(b"\x0f\x0f"), "Edge промолчал — фразу обязан договорить Fish"
+    assert calls["edge"] == 1
