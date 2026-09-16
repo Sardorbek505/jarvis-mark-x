@@ -1281,6 +1281,7 @@ class Jarvis:
                 ),
                 ref_provider=self._aec_reference_window,
                 on_silence_timeout=self._on_listen_silence_timeout,
+                on_local_transcript=self._on_local_transcript,
                 rms_threshold=MIC_RMS_THRESHOLD,
                 hangover_frames=MIC_HANGOVER_FRAMES,
                 enable_aec=True,
@@ -3109,11 +3110,30 @@ class Jarvis:
         if sm.state in (ConversationState.LISTENING, ConversationState.FOLLOW_UP, ConversationState.STANDBY):
             sm.transition_to(ConversationState.THINKING, reason="waiting for model")
 
-    async def _arbitrate_turn(self, full_in: str, out_buf: list, in_buf: list) -> bool:
+    def _on_local_transcript(self, text: str) -> None:
+        """Локальная расшифровка реплики готова (поток AudioPipeline).
+
+        Пока Gemini ещё 3–5 с молчит, команда уже может исполниться: тот же
+        арбитраж, но только локальные роутеры — модель ход не получает.
+        """
+        loop = getattr(self, "_loop", None)
+        if not loop or not loop.is_running():
+            return
+
+        def _schedule():
+            asyncio.ensure_future(self._arbitrate_turn(text, [], [], local_only=True))
+
+        loop.call_soon_threadsafe(_schedule)
+
+    async def _arbitrate_turn(self, full_in: str, out_buf: list, in_buf: list, local_only: bool = False) -> bool:
         """
         Строгий арбитраж владения репликой (Single Ownership).
         FastCommandRouter -> CommandOrchestrator -> Gemini.
         Возвращает True если реплика обработана локально, False если передана Gemini.
+
+        `local_only` — ранний заход по локальной расшифровке: локальные роутеры
+        пробуются, но если фраза не команда, реплика остаётся неарбитрованной
+        и дожидается расшифровки Gemini (она точнее на именах и названиях).
         """
         pt = getattr(self, "_pending_gemini_turn", None)
         if pt and pt.arbitrated:
@@ -3129,6 +3149,9 @@ class Jarvis:
         gap = None
         if pt and pt.addressed_at is not None and pt.first_transcript_at is not None:
             gap = max(0.0, pt.first_transcript_at - pt.addressed_at)
+        elif local_only and pt and pt.addressed:
+            # Локальная расшифровка готова в момент конца речи, шлюз ещё открыт
+            gap = 0.0
         from core import wake_policy
         is_active = wake_policy.is_addressed(
             name_in_text=is_addressed_to_jarvis(full_in),
@@ -3142,6 +3165,8 @@ class Jarvis:
             self._hotkey_active_until = 0.0
 
         if not is_active:
+            if local_only:
+                return False  # решит расшифровка Gemini — она видит больше
             if pt:
                 pt.arbitrated = True
                 pt.routed_to = "DISCARDED"
@@ -3151,8 +3176,11 @@ class Jarvis:
             self._clear_audio_in_queue()
             return False
 
-        print(f"[ДЖАРВИС] 🎤 Арбитраж реплики: '{full_in}'")
-        self.ui.write_log(f"Вы: {full_in}")
+        if local_only:
+            print(f"[ДЖАРВИС] 🎤 Локально: '{full_in}'")
+        else:
+            print(f"[ДЖАРВИС] 🎤 Арбитраж реплики: '{full_in}'")
+            self.ui.write_log(f"Вы: {full_in}")
         self.last_user_text = full_in
 
         # 1. Fast-Path: мгновенное детерминированное исполнение команд управления
@@ -3160,6 +3188,9 @@ class Jarvis:
         fast_res = await asyncio.to_thread(FastCommandRouter.match_and_execute, full_in, self.ui)
         fast_handled, fast_resp = fast_res
         if fast_handled:
+            if local_only:
+                self.ui.write_log(f"Вы: {full_in}")
+                self._latency.mark_transcript()
             if pt:
                 pt.arbitrated = True
                 pt.routed_to = "LOCAL"
@@ -3220,6 +3251,9 @@ class Jarvis:
             from core.command_orchestrator import RoutingDecision
             orch_res = await asyncio.to_thread(self.command_orchestrator.process_user_text, full_in, self.ui)
             if orch_res.decision != RoutingDecision.NEEDS_LLM and orch_res.decision != RoutingDecision.IGNORED:
+                if local_only:
+                    self.ui.write_log(f"Вы: {full_in}")
+                    self._latency.mark_transcript()
                 if pt:
                     pt.arbitrated = True
                     pt.routed_to = "LOCAL"
@@ -3281,6 +3315,8 @@ class Jarvis:
                 return True
 
             elif orch_res.decision == RoutingDecision.NEEDS_LLM:
+                if local_only:
+                    return False  # не команда — ждём Gemini, ход ему не отдаём заранее
                 self._enter_thinking()
                 if pt:
                     pt.arbitrated = True
@@ -3300,6 +3336,8 @@ class Jarvis:
                         self._maybe_stream_speech(pt.full_output_text())
                 return False
 
+        if local_only:
+            return False
         if pt and not pt.arbitrated:
             pt.arbitrated = True
             pt.routed_to = "GEMINI"

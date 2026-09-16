@@ -80,7 +80,9 @@ def test_gateway_close_returns_machine_to_standby():
     pipe._process_frame_in_worker(_loud_frame(), b"", time.monotonic(), sm.state, False)
 
     assert sm.state == ConversationState.STANDBY, "шлюз закрыт, а машина осталась слушать"
-    assert sent == [], "при закрытом шлюзе в облако не должно уходить ничего"
+    # Сразу после закрытия шлюза в облако ещё ~1 с досылается ЦИФРОВАЯ тишина —
+    # чтобы VAD Gemini закрыл ход; комната туда не уходит никогда.
+    assert all(set(f) == {0} for f in sent), "при закрытом шлюзе в облако не должна уходить комната"
     assert pipe.wake_detector.calls > 0, "в STANDBY обязан работать детектор ключевого слова"
 
 
@@ -218,3 +220,33 @@ def test_wake_spotted_keeps_listening_even_if_queued_frame_had_gate_closed():
     assert sm.state == ConversationState.LISTENING, "старый кадр с gate_open=False сбросил LISTENING в STANDBY!"
     assert sent, "речь должна уходить в облако, так как шлюз открыт"
 
+
+
+def test_cloud_turn_is_drained_with_silence_after_local_command():
+    """Команда исполнена локально → STANDBY; в облако ещё ~1 с идёт тишина,
+    чтобы VAD Gemini закрыл ход. Иначе он дослушивал оборванный ход со
+    следующим «Джарвис» и исполнял старую команду второй раз (стенд 16.09.2026)."""
+    import time
+    from unittest.mock import MagicMock
+    from core.audio_pipeline import AudioPipeline, CLOUD_TURN_DRAIN_SEC
+    from core.conversation_state import ConversationState, ConversationStateMachine
+
+    sent = []
+    sm = ConversationStateMachine()
+    pipe = AudioPipeline(
+        state_machine=sm, gateway_active_provider=lambda: False,
+        on_speech_frame=sent.append, enable_aec=False, enable_ducking=False,
+        enable_endpointing=False, enable_local_stt=False,
+    )
+    pipe.wake_detector = MagicMock(process_pcm=MagicMock(return_value=False))
+    pipe.frames_sent_since_wake = 40  # реплика ушла в облако
+    t = time.monotonic()
+    frame = b"\x01\x00" * 512
+
+    for i in range(int(CLOUD_TURN_DRAIN_SEC / 0.032) + 5):
+        pipe._process_frame_in_worker(frame, b"", t + i * 0.032, ConversationState.STANDBY, False)
+
+    drained = [f for f in sent if set(f) == {0}]
+    assert len(drained) >= int(CLOUD_TURN_DRAIN_SEC / 0.032) - 1, "тишина в облако не дослана"
+    assert len(sent) == len(drained), "в STANDBY в облако ушёл не только дренаж"
+    assert pipe.frames_sent_since_wake == 0, "после дренажа счётчик обнулён — второй раз не дренируем"

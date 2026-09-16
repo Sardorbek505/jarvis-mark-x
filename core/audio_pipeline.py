@@ -57,6 +57,11 @@ NOISE_MAX_SPEECH_PROBABILITY = 0.2
 # редким громким кадрам, тогда как p90 хватал именно их.
 NOISE_PERCENTILE_WITH_VAD = 90
 NOISE_PERCENTILE_WITHOUT_VAD = 50
+# Сколько тишины дослать в облако после того, как реплика ушла из LISTENING
+# (команда исполнена локально, шлюз закрылся). VAD Gemini закрывает ход только
+# по услышанной тишине (400 мс); оборванный посреди хода поток он дослушивал
+# со следующим «Джарвис» и исполнял старую команду второй раз (стенд 16.09).
+CLOUD_TURN_DRAIN_SEC = 1.2
 
 # Окно, в котором ищется речь при проверке ключевого слова.
 # Грамматика Vosk состоит из ~25 слов, и любой бытовой шум декодируется в
@@ -110,6 +115,8 @@ class AudioPipeline:
         gateway_active_provider: Optional[Callable[[], bool]] = None,
         ref_provider: Optional[Callable[[float, int], bytes]] = None,
         on_silence_timeout: Optional[Callable[[], None]] = None,
+        on_local_transcript: Optional[Callable[[str], None]] = None,
+        enable_local_stt: bool = True,
         rms_threshold: float = 0.0,
         hangover_frames: int = 13,
         silence_timeout_sec: float = LISTEN_SILENCE_TIMEOUT_SEC,
@@ -132,6 +139,10 @@ class AudioPipeline:
         # Вызывается, когда пользователь замолчал надолго: рантайм закрывает
         # своё окно активности, иначе шлюз откроется обратно на следующем кадре.
         self.on_silence_timeout = on_silence_timeout
+        # Локальная расшифровка реплики: готова через ~0.1 с после конца речи,
+        # пока Gemini ещё молчит 3–5 с. Отдаётся наверх текстом.
+        self.on_local_transcript = on_local_transcript
+        self._enable_local_stt = enable_local_stt
         self.rms_threshold = rms_threshold
         # Последний посчитанный адаптивный порог — для аудиоколбэка, которому
         # нельзя считать перцентили: он только читает атрибут.
@@ -156,6 +167,8 @@ class AudioPipeline:
         # Сколько кадров ушло в облако с момента пробуждения. Без этой цифры
         # «Джарвис не отвечает» неотличимо от «Джарвис не слышит».
         self.frames_sent_since_wake = 0
+        # До какого момента досылать тишину в облако после ухода из LISTENING
+        self._cloud_drain_until: float = 0.0
 
         # Нейросетевой эндпоинтинг. Если модель недоступна, `available` = False
         # и весь тракт честно откатывается на энергетический порог.
@@ -187,6 +200,14 @@ class AudioPipeline:
             on_quick_command=self._handle_quick_command_spotted,
             state_provider=self.current_state,
         )
+        self.local_stt = None
+        if self._enable_local_stt:
+            try:
+                from core.local_stt import LocalTranscriber
+                stt = LocalTranscriber(getattr(self.wake_detector, "_vosk_model", None))
+                self.local_stt = stt if stt.available else None
+            except Exception as e:
+                logger.debug("LocalSTT не поднят: %s", e)
 
         self._running = False
         self._worker_thread: Optional[threading.Thread] = None
@@ -384,6 +405,13 @@ class AudioPipeline:
         if route_state == ConversationState.SPEAKING:
             self._handle_speaking_frame(clean_pcm, rms, timestamp)
         elif route_state == ConversationState.STANDBY:
+            if self.frames_sent_since_wake > 0 and self._cloud_drain_until == 0.0:
+                self._cloud_drain_until = timestamp + CLOUD_TURN_DRAIN_SEC
+            if timestamp < self._cloud_drain_until:
+                self._send_frame(self._silence_like(clean_pcm))
+            elif self._cloud_drain_until:
+                self._cloud_drain_until = 0.0
+                self.frames_sent_since_wake = 0
             # Режим ожидания — активен только KWS (spotterless заблокирован
             # в _is_spotterless_allowed по состоянию). Заодно это единственное
             # состояние, где заведомо нет обращённой к нам речи, — здесь и
@@ -503,6 +531,24 @@ class AudioPipeline:
         """
         logger.info("AudioPipeline: конец фразы (Silero endpointing)")
         self._last_speech_at = None
+        self._emit_local_transcript()
+
+    def _emit_local_transcript(self) -> None:
+        """Итог локальной расшифровки реплики — наверх, роутеру команд."""
+        if self.local_stt is None:
+            return
+        if self.local_stt.fed_seconds() < 0.3:
+            self.local_stt.reset()
+            return
+        text = self.local_stt.final()
+        if not text:
+            return
+        logger.info("LocalSTT: «%s»", text)
+        if self.on_local_transcript:
+            try:
+                self.on_local_transcript(text)
+            except Exception as e:
+                logger.error("on_local_transcript error: %s", e)
 
     def _close_gate_on_silence(self):
         # Итог захода пишется в журнал: сколько кадров реально ушло в облако.
@@ -515,6 +561,7 @@ class AudioPipeline:
         self._last_speech_at = None
         self._preroll.clear()
         self._quiet_frames = self.hangover_frames
+        self._emit_local_transcript()
         if self.on_silence_timeout:
             try:
                 self.on_silence_timeout()
@@ -574,10 +621,14 @@ class AudioPipeline:
             return
         while self._preroll:
             frame = self._preroll.popleft()
+            if self.local_stt is not None:
+                self.local_stt.accept(frame)
             try:
                 self.on_speech_frame(frame)
             except Exception as e:
                 logger.debug("Preroll flush note: %s", e)
+        if self.local_stt is not None:
+            self.local_stt.accept(current_frame)
         try:
             self.on_speech_frame(current_frame)
         except Exception as e:
@@ -629,6 +680,8 @@ class AudioPipeline:
         # он открывает шлюз (_wake_active_until) и выставляет окно chime.
         # Если перевести машину состояний в LISTENING до on_wake, шлюз ещё закрыт,
         # и первый же кадр из очереди сбросит машину обратно в STANDBY ("gateway closed").
+        if self.local_stt is not None:
+            self.local_stt.reset()
         if self.on_wake:
             try:
                 self.on_wake()
@@ -647,8 +700,14 @@ class AudioPipeline:
 
         if self.on_speech_frame:
             while self._preroll:
+                frame = self._preroll.popleft()
+                # Предбуфер — это и есть начало фразы после имени («сделай…»):
+                # локальная расшифровка без него слышала «громче» вместо
+                # «сделай громче».
+                if self.local_stt is not None:
+                    self.local_stt.accept(frame)
                 try:
-                    self.on_speech_frame(self._preroll.popleft())
+                    self.on_speech_frame(frame)
                 except Exception:
                     break
         else:
