@@ -46,14 +46,17 @@ def test_stream_strips_header_and_keeps_every_sample(monkeypatch):
     assert all(len(c) % 2 == 0 for c in chunks), "кусок рвёт int16-сэмпл пополам"
 
 
-def test_stream_finds_data_chunk_after_service_chunks(monkeypatch):
-    pcm = b"\x01\x02" * 100
+def test_stream_walks_riff_chunks_instead_of_searching_for_data_string(monkeypatch):
+    """Служебный чанк LIST с текстом 'data' внутри не считается началом сэмплов."""
+    pcm = b"" * 100
     chunks = _run_stream(monkeypatch, _wav(pcm, junk_chunk=True), read_bytes=64)
-    joined = b"".join(chunks)
-    # Ищем первый 'data' после 12 байт — как в _pcm_from_wav; служебный LIST
-    # содержит 'data' как полезную нагрузку, поэтому допускаем оба исхода,
-    # но сэмплы должны быть целиком в хвосте.
-    assert joined.endswith(pcm)
+    assert b"".join(chunks) == pcm
+
+
+def test_pcm_from_wav_walks_riff_chunks():
+    pcm = b"" * 50
+    assert tts_fish._pcm_from_wav(_wav(pcm, junk_chunk=True)) == pcm
+    assert tts_fish._pcm_from_wav(b"not a wav at all") is None
 
 
 def test_stream_yields_nothing_when_fish_fails(monkeypatch):

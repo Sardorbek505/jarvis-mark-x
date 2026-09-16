@@ -119,16 +119,34 @@ def _request(text: str, fmt: str = "opus", latency: str | None = None,
     return _open_response(text, fmt, latency, sample_rate).read()
 
 
+def _find_wav_data(buffer: bytes) -> int | None:
+    """Смещение начала сэмплов в RIFF/WAVE или None, если чанк 'data' ещё не виден.
+
+    Заголовок не фиксированной длины: между 'fmt ' и 'data' бывают служебные
+    чанки (LIST/INFO от ffmpeg). Идём по чанкам, а не ищем подстроку 'data' —
+    та же строка может лежать внутри чужого чанка.
+    """
+    if len(buffer) < 12:
+        return None
+    if not buffer.startswith(b"RIFF") or buffer[8:12] != b"WAVE":
+        raise ValueError("ответ Fish — не WAV")
+    pos = 12
+    while pos + 8 <= len(buffer):
+        chunk_id = buffer[pos:pos + 4]
+        size = int.from_bytes(buffer[pos + 4:pos + 8], "little")
+        if chunk_id == b"data":
+            return pos + 8
+        pos += 8 + size + (size & 1)  # чанки выровнены по 2 байта
+    return None
+
+
 def _pcm_from_wav(data: bytes) -> bytes | None:
-    """Выковыривает сэмплы из RIFF. Заголовок не фиксированной длины: между
-    'fmt ' и 'data' встречаются служебные куски, поэтому ищем 'data', а не
-    отрезаем первые 44 байта."""
-    if not data.startswith(b"RIFF"):
+    """Выковыривает сэмплы из RIFF (см. _find_wav_data)."""
+    try:
+        offset = _find_wav_data(data)
+    except ValueError:
         return None
-    idx = data.find(b"data", 12)
-    if idx < 0 or len(data) < idx + 8:
-        return None
-    return data[idx + 8:]
+    return None if offset is None else data[offset:]
 
 
 async def speak_ogg(text: str) -> bytes | None:
@@ -191,16 +209,6 @@ async def speak_pcm(text: str, sample_rate: int = 24000) -> bytes | None:
 _STREAM_READ_BYTES = 4096
 
 
-def _split_wav_header(buffer: bytes) -> tuple[bytes, bytes] | None:
-    """(заголовок, начало сэмплов), когда в буфере уже виден чанк 'data'."""
-    if len(buffer) >= 4 and not buffer.startswith(b"RIFF"):
-        raise ValueError("ответ Fish — не WAV")
-    idx = buffer.find(b"data", 12)
-    if idx < 0 or len(buffer) < idx + 8:
-        return None
-    return buffer[: idx + 8], buffer[idx + 8:]
-
-
 async def stream_pcm(text: str, sample_rate: int = 24000) -> AsyncIterator[bytes]:
     """Тот же голос, что speak_pcm, но сэмплы отдаются по мере прихода.
 
@@ -236,10 +244,10 @@ async def stream_pcm(text: str, sample_rate: int = 24000) -> AsyncIterator[bytes
                         break
                     if not started:
                         header += raw
-                        split = _split_wav_header(header)
-                        if split is None:
+                        offset = _find_wav_data(header)
+                        if offset is None:
                             continue
-                        raw = split[1]
+                        raw = header[offset:]
                         started = True
                     # int16: нечётный хвост переносим в следующий кусок
                     raw = carry + raw
