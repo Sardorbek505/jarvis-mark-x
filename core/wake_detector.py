@@ -203,9 +203,14 @@ class WakeWordDetector2Stage:
             logger.debug("state_provider error: %s", err)
             return False
 
-    def process_pcm(self, pcm_bytes: bytes) -> bool:
+    def process_pcm(self, pcm_bytes: bytes, timestamp: float | None = None) -> bool:
         """
         Потоковая обработка PCM-чанка (16 кГц mono int16).
+
+        `timestamp` — время кадра по часам источника звука. Без него берётся
+        time.time(): тогда офлайн-прогон, где минута звука пролетает за секунду,
+        после первого срабатывания «засыпает» на cooldown по стенным часам и
+        пропускает всё остальное (обнаружено 17.09.2026).
 
         Returns:
             True, если обращение «Джарвис» зафиксировано.
@@ -213,7 +218,7 @@ class WakeWordDetector2Stage:
         if not pcm_bytes:
             return False
 
-        now = time.time()
+        now = time.time() if timestamp is None else timestamp
         with self._lock:
             # Обновление кольцевого буфера
             self._ring_buffer.extend(pcm_bytes)

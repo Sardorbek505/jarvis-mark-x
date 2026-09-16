@@ -25,7 +25,7 @@ from core.conversation_state import ConversationState, ConversationStateMachine
 
 
 class _FakeWakeDetector:
-    def process_pcm(self, pcm: bytes) -> bool:
+    def process_pcm(self, pcm: bytes, timestamp=None) -> bool:
         return False
 
 

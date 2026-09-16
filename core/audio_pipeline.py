@@ -203,6 +203,7 @@ class AudioPipeline:
 
         # Счётчики для аудита и телеметрии
         self.drop_count: int = 0
+        self._last_drop_count: int = 0
         self.processed_count: int = 0
         self.last_erle_db: float = 0.0
         # Реально ли работает эхоподавление: True только когда пришёл непустой
@@ -374,6 +375,20 @@ class AudioPipeline:
             except queue.Empty:
                 continue
 
+            # Пропуски кадров рвут поток: у детектора слова непрерывные буферы
+            # спектра, и на рваном потоке признаки — мусор (живой прогон
+            # 17.09.2026: серии «Джарвис 1.00» на тишине, пока процессор был
+            # занят). Заметили пропуск — сбрасываем буферы детектора и говорим
+            # об этом в журнал.
+            if self.drop_count != self._last_drop_count:
+                dropped = self.drop_count - self._last_drop_count
+                self._last_drop_count = self.drop_count
+                logger.warning("AudioPipeline: пропущено %d кадров (очередь переполнена, всего %d) — буферы детектора сброшены",
+                               dropped, self.drop_count)
+                try:
+                    self.wake_detector.reset()
+                except Exception as e:
+                    logger.debug("detector reset after drop: %s", e)
             try:
                 self._process_frame_in_worker(*item)
             except Exception as e:
@@ -381,6 +396,10 @@ class AudioPipeline:
                 # полную глухоту ассистента до перезапуска процесса.
                 logger.error("AudioPipeline: ошибка обработки кадра: %s", e, exc_info=True)
             self.processed_count += 1
+            # Раз в ~30 с — сводка нагрузки, чтобы «не так работает» было чем объяснить
+            if self.processed_count % 470 == 0:
+                logger.info("AudioPipeline: обработано %d кадров, пропущено %d, в очереди %d",
+                            self.processed_count, self.drop_count, self._queue.qsize())
 
         logger.info("AudioPipeline: Worker thread stopped")
 
@@ -449,11 +468,11 @@ class AudioPipeline:
             if speech_prob is None or speech_prob < NOISE_MAX_SPEECH_PROBABILITY:
                 self._noise_window.append(rms)
             self._preroll.append(clean_pcm)
-            self.wake_detector.process_pcm(clean_pcm)
+            self.wake_detector.process_pcm(clean_pcm, timestamp)
         elif route_state == ConversationState.FOLLOW_UP:
             # Окно непрерывного диалога — разрешён spotterless и прямое начало речи
             self._observe_speech_probability(clean_pcm, timestamp)
-            self.wake_detector.process_pcm(clean_pcm)
+            self.wake_detector.process_pcm(clean_pcm, timestamp)
             if rms >= max(DEFAULT_RMS_THRESHOLD, self.effective_rms_threshold()):
                 if self.state_machine:
                     self.state_machine.transition_to(
@@ -676,7 +695,7 @@ class AudioPipeline:
         if self.aec_active and wake_policy.rms_barge_in_enabled() and rms > self.effective_barge_in_threshold():
             should_interrupt = True
             barge_reason = "voice-rms-barge-in"
-        elif self.wake_detector.process_pcm(clean_pcm):
+        elif self.wake_detector.process_pcm(clean_pcm, timestamp):
             should_interrupt = True
             barge_reason = "wake-word-barge-in"
 

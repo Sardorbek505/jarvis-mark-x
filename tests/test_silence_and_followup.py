@@ -19,7 +19,7 @@ class _FakeWakeDetector:
     def __init__(self):
         self.calls = 0
 
-    def process_pcm(self, pcm: bytes) -> bool:
+    def process_pcm(self, pcm: bytes, timestamp=None) -> bool:
         self.calls += 1
         return False
 
