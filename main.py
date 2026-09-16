@@ -429,10 +429,9 @@ _GREETINGS = (
     "э", "ээ", "эээ", "мм", "ммм", "эм",
 )
 
-_WAKE_VARIANTS = (
-    "djarvis", "джарвис", "jarvis", "жарвис",
-    "djarv", "джарв", "jarv",
-)
+from core.wake_names import WAKE_NAME_VARIANTS as _WAKE_NAME_VARIANTS  # noqa: E402
+
+_WAKE_VARIANTS = tuple(sorted(set(_WAKE_NAME_VARIANTS) | {"djarv", "джарв", "jarv"}, key=len, reverse=True))
 
 _GREETING_PREFIX_PAT = r"^(?:(?:" + "|".join(_GREETINGS) + r")[\s,.:!—?\"'«»\-]+)*"
 _WAKE_NAMES_PAT = r"(?:" + "|".join(_WAKE_VARIANTS) + r")"
@@ -3073,6 +3072,27 @@ class Jarvis:
 
         threading.Thread(target=_worker, name="voice-warmup", daemon=True).start()
 
+    def _start_browser_bridge(self) -> None:
+        """Сервер моста к браузеру поднимается заранее: иначе расширение
+        подключается только через несколько секунд после первого фильма, и он
+        стартует через хоткеи (стенд 16.09.2026)."""
+        try:
+            from core.media.bridge.server import BrowserBridgeServer
+            BrowserBridgeServer.get_instance()
+        except Exception as e:
+            logger.debug("Мост к браузеру не поднялся: %s", e)
+
+    def _play_earcon(self, kind: str) -> None:
+        """Сигнал подтверждения/ошибки; звук для красоты не имеет права падать."""
+        try:
+            from core import earcons
+            if kind == "error":
+                earcons.play_error_earcon()
+            else:
+                earcons.play_success_earcon()
+        except Exception as e:
+            logger.debug("earcon %s: %s", kind, e)
+
     def _enter_thinking(self) -> None:
         """Ход отдан Gemini: ждём модель, таймер тишины и шлюз к этому не относятся."""
         sm = getattr(self, "state_machine", None)
@@ -3118,7 +3138,7 @@ class Jarvis:
         self.last_user_text = full_in
 
         # 1. Fast-Path: мгновенное детерминированное исполнение команд управления
-        from core.fast_command_router import FastCommandRouter
+        from core.fast_command_router import ExecutionStatus, FastCommandRouter
         fast_res = await asyncio.to_thread(FastCommandRouter.match_and_execute, full_in, self.ui)
         fast_handled, fast_resp = fast_res
         if fast_handled:
@@ -3134,7 +3154,20 @@ class Jarvis:
                 from core.conversation_state import ConversationState
                 sm.transition_to(ConversationState.EXECUTING)
 
-            if getattr(fast_res, "is_action", False):
+            fast_failed = getattr(fast_res, "status", None) in (ExecutionStatus.FAILED, ExecutionStatus.UNAVAILABLE)
+            if getattr(fast_res, "is_action", False) and fast_failed and fast_resp:
+                # Действие не вышло — молчать нельзя: сигнал ошибки и суть словами
+                self._play_earcon("error")
+                self.ui.write_log(f"Джарвис: {fast_resp}")
+                if get_voice_provider() == "fish":
+                    if sm:
+                        from core.conversation_state import ConversationState
+                        sm.transition_to(ConversationState.SPEAKING)
+                    self._start_speech(fast_resp)
+                elif sm:
+                    from core.conversation_state import ConversationState
+                    sm.transition_to(ConversationState.STANDBY)
+            elif getattr(fast_res, "is_action", False):
                 try:
                     from core.ducking_controller import ducking_controller
                     ducking_controller.restore()
@@ -3180,6 +3213,18 @@ class Jarvis:
                     resp_text = orch_res.executed_result or "Готово, сэр."
                     self.ui.write_log(f"Джарвис: {resp_text}")
                     self._wake_active_until = 0.0
+                    from core.confirmations import should_stay_silent
+                    success = getattr(orch_res, "success", True)
+                    if should_stay_silent(orch_res.action_name, success, resp_text):
+                        # Фильм/музыка/приложение запустились — это и есть
+                        # подтверждение. Сигнал вместо фразы (как у Алисы).
+                        self._play_earcon("success")
+                        if sm:
+                            from core.conversation_state import ConversationState
+                            sm.transition_to(ConversationState.STANDBY)
+                        return True
+                    if not success:
+                        self._play_earcon("error")
                     if sm:
                         from core.conversation_state import ConversationState
                         sm.transition_to(ConversationState.SPEAKING)
@@ -3379,6 +3424,24 @@ class Jarvis:
                             full_out = _clean_dialog_text(raw_out)
                             out_buf.clear()
 
+                            from core.confirmations import is_bare_confirmation
+                            if full_out and is_bare_confirmation(full_out) and getattr(self, "_tool_ran_this_turn", False):
+                                # Модель ответила голым «Готово, сэр» после инструмента:
+                                # действие уже видно, слова лишние — сигнал.
+                                self.ui.write_log(f"Джарвис: {full_out}")
+                                self._play_earcon("success")
+                                self._drop_speech_prefetch()
+                                if getattr(self, "_streaming_speech_active", False) and self._streaming_queue is not None:
+                                    self._abort_playback()
+                                self._followup_timeout = 3.5
+                                self._wake_active_until = time.monotonic() + 3.5
+                                sm = getattr(self, "state_machine", None)
+                                if sm:
+                                    sm.start_follow_up(timeout_sec=3.5)
+                                self._tool_ran_this_turn = False
+                                self._begin_new_utterance()
+                                continue
+                            self._tool_ran_this_turn = False
                             if full_out:
                                 self.ui.write_log(f"Джарвис: {full_out}")
                                 is_noise_or_apology = any(p in full_out.lower() for p in (
@@ -3463,6 +3526,7 @@ class Jarvis:
 
                         self._wake_active_until = time.monotonic() + 15.0
                         self._tool_in_progress = True
+                        self._tool_ran_this_turn = True
                         while not self.out_queue.empty():
                             try:
                                 self.out_queue.get_nowait()
@@ -3737,6 +3801,7 @@ class Jarvis:
                         except Exception:
                             pass
                         self._start_voice_warmup()
+                        self._start_browser_bridge()
 
                         # Reset retry count on successful connection
                         retry_count = 0

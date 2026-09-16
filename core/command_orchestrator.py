@@ -51,6 +51,7 @@ class ProcessResult:
     action_name: Optional[str] = None
     target_slot: Optional[str] = None
     cleaned_text: Optional[str] = None
+    success: bool = True
 
 
 class CommandOrchestrator:
@@ -340,4 +341,5 @@ class CommandOrchestrator:
             turn_id=cmd.turn_id,
             executed_result=result_msg,
             action_name=cmd.intent,
+            success=success,
         )

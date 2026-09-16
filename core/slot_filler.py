@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import re
+
+from core.wake_names import WAKE_NAME_PATTERN
 from typing import Any, Dict, Optional, Tuple
 
 _ORDINALS: Dict[str, int] = {
@@ -44,7 +46,7 @@ _CANCEL_PATTERNS = [
 ]
 
 _WAKE_PREFIX_RE = re.compile(
-    r"^(?:эй\s+)?(?:джарвис|джервис|жарвис|jarvis)[,\s!\.\?]*",
+    r"^(?:эй\s+)?" + WAKE_NAME_PATTERN + r"[,\s!\.\?]*",
     re.IGNORECASE | re.UNICODE,
 )
 
