@@ -77,3 +77,4 @@ scratch/
 # Образцы голоса для сравнения (генерируются на месте)
 logs/voicecheck/
 memory/voice_cache/
+data/

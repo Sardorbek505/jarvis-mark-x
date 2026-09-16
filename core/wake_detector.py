@@ -32,6 +32,25 @@ _CONTEXT_SCORE_FRAMES = 6
 # Ниже этого RMS в окне — тишина или шум квантования, а не речь.
 _MIN_CONTEXT_RMS = 50.0
 
+# Слова-приманки для грамматики Vosk: среди узкого набора он отлично отличает
+# «джарвис» от «сервис»/«жалюзи»/«дарвин». Сказал приманку — своя нейросеть
+# сработать не должна (если только не уверена на 0.995+: Vosk путает и в
+# обратную сторону — «дарвин» на настоящее «Джарвис»).
+VOSK_DECOY_WORDS = (
+    "сервис", "сервиз", "жалюзи", "дарвин", "джаз", "марвин", "джон", "джем", "джинсы",
+    "спасибо", "хорошо", "алиса", "привет", "ярослав", "жарко", "джордж", "джек",
+)
+DECOY_VETO_SEC = 1.5
+DECOY_OVERRIDE_SCORE = 0.995
+# Своя модель «Джарвис» (scripts/train_wake_word.py); рядом лежит .json с порогом
+CUSTOM_WAKE_MODEL = os.getenv(
+    "JARVIS_WAKE_MODEL",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "wake_models", "jarvis_ru.onnx"),
+)
+# Vosk сказал «джарвис», но своя модель за последнюю секунду ниже этого — не верим
+VOSK_NEEDS_NN_SCORE = 0.5
+NN_MIN_CONSECUTIVE_FRAMES = 2
+
 WAKE_KEYWORDS = {
     "джарвис",
     "джервис",
@@ -66,6 +85,8 @@ class WakeWordDetector2Stage:
         self._lock = threading.Lock()
         self._last_wake_time = 0.0
         self._last_quick_command_time = 0.0
+        self._last_decoy_time = 0.0
+        self._nn_run = 0
         self.quick_command_cooldown = 1.0
 
         # Кольцевой буфер сырого аудио (2 секунды)
@@ -103,6 +124,7 @@ class WakeWordDetector2Stage:
                     "тише", "потише", "громче", "погромче",
                     "звук", "звука", "экран", "полный", "весь",
                     "эй", "слушай", "привет", "окей",
+                    *VOSK_DECOY_WORDS,
                     "[unk]",
                 ]
                 grammar_words = []
@@ -123,13 +145,31 @@ class WakeWordDetector2Stage:
 
     def _init_oww(self):
         """Загрузка ONNX модели openWakeWord."""
+        self._custom_model = False
         try:
             from openwakeword.model import Model
-            self._oww_model = Model(
-                wakeword_models=["hey_jarvis"],
-                inference_framework="onnx",
-            )
-            logger.info("Wake Word: ONNX 'hey_jarvis' model loaded successfully")
+            if os.path.exists(CUSTOM_WAKE_MODEL):
+                self._oww_model = Model(wakeword_models=[CUSTOM_WAKE_MODEL], inference_framework="onnx")
+                self._custom_model = True
+                meta_path = os.path.splitext(CUSTOM_WAKE_MODEL)[0] + ".json"
+                try:
+                    with open(meta_path, encoding="utf-8") as f:
+                        thr = float(json.load(f).get("threshold", 0.94))
+                except Exception:
+                    thr = 0.94
+                # Порог из файла модели — только если порог не задан явно
+                # (конструктором или переменной окружения)
+                default1 = float(os.getenv("WAKE_THRESHOLD_STAGE1", "0.28"))
+                default2 = float(os.getenv("WAKE_THRESHOLD_STAGE2", "0.38"))
+                if self.threshold_stage1 == default1 and os.getenv("WAKE_THRESHOLD_STAGE1") is None:
+                    self.threshold_stage1 = thr
+                if self.threshold_stage2 == default2 and os.getenv("WAKE_THRESHOLD_STAGE2") is None:
+                    self.threshold_stage2 = thr
+                logger.info("Wake Word: своя модель «Джарвис» загружена (%s, порог %.2f)",
+                            os.path.basename(CUSTOM_WAKE_MODEL), thr)
+            else:
+                self._oww_model = Model(wakeword_models=["hey_jarvis"], inference_framework="onnx")
+                logger.info("Wake Word: ONNX 'hey_jarvis' model loaded successfully")
         except Exception as e:
             logger.warning("Wake Word ONNX model init fallback: %s", e)
 
@@ -196,6 +236,8 @@ class WakeWordDetector2Stage:
                 if self._vosk_rec.AcceptWaveform(pcm_bytes):
                     res = json.loads(self._vosk_rec.Result())
                     raw_text = res.get("text", "").lower().strip()
+                    if any(d in raw_text.split() for d in VOSK_DECOY_WORDS):
+                        self._last_decoy_time = now
                     words = raw_text.split()
                     for w in words:
                         if _is_wake(w):
@@ -257,6 +299,13 @@ class WakeWordDetector2Stage:
                             logger.error("on_quick_command error: %s", e)
                         return False
 
+                if detected_vosk and self._custom_model:
+                    # Своя модель есть — Vosk лишь подстраховка: его «джарвис»
+                    # засчитывается, если сеть за последнюю секунду хоть немного согласна
+                    _, nn_peak = self._read_scores()
+                    if nn_peak < VOSK_NEEDS_NN_SCORE:
+                        logger.info("Wake Word: Vosk услышал '%s', сеть не согласна (%.2f) — пропуск", matched_word, nn_peak)
+                        detected_vosk = False
                 if detected_vosk:
                     self._last_wake_time = now
                     self._vosk_rec.Reset()
@@ -270,23 +319,36 @@ class WakeWordDetector2Stage:
 
             # 2. Потоковая проверка через openWakeWord ('hey_jarvis' / 'эй джарвис')
             # Выполняем только при наличии звуковой энергии (экономия CPU в тишине)
-            if rms_energy >= _MIN_CONTEXT_RMS and self._oww_model is not None:
+            if self._oww_model is not None:
+                # Сеть получает ВСЕ кадры, включая тихие: её потоковый спектрограф
+                # держит непрерывный буфер, и пропуск кадров ломал признаки
+                # (на записях владельца ложных срабатываний было вдвое больше).
                 arr = np.frombuffer(pcm_bytes, dtype=np.int16)
                 self._oww_model.predict(arr)
 
                 jarvis_score, context_score = self._read_scores()
-
+                # Настоящее слово держит балл над порогом 5–10 кадров подряд,
+                # ложное — 1–2; требуем минимум NN_MIN_CONSECUTIVE_FRAMES.
                 if jarvis_score >= self.threshold_stage1:
+                    self._nn_run += 1
+                else:
+                    self._nn_run = 0
+
+                if rms_energy >= _MIN_CONTEXT_RMS and jarvis_score >= self.threshold_stage1 and self._nn_run >= NN_MIN_CONSECUTIVE_FRAMES:
                     context_samples = min(len(self._ring_buffer) // 2, int(SAMPLE_RATE * 0.9))
                     if context_samples > 0:
                         has_context = context_samples >= int(SAMPLE_RATE * 0.4)
                         evidence = context_score if has_context else jarvis_score
-                        if evidence >= self.threshold_stage2:
+                        decoy_recent = (now - self._last_decoy_time) < DECOY_VETO_SEC
+                        if evidence >= self.threshold_stage2 and decoy_recent and evidence < DECOY_OVERRIDE_SCORE:
+                            logger.info("Wake Word: сеть %.2f, но Vosk только что услышал слово-приманку — пропуск", evidence)
+                        elif evidence >= self.threshold_stage2:
                             self._last_wake_time = now
                             if self._vosk_rec:
                                 self._vosk_rec.Reset()
                             logger.info(
-                                "Wake Word: [OWW CONFIRMED] 'hey_jarvis' (Score: %.2f, Context: %.2f)",
+                                "Wake Word: [NN CONFIRMED] %s (Score: %.2f, Context: %.2f)",
+                                "джарвис" if self._custom_model else "hey_jarvis",
                                 jarvis_score, evidence,
                             )
                             if self.on_wake:

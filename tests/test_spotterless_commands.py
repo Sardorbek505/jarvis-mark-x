@@ -100,6 +100,9 @@ def test_spotterless_wake_word_still_works():
     )
     # Обращение 'джарвис'
     detector._vosk_rec = DummyVoskRec(result_text="джарвис", accept=True)
+    # Со своей моделью Vosk — подстраховка: его «джарвис» засчитывается, если
+    # сеть за последнюю секунду хоть немного согласна. Здесь сети нет.
+    detector._custom_model = False
 
     dummy_pcm = b"\x00\x01" * 1280
     result = detector.process_pcm(dummy_pcm)
