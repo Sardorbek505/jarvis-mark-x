@@ -1013,6 +1013,53 @@ class FastCommandRouter:
                     category=CommandCategory.LOCAL_SAFE,
                 )
 
+        # ── 23. Время и дата — без модели ─────────────────────────────────────
+        # Через Gemini «который час» стоил 4–7 с. Строгие шаблоны: «сколько
+        # времени займёт дорога» и «который час в Нью-Йорке» — вопросы модели.
+        if re.match(
+            r"^(?:скажи\s+)?(?:который\s+(?:сейчас\s+)?час|сколько\s+(?:сейчас\s+)?времени|"
+            r"сколько\s+время|время|текущее\s+время|скажи\s+время)(?:\s+сейчас)?$",
+            clean,
+        ):
+            from actions.local_answers import time_answer
+            text = time_answer()
+            logger.info("Fast-Path: 🕒 %s", text)
+            return FastCommandResult(True, text, is_action=False, status=ExecutionStatus.SUCCESS,
+                                     category=CommandCategory.LOCAL_SAFE)
+
+        if re.match(
+            r"^(?:скажи\s+)?(?:какое\s+сегодня\s+число|какой\s+сегодня\s+день(?:\s+недели)?|"
+            r"какая\s+сегодня\s+дата|какое\s+число|какой\s+день\s+недели|число\s+сегодня|сегодня\s+какое\s+число)$",
+            clean,
+        ):
+            from actions.local_answers import date_answer
+            text = date_answer()
+            logger.info("Fast-Path: 📅 %s", text)
+            return FastCommandResult(True, text, is_action=False, status=ExecutionStatus.SUCCESS,
+                                     category=CommandCategory.LOCAL_SAFE)
+
+        # ── 24. Текущая погода — без модели ───────────────────────────────────
+        # Только «сейчас»: прогноз («завтра», «на неделю», «будет дождь») —
+        # модели с её инструментом.
+        m_weather = re.match(
+            r"^(?:джарвис\s+)?(?:скажи\s+)?(?:"
+            r"какая\s+(?:сегодня\s+|сейчас\s+)?погода|погода|что\s+(?:там\s+)?с\s+погодой|"
+            r"сколько\s+(?:сейчас\s+)?градусов|какая\s+(?:сейчас\s+)?температура"
+            r")(?:\s+(?:сейчас|сегодня|на\s+улице|за\s+окном))*"
+            r"(?:\s+(?:в|во)\s+(?P<city>[а-яёa-z\-\s]+?))?(?:\s+(?:сейчас|сегодня))?$",
+            clean,
+        )
+        if m_weather:
+            from actions.local_answers import weather_answer
+            city = (m_weather.group("city") or "").strip()
+            city = city[:1].upper() + city[1:]  # normalize_command_text опускает регистр
+            text = weather_answer(city)
+            logger.info("Fast-Path: 🌤 %s", text)
+            if player:
+                player.write_log(f"SYS: 🌤 {text}")
+            return FastCommandResult(True, text, is_action=False, status=ExecutionStatus.SUCCESS,
+                                     category=CommandCategory.LOCAL_SAFE)
+
         return FastCommandResult(
             False,
             None,

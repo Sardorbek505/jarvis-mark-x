@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from actions.weather import weather_action, _WEATHER_CACHE, _GEO_URL, _FORECAST_URL, _IP_LOCATION_URL
+from actions.weather import weather_action, _WEATHER_CACHE, _GEO_CACHE, _GEO_URL, _FORECAST_URL, _IP_LOCATION_URL
 
 
 _CURRENT = {
@@ -28,6 +28,7 @@ def _fake_fetch(city_hits: list, ip_status: str = "success"):
 class TestWeatherFixes(unittest.TestCase):
     def setUp(self):
         _WEATHER_CACHE.clear()
+        _GEO_CACHE.clear()
 
     def test_empty_city_uses_detected_location(self):
         with patch("actions.weather._fetch_json", side_effect=_fake_fetch([])):

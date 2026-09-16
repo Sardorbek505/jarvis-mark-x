@@ -3146,6 +3146,11 @@ class Jarvis:
             elif fast_resp:
                 self.ui.write_log(f"Джарвис: {fast_resp}")
                 if not getattr(fast_res, "is_action", False) and get_voice_provider() == "fish":
+                    # Локальный ответ (время, погода) — такой же ход диалога:
+                    # после него окно продолжения, чтобы «а в Москве?» не
+                    # требовало снова имени.
+                    self._pending_question = False
+                    self._followup_timeout = 3.5
                     if sm:
                         from core.conversation_state import ConversationState
                         sm.transition_to(ConversationState.SPEAKING)

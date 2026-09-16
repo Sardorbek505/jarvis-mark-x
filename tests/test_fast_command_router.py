@@ -94,7 +94,7 @@ def test_fast_router_seek(monkeypatch):
 
 def test_fast_router_non_command():
     # Фразы, которые должны уйти в LLM и НЕ перехватываться Fast-Path
-    handled, resp = FastCommandRouter.match_and_execute("Джарвис, какая сегодня погода?")
+    handled, resp = FastCommandRouter.match_and_execute("Джарвис, какая погода будет завтра?")
     assert handled is False
     assert resp is None
 
