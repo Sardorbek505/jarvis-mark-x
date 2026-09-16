@@ -67,6 +67,10 @@ WAKE_SPEECH_MIN_PROBABILITY = 0.35
 # пока Джарвис говорит, окно не обновляется, и wake-word на границе
 # SPEAKING → FOLLOW_UP отбрасывался по тишине полусекундной давности.
 WAKE_SPEECH_WINDOW_MAX_AGE_SEC = 0.75
+# Дольше этого ждать ответ модели нельзя: в THINKING ключевое слово не
+# слушается, и без сторожа оборванный ход оставил бы Джарвиса глухим.
+# Инструменту даётся 25 с (main.py), плюс запас на генерацию ответа.
+THINKING_MAX_SEC = 40.0
 
 # Сколько подряд молчать в LISTENING, прежде чем шлюз закроется сам.
 # Без этого окно активности держалось до конца таймера wake-слова (8 с), и всё
@@ -127,6 +131,9 @@ class AudioPipeline:
         # своё окно активности, иначе шлюз откроется обратно на следующем кадре.
         self.on_silence_timeout = on_silence_timeout
         self.rms_threshold = rms_threshold
+        # Последний посчитанный адаптивный порог — для аудиоколбэка, которому
+        # нельзя считать перцентили: он только читает атрибут.
+        self.last_rms_threshold = rms_threshold
         self.hangover_frames = hangover_frames
         self.silence_timeout_sec = silence_timeout_sec
         self.noise_multiplier = noise_multiplier
@@ -211,6 +218,7 @@ class AudioPipeline:
         """Порог «это речь», поднятый под фактический шум комнаты."""
         floor = self.noise_floor
         if floor is None:
+            self.last_rms_threshold = self.rms_threshold
             return self.rms_threshold
         adapted = floor * self.noise_multiplier
         if adapted > self.rms_threshold and not self._noise_adapted_logged:
@@ -219,7 +227,8 @@ class AudioPipeline:
                 "AudioPipeline: шум комнаты p90=%.0f — порог речи поднят с %.0f до %.0f",
                 floor, self.rms_threshold, adapted,
             )
-        return max(self.rms_threshold, adapted)
+        self.last_rms_threshold = max(self.rms_threshold, adapted)
+        return self.last_rms_threshold
 
     def effective_barge_in_threshold(self) -> float:
         """Порог перебивания с тем же запасом по шуму."""
@@ -446,6 +455,22 @@ class AudioPipeline:
             # THINKING / EXECUTING / INTERRUPTED — ход обрабатывается, копим pre-roll,
             # чтобы не срезать начало следующей реплики.
             self._preroll.append(clean_pcm)
+            self._watch_stuck_thinking(route_state)
+
+    def _watch_stuck_thinking(self, route_state: ConversationState) -> None:
+        """Ответа нет дольше THINKING_MAX_SEC — возвращаемся к ожиданию слова."""
+        if route_state not in (ConversationState.THINKING, ConversationState.EXECUTING):
+            return
+        if not self.state_machine or self.state_machine.state != route_state:
+            return
+        if self.state_machine.state_duration_sec < THINKING_MAX_SEC:
+            return
+        logger.warning(
+            "AudioPipeline: %s дольше %.0f с без ответа — ухожу в STANDBY",
+            route_state.value, THINKING_MAX_SEC,
+        )
+        self._preroll.clear()
+        self.state_machine.transition_to(ConversationState.STANDBY, reason="thinking watchdog")
 
     def _silence_expired(self, timestamp: float) -> bool:
         """Замолчал ли пользователь дольше отведённого окна тишины."""

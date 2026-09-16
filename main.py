@@ -1150,7 +1150,9 @@ TOOLS = [
             "добрый вечер (18-22), доброй ночи (22-6). "
             "Вызывай когда пользователь говорит 'брифинг', 'что сегодня', "
             "'доброе утро', 'добрый день', 'введи в курс дня'. "
-            "Также вызывай автоматически при старте сессии если сейчас утро (6-10)."
+            "Также вызывай автоматически при старте сессии если сейчас утро (6-10). "
+            "НЕ вызывай на светские вопросы вроде 'как дела', 'как ты', 'что нового у тебя' — "
+            "на них отвечай сам, коротко, без сводки."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -2891,7 +2893,9 @@ class Jarvis:
                 if self._latency.enabled:
                     try:
                         rms = float(np.sqrt(np.mean(np.square(indata.astype(np.float32)))))
-                        if rms >= MIC_RMS_THRESHOLD:
+                        # Порог тот же, что у тракта (адаптирован под шум комнаты),
+                        # иначе в шумной комнате хвост фона сдвигал точку отсчёта.
+                        if rms >= getattr(self.audio_pipeline, "last_rms_threshold", MIC_RMS_THRESHOLD):
                             self._latency.mark_voice_frame()
                     except Exception:
                         pass
@@ -3019,6 +3023,15 @@ class Jarvis:
         full = _clean_dialog_text("".join(in_buf))
         if full:
             await self._arbitrate_turn(full, out_buf, in_buf)
+
+    def _enter_thinking(self) -> None:
+        """Ход отдан Gemini: ждём модель, таймер тишины и шлюз к этому не относятся."""
+        sm = getattr(self, "state_machine", None)
+        if not sm:
+            return
+        from core.conversation_state import ConversationState
+        if sm.state in (ConversationState.LISTENING, ConversationState.FOLLOW_UP, ConversationState.STANDBY):
+            sm.transition_to(ConversationState.THINKING, reason="waiting for model")
 
     async def _arbitrate_turn(self, full_in: str, out_buf: list, in_buf: list) -> bool:
         """
@@ -3150,6 +3163,7 @@ class Jarvis:
                 return True
 
             elif orch_res.decision == RoutingDecision.NEEDS_LLM:
+                self._enter_thinking()
                 if pt:
                     pt.arbitrated = True
                     pt.routed_to = "GEMINI"
@@ -3171,6 +3185,7 @@ class Jarvis:
         if pt and not pt.arbitrated:
             pt.arbitrated = True
             pt.routed_to = "GEMINI"
+        self._enter_thinking()
         return False
 
     # ── Получение ответа от Gemini ────────────────────────────────────────────
@@ -3332,6 +3347,13 @@ class Jarvis:
                                         sm.start_follow_up(timeout_sec=timeout)
                             elif getattr(self, "_streaming_speech_active", False) and self._streaming_queue is not None:
                                 self._streaming_queue.put_nowait(None)
+                            else:
+                                # Модель закрыла ход молча — ждать больше нечего
+                                sm = getattr(self, "state_machine", None)
+                                if sm:
+                                    from core.conversation_state import ConversationState
+                                    if sm.state == ConversationState.THINKING:
+                                        sm.transition_to(ConversationState.STANDBY, reason="empty model turn")
 
                             self._begin_new_utterance()
 
