@@ -49,7 +49,7 @@ CUSTOM_WAKE_MODEL = os.getenv(
 )
 # Vosk сказал «джарвис», но своя модель за последнюю секунду ниже этого — не верим
 VOSK_NEEDS_NN_SCORE = 0.5
-NN_MIN_CONSECUTIVE_FRAMES = 2
+NN_MIN_CONSECUTIVE_FRAMES = 4   # слово держит балл 5–10 кадров, щелчки комнаты — 1–3 (замер 17.09.2026)
 
 WAKE_KEYWORDS = {
     "джарвис",

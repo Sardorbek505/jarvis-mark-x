@@ -292,7 +292,8 @@ def test_stage2_threshold_is_actually_applied():
 
     permissive = _detector_or_skip(threshold_stage1=0.0, threshold_stage2=0.0,
                                    cooldown_sec=0.0)
-    permissive.process_pcm(frame)  # первый кадр — разгон: нужно два подряд над порогом
+    for _ in range(3):
+        permissive.process_pcm(frame)  # разгон: нужно четыре кадра подряд над порогом
     assert all(permissive.process_pcm(frame) for _ in range(6))
 
 
@@ -309,7 +310,8 @@ def test_wake_detector_cooldown_suppresses_repeats():
     detector = _detector_or_skip(threshold_stage1=0.0, threshold_stage2=0.0,
                                  cooldown_sec=5.0)
     frame = _broadband(1280, level=0.1, seed=19).tobytes()
-    detector.process_pcm(frame)  # разгон: срабатывание требует двух кадров подряд
+    for _ in range(3):
+        detector.process_pcm(frame)  # разгон: срабатывание требует четырёх кадров подряд
     assert detector.process_pcm(frame) is True
     assert not any(detector.process_pcm(frame) for _ in range(5))
 
