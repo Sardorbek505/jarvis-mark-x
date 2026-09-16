@@ -157,6 +157,11 @@ class PendingGeminiTurn:
     # срабатывания: само слово съедает локальный детектор, в расшифровку оно
     # не попадает, а окно активности к концу хода успевает истечь.
     addressed: bool = False
+    # Когда сработало слово и когда пришёл первый кусок расшифровки: если между
+    # ними больше WAKE_TO_SPEECH_MAX_GAP_SEC, это не одна реплика, а ложное
+    # срабатывание и чужая речь спустя время.
+    addressed_at: Optional[float] = None
+    first_transcript_at: Optional[float] = None
 
     def add_audio(self, data: bytes) -> bool:
         if self.total_audio_bytes + len(data) > self.max_bytes:

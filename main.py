@@ -1412,6 +1412,7 @@ class Jarvis:
         """Реакция на фиксацию ключевого слова 'Джарвис'."""
         self._begin_new_utterance()
         self._pending_gemini_turn.addressed = True
+        self._pending_gemini_turn.addressed_at = time.monotonic()
         self._wake_active_until = time.monotonic() + 8.0
         self._chime_until = 0.0
 
@@ -1838,7 +1839,8 @@ class Jarvis:
             self._current_generation_id = getattr(self, "_current_generation_id", 0) + 1
             self._active_speech_generation_id = self._current_generation_id
             self._interrupted_turn = True
-            self._wake_active_until = time.monotonic() + 8.0
+            from core import wake_policy
+            self._wake_active_until = time.monotonic() + wake_policy.gate_after_interrupt(reason)
             if getattr(self, "_pending_gemini_turn", None):
                 self._pending_gemini_turn.clear()
 
@@ -2870,6 +2872,11 @@ class Jarvis:
         """
         self._wake_active_until = 0.0
         self._hotkey_active_until = 0.0
+        # Слово было, а речи за ним так и не последовало — обращение
+        # не состоялось: фраза, пришедшая позже, к нему не относится.
+        pt = getattr(self, "_pending_gemini_turn", None)
+        if pt is not None and pt.addressed and pt.first_transcript_at is None:
+            pt.addressed = False
         logger.info("Dialog: тишина затянулась — шлюз закрыт, жду обращения по имени")
 
     def _aec_reference_window(self, timestamp: float, n_bytes: int) -> bytes:
@@ -3119,7 +3126,18 @@ class Jarvis:
             and self.command_orchestrator.has_active_command()
         )
         was_addressed = bool(pt and pt.addressed)
-        is_active = is_addressed_to_jarvis(full_in) or was_addressed or is_hotkey or is_wake or has_active_cmd
+        gap = None
+        if pt and pt.addressed_at is not None and pt.first_transcript_at is not None:
+            gap = max(0.0, pt.first_transcript_at - pt.addressed_at)
+        from core import wake_policy
+        is_active = wake_policy.is_addressed(
+            name_in_text=is_addressed_to_jarvis(full_in),
+            wake_spotted=was_addressed,
+            wake_to_speech_gap=gap,
+            hotkey=is_hotkey,
+            gate_open=is_wake,
+            active_dialog=has_active_cmd or bool(getattr(self, "_pending_question", False)),
+        )
         if is_hotkey:
             self._hotkey_active_until = 0.0
 
@@ -3182,8 +3200,9 @@ class Jarvis:
                     # Локальный ответ (время, погода) — такой же ход диалога:
                     # после него окно продолжения, чтобы «а в Москве?» не
                     # требовало снова имени.
+                    from core import wake_policy
                     self._pending_question = False
-                    self._followup_timeout = 3.5
+                    self._followup_timeout = wake_policy.follow_up_window(False)
                     if sm:
                         from core.conversation_state import ConversationState
                         sm.transition_to(ConversationState.SPEAKING)
@@ -3370,6 +3389,8 @@ class Jarvis:
                             txt = sc.input_transcription.text
                             in_buf.append(txt)
                             self._latency.mark_transcript()
+                            if pt is not None and pt.first_transcript_at is None:
+                                pt.first_transcript_at = time.monotonic()
                             print(f"[ДЖАРВИС] 🎤 Фрагмент: '{txt}'")
                             # Арбитраж здесь НЕ делаем: расшифровка идёт кусками по
                             # слогу. По обрывку «Джар» реплика признавалась «не к
@@ -3433,11 +3454,17 @@ class Jarvis:
                                 self._drop_speech_prefetch()
                                 if getattr(self, "_streaming_speech_active", False) and self._streaming_queue is not None:
                                     self._abort_playback()
-                                self._followup_timeout = 3.5
-                                self._wake_active_until = time.monotonic() + 3.5
+                                from core import wake_policy
+                                window = wake_policy.follow_up_window(False)
+                                self._followup_timeout = window
+                                self._wake_active_until = time.monotonic() + window
                                 sm = getattr(self, "state_machine", None)
                                 if sm:
-                                    sm.start_follow_up(timeout_sec=3.5)
+                                    if window > 0:
+                                        sm.start_follow_up(timeout_sec=window)
+                                    else:
+                                        from core.conversation_state import ConversationState
+                                        sm.transition_to(ConversationState.STANDBY, reason="answer finished (strict)")
                                 self._tool_ran_this_turn = False
                                 self._begin_new_utterance()
                                 continue
@@ -3448,12 +3475,13 @@ class Jarvis:
                                     "не распознал", "не разобрал", "не расслышал", "фонового шума",
                                     "повторить", "вызов, сэр", "чем могу быть полезен"
                                 ))
+                                from core import wake_policy
                                 if is_noise_or_apology:
                                     self._pending_question = False
-                                    timeout = 2.0
+                                    timeout = wake_policy.follow_up_window(False, is_apology=True)
                                 else:
                                     self._pending_question = bool(full_out.strip().endswith("?") or getattr(self, "_pending_destructive", None))
-                                    timeout = 6.0 if getattr(self, "_pending_question", False) else 3.5
+                                    timeout = wake_policy.follow_up_window(bool(self._pending_question))
                                 self._followup_timeout = timeout
                                 self.last_user_text = ""
 

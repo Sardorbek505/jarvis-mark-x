@@ -19,6 +19,8 @@ import time
 from typing import Any, Callable, Optional
 import numpy as np
 
+from core import wake_policy
+
 logger = logging.getLogger("jarvis-kws")
 
 SAMPLE_RATE = 16000
@@ -131,6 +133,11 @@ class WakeWordDetector2Stage:
         except Exception as e:
             logger.warning("Wake Word ONNX model init fallback: %s", e)
 
+    @staticmethod
+    def _vosk_word_is_wake(word: str) -> bool:
+        """Точное слово из списка: «джарвисом» и обрывок «джарви» — не обращение."""
+        return word.lower().strip() in WAKE_KEYWORDS
+
     def _is_spotterless_allowed(self, is_urgent_stop: bool = False) -> bool:
         """Проверяет, разрешены ли spotterless-команды в текущем состоянии жизненного цикла."""
         if not self.enable_spotterless or not self.on_quick_command:
@@ -184,9 +191,7 @@ class WakeWordDetector2Stage:
                 detected_vosk = False
                 matched_word = None
 
-                def _is_wake(w: str) -> bool:
-                    sw = w.lower().strip()
-                    return sw in WAKE_KEYWORDS or sw.startswith("джарви") or sw.startswith("джерви") or sw.startswith("jarvi")
+                _is_wake = self._vosk_word_is_wake
 
                 if self._vosk_rec.AcceptWaveform(pcm_bytes):
                     res = json.loads(self._vosk_rec.Result())
@@ -227,11 +232,17 @@ class WakeWordDetector2Stage:
                     pres = json.loads(self._vosk_rec.PartialResult())
                     partial = pres.get("partial", "").lower().strip()
                     words = partial.split()
-                    for w in words:
-                        if _is_wake(w):
-                            detected_vosk = True
-                            matched_word = w
-                            break
+                    # Промежуточные результаты грамматики охотно подгоняют любой
+                    # похожий звук под «джарвис» — в строгом режиме им не верим,
+                    # слово засчитывается только финальным результатом. Экстренное
+                    # «стоп»/«пауза» во время речи Джарвиса остаётся: там ошибка
+                    # дёшева, а задержка дорога.
+                    if not wake_policy.is_strict():
+                        for w in words:
+                            if _is_wake(w):
+                                detected_vosk = True
+                                matched_word = w
+                                break
                     if not detected_vosk and (
                         self._is_spotterless_allowed(is_urgent_stop=True)
                         and (now - self._last_quick_command_time >= self.quick_command_cooldown)

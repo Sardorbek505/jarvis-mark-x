@@ -49,10 +49,14 @@ def test_interrupt_speech_resets_state_and_drains_queue(jarvis_instance):
         assert j.audio_in_queue.empty()
         assert j._speech_epoch >= 1
         assert j._interrupted_turn is True
-        assert j._wake_active_until > time.monotonic()
+        # Перебили НЕ словом «Джарвис»: в строгом режиме микрофон не открывается
+        assert j._wake_active_until <= time.monotonic()
+        j._is_speaking = True
+        j.interrupt_speech("wake-word-barge-in")
+        assert j._wake_active_until > time.monotonic(), "перебили именем — ждём фразу"
         assert j.ui.state == "LISTENING"
         mock_task.cancel.assert_called_once()
-        mock_earcon.assert_called_once()
+        assert mock_earcon.call_count == 2  # по щелчку на каждое перебивание
 
 
 def test_interrupt_speech_noop_when_idle(jarvis_instance):

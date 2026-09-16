@@ -175,7 +175,11 @@ class _NullOutput:
 async def _probe(timeout: float) -> str:
     turns = []
     for name, text in _PHRASES.items():
-        turns.append(_load_frames(_synthesize(text, _VOICE_DIR / f"{name}.wav")))
+        # Имя файла — от текста: иначе сценарий из JARVIS_PROBE_PHRASES
+        # подхватывал WAV прошлого сценария под тем же номером.
+        import hashlib
+        digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
+        turns.append(_load_frames(_synthesize(text, _VOICE_DIR / f"{name}_{digest}.wav")))
 
     ui = HeadlessUI()
     jarvis = jarvis_main.Jarvis(ui)

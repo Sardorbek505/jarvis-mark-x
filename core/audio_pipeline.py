@@ -23,6 +23,8 @@ import time
 from typing import Any, Callable, Dict, Optional
 import numpy as np
 
+from core import wake_policy
+
 from core.conversation_state import ConversationState, ConversationStateMachine
 from core.aec_pipeline import AECPipeline
 from core.wake_detector import WakeWordDetector2Stage
@@ -61,7 +63,7 @@ NOISE_PERCENTILE_WITHOUT_VAD = 50
 # ближайшее из них: «дальше», «стоп», «джарвис». Само по себе это неизбежно —
 # декодер обязан выдать лучшую гипотезу. Но если нейросетевой VAD за последние
 # полсекунды речи не видел вовсе, гипотеза заведомо ложная.
-WAKE_SPEECH_LOOKBACK_FRAMES = 8      # ~0.5 с при кадре 64 мс
+WAKE_SPEECH_LOOKBACK_FRAMES = 16     # ~1 с: за 0.5 с само слово иногда не успевало попасть в окно
 WAKE_SPEECH_MIN_PROBABILITY = 0.35
 # Дольше этого окно вероятностей считается протухшим и вето не накладывается:
 # пока Джарвис говорит, окно не обновляется, и wake-word на границе
@@ -536,7 +538,7 @@ class AudioPipeline:
         # AEC уже вычел эхо динамиков, поэтому высокий RMS — это голос в комнате.
         # Без опорного сигнала (aec_active == False) порогу по RMS доверять нельзя:
         # собственные колонки дадут ложное перебивание, поэтому остаётся только KWS.
-        if self.aec_active and rms > self.effective_barge_in_threshold():
+        if self.aec_active and wake_policy.rms_barge_in_enabled() and rms > self.effective_barge_in_threshold():
             should_interrupt = True
             barge_reason = "voice-rms-barge-in"
         elif self.wake_detector.process_pcm(clean_pcm):
