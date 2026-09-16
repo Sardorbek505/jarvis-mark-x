@@ -492,3 +492,42 @@ async def test_вопрос_джарвиса_держит_окно_дольше(
 
     assert стенд.jarvis._followup_timeout == 6.0
     assert стенд.jarvis._pending_question is True
+
+
+class _InterruptingResponse:
+    """Кусок ответа, при чтении которого пользователь перебивает Джарвиса."""
+
+    def __init__(self, jarvis):
+        self._jarvis = jarvis
+        self.server_content = None
+        self.tool_call = None
+
+    @property
+    def data(self):
+        self._jarvis._is_speaking = True      # есть что перебивать
+        self._jarvis.interrupt_speech("test barge-in")
+        return None
+
+
+@pytest.mark.asyncio
+async def test_прерванный_ход_не_озвучивается_заново(стенд):
+    """turn_complete прерванного хода закрывает его молча.
+
+    Стенд 16.09.2026: после barge-in флаг прерывания сбрасывался первой же
+    строкой обработки turn_complete, и весь старый ответ звучал заново.
+    """
+    j = стенд.jarvis
+    script = [
+        _resp(heard="джарвис, как дела"),
+        _resp(said="Благодарю, сэр, всё в полном порядке. "),
+        _InterruptingResponse(j),
+        _resp(data=b"\x05\x06" * 100),
+        _resp(said="Согласно протоколу, докладываю.", turn_complete=True),
+    ]
+
+    await _прогнать(стенд, _фраза(), script, timeout=2.0)
+
+    assert not any(str(log).startswith("Джарвис:") for log in стенд.ui.logs), \
+        "прерванный ответ попал в озвучку/журнал заново"
+    assert стенд.out.written == [], "звук прерванного хода доиграл в устройство"
+    assert j._interrupted_turn is False

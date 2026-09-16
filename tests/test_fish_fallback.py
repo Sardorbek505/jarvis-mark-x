@@ -227,3 +227,86 @@ def test_empty_edge_hedge_falls_back_to_fish(monkeypatch):
     audio = _drain(stub)
     assert audio.startswith(b"\x0f\x0f"), "Edge промолчал — фразу обязан договорить Fish"
     assert calls["edge"] == 1
+
+
+# ── Кэш готовых фраз в тракте озвучки ─────────────────────────────────────────
+
+
+def _wire_cache(monkeypatch, tmp_path):
+    from core import voice_cache as vc
+    monkeypatch.setattr(vc, "_voice_id", lambda: "voice-test")
+    cache = vc.VoiceCache(tmp_path, sample_rate=24000)
+    monkeypatch.setattr(jarvis_main, "get_voice_cache", lambda sample_rate=24000: cache)
+    return cache
+
+
+def test_cached_phrase_sounds_without_calling_fish(monkeypatch, tmp_path):
+    cache = _wire_cache(monkeypatch, tmp_path)
+    cache.put("Поставил на паузу, сэр.", b"\x0c\x0c" * 2400)
+    fish_calls, edge_calls = _wire(monkeypatch, configured=True, fish_pcm=b"\x0f\x0f" * 2400)
+    stub = _Stub()
+
+    _speak(stub, "Поставил на паузу, сэр.")
+
+    assert _drain(stub).startswith(b"\x0c\x0c"), "фраза должна прозвучать из кэша"
+    assert fish_calls == [] and edge_calls == []
+
+
+def test_fish_result_is_written_to_cache(monkeypatch, tmp_path):
+    cache = _wire_cache(monkeypatch, tmp_path)
+    _wire(monkeypatch, configured=True, fish_pcm=b"\x0f\x0f" * 2400)
+    stub = _Stub()
+
+    _speak(stub, "Готово, сэр.")
+
+    assert cache.get("Готово, сэр.") == b"\x0f\x0f" * 2400
+
+
+def test_edge_voice_is_never_cached(monkeypatch, tmp_path):
+    cache = _wire_cache(monkeypatch, tmp_path)
+    _wire(monkeypatch, configured=True, fish_pcm=None)  # Fish молчит → Edge
+    stub = _Stub()
+
+    _speak(stub, "Готово, сэр.")
+
+    assert cache.get("Готово, сэр.") is None
+
+
+def test_interrupted_fish_stream_is_not_cached(monkeypatch, tmp_path):
+    """Половина фразы в кэше хуже, чем ничего."""
+    cache = _wire_cache(monkeypatch, tmp_path)
+    from telegram_bot import tts_edge, tts_fish
+
+    async def two_chunks(fragment, sample_rate=24000):
+        yield b"\x0f\x0f" * 2400
+        await asyncio.sleep(0)
+        yield b"\x0f\x0f" * 2400
+
+    async def edge(fragment, sample_rate=24000):
+        return None
+
+    monkeypatch.setattr(tts_fish, "is_configured", lambda: True)
+    monkeypatch.setattr(tts_fish, "stream_pcm", two_chunks)
+    monkeypatch.setattr(tts_edge, "speak_pcm", edge)
+
+    class _Interrupting(_Stub):
+        pushes = 0
+
+        def __init__(self):
+            super().__init__()
+            self._speech_epoch = 0
+            self.audio_in_queue = _CountingQueue(self)
+
+    class _CountingQueue(asyncio.Queue):
+        def __init__(self, owner):
+            super().__init__()
+            self.owner = owner
+
+        def put_nowait(self, item):
+            super().put_nowait(item)
+            self.owner._speech_epoch += 1  # перебили после первого куска
+
+    stub = _Interrupting()
+    _speak(stub, "Готово, сэр.")
+
+    assert cache.get("Готово, сэр.") is None

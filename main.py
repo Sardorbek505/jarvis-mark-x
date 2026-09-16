@@ -164,6 +164,8 @@ _VAD_PREFIX_MS = int(os.getenv("VAD_PREFIX_MS", "120"))
 # стоит только если он начнёт путаться в многошаговых просьбах.
 _THINKING_BUDGET = int(os.getenv("JARVIS_THINKING_BUDGET", "0"))
 
+from core.voice_cache import get_voice_cache  # noqa: E402 — после настройки окружения выше
+
 # Сколько ждать первый звук от Fish, прежде чем параллельно поднять Edge-TTS.
 # Бесплатный тариф Fish (s2.1-pro-free) за один вечер 15.09.2026 плавал от
 # 0.9 с до 11 с на первый байт; на 11 с диалог разваливается целиком. Хедж,
@@ -2057,6 +2059,20 @@ class Jarvis:
         async def _edge() -> bytes | None:
             return await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
 
+        # Готовая фраза с диска — раньше любого синтеза. Только тембр Fish.
+        cache = None
+        if voice.get("fish_alive"):
+            try:
+                cache = get_voice_cache(RECV_SAMPLE_RATE)
+                cached = cache.get(fragment)
+            except Exception as e:
+                logger.debug("Кэш голоса недоступен: %s", e)
+                cached = None
+            if cached:
+                logger.info("TTS: фраза из кэша (%d симв)", len(fragment))
+                yield cached
+                return
+
         # Источник Fish: заранее заказанная первая фраза (задача с целым PCM)
         # либо поток. Оба проходят через один хедж по первому звуку.
         taker = getattr(self, "_take_prefetched_speech", None)
@@ -2131,12 +2147,21 @@ class Jarvis:
 
             if _stale():
                 return
+            collected = [first_pcm]
             yield first_pcm
             if fish is not None:
                 async for pcm in fish:
                     if _stale():
                         return
+                    collected.append(pcm)
                     yield pcm
+            # Фраза прозвучала целиком голосом Fish и ход не перебит — в кэш.
+            # Половина фразы на диске хуже, чем ничего, поэтому только здесь.
+            if cache is not None and not _stale():
+                try:
+                    cache.put(fragment, b"".join(collected))
+                except Exception as e:
+                    logger.debug("Кэш голоса: не записал: %s", e)
         finally:
             await _close_fish()
             if edge_task is not None and not edge_task.done():
@@ -3024,6 +3049,30 @@ class Jarvis:
         if full:
             await self._arbitrate_turn(full, out_buf, in_buf)
 
+    def _start_voice_warmup(self) -> None:
+        """Фоновый прогрев кэша фиксированных фраз голосом Fish. Один раз за процесс."""
+        if getattr(self, "_voice_warmup_started", False) or get_voice_provider() != "fish":
+            return
+        try:
+            from telegram_bot import tts_fish
+            if not tts_fish.is_configured():
+                return
+        except Exception:
+            return
+        self._voice_warmup_started = True
+
+        def _synth(text: str):
+            return asyncio.run(tts_fish.speak_pcm(text, sample_rate=RECV_SAMPLE_RATE))
+
+        def _worker():
+            try:
+                from core.voice_phrases import CANNED_PHRASES
+                get_voice_cache(RECV_SAMPLE_RATE).warmup(CANNED_PHRASES, _synth)
+            except Exception as e:
+                logger.debug("Прогрев голоса не удался: %s", e)
+
+        threading.Thread(target=_worker, name="voice-warmup", daemon=True).start()
+
     def _enter_thinking(self) -> None:
         """Ход отдан Gemini: ждём модель, таймер тишины и шлюз к этому не относятся."""
         sm = getattr(self, "state_machine", None)
@@ -3279,9 +3328,20 @@ class Jarvis:
                             # Решение — когда модель начала отвечать или в turn_complete.
 
                         if sc.turn_complete:
-                            self._interrupted_turn = False
                             if self._turn_done_event:
                                 self._turn_done_event.set()
+                            if getattr(self, "_interrupted_turn", False):
+                                # Ход перебит пользователем: его текст и звук
+                                # выбрасываются целиком. Раньше флаг сбрасывался
+                                # первой же строкой, и прерванный ответ звучал
+                                # заново от начала до конца (стенд 16.09.2026).
+                                self._interrupted_turn = False
+                                logger.info("Dialog: ход, прерванный пользователем, закрыт без озвучки")
+                                out_buf.clear()
+                                in_buf.clear()
+                                self._clear_audio_in_queue()
+                                self._begin_new_utterance()
+                                continue
 
                             raw_in = "".join(in_buf)
                             full_in = _clean_dialog_text(raw_in)
@@ -3671,6 +3731,7 @@ class Jarvis:
                             play_activation_chime()
                         except Exception:
                             pass
+                        self._start_voice_warmup()
 
                         # Reset retry count on successful connection
                         retry_count = 0
