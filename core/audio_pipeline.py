@@ -117,6 +117,7 @@ class AudioPipeline:
         on_silence_timeout: Optional[Callable[[], None]] = None,
         on_local_transcript: Optional[Callable[[str], None]] = None,
         enable_local_stt: bool = True,
+        on_foreign_voice: Optional[Callable[[Optional[float]], None]] = None,
         rms_threshold: float = 0.0,
         hangover_frames: int = 13,
         silence_timeout_sec: float = LISTEN_SILENCE_TIMEOUT_SEC,
@@ -143,6 +144,17 @@ class AudioPipeline:
         # пока Gemini ещё молчит 3–5 с. Отдаётся наверх текстом.
         self.on_local_transcript = on_local_transcript
         self._enable_local_stt = enable_local_stt
+        # Голосовой отпечаток владельца (JARVIS_OWNER_ONLY): чужая фраза
+        # выбрасывается в конце речи, до роутера и до Gemini.
+        self.on_foreign_voice = on_foreign_voice
+        try:
+            from core.speaker_verifier import get_speaker_verifier
+            self.speaker_verifier = get_speaker_verifier()
+        except Exception as e:
+            logger.debug("Верификатор голоса не поднят: %s", e)
+            self.speaker_verifier = None
+        # Речь текущей реплики (с пробуждения) — для голосового отпечатка
+        self._utterance_audio = bytearray()
         self.rms_threshold = rms_threshold
         # Последний посчитанный адаптивный порог — для аудиоколбэка, которому
         # нельзя считать перцентили: он только читает атрибут.
@@ -533,8 +545,43 @@ class AudioPipeline:
         self._last_speech_at = None
         self._emit_local_transcript()
 
+    def _remember_utterance(self, frame: bytes) -> None:
+        if self.speaker_verifier is None:
+            return
+        self._utterance_audio += frame
+        limit = 6 * 16000 * 2
+        if len(self._utterance_audio) > limit:
+            del self._utterance_audio[:-limit]
+
+    def _voice_is_owner(self) -> bool:
+        """Голосовой отпечаток реплики. Нет верификатора — всегда свой."""
+        if self.speaker_verifier is None:
+            return True
+        audio = np.frombuffer(bytes(self._utterance_audio), dtype=np.int16)
+        self._utterance_audio = bytearray()
+        try:
+            ok, score = self.speaker_verifier.is_owner(audio)
+        except Exception as e:
+            logger.debug("Верификация голоса не удалась: %s", e)
+            return True
+        if ok:
+            if score is not None:
+                logger.info("Голос: владелец (сходство %.2f)", score)
+            return True
+        logger.info("Голос: не владелец (сходство %.2f) — реплика выброшена", score if score is not None else -1)
+        if self.local_stt is not None:
+            self.local_stt.reset()
+        if self.on_foreign_voice:
+            try:
+                self.on_foreign_voice(score)
+            except Exception as e:
+                logger.error("on_foreign_voice error: %s", e)
+        return False
+
     def _emit_local_transcript(self) -> None:
         """Итог локальной расшифровки реплики — наверх, роутеру команд."""
+        if not self._voice_is_owner():
+            return
         if self.local_stt is None:
             return
         if self.local_stt.fed_seconds() < 0.3:
@@ -623,12 +670,14 @@ class AudioPipeline:
             frame = self._preroll.popleft()
             if self.local_stt is not None:
                 self.local_stt.accept(frame)
+            self._remember_utterance(frame)
             try:
                 self.on_speech_frame(frame)
             except Exception as e:
                 logger.debug("Preroll flush note: %s", e)
         if self.local_stt is not None:
             self.local_stt.accept(current_frame)
+        self._remember_utterance(current_frame)
         try:
             self.on_speech_frame(current_frame)
         except Exception as e:
@@ -682,6 +731,7 @@ class AudioPipeline:
         # и первый же кадр из очереди сбросит машину обратно в STANDBY ("gateway closed").
         if self.local_stt is not None:
             self.local_stt.reset()
+        self._utterance_audio = bytearray()
         if self.on_wake:
             try:
                 self.on_wake()
@@ -706,6 +756,7 @@ class AudioPipeline:
                 # «сделай громче».
                 if self.local_stt is not None:
                     self.local_stt.accept(frame)
+                self._remember_utterance(frame)
                 try:
                     self.on_speech_frame(frame)
                 except Exception:

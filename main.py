@@ -1282,6 +1282,7 @@ class Jarvis:
                 ref_provider=self._aec_reference_window,
                 on_silence_timeout=self._on_listen_silence_timeout,
                 on_local_transcript=self._on_local_transcript,
+                on_foreign_voice=self._on_foreign_voice,
                 rms_threshold=MIC_RMS_THRESHOLD,
                 hangover_frames=MIC_HANGOVER_FRAMES,
                 enable_aec=True,
@@ -3109,6 +3110,24 @@ class Jarvis:
         from core.conversation_state import ConversationState
         if sm.state in (ConversationState.LISTENING, ConversationState.FOLLOW_UP, ConversationState.STANDBY):
             sm.transition_to(ConversationState.THINKING, reason="waiting for model")
+
+    def _on_foreign_voice(self, score) -> None:
+        """Фраза сказана не владельцем (JARVIS_OWNER_ONLY): шлюз закрыть,
+        обращение снять — расшифровка Gemini по ней уйдёт в «не к Джарвису»."""
+        self._wake_active_until = 0.0
+        self._hotkey_active_until = 0.0
+        pt = getattr(self, "_pending_gemini_turn", None)
+        if pt is not None:
+            # Реплика закрывается целиком: даже если в расшифровке Gemini есть
+            # слово «Джарвис», арбитраж по тексту её не примет
+            pt.addressed = False
+            pt.arbitrated = True
+            pt.routed_to = "DISCARDED"
+            pt.clear()
+        try:
+            self.ui.write_log(f"Игнор (чужой голос{f', сходство {score:.2f}' if score is not None else ''})")
+        except Exception:
+            pass
 
     def _on_local_transcript(self, text: str) -> None:
         """Локальная расшифровка реплики готова (поток AudioPipeline).
