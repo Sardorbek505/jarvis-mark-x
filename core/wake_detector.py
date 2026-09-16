@@ -87,6 +87,8 @@ class WakeWordDetector2Stage:
         self._last_quick_command_time = 0.0
         self._last_decoy_time = 0.0
         self._nn_run = 0
+        # Кто засчитал слово последним: "nn" (своя модель) или "vosk"
+        self.last_wake_source = ""
         self.quick_command_cooldown = 1.0
 
         # Кольцевой буфер сырого аудио (2 секунды)
@@ -312,6 +314,7 @@ class WakeWordDetector2Stage:
                     logger.info("Wake Word: [VOSK CONFIRMED] '%s'", matched_word)
                     if self.on_wake:
                         try:
+                            self.last_wake_source = "vosk"
                             self.on_wake(1.0)
                         except Exception as e:
                             logger.error("on_wake error: %s", e)
@@ -353,6 +356,7 @@ class WakeWordDetector2Stage:
                             )
                             if self.on_wake:
                                 try:
+                                    self.last_wake_source = "nn"
                                     self.on_wake(jarvis_score)
                                 except Exception as e:
                                     logger.error("on_wake error: %s", e)

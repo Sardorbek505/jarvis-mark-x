@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import sys
 import time
@@ -281,6 +282,34 @@ def main():
         for _ in range(neg_aug):
             train_neg.append(_owner_variant(c, rng))
     print(f"владелец в обучении: pos ×{OWNER_AUG}, neg ×{neg_aug}")
+
+    # Реальная комната: минутные записи data/wake/room/*.npy (без слова) и
+    # дампы ложных срабатываний logs/debug_wake_*_raw.wav. Живой прогон
+    # 17.09.2026: сеть давала 1.00 на шуме уровня 80–200 — синтетика такого
+    # не содержала. Режем на клипы по 1.5 с с перекрытием.
+    room_clips = []
+    for f in sorted(glob.glob(str(data / "room" / "*.npy"))):
+        r = np.load(f)
+        step = int(0.75 * SR)
+        for i in range(0, len(r) - int(1.5 * SR), step):
+            room_clips.append(r[i:i + int(1.5 * SR)])
+    import wave as _wave
+    for f in sorted(glob.glob("logs/debug_wake_*_raw.wav")):
+        try:
+            with _wave.open(f) as w:
+                room_clips.append(np.frombuffer(w.readframes(w.getnframes()), np.int16))
+        except Exception:
+            pass
+    for c in room_clips:
+        base = _fit_clip(c, rng, False)
+        train_neg.append(base)
+        for _ in range(3):
+            v = _fit_clip(c, rng, True)
+            train_neg.append(np.clip(v.astype(np.float32) * rng.uniform(0.3, 3.0), -32768, 32767).astype(np.int16))
+    # часть комнаты — в отложенную оценку
+    for c in room_clips[::7]:
+        hold_neg.append(_fit_clip(c, rng, False))
+    print(f"комната: {len(room_clips)} клипов-основ")
 
     # SAPI Irina — третий тембр
     from wake_data_gen import NEGATIVE_WORDS, POSITIVE_PHRASES  # noqa: E402

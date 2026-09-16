@@ -246,3 +246,23 @@ def test_silent_room_still_vetoes_phantom_wake_word():
     pipe._handle_wake_spotted(1.0)
 
     assert not woke and pipe.wake_vetoed_count == 1
+
+
+def test_silence_veto_does_not_apply_to_neural_wake():
+    """Своя модель узнала слово — Silero-вето не голосует (при играющих колонках
+    эхоподавитель давит речь, и p≈0.05 при score 1.00 — живой прогон 17.09.2026)."""
+    sm, pipe = _pipeline(lambda: False, rms_threshold=12.0)
+    pipe.endpointer = _FakeEndpointer()
+    woke = []
+    pipe.on_wake = lambda *a, **k: woke.append(True)
+    _feed(pipe, ConversationState.STANDBY, level=30, frames=20)   # тишина по Silero
+    pipe.wake_detector.last_wake_source = "nn"
+    pipe._handle_wake_spotted(1.0)
+    assert woke and pipe.wake_vetoed_count == 0
+
+    woke.clear()
+    pipe.state_machine.transition_to(ConversationState.STANDBY, reason="test", force=True)
+    _feed(pipe, ConversationState.STANDBY, level=30, frames=20)   # окно вероятностей снова свежее и тихое
+    pipe.wake_detector.last_wake_source = "vosk"
+    pipe._handle_wake_spotted(1.0)
+    assert not woke and pipe.wake_vetoed_count == 1, "для Vosk вето остаётся"

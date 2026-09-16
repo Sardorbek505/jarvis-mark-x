@@ -16,6 +16,7 @@
 """
 
 import collections
+import os
 import logging
 import queue
 import threading
@@ -155,6 +156,14 @@ class AudioPipeline:
             self.speaker_verifier = None
         # Речь текущей реплики (с пробуждения) — для голосового отпечатка
         self._utterance_audio = bytearray()
+        # Диагностика слуха: последние ~2 с сырого микрофона и очищенного
+        # сигнала. Пишутся в logs/debug_wake_*.wav, когда сеть узнала слово,
+        # а Silero речи не видит — чтобы разбирать такие случаи по звуку.
+        self._debug_raw: collections.deque = collections.deque(maxlen=32)
+        self._debug_clean: collections.deque = collections.deque(maxlen=32)
+        self._debug_dumps = 0
+        # Громкость последних кадров — для проверки «слово в тишине»
+        self._rms_window: collections.deque = collections.deque(maxlen=WAKE_SPEECH_LOOKBACK_FRAMES)
         self.rms_threshold = rms_threshold
         # Последний посчитанный адаптивный порог — для аудиоколбэка, которому
         # нельзя считать перцентили: он только читает атрибут.
@@ -404,9 +413,13 @@ class AudioPipeline:
             clean_pcm = mic_pcm
             self.last_erle_db = 0.0
 
+        self._debug_raw.append(mic_pcm)
+        self._debug_clean.append(clean_pcm)
+
         # 2. Расчёт уровня громкости для UI
         arr = np.frombuffer(clean_pcm, dtype=np.int16)
         rms = float(np.sqrt(np.mean(np.square(arr.astype(np.float32))))) if len(arr) > 0 else 0.0
+        self._rms_window.append(rms)
         if self.on_level:
             try:
                 self.on_level(min(1.0, rms / MIC_FULL_SCALE))
@@ -544,6 +557,34 @@ class AudioPipeline:
         logger.info("AudioPipeline: конец фразы (Silero endpointing)")
         self._last_speech_at = None
         self._emit_local_transcript()
+
+    def _loud_enough_for_speech(self) -> bool:
+        """Была ли за последнюю секунду громкость хотя бы на пороге речи."""
+        if not self._rms_window:
+            return True
+        return max(self._rms_window) >= self.effective_rms_threshold()
+
+    def _dump_debug_audio(self, reason: str) -> None:
+        """Сырой микрофон и очищенный сигнал за последние ~2 с — в WAV."""
+        if self._debug_dumps >= 20 or os.getenv("JARVIS_DEBUG_AUDIO", "1") == "0":
+            return
+        try:
+            import wave
+            from pathlib import Path
+            out_dir = Path(__file__).resolve().parent.parent / "logs"
+            out_dir.mkdir(exist_ok=True)
+            stamp = time.strftime("%H%M%S")
+            for tag, frames in (("raw", self._debug_raw), ("clean", self._debug_clean)):
+                path = out_dir / f"debug_wake_{stamp}_{reason}_{tag}.wav"
+                with wave.open(str(path), "wb") as w:
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(16000)
+                    w.writeframes(b"".join(frames))
+            self._debug_dumps += 1
+            logger.info("AudioPipeline: отладочный дамп звука записан (%s)", reason)
+        except Exception as e:
+            logger.debug("debug dump: %s", e)
 
     def _remember_utterance(self, frame: bytes) -> None:
         if self.speaker_verifier is None:
@@ -709,7 +750,23 @@ class AudioPipeline:
 
     def _handle_wake_spotted(self, score: float):
         """Обработка детекции ключевого слова 'Джарвис'."""
-        if not self._speech_seen_recently():
+        # Вето «речи в комнате не было» — страховка от грамматики Vosk, которая
+        # подгоняет шум под слово. Своей нейросети оно только мешает: при
+        # играющих колонках эхоподавитель давит речь, Silero даёт p≈0.05, а
+        # сеть слово всё равно узнаёт (живой прогон 17.09.2026: три «Джарвис»
+        # подряд отклонены при score 1.00).
+        from_nn = getattr(self.wake_detector, "last_wake_source", "") == "nn"
+        if from_nn and not self._loud_enough_for_speech():
+            # Живой прогон 17.09.2026: сеть давала 1.00 на шуме комнаты уровня
+            # 80–200 (речи нет). Слово не бывает тише порога речи.
+            self.wake_vetoed_count += 1
+            self._dump_debug_audio("nn_wake_quiet")
+            logger.info("AudioPipeline: сеть услышала слово в тишине (rms %.0f < %.0f) — пропуск",
+                        max(self._rms_window) if self._rms_window else 0.0, self.effective_rms_threshold())
+            return
+        if from_nn and not self._speech_seen_recently():
+            self._dump_debug_audio("nn_wake_no_speech")
+        if not from_nn and not self._speech_seen_recently():
             self.wake_vetoed_count += 1
             logger.info(
                 "AudioPipeline: ключевое слово отклонено — речи в комнате не было "

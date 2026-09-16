@@ -51,6 +51,16 @@ import logging
 from typing import Optional
 
 # Configure logging
+# Нативные падения (access violation в ONNX/Vosk/PortAudio) не дают Python-
+# трейсбэка; faulthandler пишет стеки всех потоков в logs/crash.log.
+import faulthandler  # noqa: E402
+try:
+    os.makedirs(os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"), exist_ok=True)
+    _crash_log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "crash.log"), "a", encoding="utf-8")
+    faulthandler.enable(file=_crash_log, all_threads=True)
+except Exception:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
