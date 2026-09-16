@@ -96,12 +96,8 @@ def play_earcon(kind: str, async_play: bool = True):
         # воспроизведение под pytest, из-за чего тест на вызов sounddevice
         # проверял пустоту и был обречён падать. Тест и так подменяет
         # sounddevice, реального звука в прогоне нет.
-        try:
-            import sounddevice as sd
-            sd.play(audio, SAMPLE_RATE)
-            sd.wait()
-        except Exception as e:
-            logger.debug("play_earcon exception: %s", e)
+        from core.short_sounds import play_blocking
+        play_blocking(audio, SAMPLE_RATE)
 
     if async_play:
         threading.Thread(target=_play_task, daemon=True).start()

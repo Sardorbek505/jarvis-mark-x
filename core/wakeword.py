@@ -46,12 +46,11 @@ def play_activation_chime():
     def _worker():
         try:
             import numpy as np
-            import sounddevice as sd
             pcm = generate_chime_pcm(24000)
             if pcm:
                 arr = np.frombuffer(pcm, dtype=np.int16)
-                sd.play(arr, 24000)
-                sd.wait()
+                from core.short_sounds import play_blocking
+                play_blocking(arr, 24000)
         except Exception as e:
             logger.debug("Play chime error: %s", e)
 
