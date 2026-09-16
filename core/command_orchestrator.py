@@ -288,9 +288,20 @@ class CommandOrchestrator:
 
             elif cmd.intent == "play_music":
                 from actions.spotify_controller import spotify_player
+                from core.media.orchestrator import get_media_orchestrator
                 query = cmd.slots.get("query", "")
+                media = get_media_orchestrator()
+                # Играющее видео — на паузу ДО запуска музыки, а не после
+                media.preempt_active_session()
                 r = spotify_player({"action": "play", "query": query}, player=player)
                 result_msg = r or f"Включаю музыку «{query}», сэр."
+                failed = any(w in result_msg.lower() for w in ("не удалось", "недоступен", "ошибка", "не найден"))
+                if not failed:
+                    from core.media.controllers.spotify import SpotifyMediaController
+                    from core.media.models import MediaType
+                    media.register_app_session(MediaType.MUSIC, query or "Spotify", "spotify", SpotifyMediaController())
+                else:
+                    success = False
 
             elif cmd.intent == "sleep_timer":
                 from actions.sleep_timer import sleep_timer

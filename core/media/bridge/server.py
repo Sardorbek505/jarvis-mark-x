@@ -118,6 +118,12 @@ class BrowserBridgeServer:
                     cls._instance.start()
         return cls._instance
 
+    @staticmethod
+    def is_extension_origin(origin: str) -> bool:
+        """Origin установленного расширения браузера (Chrome/Edge/Firefox)."""
+        origin = (origin or "").strip().lower()
+        return origin.startswith(("chrome-extension://", "moz-extension://", "extension://"))
+
     def verify_token(self, provided_token: str) -> bool:
         if not provided_token or not isinstance(provided_token, str):
             return False
@@ -131,6 +137,24 @@ class BrowserBridgeServer:
         self._thread.start()
         logger.info("BrowserBridgeServer: Запущен на ws://%s:%d [аутентификация по токену включена]", self.host, self.port)
 
+    def stop(self) -> None:
+        """Останавливает цикл приёма и закрывает сокет (тесты, завершение)."""
+        self._running = False
+        sock = self._server_socket
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        with self._clients_lock:
+            for c in list(self._clients):
+                try:
+                    c.close()
+                except OSError:
+                    pass
+            self._clients.clear()
+            self._authenticated_clients.clear()
+
     def _server_loop(self):
         try:
             self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -138,6 +162,8 @@ class BrowserBridgeServer:
             self._server_socket.bind((self.host, self.port))
             self._server_socket.listen(5)
             self._server_socket.settimeout(1.0)
+            # port=0 — ОС выбрала свободный порт (тесты); запоминаем фактический
+            self.port = self._server_socket.getsockname()[1]
         except Exception as e:
             logger.warning("BrowserBridgeServer: Не удалось занять порт %d (%s)", self.port, e)
             self._running = False
@@ -164,10 +190,13 @@ class BrowserBridgeServer:
 
             req_str = data.decode("utf-8", errors="ignore")
             sec_key = None
+            origin = ""
             for line in req_str.split("\r\n"):
-                if line.lower().startswith("sec-websocket-key:"):
+                low = line.lower()
+                if low.startswith("sec-websocket-key:"):
                     sec_key = line.split(":", 1)[1].strip()
-                    break
+                elif low.startswith("origin:"):
+                    origin = line.split(":", 1)[1].strip()
 
             if sec_key:
                 handshake = _make_ws_handshake_response(sec_key)
@@ -176,9 +205,18 @@ class BrowserBridgeServer:
                 conn.close()
                 return
 
-            # Требуем аутентификацию handshake первым сообщением
+            # Расширение браузера опознаётся по Origin: заголовок ставит сам
+            # браузер, и веб-страница подделать «chrome-extension://…» не может.
+            # Токен остаётся вторым способом — для не-браузерных клиентов.
             buffer = b""
             authenticated = False
+            if self.is_extension_origin(origin):
+                authenticated = True
+                with self._clients_lock:
+                    self._clients.append(conn)
+                    self._authenticated_clients.add(conn)
+                logger.info("BrowserBridgeServer: расширение подключено (%s)", origin)
+                conn.sendall(_encode_ws_frame(json.dumps({"type": "AUTH_SUCCESS", "message": "Authenticated"})))
             start_auth_time = time.time()
 
             while self._running and not authenticated:

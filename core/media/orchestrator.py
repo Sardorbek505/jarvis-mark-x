@@ -43,6 +43,7 @@ class MediaOrchestrator:
         req = MediaRequest.from_query(raw_query, parameters)
         logger.info("MediaOrchestrator: Обработка запроса %s (type=%s, provider=%s)", req.title, req.media_type, req.provider)
 
+        self.preempt_active_session()
         res = self.router.resolve_and_open(req)
         if res.success:
             import uuid
@@ -61,6 +62,46 @@ class MediaOrchestrator:
             return res.message
         else:
             raise MediaNotFound(req.title)
+
+    def register_app_session(self, media_type, title: str, provider: str, controller: BaseMediaController) -> MediaSession:
+        """Сессия плеера-приложения (Spotify через Web API), запущенного мимо роутера.
+
+        Без регистрации переключение «музыка → фильм» не знает, что глушить.
+        """
+        import uuid
+        session = MediaSession(
+            session_id=uuid.uuid4().hex,
+            media_type=media_type,
+            title=title,
+            provider=provider,
+            status=MediaState.PLAYING,
+            source_url=None,
+            controller=controller,
+            capabilities=controller.capabilities,
+        )
+        self.tracker.register_session(session)
+        return session
+
+    def preempt_active_session(self) -> None:
+        """Глушит играющий контент ДО поиска нового.
+
+        Поиск и открытие фильма занимают секунды; раньше предыдущая сессия
+        закрывалась только при регистрации новой, и всё это время играли оба.
+        Пауза — мгновенная (Web API Spotify / мост / клавиша), закрытие
+        вкладки или процесса по-прежнему делает tracker при смене сессии.
+        """
+        session = self.tracker.get_active_session()
+        if not session or session.cancelled or session.status in (MediaState.STOPPED, MediaState.PAUSED):
+            return
+        if not session.controller:
+            return
+        try:
+            session.controller.pause()
+            self.tracker.update_session_state(status=MediaState.PAUSED)
+            logger.info("MediaOrchestrator: «%s» (%s) поставлен на паузу перед новым контентом",
+                        session.title, session.provider)
+        except Exception as e:
+            logger.warning("MediaOrchestrator: не удалось приглушить «%s»: %s", session.title, e)
 
     # ── 2. Получение активного контроллера ──────────────────────────────────
     def _get_active_controller(self) -> BaseMediaController:

@@ -37,10 +37,15 @@ class MediaSessionTracker:
             if self._active_session:
                 if self._active_session != session:
                     self._active_session.cancelled = True
-                if self._active_session.controller:
+                if self._active_session.controller and self._active_session != session:
+                    # Уступить место: вкладка видео закрывается, Spotify лишь
+                    # ставится на паузу — убивать процесс ради переключения незачем.
+                    prev = self._active_session.controller
                     try:
-                        if self._active_session != session and hasattr(self._active_session.controller, "close"):
-                            self._active_session.controller.close()
+                        if hasattr(prev, "on_superseded"):
+                            prev.on_superseded()
+                        elif hasattr(prev, "close"):
+                            prev.close()
                     except Exception as e:
                         logger.debug("Close previous session note: %s", e)
 

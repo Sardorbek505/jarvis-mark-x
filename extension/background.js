@@ -1,7 +1,8 @@
 // JARVIS Media Bridge — Background Service Worker
 let socket = null;
 let reconnectInterval = 3000;
-const SERVER_URL = "ws://127.0.0.1:8765";
+// Порт сервера моста: core/media/bridge/server.py (BrowserBridgeServer, 18765)
+const SERVER_URL = "ws://127.0.0.1:18765";
 
 function connectWebSocket() {
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {

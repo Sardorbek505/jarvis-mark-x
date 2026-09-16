@@ -15,6 +15,22 @@ logger = logging.getLogger("jarvis-spotify-controller")
 _OS = platform.system()
 
 
+def _spotify_api():
+    """Web API Spotify с OAuth (actions/spotify_controller), если авторизован; иначе None.
+
+    Media-клавиша play/pause — переключатель: не зная состояния плеера, ею
+    можно случайно ВКЛЮЧИТЬ музыку вместо паузы. Web API детерминирован.
+    """
+    try:
+        from actions.spotify_controller import spotify_api
+        ctrl = getattr(spotify_api, "controller", None)
+        if ctrl is not None and ctrl.is_ready():
+            return spotify_api
+    except Exception as e:
+        logger.debug("Spotify Web API недоступен: %s", e)
+    return None
+
+
 def _send_media_key(action: str) -> bool:
     try:
         from actions.music_player import _send_media_key as _smk
@@ -45,11 +61,27 @@ class SpotifyMediaController(BaseMediaController):
         self._current_state = MediaState.PLAYING
 
     def play(self) -> str:
+        api = _spotify_api()
+        if api is not None:
+            try:
+                api.controller.resume()
+                self._current_state = MediaState.PLAYING
+                return "Продолжаю воспроизведение в Spotify, сэр."
+            except Exception as e:
+                logger.debug("Spotify resume via API note: %s", e)
         _send_media_key("playpause")
         self._current_state = MediaState.PLAYING
         return "Продолжаю воспроизведение в Spotify, сэр."
 
     def pause(self) -> str:
+        api = _spotify_api()
+        if api is not None:
+            try:
+                api.controller.pause()
+                self._current_state = MediaState.PAUSED
+                return "Пауза в Spotify поставлена, сэр."
+            except Exception as e:
+                logger.debug("Spotify pause via API note: %s", e)
         _send_media_key("playpause")
         self._current_state = MediaState.PAUSED
         return "Пауза в Spotify поставлена, сэр."
@@ -65,6 +97,12 @@ class SpotifyMediaController(BaseMediaController):
         _send_media_key("playpause")
         self._current_state = MediaState.STOPPED
         return "Музыка в Spotify остановлена, сэр."
+
+    def on_superseded(self) -> str:
+        """Новый контент вместо музыки: пауза, а не завершение процесса."""
+        if self._current_state == MediaState.PAUSED:
+            return "Музыка на паузе, сэр."
+        return self.pause()
 
     def close(self) -> str:
         """Явное закрытие приложения Spotify (завершение процесса)."""

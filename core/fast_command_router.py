@@ -112,7 +112,7 @@ class FastCommandRouter:
             )
 
         # ── 1. Пауза / Стоп ──────────────────────────────────────────────────
-        if re.match(r"^(пауза|стоп|остановись|останови|останови музыку|поставь на паузу|замолчи|тихо|заткнись)$", clean):
+        if re.match(r"^(пауза|стоп|остановись|останови|поставь на паузу|замолчи|тихо|заткнись)$", clean):
             try:
                 from actions.music_player import _send_media_key
                 ok = _send_media_key("playpause")
@@ -1012,6 +1012,23 @@ class FastCommandRouter:
                     status=ExecutionStatus.FAILED,
                     category=CommandCategory.LOCAL_SAFE,
                 )
+
+        # ── 22a. Закрыть видео / выключить музыку — без модели ────────────────
+        if re.match(r"^(?:закрой|выключи|выруби|отключи|останови)\s+(?:фильм|видео|плеер|кино|сериал|вкладку|мультик|ролик)$", clean):
+            from core.media.orchestrator import get_media_orchestrator
+            text = get_media_orchestrator().close()
+            _trigger_action_feedback()
+            logger.info("Fast-Path: ✕ %s", text)
+            return FastCommandResult(True, text, is_action=True, status=ExecutionStatus.SUCCESS,
+                                     category=CommandCategory.LOCAL_CONTEXT_DEPENDENT)
+
+        if re.match(r"^(?:выключи|выруби|отключи|останови|закрой)\s+(?:музыку|песню|трек|спотифай|spotify)$", clean):
+            from core.media.orchestrator import get_media_orchestrator
+            text = get_media_orchestrator().stop()
+            _trigger_action_feedback()
+            logger.info("Fast-Path: ⏹ %s", text)
+            return FastCommandResult(True, text, is_action=True, status=ExecutionStatus.SUCCESS,
+                                     category=CommandCategory.LOCAL_CONTEXT_DEPENDENT)
 
         # ── 23. Время и дата — без модели ─────────────────────────────────────
         # Через Gemini «который час» стоил 4–7 с. Строгие шаблоны: «сколько
