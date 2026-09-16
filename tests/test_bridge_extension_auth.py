@@ -19,8 +19,8 @@ from core.media.bridge.server import BrowserBridgeServer, _decode_ws_frame
 def server():
     srv = BrowserBridgeServer(port=0)  # свободный порт
     srv.start()
-    for _ in range(50):
-        if srv._server_socket is not None:
+    for _ in range(100):
+        if srv._server_socket is not None and srv.port:
             break
         time.sleep(0.02)
     yield srv
@@ -68,4 +68,4 @@ def test_web_page_origin_is_not_authenticated(server):
 def test_extension_points_to_the_server_port():
     js = (Path(__file__).resolve().parents[1] / "extension" / "background.js").read_text(encoding="utf-8")
     port = int(re.search(r"ws://127\.0\.0\.1:(\d+)", js).group(1))
-    assert port == BrowserBridgeServer().port
+    assert port == BrowserBridgeServer.DEFAULT_PORT

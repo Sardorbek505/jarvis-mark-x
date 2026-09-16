@@ -15,12 +15,18 @@ logger = logging.getLogger("jarvis-spotify-controller")
 _OS = platform.system()
 
 
+# Web API управления плеером требует Premium: после первого 403 не пробуем.
+_api_player_forbidden = False
+
+
 def _spotify_api():
     """Web API Spotify с OAuth (actions/spotify_controller), если авторизован; иначе None.
 
     Media-клавиша play/pause — переключатель: не зная состояния плеера, ею
     можно случайно ВКЛЮЧИТЬ музыку вместо паузы. Web API детерминирован.
     """
+    if _api_player_forbidden:
+        return None
     try:
         from actions.spotify_controller import spotify_api
         ctrl = getattr(spotify_api, "controller", None)
@@ -29,6 +35,26 @@ def _spotify_api():
     except Exception as e:
         logger.debug("Spotify Web API недоступен: %s", e)
     return None
+
+
+def _system_session_control(action: str) -> bool:
+    """Адресная команда сессии Spotify через Windows (без API, без Premium)."""
+    try:
+        from core.media_session_manager import control_app
+        return control_app("spotify", action)
+    except Exception as e:
+        logger.debug("GSMTC Spotify %s: %s", action, e)
+        return False
+
+
+def _api_result_ok(text: str) -> bool:
+    """Ответ контроллера Web API — успех, а не «не удалось/недоступен»."""
+    global _api_player_forbidden
+    low = (text or "").lower()
+    ok = bool(low) and not any(w in low for w in ("не удалось", "недоступен", "нет активного"))
+    if not ok:
+        _api_player_forbidden = True  # 403 Premium или нет устройства — дальше без API
+    return ok
 
 
 def _send_media_key(action: str) -> bool:
@@ -61,12 +87,17 @@ class SpotifyMediaController(BaseMediaController):
         self._current_state = MediaState.PLAYING
 
     def play(self) -> str:
+        # Порядок: системная сессия Spotify (адресно, без Premium) →
+        # Web API (если отвечает) → media-клавиша (переключатель, последний шанс)
+        if _system_session_control("play"):
+            self._current_state = MediaState.PLAYING
+            return "Продолжаю воспроизведение в Spotify, сэр."
         api = _spotify_api()
         if api is not None:
             try:
-                api.controller.resume()
-                self._current_state = MediaState.PLAYING
-                return "Продолжаю воспроизведение в Spotify, сэр."
+                if _api_result_ok(api.controller.resume()):
+                    self._current_state = MediaState.PLAYING
+                    return "Продолжаю воспроизведение в Spotify, сэр."
             except Exception as e:
                 logger.debug("Spotify resume via API note: %s", e)
         _send_media_key("playpause")
@@ -74,12 +105,15 @@ class SpotifyMediaController(BaseMediaController):
         return "Продолжаю воспроизведение в Spotify, сэр."
 
     def pause(self) -> str:
+        if _system_session_control("pause"):
+            self._current_state = MediaState.PAUSED
+            return "Пауза в Spotify поставлена, сэр."
         api = _spotify_api()
         if api is not None:
             try:
-                api.controller.pause()
-                self._current_state = MediaState.PAUSED
-                return "Пауза в Spotify поставлена, сэр."
+                if _api_result_ok(api.controller.pause()):
+                    self._current_state = MediaState.PAUSED
+                    return "Пауза в Spotify поставлена, сэр."
             except Exception as e:
                 logger.debug("Spotify pause via API note: %s", e)
         _send_media_key("playpause")

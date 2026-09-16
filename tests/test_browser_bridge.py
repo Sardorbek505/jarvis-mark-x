@@ -1,6 +1,7 @@
 """JARVIS Mark X — Тесты BrowserBridge и веб-управления."""
 
 import json
+from pathlib import Path
 from core.media.bridge.bridge import get_browser_bridge
 from core.media.bridge.server import BrowserBridgeServer
 from core.media.controllers.browser import BrowserMediaController
@@ -202,3 +203,32 @@ def test_browser_bridge_state_resync_and_tracker_update():
         assert active.position_seconds == 120.0
         assert active.duration_seconds == 600.0
 
+
+
+def test_controller_without_tab_id_resolves_provider_tab():
+    """Контроллер без tab_id адресует команды вкладке своего провайдера.
+
+    Без этого команда уходила «во все вкладки», расширение в этой ветке не
+    отвечало, и пауза фильма ждала 2 с таймаута (живой стенд 16.09.2026).
+    """
+    server = get_browser_bridge().server
+    with server._tabs_lock:
+        server._tabs.clear()
+    for tab_id, url, t in (("11", "https://www.youtube.com/watch?v=x", 1.0),
+                           ("22", "https://vkvideo.ru/video-1_2", 2.0),
+                           ("33", "https://vkvideo.ru/video-3_4", 3.0)):
+        server._process_ws_message(json.dumps({"type": "MEDIA_STATE_UPDATE", "tab_id": tab_id, "url": url,
+                                               "title": "x", "state": {"paused": False}}))
+        with server._tabs_lock:
+            server._tabs[tab_id]["last_updated"] = t
+
+    ctrl = BrowserMediaController(provider_name="vkvideo")
+    assert ctrl._resolve_tab_id() == "33", "должна взяться самая свежая вкладка VK"
+    assert BrowserMediaController(provider_name="youtube")._resolve_tab_id() == "11"
+    assert BrowserMediaController(provider_name="kinopoisk")._resolve_tab_id() is None
+
+
+def test_extension_answers_broadcast_commands():
+    js = (Path(__file__).resolve().parents[1] / "extension" / "background.js").read_text(encoding="utf-8")
+    broadcast = js.split("// Если tab_id не указан", 1)[1]
+    assert "COMMAND_RESPONSE" in broadcast, "широковещательная команда обязана получать ответ"

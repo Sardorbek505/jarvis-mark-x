@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 import socket
 import struct
@@ -94,8 +95,14 @@ class BrowserBridgeServer:
     _instance: Optional["BrowserBridgeServer"] = None
     _lock = threading.Lock()
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 18765):
+    # JARVIS_BRIDGE_PORT=0 — эфемерный порт (тесты): иначе к тестовому серверу
+    # подключается настоящее расширение браузера и приносит живые вкладки.
+    DEFAULT_PORT = 18765
+
+    def __init__(self, host: str = "127.0.0.1", port: Optional[int] = None):
         self.host = host
+        if port is None:
+            port = int(os.getenv("JARVIS_BRIDGE_PORT", str(self.DEFAULT_PORT)))
         self.port = port
         # Токен генерируется через secrets при старте JARVIS, не hardcoded, не пишется в логи
         self.token = secrets.token_hex(32)

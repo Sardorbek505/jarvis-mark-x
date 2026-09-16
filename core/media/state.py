@@ -21,6 +21,9 @@ class MediaSessionTracker:
 
     def __init__(self):
         self._active_session: Optional[MediaSession] = None
+        # Сессия, которую лишь приглушили ради нового контента (Spotify на
+        # паузе). Закрыли новый — она возвращается, и «продолжи» продолжает её.
+        self._suspended_session: Optional[MediaSession] = None
         self._state_lock = threading.Lock()
 
     @classmethod
@@ -40,7 +43,8 @@ class MediaSessionTracker:
                 if self._active_session.controller and self._active_session != session:
                     # Уступить место: вкладка видео закрывается, Spotify лишь
                     # ставится на паузу — убивать процесс ради переключения незачем.
-                    prev = self._active_session.controller
+                    prev_session = self._active_session
+                    prev = prev_session.controller
                     try:
                         if hasattr(prev, "on_superseded"):
                             prev.on_superseded()
@@ -48,6 +52,18 @@ class MediaSessionTracker:
                             prev.close()
                     except Exception as e:
                         logger.debug("Close previous session note: %s", e)
+                    # Приглушённая (не закрытая) сессия ждёт возвращения
+                    try:
+                        still_alive = prev.get_state() == MediaState.PAUSED
+                    except Exception:
+                        still_alive = False
+                    if still_alive:
+                        prev_session.cancelled = False
+                        prev_session.status = MediaState.PAUSED
+                        self._suspended_session = prev_session
+                        logger.info("MediaSessionTracker: «%s» приглушена, вернётся после закрытия нового", prev_session.title)
+                    else:
+                        self._suspended_session = None
 
             self._active_session = session
             logger.info("MediaSessionTracker: Зарегистрирована новая сессия -> %s", session.to_summary())
@@ -83,13 +99,27 @@ class MediaSessionTracker:
                 self._active_session.fullscreen = fullscreen
 
     def clear_active_session(self):
-        """Очищает активную сессию (например при закрытии плеера)."""
+        """Очищает активную сессию (например при закрытии плеера).
+
+        Если ради неё приглушили другую (музыку), та возвращается на место —
+        на паузе, чтобы «продолжи» продолжило именно её.
+        """
         with self._state_lock:
             if self._active_session:
                 self._active_session.cancelled = True
                 self._active_session.status = MediaState.STOPPED
                 logger.info("MediaSessionTracker: Сессия закрыта -> «%s»", self._active_session.title)
                 self._active_session = None
+            suspended = self._suspended_session
+            self._suspended_session = None
+            if suspended and suspended.controller:
+                self._active_session = suspended
+                logger.info("MediaSessionTracker: вернулась приглушённая сессия -> %s", suspended.to_summary())
+
+    def drop_suspended_session(self):
+        """Забыть приглушённую сессию (её остановили явно)."""
+        with self._state_lock:
+            self._suspended_session = None
 
 
 def get_media_tracker() -> MediaSessionTracker:

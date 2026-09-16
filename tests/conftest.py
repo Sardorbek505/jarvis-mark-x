@@ -44,3 +44,10 @@ def _isolate_rag_cache():
     memory_rag._VECS.clear()
     yield
     memory_rag._VECS.clear()
+
+
+def pytest_configure(config):
+    # Тестовый мост браузера — на эфемерном порту: иначе к нему подключается
+    # настоящее расширение из браузера разработчика и приносит живые вкладки.
+    import os
+    os.environ.setdefault("JARVIS_BRIDGE_PORT", "0")

@@ -89,6 +89,33 @@ def _trigger_action_feedback():
         pass
 
 
+def _active_media_session():
+    try:
+        from core.media.state import get_media_tracker
+        return get_media_tracker().get_active_session()
+    except Exception as e:
+        logger.debug("media tracker note: %s", e)
+        return None
+
+
+def _pause_active_session() -> bool:
+    session = _active_media_session()
+    if not session or not session.controller:
+        return False
+    from core.media.orchestrator import get_media_orchestrator
+    get_media_orchestrator().pause()
+    return True
+
+
+def _resume_active_session() -> bool:
+    session = _active_media_session()
+    if not session or not session.controller:
+        return False
+    from core.media.orchestrator import get_media_orchestrator
+    get_media_orchestrator().play()
+    return True
+
+
 class FastCommandRouter:
     """Маршрутизатор мгновенных локальных команд."""
 
@@ -114,6 +141,16 @@ class FastCommandRouter:
         # ── 1. Пауза / Стоп ──────────────────────────────────────────────────
         if re.match(r"^(пауза|стоп|остановись|останови|поставь на паузу|замолчи|тихо|заткнись)$", clean):
             try:
+                # Есть активная сессия (фильм через мост, Spotify через API) —
+                # пауза адресная. Системная клавиша — переключатель, и при
+                # открытом фильме и приглушённой музыке неизвестно, кого она тронет.
+                if _pause_active_session():
+                    _trigger_action_feedback()
+                    logger.info("Fast-Path: ⏯ Пауза активной медиа-сессии")
+                    return FastCommandResult(
+                        True, "Поставил на паузу, сэр.", is_action=True,
+                        status=ExecutionStatus.SUCCESS, category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                    )
                 from actions.music_player import _send_media_key
                 ok = _send_media_key("playpause")
                 if ok is not False:
@@ -147,8 +184,15 @@ class FastCommandRouter:
                 )
 
         # ── 2. Возобновление / Играй ──────────────────────────────────────────
-        if re.match(r"^(продолжи|продолжай|возобнови|играй|запусти музыку|вруби музыку)$", clean):
+        if re.match(r"^(продолжи|продолжай|возобнови|играй|запусти музыку|вруби музыку|продолжи музыку|продолжи фильм|продолжи видео)$", clean):
             try:
+                if _resume_active_session():
+                    _trigger_action_feedback()
+                    logger.info("Fast-Path: ⏯ Возобновление активной медиа-сессии")
+                    return FastCommandResult(
+                        True, "Продолжаю воспроизведение, сэр.", is_action=True,
+                        status=ExecutionStatus.SUCCESS, category=CommandCategory.LOCAL_CONTEXT_DEPENDENT,
+                    )
                 from actions.music_player import _send_media_key
                 ok = _send_media_key("playpause")
                 if ok is not False:

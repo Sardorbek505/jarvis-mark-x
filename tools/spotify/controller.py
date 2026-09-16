@@ -349,10 +349,13 @@ class SpotifyController:
                 best_playlist = None
                 best_score = 0
                 
+                # Свой плейлист берём только при почти точном совпадении
+                # названия. partial_ratio с порогом 60 на «daft punk get lucky»
+                # находил плейлист «funk» (по «punk») и играл не то.
                 for playlist in user_playlists:
                     name = playlist.get('name', '')
-                    score = fuzz.partial_ratio(query.lower(), name.lower())
-                    if score > best_score and score > 60:  # 60% threshold
+                    score = fuzz.token_set_ratio(query.lower(), name.lower())
+                    if score > best_score and score >= 85:
                         best_score = score
                         best_playlist = playlist
                 

@@ -68,8 +68,42 @@ class BrowserMediaController(BaseMediaController):
     def capabilities(self, value: MediaCapabilities):
         self._capabilities = value
 
+    _PROVIDER_HOSTS = {
+        "vk": ("vkvideo.ru", "vk.com/video", "vk.ru/video"),
+        "youtube": ("youtube.com", "youtu.be"),
+        "kinopoisk": ("kinopoisk.ru", "hd.kinopoisk"),
+    }
+
+    def _resolve_tab_id(self) -> Optional[str]:
+        """Вкладка провайдера по URL среди тех, что прислало расширение.
+
+        Контроллер создаётся до того, как вкладка открылась, и tab_id ему не
+        известен; команда без tab_id уходила «во все вкладки», а в этой ветке
+        расширение не отвечало — пауза ждала 2 с таймаута. Берём самую свежую
+        вкладку с хостом провайдера и запоминаем.
+        """
+        if self.tab_id and self._bridge.server.get_tab_info(self.tab_id) is not None:
+            return self.tab_id
+        p = self.provider_name
+        hosts = ()
+        for key, candidates in self._PROVIDER_HOSTS.items():
+            if key in p or (key == "vk" and "вк" in p) or (key == "youtube" and "ютуб" in p) or (key == "kinopoisk" and "кинопоиск" in p):
+                hosts = candidates
+                break
+        if not hosts:
+            return self.tab_id
+        best = None
+        for tab in self._bridge.server.get_all_tabs():
+            url = (tab.get("url") or "").lower()
+            if any(h in url for h in hosts):
+                if best is None or tab.get("last_updated", 0) > best.get("last_updated", 0):
+                    best = tab
+        if best is not None:
+            self.tab_id = str(best["tab_id"])
+        return self.tab_id
+
     def _is_bridge_active(self) -> bool:
-        return self._bridge.is_tab_connected(self.tab_id)
+        return self._bridge.is_tab_connected(self._resolve_tab_id())
 
     def _get_adapter(self):
         return self._bridge.get_adapter(self.provider_name)

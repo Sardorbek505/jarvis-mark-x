@@ -136,6 +136,7 @@ class MediaOrchestrator:
 
     def stop(self) -> str:
         """Остановка воспроизведения и сброс на 00:00 БЕЗ очистки активной сессии."""
+        self.tracker.drop_suspended_session()
         session = self.tracker.get_active_session()
         if session:
             session.cancelled = True

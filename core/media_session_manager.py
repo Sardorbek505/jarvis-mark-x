@@ -189,3 +189,69 @@ class MediaSessionManager:
             return f"Сейчас играет трек исполнителя {artist}{app_suffix}, сэр."
 
         return "Сейчас что-то играет, но название трека не определено, сэр."
+
+
+# ── Адресное управление приложением через системные медиа-сессии ──────────────
+#
+# Media-клавиша play/pause — переключатель и уходит «кому-то»; Web API Spotify
+# без Premium отвечает 403. Windows же знает каждую сессию по имени процесса и
+# умеет командовать именно ей.
+
+_CONTROL_ACTIONS = ("pause", "play", "stop", "next", "previous", "toggle")
+
+
+async def control_app_async(app_substring: str, action: str) -> bool:
+    """`action` ∈ pause/play/stop/next/previous/toggle для сессии, чей
+    source_app_user_model_id содержит `app_substring` (например «spotify»)."""
+    if _OS != "Windows" or action not in _CONTROL_ACTIONS:
+        return False
+    try:
+        import winrt.windows.media.control as wmc
+    except ImportError:
+        return False
+    try:
+        mgr = await wmc.GlobalSystemMediaTransportControlsSessionManager.request_async()
+        if not mgr:
+            return False
+        needle = app_substring.lower()
+        for session in mgr.get_sessions():
+            app_id = (session.source_app_user_model_id or "").lower()
+            if needle not in app_id:
+                continue
+            if action == "pause":
+                return bool(await session.try_pause_async())
+            if action == "play":
+                return bool(await session.try_play_async())
+            if action == "stop":
+                return bool(await session.try_stop_async())
+            if action == "next":
+                return bool(await session.try_skip_next_async())
+            if action == "previous":
+                return bool(await session.try_skip_previous_async())
+            return bool(await session.try_toggle_play_pause_async())
+    except Exception as e:
+        logger.debug("GSMTC control %s/%s: %s", app_substring, action, e)
+    return False
+
+
+def control_app(app_substring: str, action: str, timeout: float = 2.0) -> bool:
+    """Синхронная обёртка: безопасна и из потока с работающим циклом событий."""
+    import concurrent.futures
+
+    def _run():
+        return asyncio.run(control_app_async(app_substring, action))
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            return _run()
+        except Exception as e:
+            logger.debug("GSMTC control sync: %s", e)
+            return False
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        try:
+            return pool.submit(_run).result(timeout=timeout)
+        except Exception as e:
+            logger.debug("GSMTC control threaded: %s", e)
+            return False

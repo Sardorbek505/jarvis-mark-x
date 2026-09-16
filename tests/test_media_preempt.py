@@ -24,19 +24,23 @@ class _Recorder(BaseMediaController):
         self.log, self.name = log, name
 
     def play(self):
-        self.log.append(f"{self.name}:play"); return "ok"
+        self.log.append(f"{self.name}:play")
+        return "ok"
 
     def pause(self):
-        self.log.append(f"{self.name}:pause"); return "ok"
+        self.log.append(f"{self.name}:pause")
+        return "ok"
 
     def toggle_playback(self):
         return "ok"
 
     def stop(self):
-        self.log.append(f"{self.name}:stop"); return "ok"
+        self.log.append(f"{self.name}:stop")
+        return "ok"
 
     def close(self):
-        self.log.append(f"{self.name}:close"); return "ok"
+        self.log.append(f"{self.name}:close")
+        return "ok"
 
     def get_state(self):
         return MediaState.PLAYING
@@ -102,12 +106,26 @@ def test_preempt_failure_does_not_block_new_content(orchestrator):
 
 # ── Spotify: пауза и продолжение детерминированно, а не toggle-клавишей ──────
 
+def test_spotify_pause_uses_system_session_first():
+    """Windows знает сессию Spotify.exe и командует именно ей — без API и Premium."""
+    ctrl = SpotifyMediaController()
+    with patch("core.media.controllers.spotify._system_session_control", return_value=True) as sys_ctl, \
+         patch("core.media.controllers.spotify._spotify_api") as api, \
+         patch("core.media.controllers.spotify._send_media_key") as key:
+        ctrl.pause()
+    sys_ctl.assert_called_once_with("pause")
+    api.assert_not_called()
+    key.assert_not_called()
+    assert ctrl.get_state() == MediaState.PAUSED
+
+
 def test_spotify_pause_uses_web_api_before_media_key():
     ctrl = SpotifyMediaController()
     api = MagicMock()
     api.controller.is_ready.return_value = True
     api.controller.pause.return_value = "Пауза, сэр."
-    with patch("core.media.controllers.spotify._spotify_api", return_value=api), \
+    with patch("core.media.controllers.spotify._system_session_control", return_value=False), \
+         patch("core.media.controllers.spotify._spotify_api", return_value=api), \
          patch("core.media.controllers.spotify._send_media_key") as key:
         ctrl.pause()
     api.controller.pause.assert_called_once()
@@ -115,9 +133,27 @@ def test_spotify_pause_uses_web_api_before_media_key():
     assert ctrl.get_state() == MediaState.PAUSED
 
 
+def test_spotify_api_refusal_is_remembered(monkeypatch):
+    """403 (нет Premium) — дальше API не дёргаем, сразу клавиша."""
+    from core.media.controllers import spotify as sp
+    monkeypatch.setattr(sp, "_api_player_forbidden", False)
+    ctrl = SpotifyMediaController()
+    api = MagicMock()
+    api.controller.is_ready.return_value = True
+    api.controller.pause.return_value = "Не удалось поставить на паузу, сэр."
+    with patch("core.media.controllers.spotify._system_session_control", return_value=False), \
+         patch("actions.spotify_controller.spotify_api", api), \
+         patch("core.media.controllers.spotify._send_media_key") as key:
+        ctrl.pause()
+        ctrl.pause()
+    assert api.controller.pause.call_count == 1, "после отказа API не должен вызываться повторно"
+    assert key.call_count == 2
+
+
 def test_spotify_pause_falls_back_to_media_key_without_api():
     ctrl = SpotifyMediaController()
-    with patch("core.media.controllers.spotify._spotify_api", return_value=None), \
+    with patch("core.media.controllers.spotify._system_session_control", return_value=False), \
+         patch("core.media.controllers.spotify._spotify_api", return_value=None), \
          patch("core.media.controllers.spotify._send_media_key") as key:
         ctrl.pause()
     key.assert_called_once_with("playpause")
@@ -129,7 +165,8 @@ def test_spotify_play_uses_web_api_resume():
     api = MagicMock()
     api.controller.is_ready.return_value = True
     api.controller.resume.return_value = "Продолжаю, сэр."
-    with patch("core.media.controllers.spotify._spotify_api", return_value=api), \
+    with patch("core.media.controllers.spotify._system_session_control", return_value=False), \
+         patch("core.media.controllers.spotify._spotify_api", return_value=api), \
          patch("core.media.controllers.spotify._send_media_key") as key:
         ctrl.play()
     api.controller.resume.assert_called_once()
@@ -142,7 +179,8 @@ def test_spotify_play_uses_web_api_resume():
 def test_superseded_spotify_is_paused_not_killed(orchestrator):
     ctrl = SpotifyMediaController()
     orchestrator.tracker.set_active_session(_session(ctrl))
-    with patch("core.media.controllers.spotify._spotify_api", return_value=None), \
+    with patch("core.media.controllers.spotify._system_session_control", return_value=False), \
+         patch("core.media.controllers.spotify._spotify_api", return_value=None), \
          patch("core.media.controllers.spotify._send_media_key") as key, \
          patch("core.media.controllers.spotify.subprocess.run") as run:
         orchestrator.tracker.set_active_session(_session(MagicMock(), MediaType.MOVIE))
@@ -204,3 +242,78 @@ def test_stop_music_is_a_fast_command(text):
     with patch("core.media.orchestrator.MediaOrchestrator.stop", return_value="Музыка остановлена, сэр.") as m:
         res = FastCommandRouter.match_and_execute(text)
     assert res[0] is True and m.called
+
+
+# ── Пауза/продолжить идут в активную сессию, а не в системную клавишу ────────
+
+def test_pause_fast_command_targets_active_session(orchestrator):
+    from core.fast_command_router import FastCommandRouter
+    log = []
+    orchestrator.tracker.set_active_session(_session(_Recorder(log, "video"), MediaType.MOVIE))
+    with patch("actions.music_player._send_media_key") as key:
+        res = FastCommandRouter.match_and_execute("джарвис, поставь на паузу")
+    assert res[0] is True and "video:pause" in log
+    key.assert_not_called()
+    assert orchestrator.tracker.get_active_session().status == MediaState.PAUSED
+
+
+def test_resume_fast_command_targets_active_session(orchestrator):
+    from core.fast_command_router import FastCommandRouter
+    log = []
+    s = _session(_Recorder(log, "video"), MediaType.MOVIE)
+    s.status = MediaState.PAUSED
+    orchestrator.tracker.set_active_session(s)
+    with patch("actions.music_player._send_media_key") as key:
+        res = FastCommandRouter.match_and_execute("продолжи")
+    assert res[0] is True and "video:play" in log
+    key.assert_not_called()
+
+
+def test_pause_without_session_falls_back_to_media_key(orchestrator):
+    from core.fast_command_router import FastCommandRouter
+    with patch("actions.music_player._send_media_key", return_value=True) as key:
+        res = FastCommandRouter.match_and_execute("пауза")
+    assert res[0] is True
+    key.assert_called_once_with("playpause")
+
+
+# ── Закрыл фильм — вернулась приглушённая музыка ─────────────────────────────
+
+def test_closing_video_restores_suspended_music(orchestrator):
+    log = []
+    music = SpotifyMediaController()
+    with patch("core.media.controllers.spotify._system_session_control", return_value=False), \
+         patch("core.media.controllers.spotify._spotify_api", return_value=None), \
+         patch("core.media.controllers.spotify._send_media_key"):
+        orchestrator.tracker.set_active_session(_session(music))
+        orchestrator.tracker.set_active_session(_session(_Recorder(log, "video"), MediaType.MOVIE))
+        orchestrator.close()
+
+    active = orchestrator.tracker.get_active_session()
+    assert active is not None and active.controller is music, "музыка должна вернуться в активную сессию"
+    assert active.status == MediaState.PAUSED
+
+
+def test_resume_after_closing_video_resumes_music(orchestrator):
+    from core.fast_command_router import FastCommandRouter
+    music = SpotifyMediaController()
+    api = MagicMock()
+    api.controller.is_ready.return_value = True
+    with patch("core.media.controllers.spotify._system_session_control", return_value=False), \
+         patch("core.media.controllers.spotify._spotify_api", return_value=api), \
+         patch("core.media.controllers.spotify._send_media_key"):
+        orchestrator.tracker.set_active_session(_session(music))
+        orchestrator.tracker.set_active_session(_session(_Recorder([], "video"), MediaType.MOVIE))
+        orchestrator.close()
+        res = FastCommandRouter.match_and_execute("продолжи музыку")
+    assert res[0] is True
+    api.controller.resume.assert_called_once()
+
+
+def test_closed_video_session_is_not_restored(orchestrator):
+    """Вкладка видео при смене закрывается — возвращать после нечего."""
+    log = []
+    orchestrator.tracker.set_active_session(_session(_Recorder(log, "video"), MediaType.MOVIE))
+    orchestrator.tracker.set_active_session(_session(_Recorder(log, "music"), MediaType.MUSIC))
+    orchestrator.close()
+    assert orchestrator.tracker.get_active_session() is None

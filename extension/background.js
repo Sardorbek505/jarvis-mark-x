@@ -29,6 +29,9 @@ function connectWebSocket() {
 
     socket.onclose = () => {
       console.log("[JARVIS Bridge] Socket closed. Retrying in " + (reconnectInterval / 1000) + "s...");
+      // setTimeout здесь ненадёжен: Manifest V3 усыпляет service worker через
+      // ~30 с бездействия, и отложенный вызов пропадает вместе с ним. Будильник
+      // ниже переживает сон, а короткая пауза — на случай, если worker ещё жив.
       setTimeout(connectWebSocket, reconnectInterval);
     };
 
@@ -60,12 +63,24 @@ function handleJarvisCommand(msg) {
       }
     });
   } else {
-    // Если tab_id не указан, отправляем во все медиа-вкладки
+    // Если tab_id не указан, отправляем во все медиа-вкладки и отвечаем один
+    // раз: успех, если хоть одна вкладка приняла команду. Без ответа сервер
+    // ждал полный таймаут.
     chrome.tabs.query({}, (tabs) => {
+      let pending = tabs.length;
+      let anySuccess = false;
+      let firstResponse = null;
+      const finish = () => {
+        sendToJarvis({ type: "COMMAND_RESPONSE", success: anySuccess, tab_id: "default", response: firstResponse });
+      };
+      if (!pending) { finish(); return; }
       tabs.forEach((tab) => {
-        chrome.tabs.sendMessage(tab.id, { command, ...params }, () => {
-          // Игнорируем ошибки для вкладок без медиа
-          if (!chrome.runtime.lastError) {}
+        chrome.tabs.sendMessage(tab.id, { command, ...params }, (response) => {
+          if (!chrome.runtime.lastError && response && response.success) {
+            anySuccess = true;
+            if (!firstResponse) firstResponse = response;
+          }
+          if (--pending === 0) finish();
         });
       });
     });
@@ -106,5 +121,17 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   }
 });
 
-// Запускаем подключение
+// Запускаем подключение при каждом пробуждении worker'а и по будильнику:
+// пока Джарвис не запущен, сервера нет, и worker обязан пробовать снова
+// после сна. chrome.alarms — единственный таймер, который его будит.
+chrome.alarms.create("jarvis-bridge-reconnect", { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "jarvis-bridge-reconnect") connectWebSocket();
+});
+chrome.runtime.onStartup.addListener(connectWebSocket);
+chrome.runtime.onInstalled.addListener(connectWebSocket);
+// Открыл/переключил вкладку — worker проснулся, пробуем сразу
+chrome.tabs.onUpdated.addListener(() => connectWebSocket());
+chrome.tabs.onActivated.addListener(() => connectWebSocket());
+
 connectWebSocket();
