@@ -3,9 +3,61 @@ import time
 from unittest.mock import MagicMock, patch
 import pytest
 
+import core.ducking_controller as ducking_module
 from core.ducking_controller import DuckingController, DuckingState
 from core.headless_ui import HeadlessUI
 from main import Jarvis
+
+
+@pytest.fixture(autouse=True)
+def _isolated_state_file(tmp_path, monkeypatch):
+    """Тесты не трогают настоящий файл громкостей в memory/."""
+    monkeypatch.setattr(ducking_module, "DUCK_STATE_FILE", tmp_path / "duck.json")
+    return tmp_path / "duck.json"
+
+
+def test_saved_volumes_roundtrip_filters_garbage(tmp_path):
+    path = tmp_path / "v.json"
+    ducking_module._write_saved_volumes(path, {"spotify.exe": 0.8, "steam.exe": 1.0})
+    path.write_text(path.read_text(encoding="utf-8")[:-1] + ', "bad.exe": 5, "zero.exe": 0}', encoding="utf-8")
+    assert ducking_module._read_saved_volumes(path) == {"spotify.exe": 0.8, "steam.exe": 1.0}
+    path.write_text("не json", encoding="utf-8")
+    assert ducking_module._read_saved_volumes(path) == {}
+
+
+def test_duck_writes_originals_to_disk_and_restore_clears(_isolated_state_file):
+    """Обрыв посреди приглушения не должен терять исходную громкость."""
+    dc = DuckingController(duck_ratio=0.4)
+    try:
+        volume = MagicMock()
+        volume.GetMasterVolume.return_value = 0.9
+        session = MagicMock()
+        session.ProcessId = 4242
+        session.Process.name.return_value = "Spotify.exe"
+        session._ctl.QueryInterface.return_value = volume
+        with patch("pycaw.pycaw.AudioUtilities.GetAllSessions", return_value=[session]):
+            dc._discover_and_save_sessions()
+            assert ducking_module._read_saved_volumes(_isolated_state_file) == {"spotify.exe": 0.9}
+            dc._finish_restore_sessions()
+        assert not _isolated_state_file.exists()
+        volume.SetMasterVolume.assert_called_with(0.9, None)
+    finally:
+        dc.close()
+
+
+def test_startup_recovers_volumes_left_ducked(_isolated_state_file):
+    ducking_module._write_saved_volumes(_isolated_state_file, {"spotify.exe": 0.75})
+    volume = MagicMock()
+    session = MagicMock()
+    session.Process.name.return_value = "Spotify.exe"
+    session._ctl.QueryInterface.return_value = volume
+    with patch("pycaw.pycaw.AudioUtilities.GetAllSessions", return_value=[session]):
+        dc = DuckingController(duck_ratio=0.4)
+    try:
+        volume.SetMasterVolume.assert_called_with(0.75, None)
+        assert not _isolated_state_file.exists()
+    finally:
+        dc.close()
 
 
 def test_is_jarvis_or_system_process_exclusions():

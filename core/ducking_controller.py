@@ -12,11 +12,13 @@
 import atexit
 import ctypes
 import enum
+import json
 import logging
 import math
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Dict, Optional
 
 logger = logging.getLogger("jarvis-ducking")
@@ -26,6 +28,33 @@ VK_MEDIA_PLAY_PAUSE = 0xB3
 VK_MEDIA_STOP       = 0xB2
 VK_MEDIA_NEXT_TRACK = 0xB0
 VK_MEDIA_PREV_TRACK = 0xB1
+
+
+# Громкости приложений «до приглушения» — на диске. Если процесс Джарвиса
+# оборвётся посреди приглушения (падение, перезапуск, выключение ПК), Windows
+# запомнит 40%, а следующее приглушение примет их за норму: 40% → 16% → 6%.
+# Живой прогон 17.09.2026: Spotify и системные звуки «сами» съехали к ~10%.
+DUCK_STATE_FILE = Path(__file__).resolve().parent.parent / "memory" / "ducking_saved_volumes.json"
+
+
+def _write_saved_volumes(path: Path, volumes: Dict[str, float]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(volumes, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as e:
+        logger.warning("Audio Ducking: не сохранил громкости на диск: %s", e)
+
+
+def _read_saved_volumes(path: Path) -> Dict[str, float]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): float(v) for k, v in data.items() if isinstance(v, (int, float)) and 0.0 < float(v) <= 1.0}
 
 
 class DuckingState(enum.Enum):
@@ -104,6 +133,9 @@ class DuckingController:
 
         # Ключ — PID процесса (int), значение — громкость сессии до приглушения.
         self._saved_session_vols: Dict[int, float] = {}
+        # То же по имени процесса — для восстановления после обрыва (PID меняется)
+        self._saved_by_name: Dict[str, float] = {}
+        self._state_file = DUCK_STATE_FILE
 
         # Windows CoreAudio Endpoint
         self._endpoint_volume = None
@@ -117,8 +149,48 @@ class DuckingController:
         self._fade_start_time: float = 0.0
         self._fade_start_vol: float = 1.0
 
+        self._recover_after_crash()
         self._start_worker()
         atexit.register(self.close)
+
+    def _recover_after_crash(self) -> None:
+        """Возвращает громкости, оставшиеся приглушёнными после обрыва процесса."""
+        saved = _read_saved_volumes(self._state_file)
+        if not saved:
+            return
+        restored = 0
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+            from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
+
+            for session in AudioUtilities.GetAllSessions():
+                name = self._session_name(session)
+                if name in saved:
+                    try:
+                        session._ctl.QueryInterface(ISimpleAudioVolume).SetMasterVolume(saved[name], None)
+                        restored += 1
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.debug("Audio Ducking: восстановление после обрыва: %s", e)
+        logger.warning("Audio Ducking: прошлый запуск оборвался в приглушении — вернул громкость %d приложениям", restored)
+        self._clear_state_file()
+
+    @staticmethod
+    def _session_name(session) -> str:
+        try:
+            return (session.Process.name() if session.Process else "").lower()
+        except Exception:
+            return ""
+
+    def _clear_state_file(self) -> None:
+        try:
+            self._state_file.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            logger.debug("Audio Ducking: не удалил файл громкостей: %s", e)
 
     def _init_endpoint(self):
         try:
@@ -180,6 +252,7 @@ class DuckingController:
             from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
 
             sessions = AudioUtilities.GetAllSessions()
+            changed = False
             for session in sessions:
                 if self._is_jarvis_or_system_process(session):
                     continue
@@ -190,8 +263,15 @@ class DuckingController:
                         vol = float(volume_ctl.GetMasterVolume())
                         if vol > 0.0:
                             self._saved_session_vols[pid] = vol
+                            name = self._session_name(session)
+                            if name and name not in self._saved_by_name:
+                                self._saved_by_name[name] = vol
+                                changed = True
                     except Exception:
                         pass
+            # Сначала на диск, потом приглушать: обрыв после этой строки уже не страшен
+            if changed:
+                _write_saved_volumes(self._state_file, self._saved_by_name)
         except Exception as e:
             logger.debug("Discover sessions error: %s", e)
 
@@ -224,6 +304,7 @@ class DuckingController:
         self._applied_ratio = 1.0
         if not self._saved_session_vols:
             return
+        self._saved_by_name.clear()
         try:
             import pythoncom
             pythoncom.CoInitialize()
@@ -243,6 +324,7 @@ class DuckingController:
             logger.debug("Finish restore sessions error: %s", e)
         finally:
             self._saved_session_vols.clear()
+            self._clear_state_file()
 
     def _start_worker(self):
         def _loop():
