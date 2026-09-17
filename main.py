@@ -1437,11 +1437,14 @@ class Jarvis:
         self._wake_active_until = time.monotonic() + 8.0
         self._chime_until = 0.0
 
-        try:
-            from core.wakeword import play_activation_chime
-            play_activation_chime()
-        except Exception:
-            pass
+        # Звук «тык» на слово выключен по просьбе владельца (17.09.2026):
+        # JARVIS_WAKE_CHIME=1 вернёт. Подтверждение, что услышал, — HUD.
+        if os.getenv("JARVIS_WAKE_CHIME", "0") == "1":
+            try:
+                from core.wakeword import play_activation_chime
+                play_activation_chime()
+            except Exception:
+                pass
         if self.ui and hasattr(self.ui, "bring_to_front"):
             try:
                 self.ui.bring_to_front()
