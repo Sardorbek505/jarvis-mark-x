@@ -339,3 +339,22 @@ def test_onnxruntime_survives_qt_import():
 # создавал, а её start() открыл бы второй поток на то же устройство.
 # Захват, AEC, KWS и barge-in проверяются здесь по отдельности выше и в сборке —
 # в tests/test_runtime_wiring.py и tests/test_audio_gateway_gating.py.
+
+
+def test_models_keep_receiving_audio_during_cooldown():
+    """Пауза после срабатывания не должна оставлять дыру в потоке для сети.
+
+    Живой прогон 17.09.2026: return на cooldown → буфер спектра рвался →
+    мусор → 1.00 → новое срабатывание → петля ложных пробуждений.
+    """
+    detector = _detector_or_skip(threshold_stage1=0.0, threshold_stage2=0.0, cooldown_sec=5.0)
+    frame = _broadband(1280, level=0.1, seed=19).tobytes()
+    for _ in range(3):
+        detector.process_pcm(frame, timestamp=100.0)
+    assert detector.process_pcm(frame, timestamp=100.1) is True
+    fed_before = len(detector._oww_model.prediction_buffer["jarvis_ru"]) if "jarvis_ru" in detector._oww_model.prediction_buffer else None
+    for i in range(5):
+        assert detector.process_pcm(frame, timestamp=100.2 + i * 0.08) is False   # в паузе не срабатывает
+    fed_after = len(detector._oww_model.prediction_buffer["jarvis_ru"]) if fed_before is not None else None
+    if fed_before is not None:
+        assert fed_after > fed_before, "во время паузы сеть перестала получать звук"

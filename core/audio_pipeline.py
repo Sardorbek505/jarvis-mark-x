@@ -606,8 +606,7 @@ class AudioPipeline:
             logger.debug("debug dump: %s", e)
 
     def _remember_utterance(self, frame: bytes) -> None:
-        if self.speaker_verifier is None:
-            return
+        # Копится всегда: нужно и голосовому отпечатку, и отладочному дампу реплики
         self._utterance_audio += frame
         limit = 6 * 16000 * 2
         if len(self._utterance_audio) > limit:
@@ -616,6 +615,7 @@ class AudioPipeline:
     def _voice_is_owner(self) -> bool:
         """Голосовой отпечаток реплики. Нет верификатора — всегда свой."""
         if self.speaker_verifier is None:
+            self._utterance_audio = bytearray()
             return True
         audio = np.frombuffer(bytes(self._utterance_audio), dtype=np.int16)
         self._utterance_audio = bytearray()
@@ -638,8 +638,26 @@ class AudioPipeline:
                 logger.error("on_foreign_voice error: %s", e)
         return False
 
+    def _dump_utterance(self) -> None:
+        """Реплика целиком (то, что ушло в облако) — logs/debug_utt_*.wav."""
+        if os.getenv("JARVIS_DEBUG_AUDIO", "1") == "0" or self._debug_dumps >= 40 or len(self._utterance_audio) < 16000:
+            return
+        try:
+            import wave
+            from pathlib import Path
+            path = Path(__file__).resolve().parent.parent / "logs" / f"debug_utt_{time.strftime('%H%M%S')}.wav"
+            with wave.open(str(path), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(bytes(self._utterance_audio))
+            self._debug_dumps += 1
+        except Exception as e:
+            logger.debug("utterance dump: %s", e)
+
     def _emit_local_transcript(self) -> None:
         """Итог локальной расшифровки реплики — наверх, роутеру команд."""
+        self._dump_utterance()
         if not self._voice_is_owner():
             return
         if self.local_stt is None:

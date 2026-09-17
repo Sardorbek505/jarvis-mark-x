@@ -563,6 +563,15 @@ TOOLS = [
         }
     },
     {
+        "name": "get_time",
+        "description": (
+            "Точное текущее время и дата на компьютере пользователя. ВСЕГДА вызывай "
+            "на вопросы «который час», «сколько времени», «какое число», «какой день» — "
+            "никогда не отвечай о времени по памяти или по прошлым ответам."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}, "required": []}
+    },
+    {
         "name": "weather",
         "description": "Сообщает текущую погоду в указанном городе.",
         "parameters": {
@@ -2481,6 +2490,9 @@ class Jarvis:
                 result = r or "Открыл."
 
             # ── Инструмент: погода ───────────────────────────────────
+            elif name == "get_time":
+                from actions.local_answers import date_answer, time_answer
+                result = f"{time_answer()} {date_answer()}"
             elif name == "weather":
                 r = await loop.run_in_executor(
                     None, lambda: weather_action(parameters=args, player=self.ui)
@@ -3211,6 +3223,9 @@ class Jarvis:
             print(f"[ДЖАРВИС] 🎤 Арбитраж реплики: '{full_in}'")
             self.ui.write_log(f"Вы: {full_in}")
         self.last_user_text = full_in
+        # «Чарли, который час» — искажённое имя перед командой (см. wake_names)
+        from core.wake_names import strip_vocative
+        full_in = strip_vocative(full_in, was_addressed)
 
         # 1. Fast-Path: мгновенное детерминированное исполнение команд управления
         from core.fast_command_router import ExecutionStatus, FastCommandRouter

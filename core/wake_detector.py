@@ -226,8 +226,14 @@ class WakeWordDetector2Stage:
                 del self._ring_buffer[:-self._max_buffer_bytes]
 
             # Проверка периода нечувствительности (cooldown)
-            if now - self._last_wake_time < self.cooldown_sec:
-                return False
+            # Пауза после срабатывания запрещает только САМО срабатывание.
+            # Раньше здесь был return: 1.2 с звука не доходили ни до Vosk, ни до
+            # сети, у которой непрерывный буфер спектра. Дыра склеивалась с
+            # новыми кадрами в мусор, сеть давала 1.00 → срабатывание → снова
+            # пауза → снова дыра: самоподдерживающаяся петля ложных
+            # пробуждений раз в 1–5 с (живой прогон 17.09.2026), которую
+            # офлайн-стенд не воспроизводил.
+            in_cooldown = (now - self._last_wake_time) < self.cooldown_sec
 
             arr = np.frombuffer(pcm_bytes, dtype=np.int16)
             rms_energy = float(np.sqrt(np.mean(np.square(arr.astype(np.float32)))))
@@ -306,6 +312,8 @@ class WakeWordDetector2Stage:
                             logger.error("on_quick_command error: %s", e)
                         return False
 
+                if detected_vosk and in_cooldown:
+                    detected_vosk = False
                 if detected_vosk and self._custom_model:
                     # Своя модель есть — Vosk лишь подстраховка: его «джарвис»
                     # засчитывается, если сеть за последнюю секунду хоть немного согласна
@@ -342,7 +350,8 @@ class WakeWordDetector2Stage:
                 else:
                     self._nn_run = 0
 
-                if rms_energy >= _MIN_CONTEXT_RMS and jarvis_score >= self.threshold_stage1 and self._nn_run >= NN_MIN_CONSECUTIVE_FRAMES:
+                if (not in_cooldown and rms_energy >= _MIN_CONTEXT_RMS and jarvis_score >= self.threshold_stage1
+                        and self._nn_run >= NN_MIN_CONSECUTIVE_FRAMES):
                     context_samples = min(len(self._ring_buffer) // 2, int(SAMPLE_RATE * 0.9))
                     if context_samples > 0:
                         has_context = context_samples >= int(SAMPLE_RATE * 0.4)

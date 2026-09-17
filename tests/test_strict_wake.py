@@ -170,3 +170,27 @@ def test_silence_timeout_keeps_addressing_once_speech_started(strict):
     stub._pending_gemini_turn.first_transcript_at = time.monotonic()
     jarvis_main.Jarvis._on_listen_silence_timeout.__get__(stub, jarvis_main.Jarvis)()
     assert stub._pending_gemini_turn.addressed is True
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Чарли, который час.", "который час."),
+    ("Чарлись, который сейчас.", "который сейчас."),
+    ("Джарвис, сделай громче", "сделай громче"),
+    ("Включи музыку, пожалуйста", "Включи музыку, пожалуйста"),   # два слова перед запятой — не имя
+    ("который час", "который час"),
+])
+def test_misheard_vocative_is_stripped_after_wake(text, expected):
+    from core.wake_names import strip_vocative
+    assert strip_vocative(text, wake_spotted=True) == expected
+
+
+def test_vocative_kept_without_wake():
+    from core.wake_names import strip_vocative
+    assert strip_vocative("Чарли, который час.", wake_spotted=False) == "Чарли, который час."
+
+
+def test_local_time_handles_misheard_name():
+    from core.fast_command_router import FastCommandRouter
+    from core.wake_names import strip_vocative
+    res = FastCommandRouter.match_and_execute(strip_vocative("Чарлись, который сейчас.", True))
+    assert res[0] is True and res[1].startswith("Сейчас ")
