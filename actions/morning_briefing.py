@@ -66,13 +66,29 @@ def _detect_city() -> Optional[str]:
 
 
 def _load_memory() -> Dict[str, Any]:
-    """Загружает данные пользователя из памяти."""
+    """Имя и город пользователя из долгосрочной памяти.
+
+    Память лежит как `{категория: {ключ: {"value": ...}}}`, а здесь читалось
+    плоским `data.get("name")` — то есть не читалось никогда: имя хранится в
+    `identity/name`. Брифинг из-за этого всегда здоровался «сэр» и всегда
+    определял город по IP, даже когда человек называл его вслух.
+    """
     memory_file = _BASE / "memory" / "data.json"
-    
+
     try:
         if memory_file.exists():
             with open(memory_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                raw = json.load(f)
+            identity = raw.get("identity", {}) if isinstance(raw, dict) else {}
+            # Город отсутствует, пока его не назвали: пустая строка отключила бы
+            # автоопределение по IP и вернула бы «Москву» по умолчанию.
+            данные = {"name": "сэр"}
+            for поле in ("name", "city"):
+                запись = identity.get(поле)
+                значение = запись.get("value") if isinstance(запись, dict) else запись
+                if значение:
+                    данные[поле] = str(значение)
+            return данные
     except Exception as exc:
         _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
     
