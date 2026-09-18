@@ -26,7 +26,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QMainWindow, QPushButton, QScrollArea, QSizePolicy,
+    QLineEdit, QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
     QSystemTrayIcon, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -951,6 +951,21 @@ class MainWindow(QMainWindow):
         self._memory_btn.clicked.connect(self._open_memory_panel)
         left_lay.addWidget(self._memory_btn)
 
+        # Кнопка: настройки разговора
+        self._settings_btn = QPushButton("⚙  РАЗГОВОР")
+        self._settings_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._settings_btn.setFixedHeight(26)
+        self._settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._settings_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.TEXT_DIM};
+                border: 1px solid {C.BORDER}; border-radius: 3px;
+            }}
+            QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
+        """)
+        self._settings_btn.clicked.connect(self._open_conversation_settings)
+        left_lay.addWidget(self._settings_btn)
+
         root.addWidget(left)
 
         # ── Центральный HUD ─────────────────────────────────────────
@@ -1490,6 +1505,118 @@ class MainWindow(QMainWindow):
         закрыть.clicked.connect(окно.accept)
         сетка.addWidget(закрыть)
 
+        окно.exec()
+
+    def _open_conversation_settings(self):
+        """Три числа, которые решают, каким Джарвис кажется в разговоре.
+
+        Жалобы на него бывают ровно двух видов — «перебивает» и «долго
+        молчит», — и это одна и та же ручка, повёрнутая не туда. Пока она
+        жила в переменной среды, для человека её не существовало.
+        """
+        from core import settings as conv
+
+        окно = QDialog(self)
+        окно.setWindowTitle("Настройки разговора")
+        окно.setMinimumWidth(520)
+        окно.setStyleSheet(f"QDialog {{ background: {C.BG}; color: {C.TEXT}; }}")
+
+        сетка = QVBoxLayout(окно)
+        сетка.setContentsMargins(16, 14, 16, 14)
+        сетка.setSpacing(10)
+
+        поля = {}
+
+        for описание in conv.ОПИСАНИЯ:
+            подпись = QLabel(описание.подпись.upper())
+            подпись.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            подпись.setStyleSheet(f"color: {C.TEXT_DIM}; letter-spacing: 1px;")
+            сетка.addWidget(подпись)
+
+            if описание.тип is bool:
+                поле = QCheckBox(описание.подпись)
+                поле.setChecked(bool(conv.get(описание.ключ)))
+                поле.setFont(QFont("Segoe UI", 9))
+                поле.setStyleSheet(f"color: {C.TEXT};")
+            else:
+                поле = QSpinBox()
+                поле.setRange(описание.минимум or 0, описание.максимум or 100000)
+                поле.setSingleStep(10)
+                поле.setValue(int(conv.get(описание.ключ)))
+                поле.setFont(QFont("Segoe UI", 10))
+                поле.setFixedHeight(30)
+                поле.setStyleSheet(f"""
+                    QSpinBox {{
+                        background: #000d12; color: {C.TEXT};
+                        border: 1px solid {C.BORDER}; border-radius: 4px;
+                        padding: 3px 6px;
+                    }}
+                    QSpinBox:focus {{ border: 1px solid {C.PRI}; }}
+                """)
+            сетка.addWidget(поле)
+            поля[описание.ключ] = поле
+
+            # Пояснение рядом с ручкой, а не в документации: настройка, смысл
+            # которой надо где-то прочитать, не будет тронута никогда.
+            пояснение = QLabel(описание.пояснение)
+            пояснение.setFont(QFont("Segoe UI", 8))
+            пояснение.setStyleSheet(f"color: {C.TEXT_DIM};")
+            пояснение.setWordWrap(True)
+            сетка.addWidget(пояснение)
+
+        когда = QLabel("Новые значения вступят в силу при следующем подключении "
+                       "к Gemini — оно случается само каждые несколько минут.")
+        когда.setFont(QFont("Segoe UI", 8))
+        когда.setStyleSheet(f"color: {C.ACC2};")
+        когда.setWordWrap(True)
+        сетка.addWidget(когда)
+
+        кнопки = QHBoxLayout()
+        кнопки.setSpacing(6)
+
+        def _кнопка(надпись: str, цвет: str) -> QPushButton:
+            b = QPushButton(надпись)
+            b.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            b.setFixedHeight(28)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {цвет};
+                    border: 1px solid {цвет}; border-radius: 3px;
+                }}
+                QPushButton:hover {{ background: {C.BORDER_A}; }}
+            """)
+            return b
+
+        def _вернуть_как_было():
+            for описание in conv.ОПИСАНИЯ:
+                поле = поля[описание.ключ]
+                if описание.тип is bool:
+                    поле.setChecked(bool(описание.по_умолчанию))
+                else:
+                    поле.setValue(int(описание.по_умолчанию))
+
+        def _сохранить():
+            for описание in conv.ОПИСАНИЯ:
+                поле = поля[описание.ключ]
+                значение = поле.isChecked() if описание.тип is bool else поле.value()
+                conv.set(описание.ключ, значение)
+            self.write_log("SYS: настройки разговора сохранены")
+            окно.accept()
+
+        сброс = _кнопка("КАК БЫЛО", C.TEXT_DIM)
+        сброс.clicked.connect(_вернуть_как_было)
+        кнопки.addWidget(сброс)
+
+        отмена = _кнопка("ОТМЕНА", C.TEXT_DIM)
+        отмена.clicked.connect(окно.reject)
+        кнопки.addWidget(отмена)
+
+        сохранить = _кнопка("СОХРАНИТЬ", C.PRI)
+        сохранить.clicked.connect(_сохранить)
+        кнопки.addWidget(сохранить)
+
+        сетка.addLayout(кнопки)
         окно.exec()
 
     def _show_overlay(self, reason="init"):

@@ -88,6 +88,7 @@ from memory.memory_manager import (
 from core import confirm as confirm_gate
 from core import acknowledge
 from core import watcher as topic_watcher
+from core import settings as conv_settings
 from core import undo as undo_stack
 from core.action_loader import discover_actions
 from core import audio_devices
@@ -147,21 +148,12 @@ _PLAYBACK_RETRY_SEC = 1.0
 _NOISE_CANCEL_HINTS = ("noise-cancelling", "noise cancelling", "noise-canceling",
                        "шумоподавлен")
 
-# Сколько тишины ждать, прежде чем считать фразу законченной.
-# 220 мс обеспечивает мгновенную реакцию и диалог без неловких пауз.
-_VAD_SILENCE_MS = int(os.getenv("VAD_SILENCE_MS", "220"))
-_VAD_PREFIX_MS = int(os.getenv("VAD_PREFIX_MS", "60"))
-
-# Сколько модели позволено думать перед тем, как открыть рот.
-#
-# Это оказалось главным источником задержки, а вовсе не синтез речи. Замер
-# 17.08.2026, один и тот же звук, три прогона на конфиг, первый байт аудио:
-#     без ограничения  — медиана 4152 мс
-#     thinking_budget=0 — медиана 1377 мс
-# Разговорной реплике и вызову инструмента рассуждения не нужны: Джарвис
-# отвечает на «который час» и «включи музыку», а не решает задачи. Поднять
-# стоит только если он начнёт путаться в многошаговых просьбах.
-_THINKING_BUDGET = int(os.getenv("JARVIS_THINKING_BUDGET", "0"))
+# Окно VAD и размышления переехали в core/settings.py: их крутит человек в
+# окне настроек, и читаются они в момент сборки конфигурации сессии. Здесь
+# остался снимок на момент запуска — для скриптов замера и для проверки
+# инварианта «хвост тишины длиннее окна».
+def _vad_silence_ms() -> int:
+    return conv_settings.get("vad_silence_ms")
 
 # Чей голос звучит из динамиков: "fish" — тот самый Джарвис, которым говорит
 # Telegram-бот (тот же ключ, голос и модель, telegram_bot/tts_fish.py),
@@ -315,11 +307,32 @@ MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "35.0"))
 # ответят. Конец фразы определяет VAD на стороне Gemini, и определить его он
 # может только по ПОЛУЧЕННОЙ тишине: когда гейт обрывает поток сразу за
 # последним громким кадром, сервер остаётся ждать продолжения фразы.
-MIC_HANGOVER_MS = int(os.getenv("MIC_HANGOVER_MS", "450"))
+_HANGOVER_BASE_MS = int(os.getenv("MIC_HANGOVER_MS", "450"))
 _FRAME_MS = CHUNK_SIZE / SEND_SAMPLE_RATE * 1000
-MIC_HANGOVER_FRAMES = int(os.getenv(
-    "MIC_HANGOVER_FRAMES", str(max(1, round(MIC_HANGOVER_MS / _FRAME_MS)))
-))
+_HANGOVER_FRAMES_FORCED = os.getenv("MIC_HANGOVER_FRAMES", "").strip()
+
+MIC_HANGOVER_MS = _HANGOVER_BASE_MS
+MIC_HANGOVER_FRAMES = int(_HANGOVER_FRAMES_FORCED or max(1, round(MIC_HANGOVER_MS / _FRAME_MS)))
+
+
+def _sync_hangover(silence_ms: int) -> None:
+    """Приводит хвост тишины в соответствие с окном VAD.
+
+    Связь здесь не косметическая: если хвост короче окна, Gemini не дожидается
+    тишины и НЕ ОТВЕЧАЕТ ВОВСЕ. Пока окно жило в переменной среды, инвариант
+    держался руками. Теперь окно двигает человек из окна настроек, и хвост
+    обязан двигаться следом — иначе ползунок «пусть не перебивает» делает
+    Джарвиса немым, и связать одно с другим человек не сможет никогда.
+    """
+    global MIC_HANGOVER_MS, MIC_HANGOVER_FRAMES
+
+    нужно = max(_HANGOVER_BASE_MS, int(silence_ms) * 2)
+    if нужно == MIC_HANGOVER_MS:
+        return
+    MIC_HANGOVER_MS = нужно
+    if not _HANGOVER_FRAMES_FORCED:
+        MIC_HANGOVER_FRAMES = max(1, round(нужно / _FRAME_MS))
+    logger.info("Хвост тишины подтянут до %d мс под окно VAD %d мс", нужно, silence_ms)
 
 # ── Необратимые действия ──────────────────────────────────────────────────────
 # Окно, в течение которого повторный вызов считается подтверждением.
@@ -916,7 +929,7 @@ class Jarvis:
         # Секундомер голосового хода. Пишет в лог задержку от конца речи до
         # первого звука ответа при JARVIS_DEBUG_UI=1.
         self._latency = LatencyTracker(
-            sink=self.ui.write_log if os.getenv("JARVIS_DEBUG_UI") == "1" else None
+            sink=self.ui.write_log if conv_settings.get("show_latency") else None
         )
 
         # 2-Stage KWS: ловит «Джарвис», когда микрофонный шлюз закрыт музыкой.
@@ -1208,6 +1221,11 @@ class Jarvis:
         # старте сессии, а не пишется в файл, который назавтра устареет.
         шаблон     = _load_system_prompt()
         способности = _describe_capabilities()
+
+        # Окно VAD и хвост микрофона — связанная пара, и подтянуть хвост надо
+        # ДО того, как окно уедет на сервер.
+        тишина_мс = _vad_silence_ms()
+        _sync_hangover(тишина_мс)
         sys_prompt = _render_prompt(шаблон, {
             "tools":  способности,
             "limits": _LIMITS,
@@ -1280,8 +1298,12 @@ class Jarvis:
             # Ниже 300 мс модель начинает перебивать на паузах внутри фразы.
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
-                    silence_duration_ms=_VAD_SILENCE_MS,
-                    prefix_padding_ms=_VAD_PREFIX_MS,
+                    # Из настроек, а не из констант: «перебивает» и «долго
+                    # молчит» — самые частые жалобы, и это одна и та же
+                    # ручка. Читается здесь, поэтому новое число вступает в
+                    # силу со следующим подключением, а не с перезапуском.
+                    silence_duration_ms=тишина_мс,
+                    prefix_padding_ms=conv_settings.get("vad_prefix_ms"),
                     end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
                     start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
                 ),
@@ -1296,7 +1318,7 @@ class Jarvis:
             # Раздумья стоили 2.8 секунды молчания перед каждым ответом —
             # больше, чем весь остальной круг вместе взятый (см. константу).
             thinking_config=types.ThinkingConfig(
-                thinking_budget=_THINKING_BUDGET,
+                thinking_budget=conv_settings.get("thinking_budget"),
             ),
         )
 

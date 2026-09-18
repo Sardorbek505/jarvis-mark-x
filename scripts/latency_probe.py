@@ -202,7 +202,7 @@ def main() -> int:
     print(f"[СТЕНД] Реплик: {len(_PHRASES)}, "
           f"хвост тишины: {jarvis_main.MIC_HANGOVER_MS} мс "
           f"({jarvis_main.MIC_HANGOVER_FRAMES} кадров), "
-          f"окно VAD: {jarvis_main._VAD_SILENCE_MS} мс")
+          f"окно VAD: {jarvis_main._vad_silence_ms()} мс")
     print(asyncio.run(_probe(args.timeout)))
     return 0
 

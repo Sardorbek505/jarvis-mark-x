@@ -332,9 +332,28 @@ def test_хвост_тишины_заведомо_длиннее_окна_vad():
     хвост 0.64 с → ноль ответов на три реплики, модель расшифровывала
     сказанное и молчала; 1.0 с → отвечает стабильно.
     """
-    assert jarvis_main.MIC_HANGOVER_MS >= jarvis_main._VAD_SILENCE_MS * 2, (
+    assert jarvis_main.MIC_HANGOVER_MS >= jarvis_main._vad_silence_ms() * 2, (
         "хвост тишины должен перекрывать окно VAD с запасом"
     )
+
+
+def test_хвост_едет_следом_за_окном_vad():
+    """Окно VAD теперь крутит человек в окне настроек. Если хвост за ним не
+    поедет, ползунок «пусть не перебивает» сделает Джарвиса НЕМЫМ — и связать
+    одно с другим человек не сможет никогда.
+    """
+    было = jarvis_main.MIC_HANGOVER_MS
+    try:
+        jarvis_main._sync_hangover(900)
+        assert jarvis_main.MIC_HANGOVER_MS >= 1800
+        assert jarvis_main.MIC_HANGOVER_FRAMES >= 1
+
+        # И обратно: короткое окно не должно опускать хвост ниже проверенных
+        # 450 мс — на них замерено, что ответ вообще приходит.
+        jarvis_main._sync_hangover(100)
+        assert jarvis_main.MIC_HANGOVER_MS == jarvis_main._HANGOVER_BASE_MS
+    finally:
+        jarvis_main._sync_hangover(было // 2)
 
 
 def test_точка_отсчёта_замера_только_громкий_кадр(стенд):
