@@ -86,6 +86,7 @@ from memory.memory_manager import (
     search_memory, format_search_results, over_limit,
 )
 from core import confirm as confirm_gate
+from core import acknowledge
 from core import undo as undo_stack
 from core.action_loader import discover_actions
 from core import audio_devices
@@ -1082,6 +1083,25 @@ class Jarvis:
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Сэр, произошла ошибка в модуле {tool_name}. {short}")
 
+    def _acknowledge(self, name: str, args: dict, уже_сказано: bool) -> None:
+        """Говорит короткую фразу перед медленным инструментом.
+
+        Молчит, когда сказать нечего (быстрый инструмент), когда модель уже
+        что-то сказала в этом ходе и когда голосом занимается сам Gemini:
+        подмешивать к его голосу чужой ради полутора секунд — хуже паузы."""
+        if уже_сказано or get_voice_provider() != "fish":
+            return
+        try:
+            фраза = acknowledge.phrase(name, args)
+            if not фраза:
+                return
+            asyncio.create_task(self._speak_fish(фраза, метрики=False))
+            self.ui.write_log(f"Джарвис: {фраза}")
+        except Exception as exc:
+            # Подтверждение — удобство, а не работа. Его срыв не должен
+            # стоить вызова инструмента, ради которого всё затевалось.
+            logger.debug("Подтверждение не прозвучало: %s", exc, exc_info=True)
+
     def _confirm_destructive(self, key: str, name: str, args: dict) -> str | None:
         """Гейт необратимого действия.
 
@@ -1164,6 +1184,10 @@ class Jarvis:
                 + "\n\n[ЧЕГО ТЫ НЕ УМЕЕШЬ]\n" + _LIMITS + "\n"
             )
 
+        # Модель не слышит того, что произнесла система за неё.
+        if get_voice_provider() == "fish":
+            sys_prompt += "\n\n" + acknowledge.PROMPT_RULE + "\n"
+
         now      = datetime.now()
         time_str = now.strftime("%A, %d %B %Y — %H:%M")
         time_ctx = (
@@ -1238,11 +1262,23 @@ class Jarvis:
         )
 
     # ── Выполнение инструментов ───────────────────────────────────────────────
-    async def _execute_tool(self, fc) -> types.FunctionResponse:
+    async def _execute_tool(self, fc, *, уже_сказано: bool = False) -> types.FunctionResponse:
         name = fc.name
         args = dict(fc.args or {})
         logger.info(f"🔧 Tool: {name} {args}")
         self.ui.set_state("THINKING")
+
+        # Пауза перед долгим инструментом — заполненная.
+        #
+        # Поиск в сети или разбор PDF занимает секунды, и всё это время
+        # снаружи тишина: неотличимо от «не расслышал». Короткая фраза
+        # («Секунду, ищу») уходит в очередь звука прямо сейчас, ответ встанет
+        # следом — очередь одна, порядок сохраняется.
+        #
+        # `уже_сказано` — текст, который модель успела произнести в этом же
+        # ходе до вызова. Он прозвучит вместе с ответом, и подтверждение
+        # поверх него было бы вторым «сейчас посмотрю» подряд.
+        self._acknowledge(name, args, уже_сказано)
 
         # Необратимое — только после подтверждения человеком.
         #
@@ -1720,8 +1756,14 @@ class Jarvis:
             # Brief pause before attempting to continue
             await asyncio.sleep(1)
 
-    async def _speak_fish(self, text: str):
-        """Озвучивает готовый ответ голосом Джарвиса из Telegram-бота."""
+    async def _speak_fish(self, text: str, *, метрики: bool = True):
+        """Озвучивает готовый текст голосом Джарвиса из Telegram-бота.
+
+        `метрики=False` — для мгновенного подтверждения перед долгим
+        инструментом. Такая фраза не ответ, а заполнение паузы: закрыть
+        ею ход значило бы записать в статистику полсекунды вместо
+        настоящих четырёх и перестать замечать медленные инструменты —
+        ровно ту беду, ради которой фраза и произносится."""
         with self._speaking_lock:
             self._active_synth_tasks += 1
         self.set_speaking(True)
@@ -1732,7 +1774,8 @@ class Jarvis:
 
             chunks = _split_for_speech(text)
             if not chunks:
-                self._latency.mark_turn_complete()
+                if метрики:
+                    self._latency.mark_turn_complete()
                 return
 
             # Жив ли Fish — решается ОДИН раз за ответ, а не на каждом куске.
@@ -1770,7 +1813,7 @@ class Jarvis:
                         pending.cancel()
                     break
 
-                if not spoken:
+                if not spoken and метрики:
                     self._latency.mark_answer_audio()
                 spoken += len(pcm)
 
@@ -1783,7 +1826,8 @@ class Jarvis:
             if spoken:
                 logger.info("Голос Fish: %.1f с звука, %d фрагмент(ов) на %d символов",
                             spoken / 2 / RECV_SAMPLE_RATE, len(chunks), len(text))
-            self._latency.mark_turn_complete()
+            if метрики:
+                self._latency.mark_turn_complete()
         finally:
             with self._speaking_lock:
                 self._active_synth_tasks = max(0, self._active_synth_tasks - 1)
@@ -1917,7 +1961,9 @@ class Jarvis:
                                 logger.debug("Прицел не встал: %s", exc, exc_info=True)
                             _tool_started = time.perf_counter()
                             try:
-                                fr = await self._execute_tool(fc)
+                                fr = await self._execute_tool(
+                                    fc, уже_сказано=bool("".join(out_buf).strip()),
+                                )
                             finally:
                                 # Медленный инструмент — самая частая причина
                                 # паузы, которую слышно как «завис».
