@@ -1,51 +1,68 @@
 # ДЖАРВИС — Зависимости
 # pip install -r requirements.txt
+#
+# Нижняя граница — то, на чём проект разрабатывается. Верхняя останавливает
+# следующий МАЖОРНЫЙ релиз библиотеки: без неё день выхода PyQt7 или numpy 3
+# ломает любой свежий клон, причём у того, кто ничего не менял. Минорные и
+# патч-версии втекают свободно.
+#
+# Маркеры sys_platform: pip сам пропускает строку, если она не для этой ОС,
+# поэтому один файл обслуживает Windows, macOS и Linux.
 
 # Ядро Gemini Live
-google-genai>=1.0.0
+google-genai>=1.0.0,<2
 
 # UI
-PyQt6>=6.6.0
-Pillow>=10.0.0
+PyQt6>=6.6.0,<7
+Pillow>=10.0.0,<13
 
 # Аудио
-sounddevice>=0.4.6
+sounddevice>=0.4.6,<1
 
 # Системный мониторинг
-psutil>=5.9.0
+psutil>=5.9.0,<8
 
 # Веб-камера — снимок с камеры ПК (/camera)
-opencv-python>=4.8.0
+opencv-python>=4.8.0,<5
 
 # Vision Mode — захват экрана и определение активного окна
-mss>=9.0.0
-pygetwindow>=0.0.9
+mss>=9.0.0,<11
+pygetwindow>=0.0.9,<1
 
 # Movie Player — отправка клавиш в плеер (опционально, есть PowerShell fallback на Windows)
-pyautogui>=0.9.54
+pyautogui>=0.9.54,<1
 
 # Selenium для автоматического выбора фильмов (надёжнее чем pyautogui keyboard navigation)
-selenium>=4.15.0
-webdriver-manager>=4.0.0
+selenium>=4.15.0,<5
+webdriver-manager>=4.0.0,<5
 
 # Google Calendar API (опционально для синхронизации календаря)
-google-api-python-client>=2.100.0
-google-auth-oauthlib>=1.0.0
-google-auth-httplib2>=0.1.0
+google-api-python-client>=2.100.0,<3
+google-auth-oauthlib>=1.0.0,<2
+google-auth-httplib2>=0.1.0,<1
 
 # News Aggregator - RSS фиды для новостей
-feedparser>=6.0.0
+feedparser>=6.0.0,<7
 
 # Spotify API - requests и fuzzy matching
-requests>=2.31.0
-rapidfuzz>=3.0.0
+requests>=2.31.0,<3
+rapidfuzz>=3.0.0,<4
+
+# Удаление файлов — в корзину ОС, а не в никуда. Без этого пакета
+# file_controller удаляет безвозвратно и прямо говорит об этом в ответе.
+send2trash>=1.8,<3
 
 # Telegram Bot + Mini App (опционально — только для telegram_bot/)
-python-telegram-bot>=20.0
-websockets>=12.0
-fastapi>=0.110.0
-uvicorn[standard]>=0.27.0
-aiosqlite>=0.19.0
-edge-tts>=6.1.0
-pydub>=0.25.1
-imageio-ffmpeg>=0.4.8
+python-telegram-bot>=20.0,<23
+websockets>=12.0,<16
+fastapi>=0.110.0,<1
+uvicorn[standard]>=0.27.0,<1
+aiosqlite>=0.19.0,<1
+edge-tts>=6.1.0,<8
+pydub>=0.25.1,<1
+imageio-ffmpeg>=0.4.8,<1
+
+# Windows-специфичное: на macOS и Linux pip эти строки пропускает сам.
+# Приглушение чужого звука на время ответа (core/ducking_controller.py).
+pycaw>=20230407;   sys_platform == "win32"
+comtypes>=1.2,<2;  sys_platform == "win32"

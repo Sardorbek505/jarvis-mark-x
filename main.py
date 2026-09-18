@@ -80,7 +80,12 @@ except Exception as _onnx_exc:
     logger.debug("onnxruntime warm-up skipped: %s", _onnx_exc)
 
 from ui import JarvisUI
-from memory.memory_manager import load_memory, update_memory, format_memory_for_prompt
+from memory.memory_manager import (
+    load_memory, update_memory, format_memory_for_prompt,
+    search_memory, format_search_results, over_limit,
+)
+from core import confirm as confirm_gate
+from core import undo as undo_stack
 from core.emotion_analyzer import EmotionAnalyzer
 from core.user_profile import UserProfile
 from core.initiative_engine import InitiativeEngine
@@ -315,6 +320,17 @@ _CONFIRM_WINDOW_SEC = 90
 _DESTRUCTIVE = {
     "computer_control": ("shutdown", "restart", "reboot", "выключ", "перезагруз"),
     "files": ("delete", "remove", "удал"),
+}
+
+# Что написать на баннере. Ключ — «инструмент/действие», как его собирает
+# _confirm_destructive. Незнакомая пара получает техническое имя: лучше
+# невнятный заголовок, чем необратимое действие без спроса.
+_DESTRUCTIVE_TITLES = {
+    "computer_control/shutdown": "Выключение компьютера",
+    "computer_control/restart":  "Перезагрузка компьютера",
+    "computer_control/reboot":   "Перезагрузка компьютера",
+    "files/delete":              "Удаление файла",
+    "files/remove":              "Удаление файла",
 }
 
 
@@ -575,6 +591,52 @@ TOOLS = [
                 "value": {"type": "STRING", "description": "Значение (на английском)"},
             },
             "required": ["category", "key", "value"]
+        }
+    },
+    {
+        "name": "recall_memory",
+        "description": (
+            "Ищет факт о пользователе, сохранённый в долгосрочной памяти, но не попавший "
+            "в системную инструкцию. Ключи таких фактов перечислены в блоке [ТАКЖЕ ПОМНЮ] — "
+            "если разговор коснулся любого из них, вызывай ЭТОТ инструмент первым. "
+            "Вызывай его и прежде, чем сказать «я не знаю» о чём-то личном, и когда "
+            "пользователь спрашивает, что ты о нём помнишь (тогда query оставь пустым). "
+            "Это локальный поиск по файлу: мгновенный и бесплатный, сети не требует."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "query": {
+                    "type": "STRING",
+                    "description": (
+                        "Ключевое слово: имя, тема или категория (например 'азиза', "
+                        "'кофе', 'projects'). Пусто — выдать всё, что помню."
+                    ),
+                },
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "undo",
+        "description": (
+            "Отменяет последнее изменение, которое ТЫ внёс в этот компьютер: перемещённый, "
+            "переименованный, созданный или переписанный файл, а также настройку, которую "
+            "менял — громкость, яркость. Вызывай, когда пользователь говорит: отмени, верни "
+            "назад, верни как было, отмена, не то сделал — на любом языке. "
+            "action=list — показать, что можно отменить. "
+            "Это отмена ТВОИХ действий, а не Ctrl+Z в открытом приложении "
+            "(для него — computer_control)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "undo (по умолчанию) — отменить последнее | list — показать список",
+                },
+            },
+            "required": []
         }
     },
     {
@@ -1068,6 +1130,32 @@ class Jarvis:
         self._speaker_meter  = None   # см. _listen_audio: не слушаем свои динамики
         self._turn_done_event: asyncio.Event | None = None
 
+        # Запасной гейт необратимых действий для headless-режима, где нажать
+        # кнопку негде. Поле раньше не создавалось вовсе, и первое же
+        # «выключи компьютер» падало с AttributeError прямо в приёмном цикле.
+        self._pending_destructive: tuple[str, str, float] | None = None
+
+        # Хендл возобновления сессии. Сервер присылает его раз в несколько
+        # секунд и обновляет по ходу разговора; при реконнекте мы отдаём его
+        # обратно, и беседа продолжается с того же места. Держим только в
+        # памяти: записанный на диск, он заставил бы новый запуск продолжать
+        # вчерашний разговор.
+        self._resume_handle: str | None = None
+
+        # Подтверждение выдаёт интерфейс, а не модель: единственный путь к
+        # `resolve` — нажатие кнопки в окне. В headless нажимать некому, и
+        # интерфейс честно об этом говорит — там остаётся запасной гейт
+        # (см. _confirm_destructive).
+        if getattr(self.ui, "supports_confirm", False):
+            confirm_gate.bind(
+                show=self.ui.show_confirm,
+                hide=self.ui.hide_confirm,
+                notify=self._send_text_to_session,
+                log=self.ui.write_log,
+            )
+        else:
+            logger.info("Экранное подтверждение недоступно: интерфейс без баннера")
+
         # Новый мозг ДЖАРВИС
         self.user_profile = UserProfile(BASE_DIR)
         self.initiative_engine = InitiativeEngine()
@@ -1177,6 +1265,13 @@ class Jarvis:
                 pass
             self._telegram_proc = None
 
+        # Замыкания в стеке отмены держат прежнее содержимое файлов — пережить
+        # сессию они не должны. И висящее подтверждение вместе с ними: кнопка
+        # выключения, оставшаяся «нажатой» от прошлого запуска, — не то, что
+        # стоит находить при следующем.
+        undo_stack.clear()
+        confirm_gate.reset()
+
     # ── Текстовый ввод ────────────────────────────────────────────────────────
     def _send_text_to_session(self, text: str):
         """Отправляет текстовое сообщение в Live-сессию с корректной структурой типов."""
@@ -1233,6 +1328,64 @@ class Jarvis:
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Сэр, произошла ошибка в модуле {tool_name}. {short}")
 
+    def _confirm_destructive(self, key: str, name: str, args: dict) -> str | None:
+        """Гейт необратимого действия.
+
+        None — человек подтвердил, выполняем. Строка — ответ модели вместо
+        выполнения.
+
+        Основной путь: баннер в окне, токен выдаёт кнопка. Запасной, когда
+        интерфейса нет (headless, консольный запуск): прежнее правило о
+        повторном вызове — слабее, но лучше, чем выключать машину молча."""
+        title = _DESTRUCTIVE_TITLES.get(key) or f"{name} / {_action_of(args)}"
+
+        if confirm_gate.available():
+            if confirm_gate.consume(key):
+                return None
+            detail = ", ".join(f"{k}={v}" for k, v in args.items() if v) or "без параметров"
+            asked = confirm_gate.request(key, title, detail)
+            if asked:
+                return asked
+            # Баннер показать не удалось — необратимое действие без спроса не
+            # выполняем.
+            return (
+                f"НЕ ВЫПОЛНЕНО: не смог показать подтверждение на экране для «{title}». "
+                f"Скажи об этом пользователю и не утверждай, что сделал."
+            )
+
+        pending = self._pending_destructive
+        same = pending and pending[0] == name and pending[1] == _action_of(args)
+        fresh = same and (time.time() - pending[2]) < _CONFIRM_WINDOW_SEC
+        if fresh:
+            self._pending_destructive = None
+            return None
+
+        self._pending_destructive = (name, _action_of(args), time.time())
+        logger.warning("Требую подтверждения (без интерфейса): %s", key)
+        self.ui.write_log(f"SYS: жду подтверждения — {title}")
+        return (
+            "НЕ ВЫПОЛНЕНО — нужно подтверждение. Переспроси пользователя вслух, "
+            "точно ли он хочет это сделать, и вызови инструмент повторно "
+            "ТОЛЬКО если он ответит утвердительно."
+        )
+
+    def _drop_stale_handle(self, exc: Exception, resumed_with: str | None) -> bool:
+        """Сбрасывает хендл возобновления, если сервер отказался его принять.
+
+        Только если этой попыткой мы действительно возобновлялись: обычный
+        обрыв связи хендл не портит, и терять из-за него разговор незачем.
+        True — значит подключаемся заново сразу, без паузы: ошибка была не в
+        сети, а в хендле, и вторая попытка пойдёт с чистого листа."""
+        if not resumed_with or resumed_with != self._resume_handle:
+            return False
+        text = str(exc).lower()
+        if not any(k in text for k in ("resum", "handle", "invalid_argument", "not_found")):
+            return False
+        self._resume_handle = None
+        logger.warning("Хендл возобновления отклонён сервером — начинаю новую сессию")
+        self.ui.write_log("SYS: разговор восстановить не удалось — начинаю новую сессию")
+        return True
+
     # ── Конфигурация Gemini ───────────────────────────────────────────────────
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
@@ -1277,7 +1430,14 @@ class Jarvis:
             input_audio_transcription={},  # Без language_code (Pydantic не принимает)
             system_instruction="\n".join(parts),
             tools=[{"function_declarations": TOOLS}],
-            session_resumption=types.SessionResumptionConfig(),
+            # Хендл с прошлой сессии — иначе реконнект начинает пустой
+            # разговор. Конфиг здесь стоял с самого начала, но хендл,
+            # который сервер присылает в ответ, никто не читал: за
+            # «бесконечные сессии» мы платили и не получали их. Хендл
+            # подхватывается в _receive_audio.
+            session_resumption=types.SessionResumptionConfig(
+                handle=self._resume_handle,
+            ),
             # Когда считать, что человек договорил.
             #
             # По умолчанию модель ждёт около секунды тишины — отсюда пауза
@@ -1313,37 +1473,30 @@ class Jarvis:
         logger.info(f"🔧 Tool: {name} {args}")
         self.ui.set_state("THINKING")
 
-        # Необратимое — только после подтверждения.
+        # Необратимое — только после подтверждения человеком.
         #
-        # Здесь стоял словарь «критических действий», комментарий обещал
-        # подтверждение, а кода не было: выключение компьютера и удаление
-        # файлов выполнялись сразу, с одной строчкой в лог. И это не теория —
-        # микрофон отдавал в модель всё, что слышал в комнате, включая музыку,
-        # так что «выключи компьютер» могло родиться из ниоткуда, а
+        # Микрофон отдаёт в модель всё, что слышит в комнате, включая звук из
+        # фильма, так что «выключи компьютер» может родиться из ниоткуда, а
         # computer_settings делает shutdown /s /t 5 по-настоящему.
+        #
+        # Раньше подтверждением считался ПОВТОРНЫЙ вызов того же инструмента в
+        # течение 90 секунд. Модели было велено переспросить вслух, но ничто
+        # не проверяло, что человек ответил: два вызова подряд модель делает
+        # сама. Теперь токен выдаёт интерфейс — единственный путь к нему лежит
+        # через нажатие кнопки в окне (core/confirm.py).
         #
         # Блокировка экрана осталась без подтверждения: она безвредна и
         # обратима, а спрашивать о ней каждый раз — раздражать зря.
         if _is_destructive(name, args):
-            pending = self._pending_destructive
-            same = pending and pending[0] == name and pending[1] == _action_of(args)
-            fresh = same and (time.time() - pending[2]) < _CONFIRM_WINDOW_SEC
-            if not fresh:
-                self._pending_destructive = (name, _action_of(args), time.time())
-                logger.warning("Требую подтверждения: %s/%s", name, _action_of(args))
-                self.ui.write_log(f"SYS: жду подтверждения — {name}/{_action_of(args)}")
+            key = f"{name}/{_action_of(args)}"
+            gate_result = self._confirm_destructive(key, name, args)
+            if gate_result is not None:
                 if not self.ui.muted:
                     self.ui.set_state("LISTENING")
                 return types.FunctionResponse(
-                    id=fc.id, name=name,
-                    response={"result": (
-                        "НЕ ВЫПОЛНЕНО — нужно подтверждение. Переспроси пользователя вслух, "
-                        "точно ли он хочет это сделать, и вызови инструмент повторно "
-                        "ТОЛЬКО если он ответит утвердительно."
-                    )},
+                    id=fc.id, name=name, response={"result": gate_result},
                 )
-            self._pending_destructive = None
-            logger.warning("Подтверждено, выполняю: %s/%s", name, _action_of(args))
+            logger.warning("Подтверждено, выполняю: %s", key)
 
         # Сохранение в память (без задержки)
         if name == "save_to_memory":
@@ -1354,6 +1507,12 @@ class Jarvis:
                 # Запись на диск — в поток: этот же цикл гонит звук в Live API.
                 await asyncio.to_thread(update_memory, {cat: {key: {"value": val}}})
                 print(f"[Память] 💾 {cat}/{key} = {val}")
+                # Предохранитель. Ничего не удаляем, но говорим об этом в лог,
+                # который читают, а не в stdout, который нет.
+                if await asyncio.to_thread(over_limit):
+                    self.ui.write_log(
+                        "SYS: память разрослась сверх предохранителя — стоит проредить memory/data.json"
+                    )
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
             return types.FunctionResponse(
@@ -1365,8 +1524,26 @@ class Jarvis:
         result = "Готово."
 
         try:
+            # ── Инструмент: поиск по долгосрочной памяти ─────────────
+            if name == "recall_memory":
+                hits = await asyncio.to_thread(search_memory, args.get("query", ""))
+                result = format_search_results(hits)
+
+            # ── Инструмент: отмена собственного действия ─────────────
+            elif name == "undo":
+                if str(args.get("action", "")).strip().lower() == "list":
+                    items = undo_stack.history()
+                    result = (
+                        "Могу отменить: " + "; ".join(items) + "."
+                        if items else
+                        "Отменять нечего, сэр."
+                    )
+                else:
+                    result = await asyncio.to_thread(undo_stack.undo_last)
+                self.ui.write_log(f"SYS: {result}")
+
             # ── Инструмент: открыть приложение ──────────────────────
-            if name == "open_app":
+            elif name == "open_app":
                 r = await loop.run_in_executor(
                     None, lambda: open_app(parameters={"app_name": args.get("app_name", "")},
                                            player=self.ui)
@@ -1938,6 +2115,17 @@ class Jarvis:
         try:
             while True:
                 async for response in self.session.receive():
+                    # Хендл возобновления. Сервер шлёт его периодически и
+                    # обновляет по ходу разговора — берём последний.
+                    sru = getattr(response, "session_resumption_update", None)
+                    if sru is not None and getattr(sru, "resumable", False):
+                        new_handle = getattr(sru, "new_handle", None)
+                        if new_handle and new_handle != self._resume_handle:
+                            first = self._resume_handle is None
+                            self._resume_handle = new_handle
+                            if first:
+                                print("[ДЖАРВИС] 🔗 Возобновление сессии вооружено")
+
                     if response.data:
                         if self._turn_done_event and self._turn_done_event.is_set():
                             self._turn_done_event.clear()
@@ -2184,6 +2372,11 @@ class Jarvis:
 
         while True:
             try:
+                # С каким хендлом идём на этот раз — чтобы отличить отказ
+                # сервера принять хендл от обычного обрыва связи. Снимается
+                # до первого вызова, который может бросить: обработчики ниже
+                # на него рассчитывают.
+                resumed_with = self._resume_handle
                 print("[ДЖАРВИС] 🔌 Подключение к Gemini...")
                 self.ui.set_state("RECONNECTING")
                 config = self._build_config()
@@ -2241,7 +2434,16 @@ class Jarvis:
                     logger.error(f"Error type: {type(e).__name__}")
                     logger.error("Full traceback:")
                     traceback.print_exc()
-                    
+
+                    # Хендл, который сервер не принимает — протух или
+                    # относится к сессии, которую сервер уже забыл. Без этой
+                    # ветки один мёртвый хендл повторялся бы на каждой
+                    # попытке, и функция, призванная пережить реконнект, сама
+                    # бы его и не давала. Сбрасываем один раз и идём заново.
+                    if self._drop_stale_handle(e, resumed_with):
+                        continue
+
+
                     # Различаем ошибки WebSocket: 1008 (policy violation) vs 1011 (server shutdown)
                     error_msg = str(e)
                     if "1008" in error_msg:
@@ -2282,7 +2484,11 @@ class Jarvis:
                 error_msg = str(e)
                 print(f"[ДЖАРВИС] ⚠️ {e}")
                 traceback.print_exc()
-                
+
+                if self._drop_stale_handle(e, resumed_with):
+                    continue
+
+
                 # Check for API key errors - don't retry these
                 if any(key_word in error_msg.lower() for key_word in 
                    ["api key expired", "api_key_invalid", "invalid api key", "api key not found"]):

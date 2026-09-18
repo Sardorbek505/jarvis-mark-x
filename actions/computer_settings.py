@@ -7,7 +7,15 @@ import os
 import platform
 import time
 
+from core.undo import push_undo
+
 _OS = platform.system()
+
+# Обратные пары для отмены. Только относительные изменения: «тише на 10» точно
+# обращается «громче на 10», а «поставь 40%» — нет, потому что прежнего
+# значения система не сообщает, и отмена восстанавливала бы догадку. Отмена,
+# возвращающая выдуманное значение, хуже её отсутствия.
+_INVERSE = {"up": "down", "down": "up", "mute": "mute"}
 
 
 def computer_settings(parameters: dict, response=None, player=None) -> str:
@@ -85,7 +93,30 @@ def _screenshot(player) -> str:
         return f"Ошибка скриншота: {e}"
 
 
-def _volume(mode: str, value: str, player) -> str:
+def _register_inverse(kind: str, fn, mode: str, value: str) -> None:
+    """Кладёт в стек отмены обратное действие — если оно вообще существует.
+
+    `record=False` у обратного вызова обязателен: иначе отмена сама положила бы
+    в стек свою отмену, и «отмени» начало бы качать громкость туда-сюда."""
+    inverse = _INVERSE.get(mode)
+    if not inverse:
+        return
+    # «Отмена» для mute держится на том, что это ПЕРЕКЛЮЧАТЕЛЬ: SendKeys на
+    # Windows и `set-sink-mute toggle` на Linux. На macOS `set volume with
+    # output muted` звук только выключает, так что повторный вызов ничего не
+    # вернёт — молча выключить звук ещё раз хуже, чем не предлагать отмену.
+    if mode == "mute" and _OS == "Darwin":
+        return
+    amount = value if value.isdigit() else "10"
+    label = {
+        "up":   f"{kind}: +{amount}",
+        "down": f"{kind}: -{amount}",
+        "mute": f"{kind}: переключение звука",
+    }[mode]
+    push_undo(label, lambda: fn(inverse, amount, None, record=False))
+
+
+def _volume(mode: str, value: str, player, record: bool = True) -> str:
     try:
         if _OS == "Windows":
             if mode == "mute":
@@ -133,6 +164,8 @@ def _volume(mode: str, value: str, player) -> str:
                 subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"-{v}%"])
                 msg = f"Громкость -{v}%."
 
+        if record:
+            _register_inverse("громкость", _volume, mode, value)
         if player:
             player.write_log(f"SYS: {msg}")
         return msg
@@ -155,7 +188,7 @@ def _ps_volume(mode: str, val: int = 10):
     subprocess.run(["powershell", "-Command", cmd], capture_output=True, timeout=5)
 
 
-def _brightness(mode: str, value: str, player) -> str:
+def _brightness(mode: str, value: str, player, record: bool = True) -> str:
     try:
         if _OS == "Windows":
             current = 50  # default guess
@@ -194,6 +227,11 @@ def _brightness(mode: str, value: str, player) -> str:
             else:
                 msg = "Установите brightnessctl для управления яркостью."
 
+        # На Windows яркость выставляется абсолютным значением от ДОГАДКИ
+        # (current = 50), а реального прежнего значения система не отдаёт —
+        # откатывать нечего, кроме выдумки, поэтому отмену там не регистрируем.
+        if record and _OS != "Windows":
+            _register_inverse("яркость", _brightness, mode, value)
         if player:
             player.write_log(f"SYS: {msg}")
         return msg

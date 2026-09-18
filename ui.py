@@ -813,6 +813,11 @@ class MainWindow(QMainWindow):
     # из другого потока — это падение, а не подтормаживание.
     _level_sig = pyqtSignal(float)
     _tool_sig  = pyqtSignal(str)
+    # Баннер подтверждения. Просьба приходит из потока инструментов, а
+    # единственный способ его закрыть — нажатие здесь, в Qt: в этом весь смысл
+    # гейта, модель кнопку нажать не может.
+    _confirm_show_sig = pyqtSignal(str, str)
+    _confirm_hide_sig = pyqtSignal()
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -989,6 +994,10 @@ class MainWindow(QMainWindow):
         self._overlay = None
         self._setup_done = False
 
+        # ── Баннер подтверждения необратимых действий ───────────────
+        self._confirm_banner = self._build_confirm_banner(central)
+        self._confirm_banner.hide()
+
         # ── Горячие клавиши ─────────────────────────────────────────
         QShortcut(QKeySequence("Ctrl+M"), self).activated.connect(self._toggle_mute)
         QShortcut(QKeySequence("Ctrl+L"), self).activated.connect(self._clear_log)
@@ -1002,6 +1011,8 @@ class MainWindow(QMainWindow):
         self._state_sig.connect(self._apply_state)
         self._level_sig.connect(self._hud.feed_level)
         self._tool_sig.connect(self._hud.lock_on)
+        self._confirm_show_sig.connect(self._show_confirm_banner)
+        self._confirm_hide_sig.connect(self._hide_confirm_banner)
 
     # ── Публичный API ──────────────────────────────────────────────────────────
     def write_log(self, text: str):
@@ -1038,6 +1049,101 @@ class MainWindow(QMainWindow):
         self._key_ready.wait()
         return reason
 
+    # ── Подтверждение необратимых действий ────────────────────────────────────
+    # Окно умеет показать баннер и принять нажатие — значит, гейт настоящий.
+    # HeadlessUI объявляет False, и там остаётся запасной вариант.
+    supports_confirm = True
+
+    def _build_confirm_banner(self, parent: QWidget) -> QFrame:
+        """Полоса поверх HUD с заголовком и двумя кнопками.
+
+        Живёт отдельным дочерним виджетом, а не в компоновке: она не должна
+        сдвигать HUD, когда появляется, и обязана быть видна поверх всего."""
+        banner = QFrame(parent)
+        banner.setStyleSheet(f"""
+            QFrame {{
+                background: {C.PANEL2};
+                border: 1px solid {C.RED};
+                border-radius: 5px;
+            }}
+        """)
+        lay = QHBoxLayout(banner)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(10)
+
+        texts = QVBoxLayout()
+        texts.setSpacing(2)
+        self._confirm_title = QLabel("")
+        self._confirm_title.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
+        self._confirm_title.setStyleSheet(f"color: {C.RED}; border: none;")
+        self._confirm_detail = QLabel("")
+        self._confirm_detail.setFont(QFont("Segoe UI", 8))
+        self._confirm_detail.setStyleSheet(f"color: {C.TEXT_DIM}; border: none;")
+        self._confirm_detail.setWordWrap(True)
+        texts.addWidget(self._confirm_title)
+        texts.addWidget(self._confirm_detail)
+        lay.addLayout(texts, stretch=1)
+
+        def _btn(label: str, colour: str) -> QPushButton:
+            b = QPushButton(label)
+            b.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            b.setFixedHeight(30)
+            b.setMinimumWidth(110)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {colour};
+                    border: 1px solid {colour}; border-radius: 4px; padding: 0 10px;
+                }}
+                QPushButton:hover {{ background: {C.BORDER_A}; color: {C.WHITE}; }}
+            """)
+            return b
+
+        confirm_btn = _btn("ПОДТВЕРДИТЬ", C.RED)
+        cancel_btn  = _btn("ОТМЕНА", C.TEXT_MED)
+        confirm_btn.clicked.connect(lambda: self._resolve_confirm(True))
+        cancel_btn.clicked.connect(lambda: self._resolve_confirm(False))
+        lay.addWidget(confirm_btn)
+        lay.addWidget(cancel_btn)
+        return banner
+
+    def show_confirm(self, title: str, detail: str = ""):
+        """Публичный API для core/confirm.py. Зовётся из чужого потока."""
+        self._confirm_show_sig.emit(str(title), str(detail))
+
+    def hide_confirm(self):
+        self._confirm_hide_sig.emit()
+
+    def _show_confirm_banner(self, title: str, detail: str):
+        self._confirm_title.setText(f"⚠  {title.upper()} — ПОДТВЕРДИТЕ")
+        self._confirm_detail.setText(detail or "Действие необратимо.")
+        self._position_confirm_banner()
+        self._confirm_banner.show()
+        self._confirm_banner.raise_()
+        # Окно могло быть свёрнуто в трей: кнопка, которую не видно, не гейт.
+        try:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        except Exception as exc:
+            _logger.debug("Не удалось поднять окно под подтверждение: %s", exc)
+
+    def _hide_confirm_banner(self):
+        self._confirm_banner.hide()
+
+    def _resolve_confirm(self, accepted: bool):
+        self._confirm_banner.hide()
+        try:
+            from core import confirm as confirm_gate
+            confirm_gate.resolve(accepted)
+        except Exception as exc:
+            _logger.warning("Не удалось передать решение по подтверждению: %s", exc)
+
+    def _position_confirm_banner(self):
+        margin = 16
+        width = max(360, self.width() - 2 * margin)
+        self._confirm_banner.setGeometry(margin, margin, width, 58)
+
     def _show_overlay(self, reason="init"):
         self._overlay = SetupOverlay(self.centralWidget(), reason=reason)
         self._overlay.done.connect(self._on_setup_done)
@@ -1056,6 +1162,8 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._resize_overlay()
+        if getattr(self, "_confirm_banner", None) and self._confirm_banner.isVisible():
+            self._position_confirm_banner()
 
     def _on_setup_done(self, key: str, os_name: str):
         from core.paths import save_api_keys
