@@ -15,6 +15,7 @@
 import logging
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 from core.undo import push_undo, MAX_SNAPSHOT_BYTES
@@ -36,6 +37,127 @@ _SHORTCUTS = {
 
 def _resolve(path: str) -> str:
     return _SHORTCUTS.get(path.lower().strip(), path)
+
+
+def _размер(байт: int) -> str:
+    """Размер словами, которые человек слышит: «1,4 ГБ», а не «1503238553»."""
+    for предел, имя in ((1024 ** 3, "ГБ"), (1024 ** 2, "МБ"), (1024, "КБ")):
+        if байт >= предел:
+            return f"{байт / предел:.1f} {имя}".replace(".", ",")
+    return f"{байт} Б"
+
+
+def _когда(отметка: float) -> str:
+    return datetime.fromtimestamp(отметка).strftime("%d.%m.%Y %H:%M")
+
+
+# Сколько файлов обойти, прежде чем признать обход слишком долгим. Домашняя
+# папка легко содержит сотни тысяч файлов: без предела «какие файлы самые
+# большие» превращается в минуту тишины, а голосовой помощник за минуту
+# молчания успевает показаться сломанным.
+_ПРЕДЕЛ_ОБХОДА = 50_000
+
+
+def _обойти(корень: Path) -> tuple[list[Path], bool]:
+    """Файлы под корнем и признак того, что обход был прерван по пределу."""
+    найдено: list[Path] = []
+    for путь in корень.rglob("*"):
+        try:
+            if путь.is_file():
+                найдено.append(путь)
+        except OSError:
+            continue           # битая ссылка или отозванный доступ
+        if len(найдено) >= _ПРЕДЕЛ_ОБХОДА:
+            return найдено, True
+    return найдено, False
+
+
+# Куда что раскладывать. Расширения, которых здесь нет, остаются на месте:
+# «Прочее» — это папка, в которую человек складывает то, чего не понял сам,
+# а не то, чего не поняли мы. Ярлыки не трогаются вовсе: перенесённый ярлык
+# ломает привычку открывать программу с рабочего стола.
+_РАСКЛАДКА = {
+    "Картинки":  {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".heic", ".tiff"},
+    "Документы": {".pdf", ".doc", ".docx", ".txt", ".rtf", ".odt", ".xls", ".xlsx",
+                  ".ods", ".ppt", ".pptx", ".csv", ".md", ".epub"},
+    "Музыка":    {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".wma"},
+    "Видео":     {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm", ".m4v"},
+    "Архивы":    {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz"},
+    "Программы": {".exe", ".msi", ".dmg", ".deb", ".rpm", ".appimage", ".apk"},
+}
+
+_ПО_РАСШИРЕНИЮ = {
+    расш: папка for папка, расширения in _РАСКЛАДКА.items() for расш in расширения
+}
+
+
+def _разложить(корень: Path, player=None) -> str:
+    """Раскладывает файлы папки по типам. Одной отменой возвращается всё."""
+    if not корень.is_dir():
+        return f"Папка не найдена: {корень}"
+
+    переезды: list[tuple[Path, Path]] = []
+    созданы: list[Path] = []
+    оставлены = 0
+    занято = 0
+
+    for файл in sorted(корень.iterdir()):
+        if not файл.is_file():
+            continue
+        папка = _ПО_РАСШИРЕНИЮ.get(файл.suffix.lower())
+        if папка is None:
+            оставлены += 1
+            continue
+
+        назначение = корень / папка
+        if not назначение.exists():
+            назначение.mkdir()
+            созданы.append(назначение)
+        цель = назначение / файл.name
+        if цель.exists():
+            # Перезаписать — значит потерять чужой файл ради порядка.
+            занято += 1
+            continue
+        shutil.move(str(файл), str(цель))
+        переезды.append((файл, цель))
+
+    if not переезды:
+        for папка in созданы:
+            папка.rmdir()
+        return f"В {корень.name} раскладывать нечего, сэр."
+
+    def _вернуть(список=list(переезды), папки=list(созданы)):
+        возвращено = 0
+        for откуда, куда in список:
+            try:
+                shutil.move(str(куда), str(откуда))
+                возвращено += 1
+            except OSError as exc:
+                _logger.warning("Файл %s не вернулся: %s", куда, exc)
+        for папка in папки:
+            try:
+                папка.rmdir()
+            except OSError:
+                pass          # человек успел что-то туда положить — пусть стоит
+        return f"Вернул на место {возвращено} файл(ов)."
+
+    push_undo(f"раскладка папки {корень.name}", _вернуть)
+
+    по_папкам: dict[str, int] = {}
+    for _, куда in переезды:
+        по_папкам[куда.parent.name] = по_папкам.get(куда.parent.name, 0) + 1
+    разбивка = ", ".join(f"{имя} — {сколько}" for имя, сколько in sorted(по_папкам.items()))
+
+    if player:
+        player.write_log(f"FILE: раскладка {корень.name}, перемещено {len(переезды)}")
+
+    хвост = ""
+    if оставлены:
+        хвост += f" Незнакомых файлов оставил на месте: {оставлены}."
+    if занято:
+        хвост += f" Столько же имён уже было занято: {занято} — эти не трогал."
+    return (f"Разложил {len(переезды)} файл(ов) в {корень.name}: {разбивка}.{хвост} "
+            f"Скажите «отмени», и всё вернётся на места.")
 
 
 def _to_trash(p: Path) -> bool:
@@ -74,6 +196,12 @@ def file_controller(parameters: dict, player=None) -> str:
     name = parameters.get("name", "")
     content = parameters.get("content", "")
     new_name = parameters.get("new_name", "")
+    extension = str(parameters.get("extension", "")).strip().lstrip("*").lower()
+    # Путь по умолчанию для раскладки — рабочий стол, а не домашняя папка:
+    # «разбери у меня тут» про домашнюю папку не говорят, а разложить её
+    # целиком — это переезд, которого никто не просил.
+    if action in ("organize", "organize_desktop") and not parameters.get("path"):
+        path = _SHORTCUTS["desktop"]
 
     try:
         if action == "list":
@@ -122,6 +250,73 @@ def file_controller(parameters: dict, player=None) -> str:
                     return f"{target.name} удалён."
                 push_undo(f"создание файла {p.name}", _unmake)
             return f"Файл создан: {p}."
+
+        elif action == "append":
+            p = Path(path)
+            existed = p.is_file()
+            было = p.stat().st_size if existed else 0
+
+            # Перевод строки перед дописанным, если его там нет. Иначе вторая
+            # мысль приклеивается к концу первой одним словом.
+            разделитель = ""
+            if было:
+                with p.open("rb") as f:
+                    f.seek(-1, os.SEEK_END)
+                    if f.read(1) not in (b"\n", b"\r"):
+                        разделитель = "\n"
+
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("a", encoding="utf-8") as f:
+                f.write(разделитель + content)
+
+            if player:
+                player.write_log(f"FILE: Дописано в {p.name}")
+
+            if existed:
+                # Отмена обрезкой до прежней длины, а не возвратом снимка:
+                # точно, мгновенно и работает с файлом любого размера — тогда
+                # как снимок в памяти мы держать отказываемся уже с мегабайта.
+                def _обрезать(target=p, длина=было):
+                    with open(target, "r+b") as f:
+                        f.truncate(длина)
+                    return f"Дописанное в {target.name} убрано."
+                push_undo(f"дописывание в {p.name}", _обрезать)
+            else:
+                def _unmake_appended(target=p):
+                    target.unlink(missing_ok=True)
+                    return f"{target.name} удалён."
+                push_undo(f"создание файла {p.name}", _unmake_appended)
+            return f"Дописал в {p.name} {len(content)} символ(ов)."
+
+        elif action == "info":
+            p = Path(path)
+            if not p.exists():
+                return f"Не найдено: {path}"
+            изменён = _когда(p.stat().st_mtime)
+            if p.is_dir():
+                внутри = sum(1 for _ in p.iterdir())
+                return (f"{p.name} — папка, внутри {внутри} элемент(ов), "
+                        f"изменена {изменён}. Полный путь: {p}.")
+            return (f"{p.name} — файл {p.suffix.lstrip('.').upper() or 'без расширения'}, "
+                    f"{_размер(p.stat().st_size)}, изменён {изменён}. Полный путь: {p}.")
+
+        elif action == "largest":
+            корень = Path(path)
+            if not корень.is_dir():
+                return f"Папка не найдена: {path}"
+            файлы, прервано = _обойти(корень)
+            if not файлы:
+                return f"В {корень.name} файлов нет."
+            крупные = sorted(файлы, key=lambda f: f.stat().st_size, reverse=True)[:7]
+            строки = [f"{f.name} — {_размер(f.stat().st_size)}" for f in крупные]
+            if player:
+                player.write_log(f"FILE: самые большие в {корень.name}")
+            хвост = (f" Обход остановлен на {_ПРЕДЕЛ_ОБХОДА} файлах — "
+                     f"возможно, где-то глубже есть и крупнее." if прервано else "")
+            return f"Самое большое в {корень.name}: " + "; ".join(строки) + "." + хвост
+
+        elif action in ("organize", "organize_desktop"):
+            return _разложить(Path(path), player)
 
         elif action == "create_folder":
             p = Path(path)
@@ -211,9 +406,25 @@ def file_controller(parameters: dict, player=None) -> str:
 
         elif action == "find":
             base = Path(path)
-            results = list(base.rglob(f"*{name}*"))[:10]
+            if not base.is_dir():
+                return f"Папка не найдена: {path}"
+
+            # По расширению — отдельный случай, а не «имя, в котором есть
+            # точка и три буквы»: «найди все pdf» через `*pdf*` нашло бы и
+            # папку «pdf-скрипты», и файл «pdf_инструкция.txt».
+            if extension:
+                расш = extension if extension.startswith(".") else "." + extension
+                образец = f"*{name}*{расш}" if name else f"*{расш}"
+                чего = f"файлы {расш}" + (f" с «{name}» в имени" if name else "")
+            elif name:
+                образец = f"*{name}*"
+                чего = f"файлы с именем «{name}»"
+            else:
+                return "Что искать, сэр? Назовите имя или расширение."
+
+            results = [r for r in base.rglob(образец) if r.is_file()][:10]
             if not results:
-                return f"Файлы с именем «{name}» не найдены."
+                return f"{чего.capitalize()} не найдены в {base.name}."
             found = [str(r) for r in results]
             return "Найдено: " + ", ".join(found[:5]) + ("..." if len(results) > 5 else ".")
 
@@ -240,9 +451,19 @@ def file_controller(parameters: dict, player=None) -> str:
 TOOL = {
     "name": "files",
     "description": (
-        "Управляет файлами и папками: показывает список, читает, "
-        "создаёт, перемещает, копирует, переименовывает, удаляет файлы. "
-        "Может показать использование диска."
+        "Управляет файлами и папками: показывает список (list), читает (read), "
+        "создаёт (create_file, create_folder), ДОПИСЫВАЕТ в конец файла "
+        "(append — «добавь в список», «запиши ещё»), перемещает (move), "
+        "копирует (copy), переименовывает (rename), удаляет (delete). "
+        "Ищет по имени и по расширению (find: «найди все pdf» — extension=pdf). "
+        "Рассказывает о файле: размер, дата, тип (info). "
+        "Находит, что занимает место: самые большие файлы в папке (largest). "
+        "Раскладывает файлы по папкам «Картинки», «Документы», «Музыка», "
+        "«Видео», «Архивы», «Программы» (organize — «разбери рабочий стол», "
+        "«наведи порядок в загрузках»; без пути берётся рабочий стол). "
+        "Показывает свободное место (disk_usage). "
+        "Чтобы ПЕРЕСКАЗАТЬ документ или ответить по его содержимому — "
+        "file_processor, а не этот инструмент."
     ),
     "parameters": {
         "type": "OBJECT",
@@ -250,15 +471,17 @@ TOOL = {
             "action": {
                 "type": "STRING",
                 "description": (
-                    "list | read | create_file | create_folder | "
-                    "delete | move | copy | rename | find | disk_usage"
+                    "list | read | info | create_file | append | create_folder | "
+                    "delete | move | copy | rename | find | largest | organize | "
+                    "disk_usage"
                 )
             },
             "path":        {"type": "STRING", "description": "Путь к файлу/папке или: desktop, downloads, documents"},
             "destination": {"type": "STRING", "description": "Путь назначения для move/copy"},
-            "content":     {"type": "STRING", "description": "Содержимое для create_file"},
+            "content":     {"type": "STRING", "description": "Содержимое для create_file и append"},
             "new_name":    {"type": "STRING", "description": "Новое имя для rename"},
-            "name":        {"type": "STRING", "description": "Имя для поиска (find)"},
+            "name":        {"type": "STRING", "description": "Имя или его часть для поиска (find)"},
+            "extension":   {"type": "STRING", "description": "Расширение для поиска: pdf, docx, mp3 (find)"},
         },
         "required": ["action"]
     },
