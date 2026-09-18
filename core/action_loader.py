@@ -41,9 +41,10 @@ import importlib
 import inspect
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger("jarvis.actions")
 
@@ -159,12 +160,22 @@ def discover_actions(
     actions_dir: Path,
     reserved_names: set[str] | None = None,
     package: str = "actions",
+    attribute: str = "TOOL",
+    enabled: Callable[[str], bool] | None = None,
 ) -> ActionRegistry:
-    """Собирает реестр из `actions/*.py` с объявлением `TOOL`.
+    """Собирает реестр из `*.py` с объявлением в переменной `attribute`.
 
     `reserved_names` — имена, занятые встроенными инструментами `main.py`.
     Совпадение отклоняется: два обработчика на одно имя означают, что
-    сработает случайный, и понять, какой именно, по логу будет нельзя."""
+    сработает случайный, и понять, какой именно, по логу будет нельзя.
+
+    `attribute` — «TOOL» для штатных действий, «PLUGIN» для папки plugins/.
+    Механика у них одна, и разводить два загрузчика ради разного имени
+    переменной значило бы чинить потом обоих.
+
+    `enabled(имя)` — можно ли включать плагин. Выключенный не загружается
+    совсем, а не загружается и молчит: модель не должна видеть в списке
+    способность, которой человек её лишил."""
     reserved = reserved_names or set()
     found: dict[str, ActionRecord] = {}
 
@@ -179,7 +190,7 @@ def discover_actions(
             logger.warning("Модуль %s не загрузился (%s) — пропускаю", module_name, exc)
             continue
 
-        tool = getattr(module, "TOOL", None)
+        tool = getattr(module, attribute, None)
         if tool is None:
             continue
 
@@ -189,6 +200,9 @@ def discover_actions(
             continue
 
         name = tool["name"]
+        if enabled is not None and not enabled(name):
+            logger.info("Плагин %s выключен в настройках — пропускаю", name)
+            continue
         if name in reserved:
             logger.warning(
                 "Инструмент %s из %s конфликтует со встроенным — пропускаю",
@@ -213,5 +227,9 @@ def discover_actions(
             takes_player=_takes_player(tool["handler"]),
         )
 
-    logger.info("Действий загружено: %d (%s)", len(found), ", ".join(sorted(found)))
+    что = "Плагинов" if attribute == "PLUGIN" else "Действий"
+    if found:
+        logger.info("%s загружено: %d (%s)", что, len(found), ", ".join(sorted(found)))
+    else:
+        logger.info("%s не найдено в %s", что.lower(), actions_dir.name)
     return ActionRegistry(found)

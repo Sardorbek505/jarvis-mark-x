@@ -414,6 +414,7 @@ def _describe_capabilities() -> str:
     Перечень пришлось бы править руками, и он разошёлся бы с кодом в первый же
     месяц: инструмент удалили, а ассистент продолжает его обещать."""
     строки = [f"- {s}" for s in _ACTIONS.describe()]
+    строки += [f"- {s}" for s in _PLUGINS.describe()]
     встроенные = {
         "save_to_memory": "запоминает факты о пользователе",
         "recall_memory":  "ищет в долгосрочной памяти то, чего нет в этой инструкции",
@@ -803,7 +804,35 @@ INLINE_TOOLS = [
 _INLINE_NAMES = {t["name"] for t in INLINE_TOOLS}
 _ACTIONS = discover_actions(BASE_DIR / "actions", reserved_names=_INLINE_NAMES)
 
-TOOLS = INLINE_TOOLS + _ACTIONS.get_tool_declarations()
+
+def _plugin_enabled(имя: str) -> bool:
+    """Выключенный плагин не загружается вовсе.
+
+    Не «загружается и молчит»: модель не должна видеть в списке способность,
+    которой человек её лишил, — иначе она будет её предлагать, а вызов
+    упрётся в «неизвестный инструмент»."""
+    try:
+        from core.paths import load_api_keys
+        выключены = load_api_keys().get("plugins_disabled") or []
+        return имя not in {str(н).strip() for н in выключены}
+    except Exception:
+        return True
+
+
+# Пользовательские плагины: один файл — одна способность, положил и работает.
+# Имена штатных инструментов заняты: плагин не должен незаметно подменять
+# «выключи компьютер» своей версией.
+_PLUGINS = discover_actions(
+    BASE_DIR / "plugins",
+    reserved_names=_INLINE_NAMES | set(_ACTIONS.names()),
+    package="plugins",
+    attribute="PLUGIN",
+    enabled=_plugin_enabled,
+)
+
+TOOLS = (INLINE_TOOLS
+         + _ACTIONS.get_tool_declarations()
+         + _PLUGINS.get_tool_declarations())
 
 class Jarvis:
     def __init__(self, ui: JarvisUI):
@@ -1449,6 +1478,12 @@ class Jarvis:
             elif _ACTIONS.has(name):
                 result = await loop.run_in_executor(
                     None, lambda: _ACTIONS.run(name, args, player=self.ui)
+                )
+
+            # ── Пользовательские плагины ────────────────────────────────
+            elif _PLUGINS.has(name):
+                result = await loop.run_in_executor(
+                    None, lambda: _PLUGINS.run(name, args, player=self.ui)
                 )
 
             else:
