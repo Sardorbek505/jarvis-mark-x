@@ -25,7 +25,7 @@ from PyQt6.QtGui import (
     QShortcut, QTextCursor,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPushButton, QSizePolicy, QSystemTrayIcon, QTextEdit,
     QVBoxLayout, QWidget,
 )
@@ -916,6 +916,21 @@ class MainWindow(QMainWindow):
         self._style_mute_btn()
         left_lay.addWidget(self._mute_btn)
 
+        # Кнопка: выбор микрофона и динамиков
+        self._audio_btn = QPushButton("🎧  УСТРОЙСТВА")
+        self._audio_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._audio_btn.setFixedHeight(26)
+        self._audio_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._audio_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.TEXT_DIM};
+                border: 1px solid {C.BORDER}; border-radius: 3px;
+            }}
+            QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
+        """)
+        self._audio_btn.clicked.connect(self._open_audio_picker)
+        left_lay.addWidget(self._audio_btn)
+
         root.addWidget(left)
 
         # ── Центральный HUD ─────────────────────────────────────────
@@ -1143,6 +1158,173 @@ class MainWindow(QMainWindow):
         margin = 16
         width = max(360, self.width() - 2 * margin)
         self._confirm_banner.setGeometry(margin, margin, width, 58)
+
+
+    # ── Push-to-talk в окне ───────────────────────────────────────────────────
+    def bind_push_to_talk(self, on_change):
+        """Ловит удержание Ctrl+Space, пока окно в фокусе.
+
+        Запасной путь для macOS и Linux: там состояние клавиш из чужих окон не
+        прочитать, и глобальный опрос (core/push_to_talk.py) недоступен.
+
+        Именно события клавиш, а не QShortcut: QShortcut сообщает только о
+        срабатывании, отпускания у него нет вовсе — «удержание» пришлось бы
+        изображать таймером, то есть говорить не «пока держу», а «секунду
+        после нажатия». Это разные вещи, и вторая обрывает фразу на полуслове.
+        """
+        self._ptt_callback = on_change
+
+    def _ptt_chord(self, event) -> bool:
+        return (event.key() == Qt.Key.Key_Space
+                and event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+    def keyPressEvent(self, event):
+        # autoRepeat — это поток повторов от удерживаемой клавиши; состояние
+        # от них не меняется, и дёргать обработчик тридцать раз незачем.
+        if (getattr(self, "_ptt_callback", None)
+                and self._ptt_chord(event) and not event.isAutoRepeat()):
+            self._ptt_callback(True)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        # Отпустить могли и Ctrl, и пробел — по отдельности. Любое из двух
+        # закрывает микрофон: аккорд больше не зажат.
+        if getattr(self, "_ptt_callback", None) and not event.isAutoRepeat():
+            if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Control):
+                self._ptt_callback(False)
+                event.accept()
+                return
+        super().keyReleaseEvent(event)
+
+    # ── Выбор микрофона и динамиков ───────────────────────────────────────────
+    def _open_audio_picker(self):
+        """Окно выбора устройств.
+
+        До этого микрофон выбирала эвристика по названиям, а динамики не
+        выбирались вовсе. Работало, пока угадывало; когда не угадало, повлиять
+        было нечем — даже узнать, что именно взято, было негде."""
+        from core import audio_devices
+
+        входы = audio_devices.list_devices("input")
+        выходы = audio_devices.list_devices("output")
+
+        окно = QDialog(self)
+        окно.setWindowTitle("Аудиоустройства")
+        окно.setMinimumWidth(460)
+        окно.setStyleSheet(f"QDialog {{ background: {C.BG}; color: {C.TEXT}; }}")
+
+        сетка = QVBoxLayout(окно)
+        сетка.setContentsMargins(16, 14, 16, 14)
+        сетка.setSpacing(8)
+
+        def _подпись(текст: str) -> QLabel:
+            w = QLabel(текст)
+            w.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            w.setStyleSheet(f"color: {C.TEXT_DIM}; letter-spacing: 1px;")
+            return w
+
+        def _выпадающий(устройства, сохранённое: str) -> QComboBox:
+            box = QComboBox()
+            box.setFont(QFont("Segoe UI", 9))
+            box.setStyleSheet(f"""
+                QComboBox {{
+                    background: #000d12; color: {C.TEXT};
+                    border: 1px solid {C.BORDER}; border-radius: 4px; padding: 5px 8px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background: {C.PANEL2}; color: {C.TEXT};
+                    selection-background-color: {C.BORDER_A};
+                }}
+            """)
+            # Первая строка — отказ от выбора. Она же и значит «как было».
+            box.addItem("Системное по умолчанию", "")
+            for d in устройства:
+                box.addItem(d["name"], d["name"])
+            if сохранённое:
+                найдено = box.findData(сохранённое)
+                box.setCurrentIndex(найдено if найдено >= 0 else 0)
+            return box
+
+        сетка.addWidget(_подпись("◈ МИКРОФОН"))
+        микрофон = _выпадающий(входы, audio_devices.saved_name("input"))
+        сетка.addWidget(микрофон)
+
+        сетка.addWidget(_подпись("◈ ДИНАМИКИ"))
+        динамики = _выпадающий(выходы, audio_devices.saved_name("output"))
+        сетка.addWidget(динамики)
+
+        # Режим «зажми и говори» живёт здесь же: он про микрофон, и включать
+        # его правкой JSON — значит не включать вовсе.
+        from core import push_to_talk
+
+        сетка.addWidget(_подпись("◈ РЕЖИМ МИКРОФОНА"))
+        зажать = QCheckBox("Зажми и говори (Ctrl+Space)")
+        зажать.setFont(QFont("Segoe UI", 9))
+        зажать.setStyleSheet(f"QCheckBox {{ color: {C.TEXT}; }}")
+        зажать.setChecked(push_to_talk.enabled())
+        сетка.addWidget(зажать)
+
+        границы = QLabel(push_to_talk.PushToTalk.scope_note())
+        границы.setFont(QFont("Segoe UI", 8))
+        границы.setStyleSheet(f"color: {C.TEXT_DIM};")
+        границы.setWordWrap(True)
+        сетка.addWidget(границы)
+
+        если_пусто = not входы and not выходы
+        сноска = QLabel(
+            "Звуковых устройств не видно — проверьте драйверы."
+            if если_пусто else
+            "Выбор сохраняется по имени и применяется при следующем подключении "
+            "к Gemini. Если устройство отключат, Джарвис вернётся к системному "
+            "и скажет об этом в логе."
+        )
+        сноска.setFont(QFont("Segoe UI", 8))
+        сноска.setStyleSheet(f"color: {C.TEXT_DIM};")
+        сноска.setWordWrap(True)
+        сетка.addWidget(сноска)
+
+        кнопки = QHBoxLayout()
+        кнопки.addStretch()
+        for текст, цвет, действие in (
+            ("ОТМЕНА", C.TEXT_MED, окно.reject),
+            ("СОХРАНИТЬ", C.PRI, окно.accept),
+        ):
+            b = QPushButton(текст)
+            b.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            b.setFixedHeight(28)
+            b.setMinimumWidth(110)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {цвет};
+                    border: 1px solid {цвет}; border-radius: 4px; padding: 0 10px;
+                }}
+                QPushButton:hover {{ background: {C.BORDER_A}; color: {C.WHITE}; }}
+            """)
+            b.clicked.connect(действие)
+            кнопки.addWidget(b)
+        сетка.addLayout(кнопки)
+
+        if окно.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        for kind, box in (("input", микрофон), ("output", динамики)):
+            audio_devices.save_name(box.currentData() or "", kind)
+
+        было = push_to_talk.enabled()
+        стало = зажать.isChecked()
+        if стало != было:
+            push_to_talk.set_enabled(стало)
+            self.write_log(
+                "SYS: режим «зажми и говори» включён — применится при перезапуске"
+                if стало else
+                "SYS: режим «зажми и говори» выключен — применится при перезапуске"
+            )
+
+        выбрано_микрофон = микрофон.currentText()
+        self.write_log(f"SYS: микрофон — «{выбрано_микрофон[:32]}», применится при переподключении")
 
     def _show_overlay(self, reason="init"):
         self._overlay = SetupOverlay(self.centralWidget(), reason=reason)

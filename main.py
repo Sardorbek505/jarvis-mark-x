@@ -88,6 +88,9 @@ from memory.memory_manager import (
 from core import confirm as confirm_gate
 from core import undo as undo_stack
 from core.action_loader import discover_actions
+from core import audio_devices
+from core.push_to_talk import PushToTalk
+from core import push_to_talk as ptt_setting
 from core.emotion_analyzer import EmotionAnalyzer
 from core.user_profile import UserProfile
 from core.initiative_engine import InitiativeEngine
@@ -241,7 +244,18 @@ def _device_is_silent(index: int, seconds: float = 0.05) -> bool:
 
 
 def _pick_input_device():
-    """Индекс микрофона: из MIC_DEVICE, иначе лучший физический/шумоподавляющий микрофон, иначе None."""
+    """Индекс микрофона.
+
+    Порядок: выбор человека в настройках → переменная MIC_DEVICE → эвристика по
+    названиям → системный по умолчанию.
+
+    Выбор человека идёт первым сознательно: эвристика ниже работает, пока
+    угадывает, а когда не угадала, повлиять на неё было нечем — ни списка, ни
+    настройки, ни даже способа узнать, какое устройство взято."""
+    выбранный = audio_devices.chosen_index("input")
+    if выбранный is not None:
+        return выбранный
+
     manual = os.getenv("MIC_DEVICE", "").strip()
     if manual:
         try:
@@ -862,6 +876,21 @@ class Jarvis:
 
         self.ui.on_text_command = self._on_text_command
 
+        # Push-to-talk: микрофон закрыт, пока не держат Ctrl+Space.
+        #
+        # Включается в настройках и по умолчанию выключен: для тихой комнаты
+        # пробуждение голосом удобнее. Смысл режима в том, что в шумной
+        # комнате кадры микрофона НЕ уезжают — а не в том, что их игнорируют
+        # на той стороне.
+        self._ptt = PushToTalk(on_change=self._on_ptt)
+        self._ptt_enabled = ptt_setting.enabled()
+        if self._ptt_enabled:
+            глобально = self._ptt.start()
+            self.ui.write_log(f"SYS: режим «зажми и говори» — {self._ptt.scope_note()}")
+            if not глобально:
+                # Окно умеет ловить аккорд само, но только когда оно в фокусе.
+                self.ui.bind_push_to_talk(self._ptt.set_held)
+
         # Глобальные системные горячие клавиши (F8 / Ctrl+Shift+J — вызов, Ctrl+Shift+M — мьют)
         try:
             from core.hotkey_manager import GlobalHotkeyManager
@@ -877,6 +906,17 @@ class Jarvis:
         # Автоматический запуск мобильного Telegram-бота (@Aimyjarvisbot) в фоне
         self._telegram_proc = self._start_telegram_bot()
         atexit.register(self.cleanup)
+
+    def _on_ptt(self, держат: bool):
+        """Клавишу зажали или отпустили. Зовётся из опрашивающего потока."""
+        if держат:
+            # Зажатие — это и пробуждение: тянуться за словом, когда рука уже
+            # на клавише, незачем.
+            if self.ui.muted:
+                self.ui.toggle_mute()
+            self.ui.set_state("LISTENING")
+        else:
+            self.ui.set_state("IDLE")
 
     def _on_hotkey_wake(self):
         """Реакция на глобальный хоткей F8 / Ctrl+Shift+J из любого приложения или игры."""
@@ -943,6 +983,9 @@ class Jarvis:
         # сессию они не должны. И висящее подтверждение вместе с ними: кнопка
         # выключения, оставшаяся «нажатой» от прошлого запуска, — не то, что
         # стоит находить при следующем.
+        if getattr(self, "_ptt", None):
+            self._ptt.stop()
+
         undo_stack.clear()
         confirm_gate.reset()
 
@@ -1565,6 +1608,13 @@ class Jarvis:
                 self._note_gate("микрофон выключен (Ctrl+M)")
                 preroll.clear()
                 return
+            # Режим «зажми и говори»: пока клавишу не держат, кадр не уходит
+            # никуда. Предбуфер при этом чистим — иначе первая же отпущенная
+            # клавиша отправила бы полсекунды чужого разговора.
+            if self._ptt_enabled and not self._ptt.mic_open():
+                self._note_gate("зажмите Ctrl+Space, чтобы говорить")
+                preroll.clear()
+                return
 
             pcm_bytes = indata.tobytes()
 
@@ -1864,6 +1914,17 @@ class Jarvis:
             s.start()
             s.write(b"\x00" * (CHUNK_SIZE * 2))   # тишина: проверяем, что ПИШЕТСЯ
             return s
+
+        # Выбор человека — первым. Раньше здесь стоял только None, то есть
+        # «то, что система назвала по умолчанию», а в Windows это меняется
+        # само при подключении гарнитуры.
+        выбранный = audio_devices.chosen_index("output")
+        if выбранный is not None:
+            try:
+                return _try(выбранный)
+            except Exception as exc:
+                logger.warning("Выбранное устройство вывода не играет: %s", exc)
+                self.ui.write_log("SYS: выбранные динамики молчат — беру системные")
 
         try:
             return _try(None)
