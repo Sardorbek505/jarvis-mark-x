@@ -25,9 +25,9 @@ from PyQt6.QtGui import (
     QShortcut, QTextCursor,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QPushButton, QSizePolicy, QSystemTrayIcon, QTextEdit,
-    QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel,
+    QLineEdit, QMainWindow, QPushButton, QSizePolicy, QSystemTrayIcon,
+    QTextEdit, QVBoxLayout, QWidget,
 )
 
 import logging
@@ -188,8 +188,10 @@ class HudCanvas(QWidget):
     def _load_face(self, path: str):
         try:
             import io
+
             from PIL import Image, ImageDraw
-            from core.paths import get_base_dir, get_app_dir
+
+            from core.paths import get_app_dir, get_base_dir
 
             p = Path(path)
             if not p.is_absolute() or not p.exists():
@@ -828,7 +830,8 @@ class MainWindow(QMainWindow):
         # Установка иконки окна и панели задач
         try:
             from PyQt6.QtGui import QIcon
-            from core.paths import get_base_dir, get_app_dir
+
+            from core.paths import get_app_dir, get_base_dir
             for ico_candidate in [
                 get_base_dir() / "app.ico",
                 get_app_dir() / "app.ico",
@@ -854,6 +857,8 @@ class MainWindow(QMainWindow):
 
         self.muted = False        # см. комментарий выше — микрофон слушает сразу
         self.current_file: str | None = None
+        # Без этого Qt не доставляет события перетаскивания вовсе.
+        self.setAcceptDrops(True)
         self.on_text_command = None
 
         # ── Системный трей Windows ──────────────────────────────────
@@ -1047,6 +1052,7 @@ class MainWindow(QMainWindow):
     def wait_for_api_key(self):
         """Блокирует поток до получения API-ключа. Пропускает если ключ уже есть."""
         import threading
+
         from core.paths import load_api_keys
 
         # Проверяем наличие ключа во всех конфигурациях (%APPDATA% и локально)
@@ -1244,7 +1250,7 @@ class MainWindow(QMainWindow):
                 box.addItem(d["name"], d["name"])
             if сохранённое:
                 найдено = box.findData(сохранённое)
-                box.setCurrentIndex(найдено if найдено >= 0 else 0)
+                box.setCurrentIndex(max(найдено, 0))
             return box
 
         сетка.addWidget(_подпись("◈ МИКРОФОН"))
@@ -1425,9 +1431,39 @@ class MainWindow(QMainWindow):
     def _clear_log(self):
         self._log.clear()
 
+    # ── Перетаскивание файла в окно ───────────────────────────────────────────
+    # `_on_file` был написан, но его никто не вызывал: бросить файл в окно было
+    # некуда. Ради этого сценария и делался file_processor — человек бросает
+    # файл и спрашивает вслух, не называя пути.
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        пути = [u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()]
+        if not пути:
+            super().dropEvent(event)
+            return
+        # Несколько файлов сразу — берём первый и говорим об этом: молча
+        # проглотить остальные значит соврать о том, что принято.
+        self._on_file(пути[0])
+        if len(пути) > 1:
+            self.write_log(f"SYS: взял первый из {len(пути)} файлов")
+        event.acceptProposedAction()
+
     def _on_file(self, path: str):
         self.current_file = path
         self.write_log(f"FILE: Загружен → {Path(path).name}")
+        self.write_log("SYS: спросите вслух, о чём этот файл")
 
     def _update_metrics(self):
         snap = _metrics.snapshot()
