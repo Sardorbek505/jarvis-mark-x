@@ -94,3 +94,20 @@ def weather_action(parameters: dict, player=None) -> str:
 
     except Exception:
         return f"Не удалось получить погоду для {city}. Проверьте подключение к интернету."
+
+# ─── Объявление для реестра действий ──────────────────────────────────────────
+# Инструмент описывает себя сам: имя, текст для модели, схема аргументов и
+# обработчик. core/action_loader.py находит это при запуске — ни списка в
+# main.py, ни ветки в диспетчере для нового инструмента больше не нужно.
+TOOL = {
+    "name": "weather",
+    "description": "Сообщает текущую погоду в указанном городе.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "city": {"type": "STRING", "description": "Название города"}
+        },
+        "required": ["city"]
+    },
+    "handler": weather_action,
+}

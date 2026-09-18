@@ -263,3 +263,41 @@ def web_search(parameters: dict, player=None) -> str:
         return _shorten(f"По запросу «{query}»: {справка}")
 
     return _open_in_browser(query)
+
+# ─── Объявление для реестра действий ──────────────────────────────────────────
+# Инструмент описывает себя сам: имя, текст для модели, схема аргументов и
+# обработчик. core/action_loader.py находит это при запуске — ни списка в
+# main.py, ни ветки в диспетчере для нового инструмента больше не нужно.
+TOOL = {
+    "name": "web_search",
+    "description": (
+        "Ищет информацию в интернете. Вызывай на ЛЮБОЙ вопрос о текущих фактах, "
+        "событиях, ценах и людях — всегда предпочитай поиск догадке по памяти. "
+        "Режимы: search (по умолчанию) — короткий ответ на вопрос; "
+        "news — три самые свежие новости по теме; "
+        "research — развёрнутый разбор; "
+        "price — актуальная цена с валютой и источником; "
+        "compare — сравнение двух и более предметов (перечисли их в items)."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "query": {"type": "STRING", "description": "Поисковый запрос или тема"},
+            "mode": {
+                "type": "STRING",
+                "description": "search | news | research | price | compare",
+            },
+            "items": {
+                "type": "ARRAY",
+                "items": {"type": "STRING"},
+                "description": "Что с чем сравнивать (для mode=compare)",
+            },
+            "aspect": {
+                "type": "STRING",
+                "description": "Что важнее всего в сравнении: цена, характеристики, отзывы",
+            },
+        },
+        "required": ["query"]
+    },
+    "handler": web_search,
+}

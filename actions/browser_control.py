@@ -116,3 +116,29 @@ def browser_control(parameters: dict, player=None) -> str:
 
     except Exception as e:
         return f"Ошибка браузера: {e}"
+
+# ─── Объявление для реестра действий ──────────────────────────────────────────
+# Инструмент описывает себя сам: имя, текст для модели, схема аргументов и
+# обработчик. core/action_loader.py находит это при запуске — ни списка в
+# main.py, ни ветки в диспетчере для нового инструмента больше не нужно.
+TOOL = {
+    "name": "browser",
+    "description": (
+        "Управляет браузером: открывает сайты, выполняет поиск в браузере."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": "go_to — открыть сайт | search — поиск в браузере"
+            },
+            "url":    {"type": "STRING", "description": "URL для go_to"},
+            "query":  {"type": "STRING", "description": "Поисковый запрос для search"},
+            "engine": {"type": "STRING", "description": "google | yandex | duckduckgo (по умолчанию google)"},
+            "browser": {"type": "STRING", "description": "chrome | firefox | edge (необязательно)"}
+        },
+        "required": ["action"]
+    },
+    "handler": browser_control,
+}

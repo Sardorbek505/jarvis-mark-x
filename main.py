@@ -42,6 +42,7 @@ import collections
 import json
 import traceback
 import re
+import platform
 import threading
 import time
 import random
@@ -86,6 +87,7 @@ from memory.memory_manager import (
 )
 from core import confirm as confirm_gate
 from core import undo as undo_stack
+from core.action_loader import discover_actions
 from core.emotion_analyzer import EmotionAnalyzer
 from core.user_profile import UserProfile
 from core.initiative_engine import InitiativeEngine
@@ -94,18 +96,10 @@ from core.team_collaboration import TeamCollaborationEngine
 from core.onboarding import ensure_gemini_key
 from core.latency import LatencyTracker
 from core.headless_ui import HeadlessUI, headless_requested
-from actions.open_app import open_app
-from actions.weather import weather_action
-from actions.web_search import web_search
-from actions.computer_settings import computer_settings
-from actions.browser_control import browser_control
-from actions.file_controller import file_controller
-from actions.modes import set_mode, get_current_mode
-from actions.movie_player import movie_player
-from actions.spotify_controller import spotify_player
-from actions.window_control import window_control
-from actions.calendar import calendar
-from actions.obsidian import obsidian_action
+# Обработчики действий здесь больше не импортируются: их находит реестр
+# (core/action_loader.py) по объявлению TOOL в самом модуле. Остаётся только
+# то, что нужно самому main.py помимо вызова инструмента.
+from actions.modes import get_current_mode
 
 from core import (
     translate_text,
@@ -382,6 +376,60 @@ def _load_system_prompt() -> str:
         )
 
 
+
+# ─── Самоописание: что ассистент умеет и чего не умеет ────────────────────────
+
+# Настоящая ОС, а не та, что записана в конфиге: ассистент должен знать, где
+# он запущен, — команды на Windows и Linux разные.
+_OS_NAME = platform.system()
+
+def _render_prompt(template: str, values: dict[str, str]) -> str:
+    """Подставляет `{токены}` в текст промпта.
+
+    Простой заменой, а не `str.format`: в промпте 27 КБ живого текста, и одна
+    фигурная скобка в чьей-нибудь фразе уронила бы запуск с KeyError. Токен,
+    которого в шаблоне нет, просто не подставляется."""
+    for ключ, значение in values.items():
+        template = template.replace("{" + ключ + "}", значение)
+    return template
+
+
+def _describe_capabilities() -> str:
+    """Список способностей — из живого реестра, а не из отдельного перечня.
+
+    Перечень пришлось бы править руками, и он разошёлся бы с кодом в первый же
+    месяц: инструмент удалили, а ассистент продолжает его обещать."""
+    строки = [f"- {s}" for s in _ACTIONS.describe()]
+    встроенные = {
+        "save_to_memory": "запоминает факты о пользователе",
+        "recall_memory":  "ищет в долгосрочной памяти то, чего нет в этой инструкции",
+        "undo":           "отменяет собственные изменения файлов и настроек",
+        "look_at_screen": "смотрит на экран — один снимок по запросу",
+        "look_at_camera": "смотрит в камеру — один снимок по запросу",
+        "translation":    "переводит текст и ведёт историю переводов",
+        "team_collaboration": "ведёт проекты, задачи и состав команды",
+        "sleep_timer":    "ставит таймер сна с автовыключением",
+        "switch_voice":   "переключает голос между киношным и быстрым",
+        "shutdown_jarvis": "завершает свою работу",
+    }
+    for имя, описание in встроенные.items():
+        строки.append(f"- {имя} — {описание}.")
+    return "\n".join(sorted(строки))
+
+
+# Чего ассистент не может. Эта половина важнее списка умений: не зная границ,
+# модель придумывает недостающее и уверенно рапортует о сделанном.
+_LIMITS = """- Зрение — это ОДИН снимок по запросу, а не постоянное наблюдение:
+  того, что было на экране минуту назад, ты не видел.
+- Ты действуешь только на этой машине. Чужими компьютерами, телефоном и
+  умным домом ты не управляешь.
+- Выключение, перезагрузка и удаление файла требуют нажатия кнопки на экране.
+  Пока её не нажали, действие НЕ выполнено — не говори, что сделал.
+- Ты не можешь отменить то, чего не делал сам: «отмени» относится к твоим
+  действиям, а не к Ctrl+Z в чужом приложении.
+- Всего, чего нет в списке выше, ты не умеешь. Скажи об этом прямо, вместо
+  того чтобы придумывать результат."""
+
 def _clean_dialog_text(text: str) -> str:
     """Очищает и нормализует текст диалога, отсекая шум и звуковые артефакты."""
     if not text:
@@ -460,137 +508,12 @@ def _split_for_speech(text: str) -> list[str]:
     return chunks
 
 
-# ─── Описания инструментов (на русском) ───────────────────────────────────────
-TOOLS = [
-    {
-        "name": "open_app",
-        "description": (
-            "Открывает любое приложение или программу на компьютере. "
-            "Вызывай всегда, когда пользователь просит открыть, запустить или включить что-либо. "
-            "Никогда не говори что открыл — всегда вызывай этот инструмент."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "app_name": {
-                    "type": "STRING",
-                    "description": "Название приложения (например: Chrome, Telegram, Spotify)"
-                }
-            },
-            "required": ["app_name"]
-        }
-    },
-    {
-        "name": "weather",
-        "description": "Сообщает текущую погоду в указанном городе.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "city": {"type": "STRING", "description": "Название города"}
-            },
-            "required": ["city"]
-        }
-    },
-    {
-        "name": "web_search",
-        "description": (
-            "Ищет информацию в интернете. Вызывай на ЛЮБОЙ вопрос о текущих фактах, "
-            "событиях, ценах и людях — всегда предпочитай поиск догадке по памяти. "
-            "Режимы: search (по умолчанию) — короткий ответ на вопрос; "
-            "news — три самые свежие новости по теме; "
-            "research — развёрнутый разбор; "
-            "price — актуальная цена с валютой и источником; "
-            "compare — сравнение двух и более предметов (перечисли их в items)."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "query": {"type": "STRING", "description": "Поисковый запрос или тема"},
-                "mode": {
-                    "type": "STRING",
-                    "description": "search | news | research | price | compare",
-                },
-                "items": {
-                    "type": "ARRAY",
-                    "items": {"type": "STRING"},
-                    "description": "Что с чем сравнивать (для mode=compare)",
-                },
-                "aspect": {
-                    "type": "STRING",
-                    "description": "Что важнее всего в сравнении: цена, характеристики, отзывы",
-                },
-            },
-            "required": ["query"]
-        }
-    },
-    {
-        "name": "computer_control",
-        "description": (
-            "Управляет настройками компьютера: громкость, яркость, скриншот, "
-            "блокировка экрана, выключение, перезагрузка."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {
-                    "type": "STRING",
-                    "description": (
-                        "Действие: volume_up | volume_down | mute | "
-                        "brightness_up | brightness_down | screenshot | lock | "
-                        "shutdown | restart"
-                    )
-                },
-                "value": {"type": "STRING", "description": "Значение (например: 50 для 50%)"}
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "browser",
-        "description": (
-            "Управляет браузером: открывает сайты, выполняет поиск в браузере."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {
-                    "type": "STRING",
-                    "description": "go_to — открыть сайт | search — поиск в браузере"
-                },
-                "url":    {"type": "STRING", "description": "URL для go_to"},
-                "query":  {"type": "STRING", "description": "Поисковый запрос для search"},
-                "engine": {"type": "STRING", "description": "google | yandex | duckduckgo (по умолчанию google)"},
-                "browser": {"type": "STRING", "description": "chrome | firefox | edge (необязательно)"}
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "files",
-        "description": (
-            "Управляет файлами и папками: показывает список, читает, "
-            "создаёт, перемещает, копирует, переименовывает, удаляет файлы. "
-            "Может показать использование диска."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {
-                    "type": "STRING",
-                    "description": (
-                        "list | read | create_file | create_folder | "
-                        "delete | move | copy | rename | find | disk_usage"
-                    )
-                },
-                "path":        {"type": "STRING", "description": "Путь к файлу/папке или: desktop, downloads, documents"},
-                "destination": {"type": "STRING", "description": "Путь назначения для move/copy"},
-                "content":     {"type": "STRING", "description": "Содержимое для create_file"},
-                "new_name":    {"type": "STRING", "description": "Новое имя для rename"},
-                "name":        {"type": "STRING", "description": "Имя для поиска (find)"},
-            },
-            "required": ["action"]
-        }
-    },
+# ─── Встроенные инструменты ───────────────────────────────────────────────────
+# Здесь остаётся только то, что вплетено в состояние живой сессии: память,
+# отмена, зрение с дозагрузкой кадра в тот же ход, переключение голоса,
+# выключение. Всё остальное описывает себя само в actions/*.py и приходит из
+# core/action_loader.py — см. _ACTIONS ниже.
+INLINE_TOOLS = [
     {
         "name": "save_to_memory",
         "description": (
@@ -658,177 +581,6 @@ TOOLS = [
         }
     },
     {
-        "name": "obsidian",
-        "description": (
-            "Личная база знаний пользователя в Obsidian (markdown-заметки). "
-            "Вызывай, когда пользователь просит: запиши/сохрани заметку, добавь в дневник, "
-            "«что я записывал про…», найди заметку, прочитай заметку, покажи список заметок. "
-            "action=write — новая заметка (title + content); "
-            "append_daily — дописать строку в дневник за сегодня (content); "
-            "search — найти по базе (query); "
-            "read — прочитать заметку по заголовку (title); "
-            "list — список заметок (folder — опционально)."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":  {"type": "STRING", "description": "write | append_daily | search | read | list"},
-                "title":   {"type": "STRING", "description": "Заголовок заметки (для write / read)"},
-                "content": {"type": "STRING", "description": "Текст заметки (для write / append_daily)"},
-                "query":   {"type": "STRING", "description": "Поисковый запрос (для search)"},
-                "folder":  {"type": "STRING", "description": "Папка внутри vault (опционально)"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "set_mode",
-        "description": (
-            "Активирует один из lifestyle-режимов ДЖАРВИС или сбрасывает в обычный. "
-            "Каждый режим открывает релевантные приложения и сайты. "
-            "Вызывай когда пользователь говорит: режим учебы, режим работы, режим кино, "
-            "режим музыки, обычный режим, пора учиться, пора работать, хочу фильм, включи музыку."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "mode": {
-                    "type": "STRING",
-                    "description": (
-                        "study (учеба) | work (работа) | movie (кино) | "
-                        "music (музыка) | normal (обычный, сброс)"
-                    )
-                },
-                "preference": {
-                    "type": "STRING",
-                    "description": (
-                        "Опциональная под-опция. "
-                        "Для work: design | code | client. "
-                        "Для music: energy | calm | focus | power. "
-                        "Для movie: название фильма. "
-                        "Если не указано — Джарвис задаст уточняющий вопрос."
-                    )
-                }
-            },
-            "required": ["mode"]
-        }
-    },
-    {
-        "name": "movie_player",
-        "description": (
-            "Управляет видеоплеером фильмов и сериалов через VK Видео (https://vkvideo.ru/): "
-            "запуск фильма на vkvideo.ru, пауза (Space), полный экран (F), "
-            "перемотка вперед/назад на 10 сек (←/→), громкость (↑/↓), выход. "
-            "Вызывай когда пользователь говорит: включи фильм X, поставь X, фильм X, "
-            "пауза, продолжай, перемотай, полный экран, вперёд, назад, громче фильм, тише, выйти из фильма."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {
-                    "type": "STRING",
-                    "description": (
-                        "play (запустить фильм на vkvideo.ru) | pause (Space, переключатель) | "
-                        "resume (Space) | fullscreen (F) | "
-                        "seek_forward (→ 10 сек) | seek_back (← 10 сек) | "
-                        "volume_up (громкость +10%) | volume_down (-10%) | "
-                        "exit (выход + закрыть вкладку)"
-                    )
-                },
-                "title": {
-                    "type": "STRING",
-                    "description": "Название фильма для воспроизведения на vkvideo.ru (для action=play)"
-                }
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "window_control",
-        "description": (
-            "Управляет окнами и системой Windows: закрыть/свернуть/развернуть окно, "
-            "переключение окон, рабочий стол, проводник, диспетчер задач, параметры. "
-            "Вызывай когда пользователь говорит: закрой окно, сверни окно, разверни, "
-            "переключи окно, покажи рабочий стол, сверни все окна, открой проводник, "
-            "открой диспетчер задач, открой параметры, переключись на Chrome/Spotify/etc."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {
-                    "type": "STRING",
-                    "description": (
-                        "close (Alt+F4 закрыть окно) | "
-                        "minimize (свернуть) | maximize (развернуть) | "
-                        "minimize_all (свернуть все окна Win+M) | "
-                        "snap_left (прижать влево Win+←) | snap_right (Win+→) | "
-                        "switch (переключиться Alt+Tab) | "
-                        "show_desktop (Win+D рабочий стол) | "
-                        "open_explorer (Win+E проводник) | "
-                        "task_manager (диспетчер задач) | "
-                        "settings (параметры Windows) | "
-                        "run (Win+R выполнить) | "
-                        "activate (переключиться на окно по имени, нужен target)"
-                    )
-                },
-                "target": {
-                    "type": "STRING",
-                    "description": (
-                        "Для action=activate — название приложения "
-                        "(например 'Chrome', 'Spotify', 'Telegram')"
-                    )
-                }
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "music_player",
-        "description": (
-            "Управляет Spotify через официальный Web API: точный поиск треков, пауза, "
-            "переключение, громкость, перемешивание, повтор, информация о текущем треке, "
-            "mood mode (спокойное/мотивационное/ночной вайб). "
-            "Гарантирует воспроизведение запрошенного трека, не последнего проигранного. "
-            "Вызывай когда пользователь говорит: включи музыку, включи <исполнителя/трек>, "
-            "поставь песню, пауза, продолжи, следующий трек, предыдущий трек, "
-            "стоп музыку, громче, тише, громкость X, перемешай, повтор, что играет, "
-            "кто поет, включи спокойное/мотивационное/ночной вайб."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {
-                    "type": "STRING",
-                    "description": (
-                        "play (запуск с поиском) | pause | resume | "
-                        "next (следующий трек) | prev (предыдущий) | stop | "
-                        "volume_up | volume_down | volume | shuffle | repeat | "
-                        "now_playing | mood"
-                    )
-                },
-                "query": {
-                    "type": "STRING",
-                    "description": (
-                        "Что играть (для action=play/mood): название трека, исполнителя, "
-                        "альбома, жанра или настроение. Например: 'Imagine Dragons', 'lofi hip hop', "
-                        "'Любэ', 'jazz', 'спокойное', 'мотивационное', 'ночной вайб'."
-                    )
-                },
-                "value": {
-                    "type": "STRING",
-                    "description": (
-                        "Значение для action=volume (0-100) или action=repeat (track/context/off)"
-                    )
-                },
-                "playlist_url": {
-                    "type": "STRING",
-                    "description": "Прямой URL Spotify-плейлиста (опционально, имеет приоритет над query)"
-                }
-            },
-            "required": ["action"]
-        }
-    },
-    {
         "name": "team_collaboration",
         "description": (
             "Управление командной работой и проектами: добавление членов команды, "
@@ -893,74 +645,6 @@ TOOLS = [
             "Вызывай когда пользователь говорит: выключи, закрой, до свидания, пока, стоп, хватит."
         ),
         "parameters": {"type": "OBJECT", "properties": {}}
-    },
-    {
-        "name": "calendar",
-        "description": (
-            "Управление календарём и напоминаниями: добавление событий, просмотр расписания, "
-            "удаление событий, обновление времени, добавление напоминаний. "
-            "Поддерживает локальный календарь и Google Calendar (опционально). "
-            "Вызывай когда пользователь говорит: добавь встречу, создай событие, какие дела на сегодня, "
-            "покажи календарь, напомни мне, перенеси встречу, отмени событие, расписание на завтра."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {
-                    "type": "STRING",
-                    "description": (
-                        "add_event — добавить событие (нужны title, datetime) | "
-                        "get_events — показать события (date_range: today/tomorrow/week/all) | "
-                        "delete_event — удалить событие (нужен title_or_id) | "
-                        "update_event — обновить событие (нужен title_or_id, опционально new_datetime, new_duration) | "
-                        "add_reminder — добавить напоминание (нужны text, datetime) | "
-                        "todays_schedule — расписание на сегодня | "
-                        "sync_google — синхронизация с Google Calendar"
-                    )
-                },
-                "title": {
-                    "type": "STRING",
-                    "description": "Название события (для add_event)"
-                },
-                "datetime": {
-                    "type": "STRING",
-                    "description": "Дата и время (русский текст: 'завтра в 14:00', 'через 30 минут')"
-                },
-                "duration": {
-                    "type": "STRING",
-                    "description": "Длительность (например: '1 час', '30 минут')"
-                },
-                "description": {
-                    "type": "STRING",
-                    "description": "Описание события (для add_event)"
-                },
-                "location": {
-                    "type": "STRING",
-                    "description": "Место (для add_event)"
-                },
-                "date_range": {
-                    "type": "STRING",
-                    "description": "Период для get_events: today/tomorrow/week/all"
-                },
-                "title_or_id": {
-                    "type": "STRING",
-                    "description": "Название или ID события (для delete_event, update_event)"
-                },
-                "new_datetime": {
-                    "type": "STRING",
-                    "description": "Новое дата/время (для update_event)"
-                },
-                "new_duration": {
-                    "type": "STRING",
-                    "description": "Новая длительность (для update_event)"
-                },
-                "text": {
-                    "type": "STRING",
-                    "description": "Текст напоминания (для add_reminder)"
-                }
-            },
-            "required": ["action"]
-        }
     },
     {
         "name": "translation",
@@ -1053,43 +737,6 @@ TOOLS = [
         }
     },
     {
-        "name": "send_to_telegram",
-        "description": (
-            "Отправляет текстовое сообщение или скриншот экрана в личный Telegram-чат пользователя. "
-            "Вызывай когда пользователь просит скинуть ссылку, отправить заметку или скриншот в телеграм."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "text": {
-                    "type": "STRING",
-                    "description": "Текст сообщения для отправки"
-                },
-                "send_screenshot": {
-                    "type": "BOOLEAN",
-                    "description": "True, если нужно прикрепить снимок экрана"
-                }
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "morning_briefing",
-        "description": (
-            "Дневной брифинг — погода, события на сегодня, главные новости. "
-            "Приветствие зависит от времени суток: доброе утро (6-12), добрый день (12-18), "
-            "добрый вечер (18-22), доброй ночи (22-6). "
-            "Вызывай когда пользователь говорит 'брифинг', 'что сегодня', "
-            "'доброе утро', 'добрый день', 'введи в курс дня'. "
-            "Также вызывай автоматически при старте сессии если сейчас утро (6-10)."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {},
-            "required": []
-        }
-    },
-    {
         "name": "sleep_timer",
         "description": (
             "Управляет умным таймером сна с подтверждением голосом и автовыключением ноутбука/ПК. "
@@ -1135,6 +782,15 @@ TOOLS = [
 
 
 # ─── Ядро ДЖАРВИС ─────────────────────────────────────────────────────────────
+
+# Действия, которые описывают себя сами. Реестр собирается один раз при импорте:
+# список способностей ассистента — это он, а не отдельный список, который
+# пришлось бы править вручную и который разошёлся бы с кодом в первый же месяц.
+_INLINE_NAMES = {t["name"] for t in INLINE_TOOLS}
+_ACTIONS = discover_actions(BASE_DIR / "actions", reserved_names=_INLINE_NAMES)
+
+TOOLS = INLINE_TOOLS + _ACTIONS.get_tool_declarations()
+
 class Jarvis:
     def __init__(self, ui: JarvisUI):
         self.ui = ui
@@ -1409,7 +1065,24 @@ class Jarvis:
         from datetime import datetime
         memory    = load_memory()
         mem_str   = format_memory_for_prompt(memory)
-        sys_prompt = _load_system_prompt()
+        # Кто ты, что умеешь и чего не умеешь — собирается из живой системы на
+        # старте сессии, а не пишется в файл, который назавтра устареет.
+        шаблон     = _load_system_prompt()
+        способности = _describe_capabilities()
+        sys_prompt = _render_prompt(шаблон, {
+            "tools":  способности,
+            "limits": _LIMITS,
+            "os":     _OS_NAME,
+        })
+        # Своего места для этих блоков в промпте может и не быть: файл писали
+        # до того, как они появились. Тогда дописываем в конец — молча остаться
+        # без описания собственных границ хуже, чем поставить его не там.
+        if "{tools}" not in шаблон:
+            sys_prompt += (
+                "\n\n[ЧТО ТЫ УМЕЕШЬ — собрано из установленных инструментов]\n"
+                + способности
+                + "\n\n[ЧЕГО ТЫ НЕ УМЕЕШЬ]\n" + _LIMITS + "\n"
+            )
 
         now      = datetime.now()
         time_str = now.strftime("%A, %d %B %Y — %H:%M")
@@ -1560,70 +1233,6 @@ class Jarvis:
                     result = await asyncio.to_thread(undo_stack.undo_last)
                 self.ui.write_log(f"SYS: {result}")
 
-            # ── Инструмент: открыть приложение ──────────────────────
-            elif name == "open_app":
-                r = await loop.run_in_executor(
-                    None, lambda: open_app(parameters={"app_name": args.get("app_name", "")},
-                                           player=self.ui)
-                )
-                result = r or "Открыл."
-
-            # ── Инструмент: погода ───────────────────────────────────
-            elif name == "weather":
-                r = await loop.run_in_executor(
-                    None, lambda: weather_action(parameters=args, player=self.ui)
-                )
-                result = r or "Готово."
-
-            # ── Инструмент: поиск ────────────────────────────────────
-            elif name == "web_search":
-                r = await loop.run_in_executor(
-                    None, lambda: web_search(parameters=args, player=self.ui)
-                )
-                result = r or "Готово."
-
-            # ── Инструмент: база знаний Obsidian ─────────────────────
-            elif name == "obsidian":
-                r = await loop.run_in_executor(
-                    None, lambda: obsidian_action(parameters=args, player=self.ui)
-                )
-                result = r or "Готово."
-
-            # ── Инструмент: управление компьютером ───────────────────
-            elif name == "computer_control":
-                # Маппинг action → параметры
-                action_en = args.get("action", "")
-                action_map = {
-                    "volume_up":       {"action": "увеличить громкость", "value": args.get("value", "10")},
-                    "volume_down":     {"action": "уменьшить громкость", "value": args.get("value", "10")},
-                    "mute":            {"action": "без звука"},
-                    "brightness_up":   {"action": "увеличить яркость",  "value": args.get("value", "10")},
-                    "brightness_down": {"action": "уменьшить яркость",  "value": args.get("value", "10")},
-                    "screenshot":      {"action": "скриншот"},
-                    "lock":            {"action": "заблокировать"},
-                    "shutdown":        {"action": "выключить"},
-                    "restart":         {"action": "перезагрузить"},
-                }
-                mapped = action_map.get(action_en, {"action": action_en, "value": args.get("value", "")})
-                r = await loop.run_in_executor(
-                    None, lambda: computer_settings(parameters=mapped, player=self.ui)
-                )
-                result = r or "Готово."
-
-            # ── Инструмент: браузер ──────────────────────────────────
-            elif name == "browser":
-                r = await loop.run_in_executor(
-                    None, lambda: browser_control(parameters=args, player=self.ui)
-                )
-                result = r or "Готово."
-
-            # ── Инструмент: файлы ────────────────────────────────────
-            elif name == "files":
-                r = await loop.run_in_executor(
-                    None, lambda: file_controller(parameters=args, player=self.ui)
-                )
-                result = r or "Готово."
-
             # ── Инструмент: Vision (анализ экрана и камеры) ─────────
             elif name in ("look_at_screen", "look_at_camera", "vision_review"):
                 from actions.vision import vision_action
@@ -1631,40 +1240,6 @@ class Jarvis:
                 args["source"] = source
                 r = await loop.run_in_executor(None, lambda: vision_action(args))
                 result = r or "Анализ изображения завершен."
-
-            # ── Инструмент: отправка в Telegram ──────────────────────
-            elif name in ("send_to_telegram", "telegram_send"):
-                from actions.telegram_sender import telegram_sender_action
-                r = await loop.run_in_executor(None, lambda: telegram_sender_action(args))
-                result = r or "Отправлено в Telegram."
-
-            # ── Инструмент: режимы (study/work/movie/music) ──────────
-            elif name == "set_mode":
-                r = await loop.run_in_executor(
-                    None, lambda: set_mode(parameters=args, player=self.ui)
-                )
-                result = r or "Готово."
-
-            # ── Инструмент: продвинутый кино-плеер ───────────────────
-            elif name == "movie_player":
-                r = await loop.run_in_executor(
-                    None, lambda: movie_player(parameters=args, player=self.ui)
-                )
-                result = r or "Готово."
-
-            # ── Инструмент: Spotify music-плеер ──────────────────────
-            elif name == "music_player":
-                r = await loop.run_in_executor(
-                    None, lambda: spotify_player(parameters=args, player=self.ui)
-                )
-                result = r or "Готово."
-
-            # ── Инструмент: управление окнами Windows ────────────────
-            elif name == "window_control":
-                r = await loop.run_in_executor(
-                    None, lambda: window_control(parameters=args, player=self.ui)
-                )
-                result = r or "Готово."
 
             # ── Инструмент: командная работа ─────────────────────────
             elif name == "team_collaboration":
@@ -1713,13 +1288,6 @@ class Jarvis:
                     result = self.team_engine.generate_suggestions()
                 else:
                     result = "Не понял команду командной работы."
-
-            # ── Инструмент: календарь ──────────────────────────────────
-            elif name == "calendar":
-                r = await loop.run_in_executor(
-                    None, lambda: calendar(parameters=args, player=self.ui)
-                )
-                result = r or "Готово."
 
             # ── Инструмент: перевод ─────────────────────────────────
             #
@@ -1801,14 +1369,6 @@ class Jarvis:
                 else:
                     result = "Не понял команду перевода."
 
-            # ── Инструмент: утренний брифинг ─────────────────────────────
-            elif name == "morning_briefing":
-                from actions.morning_briefing import morning_briefing
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None, lambda: morning_briefing(args, player=self.ui)
-                )
-
             # ── Инструмент: умный таймер сна ──────────────────────────────
             elif name == "sleep_timer":
                 from actions.sleep_timer import sleep_timer
@@ -1837,6 +1397,16 @@ class Jarvis:
                     time.sleep(1.5)
                     os._exit(0)
                 threading.Thread(target=_shutdown, daemon=True).start()
+
+            # ── Всё остальное — самоописывающиеся действия из actions/ ──
+            #
+            # Одна ветка вместо четырнадцати. Реестр знает и объявление, и
+            # обработчик, поэтому расхождение между «что обещано модели» и
+            # «что выполнится» стало невозможным: они берутся из одного места.
+            elif _ACTIONS.has(name):
+                result = await loop.run_in_executor(
+                    None, lambda: _ACTIONS.run(name, args, player=self.ui)
+                )
 
             else:
                 result = f"Неизвестный инструмент: {name}"

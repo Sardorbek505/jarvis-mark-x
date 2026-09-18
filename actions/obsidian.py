@@ -247,3 +247,33 @@ def obsidian_action(parameters: dict, player=None) -> str:
         "Не понял действие для базы знаний. "
         "Доступно: записать, добавить в дневник, найти, прочитать, список."
     )
+
+# ─── Объявление для реестра действий ──────────────────────────────────────────
+# Инструмент описывает себя сам: имя, текст для модели, схема аргументов и
+# обработчик. core/action_loader.py находит это при запуске — ни списка в
+# main.py, ни ветки в диспетчере для нового инструмента больше не нужно.
+TOOL = {
+    "name": "obsidian",
+    "description": (
+        "Личная база знаний пользователя в Obsidian (markdown-заметки). "
+        "Вызывай, когда пользователь просит: запиши/сохрани заметку, добавь в дневник, "
+        "«что я записывал про…», найди заметку, прочитай заметку, покажи список заметок. "
+        "action=write — новая заметка (title + content); "
+        "append_daily — дописать строку в дневник за сегодня (content); "
+        "search — найти по базе (query); "
+        "read — прочитать заметку по заголовку (title); "
+        "list — список заметок (folder — опционально)."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action":  {"type": "STRING", "description": "write | append_daily | search | read | list"},
+            "title":   {"type": "STRING", "description": "Заголовок заметки (для write / read)"},
+            "content": {"type": "STRING", "description": "Текст заметки (для write / append_daily)"},
+            "query":   {"type": "STRING", "description": "Поисковый запрос (для search)"},
+            "folder":  {"type": "STRING", "description": "Папка внутри vault (опционально)"},
+        },
+        "required": ["action"]
+    },
+    "handler": obsidian_action,
+}

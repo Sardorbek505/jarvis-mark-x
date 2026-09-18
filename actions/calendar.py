@@ -308,4 +308,76 @@ def _load_calendar():
     from core.calendar_manager import _load_calendar
     return _load_calendar()
 
-
+# ─── Объявление для реестра действий ──────────────────────────────────────────
+# Инструмент описывает себя сам: имя, текст для модели, схема аргументов и
+# обработчик. core/action_loader.py находит это при запуске — ни списка в
+# main.py, ни ветки в диспетчере для нового инструмента больше не нужно.
+TOOL = {
+    "name": "calendar",
+    "description": (
+        "Управление календарём и напоминаниями: добавление событий, просмотр расписания, "
+        "удаление событий, обновление времени, добавление напоминаний. "
+        "Поддерживает локальный календарь и Google Calendar (опционально). "
+        "Вызывай когда пользователь говорит: добавь встречу, создай событие, какие дела на сегодня, "
+        "покажи календарь, напомни мне, перенеси встречу, отмени событие, расписание на завтра."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": (
+                    "add_event — добавить событие (нужны title, datetime) | "
+                    "get_events — показать события (date_range: today/tomorrow/week/all) | "
+                    "delete_event — удалить событие (нужен title_or_id) | "
+                    "update_event — обновить событие (нужен title_or_id, опционально new_datetime, new_duration) | "
+                    "add_reminder — добавить напоминание (нужны text, datetime) | "
+                    "todays_schedule — расписание на сегодня | "
+                    "sync_google — синхронизация с Google Calendar"
+                )
+            },
+            "title": {
+                "type": "STRING",
+                "description": "Название события (для add_event)"
+            },
+            "datetime": {
+                "type": "STRING",
+                "description": "Дата и время (русский текст: 'завтра в 14:00', 'через 30 минут')"
+            },
+            "duration": {
+                "type": "STRING",
+                "description": "Длительность (например: '1 час', '30 минут')"
+            },
+            "description": {
+                "type": "STRING",
+                "description": "Описание события (для add_event)"
+            },
+            "location": {
+                "type": "STRING",
+                "description": "Место (для add_event)"
+            },
+            "date_range": {
+                "type": "STRING",
+                "description": "Период для get_events: today/tomorrow/week/all"
+            },
+            "title_or_id": {
+                "type": "STRING",
+                "description": "Название или ID события (для delete_event, update_event)"
+            },
+            "new_datetime": {
+                "type": "STRING",
+                "description": "Новое дата/время (для update_event)"
+            },
+            "new_duration": {
+                "type": "STRING",
+                "description": "Новая длительность (для update_event)"
+            },
+            "text": {
+                "type": "STRING",
+                "description": "Текст напоминания (для add_reminder)"
+            }
+        },
+        "required": ["action"]
+    },
+    "handler": calendar,
+}

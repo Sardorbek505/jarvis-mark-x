@@ -351,3 +351,48 @@ def window_control(parameters: dict, player=None) -> str:
         return _activate_window_by_title(target, player)
 
     return f"Не понял команду: «{action}»."
+
+# ─── Объявление для реестра действий ──────────────────────────────────────────
+# Инструмент описывает себя сам: имя, текст для модели, схема аргументов и
+# обработчик. core/action_loader.py находит это при запуске — ни списка в
+# main.py, ни ветки в диспетчере для нового инструмента больше не нужно.
+TOOL = {
+    "name": "window_control",
+    "description": (
+        "Управляет окнами и системой Windows: закрыть/свернуть/развернуть окно, "
+        "переключение окон, рабочий стол, проводник, диспетчер задач, параметры. "
+        "Вызывай когда пользователь говорит: закрой окно, сверни окно, разверни, "
+        "переключи окно, покажи рабочий стол, сверни все окна, открой проводник, "
+        "открой диспетчер задач, открой параметры, переключись на Chrome/Spotify/etc."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": (
+                    "close (Alt+F4 закрыть окно) | "
+                    "minimize (свернуть) | maximize (развернуть) | "
+                    "minimize_all (свернуть все окна Win+M) | "
+                    "snap_left (прижать влево Win+←) | snap_right (Win+→) | "
+                    "switch (переключиться Alt+Tab) | "
+                    "show_desktop (Win+D рабочий стол) | "
+                    "open_explorer (Win+E проводник) | "
+                    "task_manager (диспетчер задач) | "
+                    "settings (параметры Windows) | "
+                    "run (Win+R выполнить) | "
+                    "activate (переключиться на окно по имени, нужен target)"
+                )
+            },
+            "target": {
+                "type": "STRING",
+                "description": (
+                    "Для action=activate — название приложения "
+                    "(например 'Chrome', 'Spotify', 'Telegram')"
+                )
+            }
+        },
+        "required": ["action"]
+    },
+    "handler": window_control,
+}

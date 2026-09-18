@@ -232,3 +232,35 @@ def file_controller(parameters: dict, player=None) -> str:
 
     except Exception as e:
         return f"Ошибка файловой операции: {e}"
+
+# ─── Объявление для реестра действий ──────────────────────────────────────────
+# Инструмент описывает себя сам: имя, текст для модели, схема аргументов и
+# обработчик. core/action_loader.py находит это при запуске — ни списка в
+# main.py, ни ветки в диспетчере для нового инструмента больше не нужно.
+TOOL = {
+    "name": "files",
+    "description": (
+        "Управляет файлами и папками: показывает список, читает, "
+        "создаёт, перемещает, копирует, переименовывает, удаляет файлы. "
+        "Может показать использование диска."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": (
+                    "list | read | create_file | create_folder | "
+                    "delete | move | copy | rename | find | disk_usage"
+                )
+            },
+            "path":        {"type": "STRING", "description": "Путь к файлу/папке или: desktop, downloads, documents"},
+            "destination": {"type": "STRING", "description": "Путь назначения для move/copy"},
+            "content":     {"type": "STRING", "description": "Содержимое для create_file"},
+            "new_name":    {"type": "STRING", "description": "Новое имя для rename"},
+            "name":        {"type": "STRING", "description": "Имя для поиска (find)"},
+        },
+        "required": ["action"]
+    },
+    "handler": file_controller,
+}

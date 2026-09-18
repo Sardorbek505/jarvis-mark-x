@@ -217,3 +217,39 @@ def movie_player(parameters: dict, player=None) -> str:
         return _exit_movie(player)
 
     return f"Не понял команду плеера: «{action}»."
+
+# ─── Объявление для реестра действий ──────────────────────────────────────────
+# Инструмент описывает себя сам: имя, текст для модели, схема аргументов и
+# обработчик. core/action_loader.py находит это при запуске — ни списка в
+# main.py, ни ветки в диспетчере для нового инструмента больше не нужно.
+TOOL = {
+    "name": "movie_player",
+    "description": (
+        "Управляет видеоплеером фильмов и сериалов через VK Видео (https://vkvideo.ru/): "
+        "запуск фильма на vkvideo.ru, пауза (Space), полный экран (F), "
+        "перемотка вперед/назад на 10 сек (←/→), громкость (↑/↓), выход. "
+        "Вызывай когда пользователь говорит: включи фильм X, поставь X, фильм X, "
+        "пауза, продолжай, перемотай, полный экран, вперёд, назад, громче фильм, тише, выйти из фильма."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": (
+                    "play (запустить фильм на vkvideo.ru) | pause (Space, переключатель) | "
+                    "resume (Space) | fullscreen (F) | "
+                    "seek_forward (→ 10 сек) | seek_back (← 10 сек) | "
+                    "volume_up (громкость +10%) | volume_down (-10%) | "
+                    "exit (выход + закрыть вкладку)"
+                )
+            },
+            "title": {
+                "type": "STRING",
+                "description": "Название фильма для воспроизведения на vkvideo.ru (для action=play)"
+            }
+        },
+        "required": ["action"]
+    },
+    "handler": movie_player,
+}

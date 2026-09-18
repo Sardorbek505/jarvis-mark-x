@@ -276,3 +276,65 @@ def _power(action: str, player) -> str:
             return "Выключаю компьютер через 5 секунд."
     except Exception as e:
         return f"Ошибка: {e}"
+
+# ─── Точка входа инструмента ──────────────────────────────────────────────────
+# Имена действий, которыми пользуется модель, объявлены на английском, а сам
+# `computer_settings` понимает русские фразы. Перевод жил в диспетчере main.py —
+# то есть словарь действий этого модуля лежал в другом файле, и добавление
+# действия требовало правки обоих. Теперь он здесь, рядом с тем, что переводит.
+_ACTION_ALIASES = {
+    "volume_up":       "увеличить громкость",
+    "volume_down":     "уменьшить громкость",
+    "mute":            "без звука",
+    "brightness_up":   "увеличить яркость",
+    "brightness_down": "уменьшить яркость",
+    "screenshot":      "скриншот",
+    "lock":            "заблокировать",
+    "shutdown":        "выключить",
+    "restart":         "перезагрузить",
+}
+
+
+def _computer_control_tool(parameters: dict, player=None) -> str:
+    """Обёртка для реестра: переводит имя действия и зовёт `computer_settings`."""
+    действие = str((parameters or {}).get("action", ""))
+    значение = str((parameters or {}).get("value", "") or "")
+    русское = _ACTION_ALIASES.get(действие)
+    if русское is None:
+        # Незнакомое имя отдаём как есть: `computer_settings` разбирает и
+        # свободные формулировки, и придуманное моделью имя может совпасть.
+        return computer_settings({"action": действие, "value": значение}, player=player)
+    параметры = {"action": русское}
+    if значение:
+        параметры["value"] = значение
+    elif действие in ("volume_up", "volume_down", "brightness_up", "brightness_down"):
+        параметры["value"] = "10"
+    return computer_settings(параметры, player=player)
+
+# ─── Объявление для реестра действий ──────────────────────────────────────────
+# Инструмент описывает себя сам: имя, текст для модели, схема аргументов и
+# обработчик. core/action_loader.py находит это при запуске — ни списка в
+# main.py, ни ветки в диспетчере для нового инструмента больше не нужно.
+TOOL = {
+    "name": "computer_control",
+    "description": (
+        "Управляет настройками компьютера: громкость, яркость, скриншот, "
+        "блокировка экрана, выключение, перезагрузка."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": (
+                    "Действие: volume_up | volume_down | mute | "
+                    "brightness_up | brightness_down | screenshot | lock | "
+                    "shutdown | restart"
+                )
+            },
+            "value": {"type": "STRING", "description": "Значение (например: 50 для 50%)"}
+        },
+        "required": []
+    },
+    "handler": _computer_control_tool,
+}

@@ -101,3 +101,30 @@ def telegram_sender_action(params: dict) -> str:
     text = params.get("text") or params.get("message") or ""
     send_screen = params.get("send_screenshot", False) or "скриншот" in text.lower() or "экран" in text.lower()
     return send_to_telegram(text=text, send_screenshot=send_screen)
+
+# ─── Объявление для реестра действий ──────────────────────────────────────────
+# Инструмент описывает себя сам: имя, текст для модели, схема аргументов и
+# обработчик. core/action_loader.py находит это при запуске — ни списка в
+# main.py, ни ветки в диспетчере для нового инструмента больше не нужно.
+TOOL = {
+    "name": "send_to_telegram",
+    "description": (
+        "Отправляет текстовое сообщение или скриншот экрана в личный Telegram-чат пользователя. "
+        "Вызывай когда пользователь просит скинуть ссылку, отправить заметку или скриншот в телеграм."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "text": {
+                "type": "STRING",
+                "description": "Текст сообщения для отправки"
+            },
+            "send_screenshot": {
+                "type": "BOOLEAN",
+                "description": "True, если нужно прикрепить снимок экрана"
+            }
+        },
+        "required": []
+    },
+    "handler": telegram_sender_action,
+}
