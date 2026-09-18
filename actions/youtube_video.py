@@ -130,36 +130,22 @@ def _transcript(vid: str) -> tuple[str, str]:
 
 
 def _summarise(текст: str, название: str) -> str:
-    """Пересказ расшифровки. Пустая строка — модель недоступна."""
-    try:
-        from core.onboarding import ensure_gemini_key
-        ключ = ensure_gemini_key(interactive=False)
-    except Exception as exc:
-        _logger.debug("Ключ недоступен: %s", exc)
-        return ""
-    if not ключ:
-        return ""
+    """Пересказ расшифровки. Пустая строка — модель недоступна.
 
-    try:
-        from google import genai
-        from google.genai import types
+    Через `core.llm_client`: у кончившейся квоты Gemini не должно быть права
+    отнимать пересказ там, где на машине стоит локальная модель."""
+    from core import llm_client
 
-        клиент = genai.Client(api_key=ключ)
-        ответ = клиент.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=(
-                "Ниже расшифровка видео с YouTube. Перескажи её по-русски: о чём "
-                "ролик и какие главные мысли в нём звучат. Четыре-шесть "
-                "предложений, без списков и markdown — это читают вслух. "
-                "Обращайся «сэр». Не добавляй ничего, чего в расшифровке нет.\n\n"
-                f"Название: {название}\n\nРасшифровка:\n{текст}"
-            ),
-            config=types.GenerateContentConfig(temperature=0.3, max_output_tokens=600),
-        )
-        return (ответ.text or "").strip()
-    except Exception as exc:
-        _logger.warning("Пересказ не получился: %s", exc)
-        return ""
+    return llm_client.ask(
+        f"Название: {название}\n\nРасшифровка:\n{текст}",
+        система=(
+            "Ниже расшифровка видео с YouTube. Перескажи её по-русски: о чём "
+            "ролик и какие главные мысли в нём звучат. Четыре-шесть "
+            "предложений, без списков и markdown — это читают вслух. "
+            "Обращайся «сэр». Не добавляй ничего, чего в расшифровке нет."
+        ),
+        предел=600,
+    )
 
 
 # ─── Действия ─────────────────────────────────────────────────────────────────
