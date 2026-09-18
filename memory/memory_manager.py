@@ -135,6 +135,25 @@ def all_entries(memory: dict | None = None) -> list[dict]:
     return out
 
 
+def filter_entries(entries: list[dict], query: str) -> list[dict]:
+    """Отбор для панели памяти: подстрока в ключе, значении или категории.
+
+    Здесь СОЗНАТЕЛЬНО не используется `_score`. Тот взвешивает слова, потому
+    что отвечает модели на вопрос «что ты обо мне знаешь». Человек, который
+    печатает в поле фильтра, ждёт другого: он видит список и сужает его,
+    буква за буквой. Ранжирование в этот момент выглядит как пропажа строк.
+    """
+    искомое = (query or "").strip().lower()
+    if not искомое:
+        return list(entries)
+    return [
+        з for з in entries
+        if искомое in з["key"].lower()
+        or искомое in з["value"].lower()
+        or искомое in з["category"].lower()
+    ]
+
+
 def over_limit(memory: dict | None = None) -> bool:
     """Предохранитель сработал. Ничего не удаляем — сообщаем наверх, чтобы это
     попало в лог, который читают, а не в stdout, который нет."""

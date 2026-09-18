@@ -26,8 +26,8 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QMainWindow, QPushButton, QSizePolicy, QSystemTrayIcon,
-    QTextEdit, QVBoxLayout, QWidget,
+    QLineEdit, QMainWindow, QPushButton, QScrollArea, QSizePolicy,
+    QSystemTrayIcon, QTextEdit, QVBoxLayout, QWidget,
 )
 
 import logging
@@ -936,6 +936,21 @@ class MainWindow(QMainWindow):
         self._audio_btn.clicked.connect(self._open_audio_picker)
         left_lay.addWidget(self._audio_btn)
 
+        # Кнопка: что Джарвис обо мне помнит
+        self._memory_btn = QPushButton("🧠  ПАМЯТЬ")
+        self._memory_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._memory_btn.setFixedHeight(26)
+        self._memory_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._memory_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.TEXT_DIM};
+                border: 1px solid {C.BORDER}; border-radius: 3px;
+            }}
+            QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
+        """)
+        self._memory_btn.clicked.connect(self._open_memory_panel)
+        left_lay.addWidget(self._memory_btn)
+
         root.addWidget(left)
 
         # ── Центральный HUD ─────────────────────────────────────────
@@ -1331,6 +1346,151 @@ class MainWindow(QMainWindow):
 
         выбрано_микрофон = микрофон.currentText()
         self.write_log(f"SYS: микрофон — «{выбрано_микрофон[:32]}», применится при переподключении")
+
+    def _open_memory_panel(self):
+        """Что Джарвис обо мне помнит — и как это забыть.
+
+        Долгосрочная память копилась молча: ассистент записывал факты сам, а
+        увидеть их можно было только в `memory/data.json`, куда человек не
+        полезет. Забыть отдельный факт голосом было можно, но лишь если
+        помнить, КАК он назван, — а именно этого человек и не знает.
+
+        Здесь список видно целиком, он сужается по мере набора в поле поиска,
+        и каждая строка убирается крестиком. Спрашивать подтверждение не о
+        чем: нажатие на крестик и ЕСТЬ решение человека. Гейт в этом проекте
+        стоит на том, что делает модель, а не на том, что делают руками.
+        """
+        from memory.memory_manager import all_entries, filter_entries, forget
+
+        окно = QDialog(self)
+        окно.setWindowTitle("Память")
+        окно.setMinimumSize(560, 460)
+        окно.setStyleSheet(f"QDialog {{ background: {C.BG}; color: {C.TEXT}; }}")
+
+        сетка = QVBoxLayout(окно)
+        сетка.setContentsMargins(16, 14, 16, 14)
+        сетка.setSpacing(8)
+
+        поиск = QLineEdit()
+        поиск.setPlaceholderText("Поиск по памяти…")
+        поиск.setFont(QFont("Segoe UI", 9))
+        поиск.setFixedHeight(30)
+        поиск.setStyleSheet(f"""
+            QLineEdit {{
+                background: #000d12; color: {C.TEXT};
+                border: 1px solid {C.BORDER}; border-radius: 4px; padding: 4px 8px;
+            }}
+            QLineEdit:focus {{ border: 1px solid {C.PRI}; background: #00141e; }}
+        """)
+        сетка.addWidget(поиск)
+
+        итог = QLabel("")
+        итог.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        итог.setStyleSheet(f"color: {C.TEXT_DIM}; letter-spacing: 1px;")
+        сетка.addWidget(итог)
+
+        прокрутка = QScrollArea()
+        прокрутка.setWidgetResizable(True)
+        прокрутка.setStyleSheet(
+            f"QScrollArea {{ border: 1px solid {C.BORDER}; border-radius: 4px; "
+            f"background: #000d12; }}")
+        сетка.addWidget(прокрутка, stretch=1)
+
+        содержимое = QWidget()
+        столбец = QVBoxLayout(содержимое)
+        столбец.setContentsMargins(6, 6, 6, 6)
+        столбец.setSpacing(4)
+        столбец.addStretch()
+        прокрутка.setWidget(содержимое)
+
+        def _строка(запись: dict) -> QWidget:
+            ряд = QFrame()
+            ряд.setStyleSheet(
+                f"QFrame {{ border: 1px solid {C.BORDER}; border-radius: 3px; "
+                f"background: transparent; }}")
+            полоса = QHBoxLayout(ряд)
+            полоса.setContentsMargins(8, 5, 5, 5)
+            полоса.setSpacing(8)
+
+            ярлык = QLabel(запись["category"].upper())
+            ярлык.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+            ярлык.setStyleSheet(f"color: {C.ACC2}; border: none;")
+            ярлык.setFixedWidth(84)
+            полоса.addWidget(ярлык)
+
+            текст = QLabel(f'{запись["key"]}: {запись["value"]}')
+            текст.setFont(QFont("Segoe UI", 9))
+            текст.setStyleSheet(f"color: {C.TEXT}; border: none;")
+            текст.setWordWrap(True)
+            полоса.addWidget(текст, stretch=1)
+
+            убрать = QPushButton("✕")
+            убрать.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            убрать.setFixedSize(24, 24)
+            убрать.setCursor(Qt.CursorShape.PointingHandCursor)
+            убрать.setToolTip("Забыть")
+            убрать.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {C.TEXT_DIM};
+                    border: 1px solid {C.BORDER}; border-radius: 3px;
+                }}
+                QPushButton:hover {{ color: {C.RED}; border: 1px solid {C.RED}; }}
+            """)
+
+            def _забыть(_=False, з=запись):
+                # Категорию передаём обязательно: один и тот же ключ может
+                # лежать в двух категориях, и забыть чужое молча — хуже, чем
+                # не забыть ничего.
+                if forget(з["key"], з["category"]):
+                    self.write_log(f'SYS: забыл — {з["category"]}/{з["key"]}')
+                _перерисовать()
+
+            убрать.clicked.connect(_забыть)
+            полоса.addWidget(убрать)
+            return ряд
+
+        def _перерисовать():
+            while столбец.count() > 1:                 # растяжку оставляем
+                элемент = столбец.takeAt(0)
+                виджет = элемент.widget()
+                if виджет is not None:
+                    # Сначала отвязать от родителя, потом удалять. Один
+                    # `deleteLater` оставил бы строку висеть на прежнем месте
+                    # до следующего прохода цикла событий: убранная из
+                    # раскладки, но всё ещё нарисованная.
+                    виджет.setParent(None)
+                    виджет.deleteLater()
+
+            записи = filter_entries(all_entries(), поиск.text())
+            for запись in записи:
+                столбец.insertWidget(столбец.count() - 1, _строка(запись))
+
+            всего = len(all_entries())
+            if not записи:
+                итог.setText("НИЧЕГО НЕ НАЙДЕНО" if всего else "ПАМЯТЬ ПУСТА")
+            elif len(записи) == всего:
+                итог.setText(f"ФАКТОВ: {всего}")
+            else:
+                итог.setText(f"НАЙДЕНО: {len(записи)} ИЗ {всего}")
+
+        поиск.textChanged.connect(_перерисовать)
+        _перерисовать()
+
+        закрыть = QPushButton("ЗАКРЫТЬ")
+        закрыть.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        закрыть.setFixedHeight(28)
+        закрыть.setCursor(Qt.CursorShape.PointingHandCursor)
+        закрыть.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.TEXT_DIM};
+                border: 1px solid {C.BORDER}; border-radius: 3px;
+            }}
+            QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
+        """)
+        закрыть.clicked.connect(окно.accept)
+        сетка.addWidget(закрыть)
+
+        окно.exec()
 
     def _show_overlay(self, reason="init"):
         self._overlay = SetupOverlay(self.centralWidget(), reason=reason)
