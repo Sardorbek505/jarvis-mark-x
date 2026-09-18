@@ -20,7 +20,8 @@ def _load():
     wanted = {"_action_of", "_is_destructive"}
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
-                getattr(t, "id", "") in {"_DESTRUCTIVE", "_CONFIRM_WINDOW_SEC"} for t in node.targets):
+                getattr(t, "id", "") in {"_DESTRUCTIVE", "_DESTRUCTIVE_UNLESS",
+                                         "_CONFIRM_WINDOW_SEC"} for t in node.targets):
             exec(compile(ast.Module([node], []), "guard", "exec"), mod.__dict__)
         if isinstance(node, ast.FunctionDef) and node.name in wanted:
             exec(compile(ast.get_source_segment(src, node), "guard", "exec"), mod.__dict__)
