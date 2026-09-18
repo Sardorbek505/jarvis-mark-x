@@ -87,6 +87,7 @@ from memory.memory_manager import (
 )
 from core import confirm as confirm_gate
 from core import acknowledge
+from core import watcher as topic_watcher
 from core import undo as undo_stack
 from core.action_loader import discover_actions
 from core import audio_devices
@@ -874,6 +875,20 @@ class Jarvis:
         else:
             logger.info("Экранное подтверждение недоступно: интерфейс без баннера")
 
+        # Слежение за темами. Проверяет фоновый поток, а говорит — эта же
+        # сессия: `_send_text_to_session` потокобезопасен (внутри
+        # run_coroutine_threadsafe), поэтому отдельного моста не нужно.
+        #
+        # Поток поднимается, только если с прошлого запуска осталось за чем
+        # следить: пустой сторож — это разбуженный раз в минуту процесс,
+        # который ничего не делает.
+        topic_watcher.bind(
+            notify=self._send_text_to_session,
+            log=self.ui.write_log,
+        )
+        if topic_watcher.start():
+            logger.info("Слежение за темами возобновлено: %s", topic_watcher.describe())
+
         # Новый мозг ДЖАРВИС
         self.user_profile = UserProfile(BASE_DIR)
         self.initiative_engine = InitiativeEngine()
@@ -1023,6 +1038,13 @@ class Jarvis:
             browser_session.close()
         except Exception as exc:
             logger.debug("Браузер при выходе: %s", exc)
+
+        # Фоновый сторож — демон, но join на выходе честнее: иначе он успеет
+        # заговорить в мёртвую сессию уже после прощания.
+        try:
+            topic_watcher.stop()
+        except Exception as exc:
+            logger.debug("Слежение при выходе: %s", exc)
 
         undo_stack.clear()
         confirm_gate.reset()
