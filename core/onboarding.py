@@ -135,7 +135,15 @@ def ensure_gemini_key(config_path: Path | None = None, *, interactive: bool = Tr
         except Exception as _e:
             _logger.debug("load_api_keys lookup failed: %s", _e)
 
-    if not interactive or not sys.stdin.isatty():
+    if not interactive:
+        # Спрашивать не просили. Здесь `None` — штатный ответ, а не беда:
+        # поиск, пересказ и слой моделей зовут эту функцию на каждый запрос и
+        # умеют обойтись без ключа. Уровень ERROR на такой ветке заполнял лог
+        # тревогой там, где всё идёт по плану, и прятал настоящие ошибки.
+        _logger.debug("Ключа Gemini нет, а спрашивать не просили")
+        return None
+
+    if not sys.stdin.isatty():
         _logger.error("Ключ Gemini не настроен, а мастер запустить негде (нет TTY)")
         return None
 
