@@ -1015,6 +1015,14 @@ class Jarvis:
         if getattr(self, "_ptt", None):
             self._ptt.stop()
 
+        # Автоматизируемое окно браузера переживёт процесс, если его не закрыть:
+        # Chromium останется висеть без хозяина.
+        try:
+            from core import browser_session
+            browser_session.close()
+        except Exception as exc:
+            logger.debug("Браузер при выходе: %s", exc)
+
         undo_stack.clear()
         confirm_gate.reset()
 

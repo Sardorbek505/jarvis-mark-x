@@ -2,13 +2,13 @@
 Действие: управление браузером — открыть сайт, поиск
 """
 
+import logging
+import os
+import pathlib
+import shutil
 import subprocess
 import sys
-import os
 import urllib.parse
-import shutil
-
-import logging
 
 _logger = logging.getLogger(__name__)
 
@@ -83,14 +83,127 @@ def _open_url(url: str, browser: str | None = None):
         subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def browser_control(parameters: dict, player=None) -> str:
-    action = parameters.get("action", "go_to").lower()
-    browser = parameters.get("browser")
-    url = parameters.get("url", "")
-    query = parameters.get("query", "")
-    engine = parameters.get("engine", "google").lower()
+# ─── Интерактивные действия ───────────────────────────────────────────────────
+# Открыть сайт и поискать человек сделает сам за секунду — это уходит в ЕГО
+# браузер, с его профилем и залогиненными аккаунтами. Нажать на кнопку и
+# прочитать текст в чужом окне нельзя: браузер не даёт собой управлять снаружи,
+# и для этого поднимается отдельное окно (core/browser_session.py).
+_ИНТЕРАКТИВНЫЕ = {
+    "click", "type", "fill", "fill_form", "get_text", "get_url", "press",
+    "scroll", "screenshot", "back", "forward", "reload", "close",
+}
+
+
+def _интерактивно(action: str, parameters: dict, player=None) -> str:
+    from core import browser_session as bs
+
+    url = str(parameters.get("url", "")).strip()
+    selector = str(parameters.get("selector", "")).strip()
+    text = str(parameters.get("text", "")).strip()
+    описание = str(parameters.get("description", "")).strip()
+
+    if action == "close":
+        if not bs.is_open():
+            return "Автоматизируемое окно и так закрыто, сэр."
+        bs.close()
+        return "Закрыл автоматизируемое окно."
 
     try:
+        сессия = bs.session()
+    except bs.BrowserUnavailable as беда:
+        return f"Не могу управлять браузером, сэр: {беда}."
+
+    try:
+        if url and action not in ("get_text", "get_url"):
+            if not url.startswith("http"):
+                url = "https://" + url
+            if not _is_safe_url(url):
+                return "Этот адрес я открывать не стану, сэр."
+            заголовок = сессия.goto(url)
+            if action == "go_to":
+                return f"Открыл «{заголовок}» в автоматизируемом окне."
+
+        if action == "click":
+            # По видимой надписи — так человек и описывает кнопку голосом,
+            # селекторов он не знает.
+            if описание or (text and not selector):
+                сессия.click_text(описание or text)
+                return f"Нажал «{описание or text}»."
+            if not selector:
+                return "На что нажать, сэр? Назовите надпись на кнопке."
+            сессия.click(selector)
+            return "Нажал."
+
+        if action in ("type", "fill", "fill_form"):
+            if not text:
+                return "Что ввести, сэр?"
+            if описание:
+                сессия.fill_by_label(описание, text)
+                return f"Заполнил «{описание}»."
+            if not selector:
+                return "В какое поле вводить, сэр? Назовите его подпись."
+            сессия.fill(selector, text)
+            return "Заполнил."
+
+        if action == "press":
+            клавиша = text or "Enter"
+            сессия.press(клавиша)
+            return f"Нажал {клавиша}."
+
+        if action == "get_text":
+            содержимое = сессия.text(selector or "body")
+            if not содержимое.strip():
+                return "На странице пусто, сэр."
+            return f"На странице: {содержимое[:700]}"
+
+        if action == "get_url":
+            return f"Сейчас открыто: {сессия.url()}"
+
+        if action == "scroll":
+            вниз = str(parameters.get("direction", "down")).lower() not in ("up", "вверх")
+            сессия.scroll(вниз=вниз)
+            return "Пролистал."
+
+        if action in ("back", "forward", "reload"):
+            getattr(сессия, action)()
+            return {"back": "Вернулся назад.", "forward": "Перешёл вперёд.",
+                    "reload": "Обновил страницу."}[action]
+
+        if action == "screenshot":
+            import time
+            путь = str(pathlib.Path.home() / f"jarvis_page_{time.strftime('%H%M%S')}.png")
+            сессия.screenshot(путь)
+            return f"Снимок страницы сохранён: {путь}"
+
+        return f"Не понял действие «{action}», сэр."
+
+    except bs.BrowserUnavailable as беда:
+        return f"Браузер перестал отвечать, сэр: {беда}."
+    except Exception as беда:
+        # Чаще всего это «элемент не нашёлся» — и сказать надо именно это,
+        # а не «ошибка браузера»: человек тогда назовёт надпись иначе.
+        краткая = str(беда).split("\n")[0][:140]
+        if "Timeout" in краткая or "waiting for" in краткая:
+            что = описание or text or selector or "элемент"
+            return f"Не нашёл «{что}» на странице, сэр — назовите иначе."
+        return f"Не получилось: {краткая}"
+
+
+def browser_control(parameters: dict, player=None) -> str:
+    parameters = parameters or {}
+    action = str(parameters.get("action", "go_to")).lower().strip()
+    browser = parameters.get("browser")
+    url = str(parameters.get("url", "")).strip()
+    query = str(parameters.get("query", "")).strip()
+    engine = str(parameters.get("engine", "google")).lower()
+
+    try:
+        if action in _ИНТЕРАКТИВНЫЕ:
+            ответ = _интерактивно(action, parameters, player)
+            if player:
+                player.write_log(f"SYS: браузер — {action}")
+            return ответ
+
         if action == "go_to" and url:
             if not url.startswith("http"):
                 url = "https://" + url
@@ -108,7 +221,6 @@ def browser_control(parameters: dict, player=None) -> str:
             return f"Ищу «{query}» в браузере."
 
         else:
-            # Если передан просто URL без action
             if url:
                 _open_url(url, browser)
                 return f"Открываю {url}."
@@ -117,28 +229,44 @@ def browser_control(parameters: dict, player=None) -> str:
     except Exception as e:
         return f"Ошибка браузера: {e}"
 
+
 # ─── Объявление для реестра действий ──────────────────────────────────────────
-# Инструмент описывает себя сам: имя, текст для модели, схема аргументов и
-# обработчик. core/action_loader.py находит это при запуске — ни списка в
-# main.py, ни ветки в диспетчере для нового инструмента больше не нужно.
 TOOL = {
     "name": "browser",
     "description": (
-        "Управляет браузером: открывает сайты, выполняет поиск в браузере."
+        "Управляет браузером. Простые «открой сайт» (go_to) и «найди в браузере» "
+        "(search) запускают ОБЫЧНЫЙ браузер пользователя — с его вкладками и "
+        "аккаунтами. "
+        "Действия click, type, get_text, press, scroll, back, forward, reload, "
+        "screenshot работают в отдельном автоматизируемом окне: им можно нажимать "
+        "кнопки, заполнять поля и читать текст со страницы. Первое такое действие "
+        "поднимает это окно, close — закрывает. "
+        "Для нажатий и полей называй ВИДИМУЮ НАДПИСЬ в параметре description — "
+        "CSS-селектор нужен, только если надпись не помогла."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "go_to — открыть сайт | search — поиск в браузере"
+                "description": (
+                    "go_to | search | click | type | get_text | get_url | press | "
+                    "scroll | back | forward | reload | screenshot | close"
+                ),
             },
-            "url":    {"type": "STRING", "description": "URL для go_to"},
-            "query":  {"type": "STRING", "description": "Поисковый запрос для search"},
-            "engine": {"type": "STRING", "description": "google | yandex | duckduckgo (по умолчанию google)"},
-            "browser": {"type": "STRING", "description": "chrome | firefox | edge (необязательно)"}
+            "url":   {"type": "STRING", "description": "Адрес страницы"},
+            "query": {"type": "STRING", "description": "Поисковый запрос для search"},
+            "engine": {"type": "STRING", "description": "google | yandex | duckduckgo | bing"},
+            "browser": {"type": "STRING", "description": "chrome | firefox | edge (для go_to/search)"},
+            "description": {
+                "type": "STRING",
+                "description": "Видимая надпись кнопки или поля — предпочтительный способ",
+            },
+            "selector": {"type": "STRING", "description": "CSS-селектор, если надпись не сработала"},
+            "text": {"type": "STRING", "description": "Что ввести (type) или какую клавишу нажать (press)"},
+            "direction": {"type": "STRING", "description": "up | down для scroll"},
         },
-        "required": ["action"]
+        "required": ["action"],
     },
     "handler": browser_control,
 }
