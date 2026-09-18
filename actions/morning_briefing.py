@@ -26,6 +26,10 @@ def morning_briefing(parameters: Dict[str, Any], player=None) -> str:
     Returns:
         Строка с брифингом в стиле ДЖАРВИС
     """
+    действие = str((parameters or {}).get("action", "")).strip().lower()
+    if действие in ("yesterday", "вчера", "recap", "разговор"):
+        return _о_чём_говорили()
+
     # Загрузка памяти пользователя
     user_data = _load_memory()
     user_name = user_data.get("name", "сэр")
@@ -37,11 +41,46 @@ def morning_briefing(parameters: Dict[str, Any], player=None) -> str:
     weather_part = _get_weather(city)
     calendar_part = _get_calendar()
     news_part = _get_news()
-    
+    вчера_part = _вчерашний_разговор()
+
     # Сборка финального монолога
-    briefing = _assemble_briefing(user_name, weather_part, calendar_part, news_part)
-    
+    briefing = _assemble_briefing(user_name, weather_part, calendar_part,
+                                  news_part, вчера_part)
+
     return briefing
+
+
+def _вчерашний_разговор() -> str:
+    """«Вчера мы говорили о…» — или пусто, если говорить не о чем.
+
+    Пусто здесь нормально и часто: в первый день, после молчаливой недели,
+    после разговора из двух реплик. Брифинг обязан выглядеть целым и без
+    этой строки."""
+    try:
+        from core import session_log
+
+        выжимка, день = session_log.о_чём_говорили()
+        if not выжимка or день is None:
+            return ""
+        return f"{session_log.как_назвать(день)} мы говорили о том, что {выжимка}"
+    except Exception as exc:
+        _logger.warning("Вчерашний разговор не вспомнился: %s", exc)
+        return ""
+
+
+def _о_чём_говорили() -> str:
+    """Ответ на прямой вопрос «о чём мы вчера говорили»."""
+    try:
+        from core import session_log
+
+        выжимка, день = session_log.о_чём_говорили()
+    except Exception as exc:
+        _logger.warning("Разговор не вспомнился: %s", exc)
+        return "Вспомнить разговор не вышло, сэр."
+
+    if not выжимка or день is None:
+        return "Прошлых разговоров не припомню, сэр."
+    return f"{session_log.как_назвать(день)} мы говорили о том, что {выжимка}"
 
 
 _city_cache: Optional[str] = None
@@ -157,7 +196,8 @@ def _get_news() -> str:
         return "Новостная лента недоступна."
 
 
-def _assemble_briefing(user_name: str, weather: str, calendar: str, news: str) -> str:
+def _assemble_briefing(user_name: str, weather: str, calendar: str, news: str,
+                       вчера: str = "") -> str:
     """Собирает финальный монолог в стиле ДЖАРВИС."""
     
     # Определяем приветствие по времени суток
@@ -188,6 +228,11 @@ def _assemble_briefing(user_name: str, weather: str, calendar: str, news: str) -
     if news and "недоступен" not in news.lower() and "пуста" not in news.lower():
         briefing += f"Главное: {news}. "
     
+    # Вчерашний разговор — последним перед прощанием: это не сводка, а то,
+    # к чему человек, возможно, захочет вернуться.
+    if вчера:
+        briefing += f"{вчера}. "
+
     # Завершение
     current_hour = datetime.now().hour
     if current_hour < 12:
@@ -211,11 +256,23 @@ TOOL = {
         "добрый вечер (18-22), доброй ночи (22-6). "
         "Вызывай когда пользователь говорит 'брифинг', 'что сегодня', "
         "'доброе утро', 'добрый день', 'введи в курс дня'. "
-        "Также вызывай автоматически при старте сессии если сейчас утро (6-10)."
+        "Также вызывай автоматически при старте сессии если сейчас утро (6-10). "
+        "action=yesterday — ТОЛЬКО напомнить, о чём был прошлый разговор, без "
+        "погоды и новостей: на вопросы «о чём мы вчера говорили», «на чём мы "
+        "остановились», «что было в прошлый раз»."
     ),
     "parameters": {
         "type": "OBJECT",
-        "properties": {},
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": "Пусто — полный брифинг | yesterday — только прошлый разговор",
+            },
+            "city": {
+                "type": "STRING",
+                "description": "Город для погоды; пусто — из памяти или по IP",
+            },
+        },
         "required": []
     },
     "handler": morning_briefing,

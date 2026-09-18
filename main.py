@@ -89,6 +89,7 @@ from core import confirm as confirm_gate
 from core import acknowledge
 from core import watcher as topic_watcher
 from core import settings as conv_settings
+from core import session_log
 from core import undo as undo_stack
 from core.action_loader import discover_actions
 from core import audio_devices
@@ -1959,6 +1960,10 @@ class Jarvis:
                                 print(f"[ДЖАРВИС] 🎤 Полная фраза: '{full_in}'")
                                 self.ui.write_log(f"Вы: {full_in}")
                                 self.last_user_text = full_in
+                                # Дописывание в файл дня — миллисекунды, и
+                                # оно переживает закрытие крестиком. Выжимка
+                                # считается потом, когда о ней спросят.
+                                session_log.remember("Вы", full_in)
 
                                 # Анализ эмоций (новый мозг)
                                 emotion_result = EmotionAnalyzer.analyze(full_in)
@@ -2004,6 +2009,7 @@ class Jarvis:
 
                             if full_out:
                                 self.ui.write_log(f"Джарвис: {full_out}")
+                                session_log.remember("Джарвис", full_out)
                                 if get_voice_provider() == "fish":
                                     # Отдельной задачей: синтез идёт около
                                     # секунды, а приём в это время должен
