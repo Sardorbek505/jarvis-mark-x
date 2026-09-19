@@ -224,3 +224,91 @@ def test_запрос_попадает_в_лог_интерфейса(monkeypatc
     ws.web_search({"query": "погода", "mode": "news"}, player=окно)
 
     assert окно.лог and "погода" in окно.лог[0] and "news" in окно.лог[0]
+
+
+# ─── Ответ по выдержкам, когда Gemini отказал ────────────────────────────────
+
+def test_выдержки_пересказываются_а_не_склеиваются(monkeypatch):
+    """Склейка «Заголовок. Выдержка Заголовок. Выдержка» — это стена
+    SEO-текста, зачитанная вслух: ответ в ней есть, а найти его на слух
+    нельзя."""
+    from core import llm_client
+
+    monkeypatch.setattr(ws, "_gemini_search", lambda *a, **k: "")
+    monkeypatch.setattr(ws, "_ddg_results", lambda q, limit=3: [
+        ("Курс доллара сегодня — РБК", "ЦБ установил курс 92,31 рубля"),
+        ("Доллар США — Банки.ру", "Котировки и динамика за неделю"),
+    ])
+    monkeypatch.setattr(llm_client, "ask",
+                        lambda запрос, **k: "Курс доллара сегодня 92,31 рубля, сэр.")
+
+    ответ = ws.web_search({"query": "курс доллара"})
+
+    assert ответ == "Курс доллара сегодня 92,31 рубля, сэр."
+
+
+def test_gemini_второй_раз_не_спрашивается(monkeypatch):
+    """Его только что спросили и он отказал. Повторная попытка стоит ещё
+    одного таймаута на пути, который и так деградировал."""
+    from core import llm_client
+
+    переданное = {}
+    monkeypatch.setattr(ws, "_gemini_search", lambda *a, **k: "")
+    monkeypatch.setattr(ws, "_ddg_results", lambda q, limit=3: [("Заголовок", "Выдержка")])
+    monkeypatch.setattr(llm_client, "ask",
+                        lambda запрос, **k: переданное.update(k) or "ответ")
+
+    ws.web_search({"query": "что-нибудь"})
+
+    assert переданное["кроме"] == ("gemini",)
+
+
+def test_без_пересказчика_выдержки_отдаются_как_есть(monkeypatch):
+    """Хуже связного ответа, но лучше молчания: ответ в этих строчках
+    всё-таки есть."""
+    from core import llm_client
+
+    monkeypatch.setattr(ws, "_gemini_search", lambda *a, **k: "")
+    monkeypatch.setattr(ws, "_ddg_results", lambda q, limit=3: [
+        ("Курс доллара сегодня", "ЦБ установил 92,31"),
+    ])
+    monkeypatch.setattr(llm_client, "ask", lambda запрос, **k: "")
+
+    ответ = ws.web_search({"query": "курс доллара"})
+
+    assert "Курс доллара сегодня" in ответ
+    assert "92,31" in ответ
+
+
+def test_пересказчику_запрещено_досказывать(monkeypatch):
+    """Модель, которой отдали три строчки поисковой выдачи, охотно допишет
+    остальное по памяти — и это будет выдумка с интонацией факта."""
+    from core import llm_client
+
+    система = {}
+    monkeypatch.setattr(ws, "_gemini_search", lambda *a, **k: "")
+    monkeypatch.setattr(ws, "_ddg_results", lambda q, limit=3: [("З", "В")])
+    monkeypatch.setattr(llm_client, "ask",
+                        lambda запрос, **k: система.update(k) or "ответ")
+
+    ws.web_search({"query": "что-нибудь"})
+
+    текст = система["система"].lower()
+    assert "только по выдержкам" in текст
+    assert "не добавляй" in текст
+
+
+def test_режим_доходит_до_пересказчика(monkeypatch):
+    """Новости просят три свежих заголовка с датами, цена — число с валютой.
+    Потерять режим здесь значит получить общий пересказ вместо ответа."""
+    from core import llm_client
+
+    система = {}
+    monkeypatch.setattr(ws, "_gemini_search", lambda *a, **k: "")
+    monkeypatch.setattr(ws, "_ddg_results", lambda q, limit=3: [("З", "В")])
+    monkeypatch.setattr(llm_client, "ask",
+                        lambda запрос, **k: система.update(k) or "ответ")
+
+    ws.web_search({"query": "цена RTX 5080", "mode": "price"})
+
+    assert ws._MODE_INSTRUCTIONS["price"] in система["система"]
