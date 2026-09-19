@@ -1095,10 +1095,16 @@ class Jarvis:
         confirm_gate.reset()
 
     # ── Текстовый ввод ────────────────────────────────────────────────────────
-    def _send_text_to_session(self, text: str):
-        """Отправляет текстовое сообщение в Live-сессию с корректной структурой типов."""
+    def _send_text_to_session(self, text: str) -> bool:
+        """Отправляет текст в Live-сессию. False — отправить было некуда.
+
+        Возврат важен не всем вызывающим, но слежению за темами — критично:
+        сессия обрывается и переподключается сама каждые несколько минут, и
+        всё это время отправка молча никуда не ведёт. Новость, отданная сюда
+        в такой момент, раньше считалась сказанной и пропадала насовсем.
+        """
         if not self._loop or not self.session or not self._loop.is_running() or not text:
-            return
+            return False
         content = types.Content(
             role="user",
             parts=[types.Part.from_text(text=text)],
@@ -1110,6 +1116,7 @@ class Jarvis:
             ),
             self._loop,
         )
+        return True
 
     def _on_text_command(self, text: str):
         # Normalize text before sending
