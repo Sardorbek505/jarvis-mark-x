@@ -297,3 +297,90 @@ def test_опасный_адрес_не_открывается(страница)
     ответ = bc.browser_control({"action": "go_to", "url": "javascript:alert(1)"})
 
     assert "не стану" in ответ or "Открываю" not in ответ
+
+
+# ─── Управляемое окно и адреса своей сети ────────────────────────────────────
+#
+# Разница с браузером человека здесь принципиальная. Когда он просит открыть
+# роутер, страница появляется у него на экране, и дальше решает он. А
+# управляемое окно умеет `get_text`: что бы там ни открылось, текст уедет в
+# модель — а модель читает то, что пишут посторонние: расшифровки роликов,
+# тексты сайтов, содержимое файлов.
+
+from actions import browser_control as bc  # noqa: E402
+
+
+@pytest.mark.parametrize("адрес", [
+    "http://192.168.1.1/",
+    "http://10.0.0.5/admin",
+    "http://172.16.0.1/",
+    "http://127.0.0.1:8787/",
+    "http://[::1]/",
+    "http://0.0.0.0/",
+    "http://169.254.169.254/latest/meta-data/",   # метаданные облака
+    "http://nas.local/",
+    "http://localhost:3000",
+    "http://printer.home.arpa/",
+])
+def test_адреса_своей_сети_узнаются(адрес):
+    assert bc._адрес_своей_сети(адрес) is True, адрес
+
+
+@pytest.mark.parametrize("адрес", [
+    "https://github.com/",
+    "https://ya.ru/поиск?q=1",
+    "https://8.8.8.8/",
+    "http://example.org:8080/path",
+])
+def test_внешние_адреса_не_трогаются(адрес):
+    assert bc._адрес_своей_сети(адрес) is False, адрес
+
+
+def test_неразобранный_адрес_считается_опасным():
+    """Не понял, куда ведёт, — значит не открываю."""
+    assert bc._адрес_своей_сети("не адрес вовсе") is True
+    assert bc._адрес_своей_сети("") is True
+
+
+@pytest.mark.parametrize("действие", ["click", "fill", "screenshot", "reload"])
+def test_управляемое_окно_отказывается_и_объясняет(monkeypatch, действие):
+    """Отказ должен называть путь, которым это всё-таки можно сделать."""
+    monkeypatch.setattr(bc, "_is_safe_url", lambda url: True)
+
+    ответ = bc.browser_control({"action": действие, "url": "http://192.168.1.1/",
+                                "description": "Вход", "text": "что-то"})
+
+    assert "вашем браузере" in ответ, ответ
+
+
+def test_чтение_страницы_адрес_не_меняет(monkeypatch):
+    """`get_text` и `get_url` читают ТО, что уже открыто, и на адрес в
+    параметрах не смотрят вовсе — иначе «прочитай страницу» само бы и
+    уводило окно куда попало."""
+    переходы = []
+
+    class _Страница:
+        def goto(self, url):
+            переходы.append(url)
+            return "заголовок"
+
+        def text(self):
+            return "содержимое"
+
+    monkeypatch.setattr(bc, "_is_safe_url", lambda url: True)
+    monkeypatch.setattr("core.browser_session.session", lambda *a, **k: _Страница())
+
+    bc.browser_control({"action": "get_text", "url": "https://example.org/"})
+
+    assert переходы == []
+
+
+def test_в_браузер_человека_свой_адрес_открывается(monkeypatch):
+    """Ограничение не должно мешать «открой роутер»: там страницу видит
+    человек, и в модель ничего не уезжает."""
+    открытое = []
+    monkeypatch.setattr(bc, "_open_url", lambda url, browser=None: открытое.append(url))
+
+    bc.browser_control({"action": "go_to", "url": "http://192.168.1.1/"})
+
+    assert открытое == ["http://192.168.1.1/"]
