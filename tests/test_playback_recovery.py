@@ -19,6 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main as jarvis_main
+from core.echo_reference import ОпорныйСигнал
 from core.latency import LatencyTracker
 
 
@@ -62,6 +63,9 @@ class _Stub:
         self.levels: list[float] = []
         # _play_audio отмечает первый кадр в устройстве; здесь замер не нужен
         self._latency = LatencyTracker(enabled=False)
+        # Тот же кусок уходит в опорный сигнал эхоподавления: через несколько
+        # десятков миллисекунд он вернётся в микрофон.
+        self._echo_ref = ОпорныйСигнал(частота_микрофона=16000)
 
     def _push_level(self, value):
         self.levels.append(value)

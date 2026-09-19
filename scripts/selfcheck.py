@@ -186,6 +186,65 @@ def _ptt():
 
 # ─── Экран и мышь ────────────────────────────────────────────────────────────
 
+@проверка("Звук", "Перебивание по имени")
+def _перебивание():
+    """Детектор ключевого слова — единственный способ оборвать ответ голосом."""
+    try:
+        from core.wake_detector import WakeWordDetector2Stage
+    except Exception as exc:
+        return Итог(НЕТ, f"детектор не импортируется: {str(exc)[:60]}",
+                    "перебить голосом будет нельзя — останутся Escape и Ctrl+M")
+
+    детектор = WakeWordDetector2Stage()
+    if getattr(детектор, "_oww_model", None) is None:
+        return Итог(НЕТ, "модель openWakeWord не загрузилась",
+                    "pip install openwakeword — иначе имя не распознаётся")
+
+    from core import barge_in
+
+    return Итог(OK, f"пороги {barge_in.ПОРОГИ_МОЛЧА[0]:.2f}/{barge_in.ПОРОГИ_МОЛЧА[1]:.2f}, "
+                    f"пока говорит — {barge_in.ПОРОГИ_РЕЧЬ[0]:.2f}/{barge_in.ПОРОГИ_РЕЧЬ[1]:.2f}")
+
+
+@проверка("Звук", "Эхоподавление")
+def _эхо():
+    """Без него детектор слушает микрофон, в котором звучит сам Джарвис."""
+    try:
+        from core.aec_pipeline import AECPipeline
+    except Exception as exc:
+        return Итог(НЕТ, f"не импортируется: {str(exc)[:60]}",
+                    "перебивание останется, но порог имени будет строже")
+
+    import numpy as np
+
+    from core.echo_reference import ОпорныйСигнал
+
+    # Настоящая проверка, а не «модуль на месте»: гоняем шум через ту же
+    # очередь, которой пользуется воспроизведение, и смотрим подавление.
+    aec = AECPipeline(sample_rate=16000, filter_length=512)
+    опора = ОпорныйСигнал(частота_микрофона=16000)
+    rng = np.random.default_rng(5)
+    звук = np.clip(rng.normal(0, 0.2, 16000 * 4) * 32767, -32768, 32767).astype(np.int16)
+
+    кадр, задержка = 1280, 480
+    чистый = микрофон = None
+    for k in range(1, 45):
+        с = k * кадр
+        опора.положить(звук[с:с + кадр].tobytes(), 16000)
+        микрофон = (звук[с - задержка:с - задержка + кадр] * 0.5).astype(np.int16)
+        чистый, _ = aec.process_frame(микрофон.tobytes(), опора.взять(кадр))
+
+    остаток = np.frombuffer(чистый, dtype=np.int16).astype(np.float64)
+    подавление = 20 * np.log10(
+        (np.sqrt(np.mean(микрофон.astype(np.float64) ** 2)) + 1e-9)
+        / (np.sqrt(np.mean(остаток ** 2)) + 1e-9))
+
+    if подавление < 6.0:
+        return Итог(СБОЙ, f"подавляет всего {подавление:.1f} дБ",
+                    "собственный голос будет попадать в детектор имени")
+    return Итог(OK, f"подавляет {подавление:.0f} дБ на модельном сигнале")
+
+
 @проверка("Экран", "Снимок экрана")
 def _снимок():
     from vision.screen_capture import capture_full_screen

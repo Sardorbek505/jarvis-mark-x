@@ -91,6 +91,7 @@ from core import watcher as topic_watcher
 from core import settings as conv_settings
 from core import session_log
 from core.barge_in import Перебивание
+from core.echo_reference import ОпорныйСигнал
 from core import undo as undo_stack
 from core.action_loader import discover_actions
 from core import audio_devices
@@ -899,6 +900,22 @@ class Jarvis:
         # перестаёт докладывать звук в очередь. Надёжнее отмены задач: отменять
         # приходилось бы и внешнюю, и вложенную, а гонку между ними не видно.
         self._speech_gen = 0
+
+        # Эхоподавление: вычитаем из микрофона то, что сами играем. Опорный
+        # сигнал берём из собственной очереди вывода, а не из WASAPI loopback —
+        # эти байты мы знаем точно, и лишний поток захвата не нужен.
+        self._echo_ref = ОпорныйСигнал(частота_микрофона=SEND_SAMPLE_RATE)
+        self._aec = None
+        self._aec_erle = 0.0
+        try:
+            from core.aec_pipeline import AECPipeline
+            self._aec = AECPipeline(sample_rate=SEND_SAMPLE_RATE)
+            logger.info("AEC подключён: имя будет слышно сквозь собственный голос")
+        except Exception as exc:
+            # Не беда: перебивание работает и без вычитания, просто порог
+            # детектора на время речи поднят. Но молчать об этом нельзя —
+            # в диагностике должно быть видно, что эха не вычитают.
+            logger.warning("AEC не поднялся (%s) — обрыв по имени будет строже", exc)
         self._speaker_meter  = None   # см. _listen_audio: не слушаем свои динамики
         self._turn_done_event: asyncio.Event | None = None
 
@@ -1171,6 +1188,9 @@ class Jarvis:
                     self._wake_detector.reset()
                 except Exception as exc:
                     logger.debug("Буфер детектора не очищен: %s", exc)
+            # И опорный сигнал: хвост прошлой реплики сдвинул бы выравнивание,
+            # а выравнивание здесь — это и есть вычитание.
+            self._echo_ref.сбросить()
             if not self._barge.говорит:
                 # Голос самой модели: текста здесь нет, но отсчёт разгона
                 # начать нужно всё равно.
@@ -1918,11 +1938,33 @@ class Jarvis:
             низкий, высокий = self._barge.пороги
             детектор.threshold_stage1 = низкий
             детектор.threshold_stage2 = высокий
-            услышано = детектор.process_pcm(indata.tobytes())
+            услышано = детектор.process_pcm(self._without_own_voice(indata))
             return bool(услышано) and слушать
         except Exception as exc:
             logger.debug("Детектор имени споткнулся: %s", exc, exc_info=True)
             return False
+
+    def _without_own_voice(self, indata) -> bytes:
+        """Кадр микрофона без собственного голоса из колонок.
+
+        Без вычитания детектор слушает микрофон, в котором звучит сам Джарвис,
+        и ловит себя же. Опорный сигнал — то, что мы только что отдали в
+        устройство вывода; выравниванием занят сам AEC.
+
+        Отказ вычитания не должен стоить кадра: возвращаем сырой звук, а
+        порог детектора и так поднят на время речи.
+        """
+        сырой = indata.tobytes()
+        if self._aec is None:
+            return сырой
+        try:
+            опора = self._echo_ref.взять(len(сырой) // 2)
+            чистый, erle = self._aec.process_frame(сырой, опора)
+            self._aec_erle = erle
+            return чистый or сырой
+        except Exception as exc:
+            logger.debug("Эхо не вычлось: %s", exc, exc_info=True)
+            return сырой
 
     async def _listen_audio(self):
         print("[ДЖАРВИС] 🎤 Микрофон запущен")
@@ -2386,6 +2428,11 @@ class Jarvis:
                     self.set_speaking(True)
                     self._latency.mark_playback()
                     self._push_level(_chunk_level(chunk))
+                    # Тот же кусок — в опорный сигнал: через несколько
+                    # десятков миллисекунд он вернётся в микрофон, и AEC
+                    # вычтет его оттуда. Кладём ДО записи в устройство:
+                    # write блокирует поток на длину буфера.
+                    self._echo_ref.положить(chunk, RECV_SAMPLE_RATE)
                     await asyncio.to_thread(stream.write, chunk)
 
             except asyncio.CancelledError:

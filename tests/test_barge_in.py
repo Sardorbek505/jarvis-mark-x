@@ -24,6 +24,7 @@ if str(_BASE) not in sys.path:
 
 from core import barge_in
 from core.barge_in import Перебивание
+from core.echo_reference import ОпорныйСигнал
 
 
 class _Часы:
@@ -177,6 +178,10 @@ def _джарвис(говорит=True):
     j._wake_detector = None
     j._barge = Перебивание()
     j._speech_gen = 0
+    # Эхоподавление: без опорного сигнала кадр уходит в детектор как есть.
+    j._echo_ref = ОпорныйСигнал(частота_микрофона=16000)
+    j._aec = None
+    j._aec_erle = 0.0
     j._loop = None
     j.audio_in_queue = asyncio.Queue()
     j.сказанное = []
@@ -336,3 +341,70 @@ def test_повторный_признак_речи_не_перезапуска�
     j.set_speaking(True)
 
     assert j._wake_detector.сбросов == 1
+
+
+# ─── Эхоподавление в микрофонном шве ─────────────────────────────────────────
+
+def test_детектор_слышит_кадр_без_собственного_голоса():
+    """Пока Джарвис говорит, в микрофон звучит он сам. Без вычитания детектор
+    ловил бы собственный голос ассистента."""
+    import numpy as np
+    from core.aec_pipeline import AECPipeline
+
+    j = _джарвис()
+    j._aec = AECPipeline(sample_rate=16000, filter_length=512)
+    j._echo_ref = ОпорныйСигнал(частота_микрофона=16000)
+
+    rng = np.random.default_rng(11)
+    голос = np.clip(rng.normal(0, 0.2, 16000 * 4) * 32767, -32768, 32767).astype(np.int16)
+    кадр, задержка = 1280, 480
+
+    класс_кадра = type("Кадр", (), {})
+    последний = None
+    for k in range(1, 45):
+        с = k * кадр
+        j._echo_ref.положить(голос[с:с + кадр].tobytes(), 16000)
+
+        микрофон = (голос[с - задержка:с - задержка + кадр] * 0.5).astype(np.int16)
+        объект = класс_кадра()
+        объект.tobytes = микрофон.tobytes
+        последний = (микрофон, j._without_own_voice(объект))
+
+    сырой, чистый = последний
+    было = np.sqrt(np.mean(сырой.astype(np.float64) ** 2))
+    стало = np.sqrt(np.mean(np.frombuffer(чистый, dtype=np.int16).astype(np.float64) ** 2))
+
+    assert стало < было * 0.25, f"эхо почти не вычлось: было {было:.0f}, стало {стало:.0f}"
+
+
+def test_без_эхоподавления_кадр_идёт_как_есть():
+    """AEC мог не подняться. Это не повод терять кадр: порог детектора на
+    время речи и так поднят."""
+    j = _джарвис()
+    j._aec = None
+
+    assert j._without_own_voice(_Кадр()) == _Кадр.tobytes()
+
+
+def test_сорванное_вычитание_не_стоит_кадра():
+    j = _джарвис()
+
+    class _Битый:
+        def process_frame(self, mic, ref):
+            raise RuntimeError("фильтр разошёлся")
+
+    j._aec = _Битый()
+
+    assert j._without_own_voice(_Кадр()) == _Кадр.tobytes()
+
+
+def test_начало_реплики_чистит_опорный_сигнал():
+    """Хвост прошлой реплики сдвинул бы выравнивание, а выравнивание здесь
+    и есть вычитание."""
+    j = _джарвис(говорит=False)
+    j._wake_detector = _Детектор()
+    j._echo_ref.положить(b"\x10\x00" * 800, 16000)
+
+    j.set_speaking(True)
+
+    assert j._echo_ref.в_очереди == 0
