@@ -371,6 +371,11 @@ _DESTRUCTIVE_TITLES = {
 }
 
 
+# «Это не мой инструмент» от инлайн-диспетчера. Отдельный объект, а не None
+# и не пустая строка: те означали бы «инструмент отработал и промолчал».
+_НЕ_ИНЛАЙН = object()
+
+
 def _action_of(args: dict) -> str:
     return str(args.get("action", "")).strip().lower()
 
@@ -1324,6 +1329,239 @@ class Jarvis:
         )
 
     # ── Выполнение инструментов ───────────────────────────────────────────────
+    # Инструменты, по которым видно, чем человек занят. Остальные о занятии
+    # ничего не говорят: «посмотрел погоду» — не деятельность.
+    _ЗАНЯТИЯ = ("movie_player", "music_player", "set_mode")
+
+    def _note_activity(self, name: str, args: dict) -> None:
+        """Отмечает в профиле, чем человек занялся, и кормит прогноз."""
+        if name not in self._ЗАНЯТИЯ:
+            return
+
+        activity = name
+        if name == "movie_player" and args.get("action", "") == "play":
+            title = args.get("title", "")
+            if title:
+                self.user_profile.add_to_history("recent_movies", title)
+                activity = f"watching_movie: {title}"
+        elif name == "music_player" and args.get("action", "") == "play":
+            query = args.get("query", "")
+            if query:
+                self.user_profile.add_to_history("recent_music", query)
+                activity = f"listening_music: {query}"
+        elif name == "set_mode":
+            activity = f"mode_{args.get('mode', '')}"
+
+        self.user_profile.update_context(activity=activity)
+
+        # Запись действия для прогнозирования (новый мозг)
+        self.proactive_engine.record_action(name, {
+            "time": datetime.now().strftime("%H:%M"),
+            "emotion": self.user_profile.get_context().get("last_emotion", "neutral"),
+            "mode": get_current_mode().get("mode", "normal"),
+        })
+
+    async def _run_inline_tool(self, name: str, args: dict):
+        """Десять инструментов, вплетённых в состояние живой сессии.
+
+        Остальные живут в `actions/` и объявляют себя сами; эти остались
+        здесь, потому что им нужны голос, очередь звука, стек отмены или
+        завершение процесса — то, чего у отдельного модуля нет.
+
+        Возвращает `_НЕ_ИНЛАЙН`, если имя не отсюда: пустая строка или None
+        значили бы «инструмент отработал и промолчал», а это другое.
+        """
+        loop = asyncio.get_event_loop()
+        result = "Готово."
+
+        # ── Инструмент: поиск по долгосрочной памяти ─────────────
+        if name == "recall_memory":
+            hits = await asyncio.to_thread(search_memory, args.get("query", ""))
+            result = format_search_results(hits)
+
+        # ── Инструмент: отмена собственного действия ─────────────
+        elif name == "undo":
+            if str(args.get("action", "")).strip().lower() == "list":
+                items = undo_stack.history()
+                result = (
+                    "Могу отменить: " + "; ".join(items) + "."
+                    if items else
+                    "Отменять нечего, сэр."
+                )
+            else:
+                result = await asyncio.to_thread(undo_stack.undo_last)
+            self.ui.write_log(f"SYS: {result}")
+
+        # ── Инструмент: Vision (анализ экрана и камеры) ─────────
+        elif name in ("look_at_screen", "look_at_camera", "vision_review"):
+            from actions.vision import vision_action
+            source = "camera" if name == "look_at_camera" else args.get("source", "screen")
+            args["source"] = source
+            r = await loop.run_in_executor(None, lambda: vision_action(args))
+            result = r or "Анализ изображения завершен."
+
+        # ── Инструмент: командная работа ─────────────────────────
+        elif name == "team_collaboration":
+            action = args.get("action", "")
+            team_action = args.get("name", "")
+            role = args.get("role", "")
+            project_name = args.get("project_name", "")
+            task = args.get("task", "")
+            priority = args.get("priority", "medium")
+
+            if action == "add_member":
+                if team_action and role:
+                    success = self.team_engine.add_team_member(team_action, role)
+                    result = f"Добавил {team_action} в команду." if success else "Ошибка добавления."
+                else:
+                    result = "Укажите имя и роль члена команды."
+
+            elif action == "add_project":
+                if team_action:
+                    success = self.team_engine.add_project(team_action, args.get("description", ""))
+                    result = f"Создал проект '{team_action}'." if success else "Ошибка создания."
+                else:
+                    result = "Укажите название проекта."
+
+            elif action == "add_task":
+                if project_name and task:
+                    success = self.team_engine.add_task(project_name, task, priority, args.get("assignee", ""))
+                    result = f"Добавил задачу в '{project_name}'." if success else "Ошибка добавления."
+                else:
+                    result = "Укажите проект и задачу."
+
+            elif action == "project_status":
+                if project_name:
+                    status = self.team_engine.get_project_status(project_name)
+                    if status:
+                        result = f"Проект '{status['name']}': {status['completed']}/{status['total_tasks']} задач, прогресс {status['progress']:.0f}%."
+                    else:
+                        result = f"Проект '{project_name}' не найден."
+                else:
+                    result = "Укажите название проекта."
+
+            elif action == "team_report":
+                result = self.team_engine.generate_team_report()
+
+            elif action == "team_suggestions":
+                result = self.team_engine.generate_suggestions()
+            else:
+                result = "Не понял команду командной работы."
+
+        # ── Инструмент: перевод ─────────────────────────────────
+        #
+        # Раньше все настройки языков правились здесь руками по ключам
+        # "enabled_languages" и "default_language", которых в файле нет:
+        # включение языка гарантированно падало с KeyError, а смена языка
+        # по умолчанию писала мимо схемы и бодро рапортовала об успехе.
+        # Схемой владеет translation_manager — операции живут там.
+        #
+        # Плюс сам перевод — это сетевой запрос к Gemini, а он выполнялся
+        # прямо в событийном цикле, который в это же время гонит микрофон
+        # в Live API. Всё, что лезет в сеть или на диск, уходит в поток.
+        elif name == "translation":
+            action = args.get("action", "")
+            lang = args.get("language") or args.get("target_language") or ""
+
+            if action == "translate":
+                text = args.get("text", "")
+                target_lang = args.get("target_language", "english")
+                if text:
+                    translated = await loop.run_in_executor(
+                        None, lambda: translate_text(text, target_lang)
+                    )
+                    result = f"Перевод на {target_lang}: {translated}"
+                else:
+                    result = "Укажите текст для перевода."
+
+            elif action == "history":
+                date_range = args.get("date_range", "all")
+                history = await loop.run_in_executor(
+                    None, lambda: get_translation_history(date_range)
+                )
+                if history:
+                    result = f"История переводов ({date_range}): {len(history)} записей. Последний: {history[0].get('translation', 'N/A')}"
+                else:
+                    result = f"История переводов ({date_range}) пуста."
+
+            elif action == "search":
+                query = args.get("query", "")
+                if query:
+                    results = await loop.run_in_executor(
+                        None, lambda: search_translations(query)
+                    )
+                    if results:
+                        result = f"Найдено переводов: {len(results)}. Первый: {results[0].get('translation', 'N/A')}"
+                    else:
+                        result = f"Переводы по запросу '{query}' не найдены."
+                else:
+                    result = "Укажите поисковый запрос."
+
+            elif action == "enable_learning":
+                code = await loop.run_in_executor(
+                    None, lambda: set_learning_mode(True, lang or "english")
+                )
+                result = (f"Включил режим изучения: {code}." if code
+                          else f"Не знаю язык '{lang}' — назовите другой.")
+
+            elif action == "disable_learning":
+                ok = await loop.run_in_executor(None, lambda: set_learning_mode(False))
+                result = ("Отключил режим изучения языков." if ok is not None
+                          else "Не смог сохранить настройки изучения.")
+
+            elif action == "set_default_language":
+                code = await loop.run_in_executor(
+                    None, lambda: set_default_language(lang)
+                )
+                result = (f"Язык по умолчанию теперь {code}." if code
+                          else f"Не знаю язык '{lang}' — назовите другой.")
+
+            elif action in ("enable_language", "disable_language"):
+                on = action == "enable_language"
+                code = await loop.run_in_executor(
+                    None, lambda: set_language_enabled(lang, on)
+                )
+                if not code:
+                    result = f"Не знаю язык '{lang}' — назовите другой."
+                else:
+                    result = f"{'Включил' if on else 'Отключил'} язык: {code}."
+            else:
+                result = "Не понял команду перевода."
+
+        # ── Инструмент: умный таймер сна ──────────────────────────────
+        elif name == "sleep_timer":
+            from actions.sleep_timer import sleep_timer
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: sleep_timer(args, player=self.ui, bot=self)
+            )
+
+        # ── Инструмент: переключение голоса ───────────────────────────
+        elif name == "switch_voice":
+            provider = args.get("provider", "fish").strip().lower()
+            if provider not in ("fish", "gemini"):
+                provider = "fish"
+            set_voice_provider(provider)
+            rus_name = "киношный дубляж Пола Беттани (Fish Audio)" if provider == "fish" else "стандартный быстрый голос Gemini"
+            self.ui.write_log(f"SYS: Голос переключён на {rus_name}")
+            result = {"status": "success", "voice": provider, "message": f"Голос переключён на {rus_name}"}
+
+        # ── Инструмент: выключить ────────────────────────────────
+        elif name == "shutdown_jarvis":
+            self.ui.write_log("SYS: Завершение работы...")
+            self.speak("До свидания, сэр. Отключаюсь.")
+            def _shutdown():
+                import time
+                import os
+                time.sleep(1.5)
+                os._exit(0)
+            threading.Thread(target=_shutdown, daemon=True).start()
+
+        else:
+            return _НЕ_ИНЛАЙН
+
+        return result
+
     async def _execute_tool(self, fc, *, уже_сказано: bool = False) -> types.FunctionResponse:
         name = fc.name
         args = dict(fc.args or {})
@@ -1393,243 +1631,34 @@ class Jarvis:
         result = "Готово."
 
         try:
-            # ── Инструмент: поиск по долгосрочной памяти ─────────────
-            if name == "recall_memory":
-                hits = await asyncio.to_thread(search_memory, args.get("query", ""))
-                result = format_search_results(hits)
+            result = await self._run_inline_tool(name, args)
 
-            # ── Инструмент: отмена собственного действия ─────────────
-            elif name == "undo":
-                if str(args.get("action", "")).strip().lower() == "list":
-                    items = undo_stack.history()
-                    result = (
-                        "Могу отменить: " + "; ".join(items) + "."
-                        if items else
-                        "Отменять нечего, сэр."
+            if result is _НЕ_ИНЛАЙН:
+                # ── Самоописывающиеся действия из actions/ ──────────────
+                #
+                # Одна ветка вместо четырнадцати. Реестр знает и объявление,
+                # и обработчик, поэтому расхождение между «что обещано
+                # модели» и «что выполнится» невозможно: они из одного места.
+                if _ACTIONS.has(name):
+                    result = await loop.run_in_executor(
+                        None, lambda: _ACTIONS.run(name, args, player=self.ui)
                     )
+
+                # ── Пользовательские плагины ────────────────────────────
+                elif _PLUGINS.has(name):
+                    result = await loop.run_in_executor(
+                        None, lambda: _PLUGINS.run(name, args, player=self.ui)
+                    )
+
                 else:
-                    result = await asyncio.to_thread(undo_stack.undo_last)
-                self.ui.write_log(f"SYS: {result}")
-
-            # ── Инструмент: Vision (анализ экрана и камеры) ─────────
-            elif name in ("look_at_screen", "look_at_camera", "vision_review"):
-                from actions.vision import vision_action
-                source = "camera" if name == "look_at_camera" else args.get("source", "screen")
-                args["source"] = source
-                r = await loop.run_in_executor(None, lambda: vision_action(args))
-                result = r or "Анализ изображения завершен."
-
-            # ── Инструмент: командная работа ─────────────────────────
-            elif name == "team_collaboration":
-                action = args.get("action", "")
-                team_action = args.get("name", "")
-                role = args.get("role", "")
-                project_name = args.get("project_name", "")
-                task = args.get("task", "")
-                priority = args.get("priority", "medium")
-
-                if action == "add_member":
-                    if team_action and role:
-                        success = self.team_engine.add_team_member(team_action, role)
-                        result = f"Добавил {team_action} в команду." if success else "Ошибка добавления."
-                    else:
-                        result = "Укажите имя и роль члена команды."
-
-                elif action == "add_project":
-                    if team_action:
-                        success = self.team_engine.add_project(team_action, args.get("description", ""))
-                        result = f"Создал проект '{team_action}'." if success else "Ошибка создания."
-                    else:
-                        result = "Укажите название проекта."
-
-                elif action == "add_task":
-                    if project_name and task:
-                        success = self.team_engine.add_task(project_name, task, priority, args.get("assignee", ""))
-                        result = f"Добавил задачу в '{project_name}'." if success else "Ошибка добавления."
-                    else:
-                        result = "Укажите проект и задачу."
-
-                elif action == "project_status":
-                    if project_name:
-                        status = self.team_engine.get_project_status(project_name)
-                        if status:
-                            result = f"Проект '{status['name']}': {status['completed']}/{status['total_tasks']} задач, прогресс {status['progress']:.0f}%."
-                        else:
-                            result = f"Проект '{project_name}' не найден."
-                    else:
-                        result = "Укажите название проекта."
-
-                elif action == "team_report":
-                    result = self.team_engine.generate_team_report()
-
-                elif action == "team_suggestions":
-                    result = self.team_engine.generate_suggestions()
-                else:
-                    result = "Не понял команду командной работы."
-
-            # ── Инструмент: перевод ─────────────────────────────────
-            #
-            # Раньше все настройки языков правились здесь руками по ключам
-            # "enabled_languages" и "default_language", которых в файле нет:
-            # включение языка гарантированно падало с KeyError, а смена языка
-            # по умолчанию писала мимо схемы и бодро рапортовала об успехе.
-            # Схемой владеет translation_manager — операции живут там.
-            #
-            # Плюс сам перевод — это сетевой запрос к Gemini, а он выполнялся
-            # прямо в событийном цикле, который в это же время гонит микрофон
-            # в Live API. Всё, что лезет в сеть или на диск, уходит в поток.
-            elif name == "translation":
-                action = args.get("action", "")
-                lang = args.get("language") or args.get("target_language") or ""
-
-                if action == "translate":
-                    text = args.get("text", "")
-                    target_lang = args.get("target_language", "english")
-                    if text:
-                        translated = await loop.run_in_executor(
-                            None, lambda: translate_text(text, target_lang)
-                        )
-                        result = f"Перевод на {target_lang}: {translated}"
-                    else:
-                        result = "Укажите текст для перевода."
-
-                elif action == "history":
-                    date_range = args.get("date_range", "all")
-                    history = await loop.run_in_executor(
-                        None, lambda: get_translation_history(date_range)
-                    )
-                    if history:
-                        result = f"История переводов ({date_range}): {len(history)} записей. Последний: {history[0].get('translation', 'N/A')}"
-                    else:
-                        result = f"История переводов ({date_range}) пуста."
-
-                elif action == "search":
-                    query = args.get("query", "")
-                    if query:
-                        results = await loop.run_in_executor(
-                            None, lambda: search_translations(query)
-                        )
-                        if results:
-                            result = f"Найдено переводов: {len(results)}. Первый: {results[0].get('translation', 'N/A')}"
-                        else:
-                            result = f"Переводы по запросу '{query}' не найдены."
-                    else:
-                        result = "Укажите поисковый запрос."
-
-                elif action == "enable_learning":
-                    code = await loop.run_in_executor(
-                        None, lambda: set_learning_mode(True, lang or "english")
-                    )
-                    result = (f"Включил режим изучения: {code}." if code
-                              else f"Не знаю язык '{lang}' — назовите другой.")
-
-                elif action == "disable_learning":
-                    ok = await loop.run_in_executor(None, lambda: set_learning_mode(False))
-                    result = ("Отключил режим изучения языков." if ok is not None
-                              else "Не смог сохранить настройки изучения.")
-
-                elif action == "set_default_language":
-                    code = await loop.run_in_executor(
-                        None, lambda: set_default_language(lang)
-                    )
-                    result = (f"Язык по умолчанию теперь {code}." if code
-                              else f"Не знаю язык '{lang}' — назовите другой.")
-
-                elif action in ("enable_language", "disable_language"):
-                    on = action == "enable_language"
-                    code = await loop.run_in_executor(
-                        None, lambda: set_language_enabled(lang, on)
-                    )
-                    if not code:
-                        result = f"Не знаю язык '{lang}' — назовите другой."
-                    else:
-                        result = f"{'Включил' if on else 'Отключил'} язык: {code}."
-                else:
-                    result = "Не понял команду перевода."
-
-            # ── Инструмент: умный таймер сна ──────────────────────────────
-            elif name == "sleep_timer":
-                from actions.sleep_timer import sleep_timer
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None, lambda: sleep_timer(args, player=self.ui, bot=self)
-                )
-
-            # ── Инструмент: переключение голоса ───────────────────────────
-            elif name == "switch_voice":
-                provider = args.get("provider", "fish").strip().lower()
-                if provider not in ("fish", "gemini"):
-                    provider = "fish"
-                set_voice_provider(provider)
-                rus_name = "киношный дубляж Пола Беттани (Fish Audio)" if provider == "fish" else "стандартный быстрый голос Gemini"
-                self.ui.write_log(f"SYS: Голос переключён на {rus_name}")
-                result = {"status": "success", "voice": provider, "message": f"Голос переключён на {rus_name}"}
-
-            # ── Инструмент: выключить ────────────────────────────────
-            elif name == "shutdown_jarvis":
-                self.ui.write_log("SYS: Завершение работы...")
-                self.speak("До свидания, сэр. Отключаюсь.")
-                def _shutdown():
-                    import time
-                    import os
-                    time.sleep(1.5)
-                    os._exit(0)
-                threading.Thread(target=_shutdown, daemon=True).start()
-
-            # ── Всё остальное — самоописывающиеся действия из actions/ ──
-            #
-            # Одна ветка вместо четырнадцати. Реестр знает и объявление, и
-            # обработчик, поэтому расхождение между «что обещано модели» и
-            # «что выполнится» стало невозможным: они берутся из одного места.
-            elif _ACTIONS.has(name):
-                result = await loop.run_in_executor(
-                    None, lambda: _ACTIONS.run(name, args, player=self.ui)
-                )
-
-            # ── Пользовательские плагины ────────────────────────────────
-            elif _PLUGINS.has(name):
-                result = await loop.run_in_executor(
-                    None, lambda: _PLUGINS.run(name, args, player=self.ui)
-                )
-
-            else:
-                result = f"Неизвестный инструмент: {name}"
+                    result = f"Неизвестный инструмент: {name}"
 
         except Exception as e:
             result = f"Ошибка инструмента '{name}': {e}"
             traceback.print_exc()
             self.speak_error(name, e)
 
-        # Обновление контекста (новый мозг)
-        if name in ["movie_player", "music_player", "set_mode"]:
-            activity = name
-            if name == "movie_player":
-                action = args.get("action", "")
-                if action == "play":
-                    title = args.get("title", "")
-                    if title:
-                        self.user_profile.add_to_history("recent_movies", title)
-                        activity = f"watching_movie: {title}"
-            elif name == "music_player":
-                action = args.get("action", "")
-                if action == "play":
-                    query = args.get("query", "")
-                    if query:
-                        self.user_profile.add_to_history("recent_music", query)
-                        activity = f"listening_music: {query}"
-            elif name == "set_mode":
-                mode = args.get("mode", "")
-                activity = f"mode_{mode}"
-
-            self.user_profile.update_context(activity=activity)
-
-            # Запись действия для прогнозирования (новый мозг)
-            context = {
-                "time": datetime.now().strftime("%H:%M"),
-                "emotion": self.user_profile.get_context().get("last_emotion", "neutral"),
-                "mode": get_current_mode().get("mode", "normal")
-            }
-            self.proactive_engine.record_action(name, context)
+        self._note_activity(name, args)
 
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
@@ -1895,42 +1924,137 @@ class Jarvis:
                 self._active_synth_tasks = max(0, self._active_synth_tasks - 1)
 
     # ── Получение ответа от Gemini ────────────────────────────────────────────
+    def _catch_resume_handle(self, response) -> None:
+        """Хендл возобновления. Сервер шлёт его периодически и обновляет по
+        ходу разговора — берём последний."""
+        sru = getattr(response, "session_resumption_update", None)
+        if sru is None or not getattr(sru, "resumable", False):
+            return
+        new_handle = getattr(sru, "new_handle", None)
+        if not new_handle or new_handle == self._resume_handle:
+            return
+        first = self._resume_handle is None
+        self._resume_handle = new_handle
+        if first:
+            print("[ДЖАРВИС] 🔗 Возобновление сессии вооружено")
+
+    def _play_model_audio(self, data: bytes) -> None:
+        """Звук от самой модели — в очередь воспроизведения."""
+        if self._turn_done_event and self._turn_done_event.is_set():
+            self._turn_done_event.clear()
+        if get_voice_provider() == "fish":
+            # Говорит Fish — звук Gemini выбрасываем, иначе два голоса
+            # произнесут один ответ одновременно.
+            return
+        self._latency.mark_answer_audio()
+        try:
+            self.audio_in_queue.put_nowait(data)
+        except asyncio.QueueFull:
+            # _play_audio не успевает — дропаем старейший фрейм, чтобы
+            # освободить место под новый.
+            try:
+                self.audio_in_queue.get_nowait()
+                self.audio_in_queue.put_nowait(data)
+            except (asyncio.QueueEmpty, asyncio.QueueFull):
+                pass
+
+    def _on_user_said(self, full_in: str) -> None:
+        """Реплика человека дослушана: журнал, эмоции, инициатива, прогноз.
+
+        Всё это не имеет отношения к чтению сокета и жило внутри цикла приёма
+        только потому, что там оказалось под рукой. Разбор ответа сервера и
+        поведение ассистента — разные задачи, и ошибка в одной не должна
+        требовать чтения другой.
+        """
+        print(f"[ДЖАРВИС] 🎤 Полная фраза: '{full_in}'")
+        self.ui.write_log(f"Вы: {full_in}")
+        self.last_user_text = full_in
+        # Дописывание в файл дня — миллисекунды, и оно переживает закрытие
+        # крестиком. Выжимка считается потом, когда о ней спросят.
+        session_log.remember("Вы", full_in)
+
+        # Анализ эмоций (новый мозг)
+        emotion_result = EmotionAnalyzer.analyze(full_in)
+        if emotion_result["emotion"] != "neutral":
+            print(f"[Эмоции] {emotion_result['emotion']} (confidence: {emotion_result['confidence']:.2f})")
+            self.user_profile.update_context(emotion=emotion_result["emotion"])
+
+            # Проверяем инициативу
+            mode_state = get_current_mode()
+            current_mode = mode_state.get("mode", "normal")
+            initiative = self.initiative_engine.should_show_initiative(
+                emotion_result,
+                self.user_profile.get_full_profile(),
+                current_mode
+            )
+            if initiative:
+                print(f"[Инициатива] {initiative}")
+                # Отправляем инициативное предложение
+                self._send_text_to_session(initiative)
+
+        # Обучение из контекста
+        preference = self.initiative_engine.should_learn_preference(full_in, "")
+        if preference:
+            self.user_profile.update_preference(preference["type"], preference["value"])
+            print(f"[Обучение] Выучил предпочтение: {preference['type']} = {preference['value']}")
+
+        # Прогнозирование потребностей (новый мозг)
+        context = {
+            "current_activity": self.user_profile.get_context().get("current_activity"),
+            "mode": get_current_mode().get("mode", "normal"),
+            "last_emotion": emotion_result.get("emotion") if emotion_result else "neutral"
+        }
+        proactive_suggestions = self.proactive_engine.get_proactive_suggestions(context)
+        if proactive_suggestions:
+            print(f"[Прогноз] Предложения: {proactive_suggestions}")
+            # Отправляем первое предложение (не навязчиво)
+            if proactive_suggestions and random.random() < 0.3:  # 30% шанс
+                self._send_text_to_session(proactive_suggestions[0])
+
+    def _on_jarvis_said(self, full_out: str) -> None:
+        """Ответ дописан: в журнал окна, в журнал дня и — если голос внешний —
+        на синтез."""
+        self.ui.write_log(f"Джарвис: {full_out}")
+        session_log.remember("Джарвис", full_out)
+        if get_voice_provider() == "fish":
+            # Отдельной задачей: синтез идёт около секунды, а приём в это
+            # время должен продолжать читать сессию.
+            asyncio.create_task(self._speak_fish(full_out))
+
+    async def _run_tool_calls(self, tool_call, уже_сказано: bool) -> None:
+        responses = []
+        for fc in tool_call.function_calls:
+            print(f"[ДЖАРВИС] 📞 {fc.name}")
+            # Джарвис у Старка не работает молча: HUD всегда показывает,
+            # на что наведён.
+            try:
+                self.ui.lock_on(fc.name)
+            except Exception as exc:
+                logger.debug("Прицел не встал: %s", exc, exc_info=True)
+            начало = time.perf_counter()
+            try:
+                fr = await self._execute_tool(fc, уже_сказано=уже_сказано)
+            finally:
+                # Медленный инструмент — самая частая причина паузы, которую
+                # слышно как «завис».
+                self._latency.add_tool(
+                    fc.name, int((time.perf_counter() - начало) * 1000))
+            responses.append(fr)
+        await self.session.send_tool_response(function_responses=responses)
+
     async def _receive_audio(self):
+        """Чтение сессии: что пришло — то и раздать. Вся работа по кускам
+        живёт в отдельных методах выше."""
         print("[ДЖАРВИС] 👂 Приём запущен")
         out_buf, in_buf = [], []
 
         try:
             while True:
                 async for response in self.session.receive():
-                    # Хендл возобновления. Сервер шлёт его периодически и
-                    # обновляет по ходу разговора — берём последний.
-                    sru = getattr(response, "session_resumption_update", None)
-                    if sru is not None and getattr(sru, "resumable", False):
-                        new_handle = getattr(sru, "new_handle", None)
-                        if new_handle and new_handle != self._resume_handle:
-                            first = self._resume_handle is None
-                            self._resume_handle = new_handle
-                            if first:
-                                print("[ДЖАРВИС] 🔗 Возобновление сессии вооружено")
+                    self._catch_resume_handle(response)
 
                     if response.data:
-                        if self._turn_done_event and self._turn_done_event.is_set():
-                            self._turn_done_event.clear()
-                        if get_voice_provider() == "fish":
-                            # Говорит Fish — звук Gemini выбрасываем, иначе
-                            # два голоса произнесут один ответ одновременно.
-                            continue
-                        self._latency.mark_answer_audio()
-                        try:
-                            self.audio_in_queue.put_nowait(response.data)
-                        except asyncio.QueueFull:
-                            # _play_audio не успевает — дропаем старейший
-                            # фрейм, чтобы освободить место под новый.
-                            try:
-                                self.audio_in_queue.get_nowait()
-                                self.audio_in_queue.put_nowait(response.data)
-                            except (asyncio.QueueEmpty, asyncio.QueueFull):
-                                pass
+                        self._play_model_audio(response.data)
 
                     if response.server_content:
                         sc = response.server_content
@@ -1952,94 +2076,23 @@ class Jarvis:
                             if self._turn_done_event:
                                 self._turn_done_event.set()
 
-                            raw_in = "".join(in_buf)
-                            full_in = _clean_dialog_text(raw_in)
+                            full_in = _clean_dialog_text("".join(in_buf))
                             in_buf = []
-
                             if full_in:
-                                print(f"[ДЖАРВИС] 🎤 Полная фраза: '{full_in}'")
-                                self.ui.write_log(f"Вы: {full_in}")
-                                self.last_user_text = full_in
-                                # Дописывание в файл дня — миллисекунды, и
-                                # оно переживает закрытие крестиком. Выжимка
-                                # считается потом, когда о ней спросят.
-                                session_log.remember("Вы", full_in)
+                                self._on_user_said(full_in)
 
-                                # Анализ эмоций (новый мозг)
-                                emotion_result = EmotionAnalyzer.analyze(full_in)
-                                if emotion_result["emotion"] != "neutral":
-                                    print(f"[Эмоции] {emotion_result['emotion']} (confidence: {emotion_result['confidence']:.2f})")
-                                    self.user_profile.update_context(emotion=emotion_result["emotion"])
-
-                                    # Проверяем инициативу
-                                    mode_state = get_current_mode()
-                                    current_mode = mode_state.get("mode", "normal")
-                                    initiative = self.initiative_engine.should_show_initiative(
-                                        emotion_result,
-                                        self.user_profile.get_full_profile(),
-                                        current_mode
-                                    )
-                                    if initiative:
-                                        print(f"[Инициатива] {initiative}")
-                                        # Отправляем инициативное предложение
-                                        self._send_text_to_session(initiative)
-
-                                # Обучение из контекста
-                                preference = self.initiative_engine.should_learn_preference(full_in, "")
-                                if preference:
-                                    self.user_profile.update_preference(preference["type"], preference["value"])
-                                    print(f"[Обучение] Выучил предпочтение: {preference['type']} = {preference['value']}")
-
-                                # Прогнозирование потребностей (новый мозг)
-                                context = {
-                                    "current_activity": self.user_profile.get_context().get("current_activity"),
-                                    "mode": get_current_mode().get("mode", "normal"),
-                                    "last_emotion": emotion_result.get("emotion") if emotion_result else "neutral"
-                                }
-                                proactive_suggestions = self.proactive_engine.get_proactive_suggestions(context)
-                                if proactive_suggestions:
-                                    print(f"[Прогноз] Предложения: {proactive_suggestions}")
-                                    # Отправляем первое предложение (не навязчиво)
-                                    if proactive_suggestions and random.random() < 0.3:  # 30% шанс
-                                        self._send_text_to_session(proactive_suggestions[0])
-
-                            raw_out = "".join(out_buf)
-                            full_out = _clean_dialog_text(raw_out)
+                            full_out = _clean_dialog_text("".join(out_buf))
                             out_buf = []
-
                             if full_out:
-                                self.ui.write_log(f"Джарвис: {full_out}")
-                                session_log.remember("Джарвис", full_out)
-                                if get_voice_provider() == "fish":
-                                    # Отдельной задачей: синтез идёт около
-                                    # секунды, а приём в это время должен
-                                    # продолжать читать сессию.
-                                    asyncio.create_task(self._speak_fish(full_out))
+                                self._on_jarvis_said(full_out)
 
                     if response.tool_call:
-                        responses = []
-                        for fc in response.tool_call.function_calls:
-                            print(f"[ДЖАРВИС] 📞 {fc.name}")
-                            # Джарвис у Старка не работает молча: HUD всегда
-                            # показывает, на что наведён.
-                            try:
-                                self.ui.lock_on(fc.name)
-                            except Exception as exc:
-                                logger.debug("Прицел не встал: %s", exc, exc_info=True)
-                            _tool_started = time.perf_counter()
-                            try:
-                                fr = await self._execute_tool(
-                                    fc, уже_сказано=bool("".join(out_buf).strip()),
-                                )
-                            finally:
-                                # Медленный инструмент — самая частая причина
-                                # паузы, которую слышно как «завис».
-                                self._latency.add_tool(
-                                    fc.name,
-                                    int((time.perf_counter() - _tool_started) * 1000),
-                                )
-                            responses.append(fr)
-                        await self.session.send_tool_response(function_responses=responses)
+                        # Признак «модель уже заговорила в этом ходе» —
+                        # из буфера на момент вызова: см. _acknowledge.
+                        await self._run_tool_calls(
+                            response.tool_call,
+                            уже_сказано=bool("".join(out_buf).strip()),
+                        )
 
         except Exception as e:
             logger.error("Приём оборвался: %s", e)
