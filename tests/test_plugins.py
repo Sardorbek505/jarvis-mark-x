@@ -177,15 +177,45 @@ def test_включённый_загружается(положить):
 
 
 def test_список_выключенных_читается_из_настроек(monkeypatch):
+    """Прежний ключ `plugins_disabled` продолжает работать: у кого-то он уже
+    прописан, и молча перестать его читать — значит вернуть человеку
+    плагин, который он выключил."""
     import main
     from core import paths
 
     monkeypatch.setattr(paths, "load_api_keys",
                         lambda: {"plugins_disabled": ["kettle", " radio "]})
 
-    assert main._plugin_enabled("kettle") is False
-    assert main._plugin_enabled("radio") is False, "пробелы не должны мешать"
-    assert main._plugin_enabled("другой") is True
+    assert main._tool_enabled("kettle") is False
+    assert main._tool_enabled("radio") is False, "пробелы не должны мешать"
+    assert main._tool_enabled("другой") is True
+
+
+def test_выключать_можно_и_штатные_инструменты(monkeypatch):
+    """35 объявлений уходят в промпт на каждом подключении. Тому, у кого нет
+    ни Spotify, ни игр, всё это оплачивается токенами и сбивает выбор."""
+    import main
+    from core import paths
+
+    monkeypatch.setattr(paths, "load_api_keys",
+                        lambda: {"tools_disabled": ["music_player", "game_launcher"]})
+
+    assert main._tool_enabled("music_player") is False
+    assert main._tool_enabled("game_launcher") is False
+    assert main._tool_enabled("weather") is True
+
+
+@pytest.mark.parametrize("имя", sorted(
+    __import__("core.settings", fromlist=["x"]).НЕВЫКЛЮЧАЕМЫЕ))
+def test_несущее_выключить_нельзя(monkeypatch, имя):
+    """Без памяти ассистент забывает человека, без отмены сделанное нечем
+    вернуть, без shutdown_jarvis его не закрыть голосом."""
+    import main
+    from core import paths
+
+    monkeypatch.setattr(paths, "load_api_keys", lambda: {"tools_disabled": [имя]})
+
+    assert main._tool_enabled(имя) is True
 
 
 def test_битые_настройки_не_выключают_всё(monkeypatch):
@@ -197,7 +227,7 @@ def test_битые_настройки_не_выключают_всё(monkeypatc
 
     monkeypatch.setattr(paths, "load_api_keys", падает)
 
-    assert main._plugin_enabled("kettle") is True, "молча остаться без плагинов — хуже"
+    assert main._tool_enabled("kettle") is True, "молча остаться без плагинов — хуже"
 
 
 # ─── Связь с остальным ────────────────────────────────────────────────────────

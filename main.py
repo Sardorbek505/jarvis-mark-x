@@ -466,7 +466,8 @@ def _describe_capabilities() -> str:
         "shutdown_jarvis": "завершает свою работу",
     }
     for имя, описание in встроенные.items():
-        строки.append(f"- {имя} — {описание}.")
+        if _tool_enabled(имя):
+            строки.append(f"- {имя} — {описание}.")
     return "\n".join(sorted(строки))
 
 
@@ -840,21 +841,25 @@ INLINE_TOOLS = [
 # список способностей ассистента — это он, а не отдельный список, который
 # пришлось бы править вручную и который разошёлся бы с кодом в первый же месяц.
 _INLINE_NAMES = {t["name"] for t in INLINE_TOOLS}
-_ACTIONS = discover_actions(BASE_DIR / "actions", reserved_names=_INLINE_NAMES)
 
 
-def _plugin_enabled(имя: str) -> bool:
-    """Выключенный плагин не загружается вовсе.
+def _tool_enabled(имя: str) -> bool:
+    """Выключенный инструмент не загружается вовсе.
 
     Не «загружается и молчит»: модель не должна видеть в списке способность,
     которой человек её лишил, — иначе она будет её предлагать, а вызов
     упрётся в «неизвестный инструмент»."""
     try:
-        from core.paths import load_api_keys
-        выключены = load_api_keys().get("plugins_disabled") or []
-        return имя not in {str(н).strip() for н in выключены}
-    except Exception:
+        return conv_settings.tool_enabled(имя)
+    except Exception as exc:
+        # Настройки не прочитались — включено всё. Ошибка чтения файла не
+        # повод молча лишить человека половины способностей.
+        logger.debug("Список выключенных не прочитан: %s", exc)
         return True
+
+
+_ACTIONS = discover_actions(BASE_DIR / "actions", reserved_names=_INLINE_NAMES,
+                            enabled=_tool_enabled)
 
 
 # Пользовательские плагины: один файл — одна способность, положил и работает.
@@ -865,10 +870,14 @@ _PLUGINS = discover_actions(
     reserved_names=_INLINE_NAMES | set(_ACTIONS.names()),
     package="plugins",
     attribute="PLUGIN",
-    enabled=_plugin_enabled,
+    enabled=_tool_enabled,
 )
 
-TOOLS = (INLINE_TOOLS
+# Встроенные фильтруются здесь: у них нет своего загрузчика, который мог бы
+# их не взять.
+_INLINE_ENABLED = [t for t in INLINE_TOOLS if _tool_enabled(t["name"])]
+
+TOOLS = (_INLINE_ENABLED
          + _ACTIONS.get_tool_declarations()
          + _PLUGINS.get_tool_declarations())
 
@@ -1649,6 +1658,13 @@ class Jarvis:
                     result = await loop.run_in_executor(
                         None, lambda: _PLUGINS.run(name, args, player=self.ui)
                     )
+
+                elif not _tool_enabled(name):
+                    # Сессия могла начаться до того, как инструмент выключили.
+                    # «Неизвестный инструмент» здесь — неправда: он известен,
+                    # его убрали, и человек должен узнать именно это.
+                    result = (f"{name} выключен в настройках, сэр. "
+                              f"Включите его в окне «Инструменты».")
 
                 else:
                     result = f"Неизвестный инструмент: {name}"

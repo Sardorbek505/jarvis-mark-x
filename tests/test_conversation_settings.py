@@ -49,7 +49,7 @@ def test_без_файла_берутся_проверенные_значени�
 
 
 def test_сохранённое_читается_обратно(конфиг):
-    conv.set("vad_silence_ms", 500)
+    conv.save("vad_silence_ms", 500)
     assert conv.get("vad_silence_ms") == 500
     assert json.loads(конфиг.read_text(encoding="utf-8"))["vad_silence_ms"] == 500
 
@@ -57,10 +57,10 @@ def test_сохранённое_читается_обратно(конфиг):
 def test_невозможное_значение_прижимается_к_границе(конфиг):
     """Ноль миллисекунд тишины означает, что Джарвис перебьёт на первом же
     вдохе, а десять секунд — что ответа не дождаться."""
-    conv.set("vad_silence_ms", 0)
+    conv.save("vad_silence_ms", 0)
     assert conv.get("vad_silence_ms") == conv.описание("vad_silence_ms").минимум
 
-    conv.set("vad_silence_ms", 999999)
+    conv.save("vad_silence_ms", 999999)
     assert conv.get("vad_silence_ms") == conv.описание("vad_silence_ms").максимум
 
 
@@ -74,7 +74,7 @@ def test_чужие_ключи_в_файле_сохраняются(конфиг
     значило бы отобрать у человека доступ к Gemini заодно с настройкой."""
     конфиг.write_text(json.dumps({"gemini_api_key": "секрет"}), encoding="utf-8")
 
-    conv.set("vad_silence_ms", 400)
+    conv.save("vad_silence_ms", 400)
 
     данные = json.loads(конфиг.read_text(encoding="utf-8"))
     assert данные["gemini_api_key"] == "секрет"
@@ -83,19 +83,19 @@ def test_чужие_ключи_в_файле_сохраняются(конфиг
 
 def test_испорченный_файл_не_отменяет_сохранение(конфиг):
     конфиг.write_text("{это не json", encoding="utf-8")
-    assert conv.set("vad_silence_ms", 300) is True
+    assert conv.save("vad_silence_ms", 300) is True
 
 
 def test_переменная_среды_перебивает_файл(конфиг, monkeypatch):
     """Ею пользуются, когда надо проверить одно число на один запуск."""
-    conv.set("vad_silence_ms", 400)
+    conv.save("vad_silence_ms", 400)
     monkeypatch.setenv("VAD_SILENCE_MS", "900")
 
     assert conv.get("vad_silence_ms") == 900
 
 
 def test_несуществующая_настройка_не_пишется(конфиг):
-    assert conv.set("цвет_реактора", "красный") is False
+    assert conv.save("цвет_реактора", "красный") is False
     assert conv.get("цвет_реактора") is None
 
 

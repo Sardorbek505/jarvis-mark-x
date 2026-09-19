@@ -966,6 +966,21 @@ class MainWindow(QMainWindow):
         self._settings_btn.clicked.connect(self._open_conversation_settings)
         left_lay.addWidget(self._settings_btn)
 
+        # Кнопка: какие инструменты включены
+        self._tools_btn = QPushButton("🧰  ИНСТРУМЕНТЫ")
+        self._tools_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._tools_btn.setFixedHeight(26)
+        self._tools_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._tools_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.TEXT_DIM};
+                border: 1px solid {C.BORDER}; border-radius: 3px;
+            }}
+            QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
+        """)
+        self._tools_btn.clicked.connect(self._open_tool_switchboard)
+        left_lay.addWidget(self._tools_btn)
+
         root.addWidget(left)
 
         # ── Центральный HUD ─────────────────────────────────────────
@@ -1600,13 +1615,151 @@ class MainWindow(QMainWindow):
             for описание in conv.ОПИСАНИЯ:
                 поле = поля[описание.ключ]
                 значение = поле.isChecked() if описание.тип is bool else поле.value()
-                conv.set(описание.ключ, значение)
+                conv.save(описание.ключ, значение)
             self.write_log("SYS: настройки разговора сохранены")
             окно.accept()
 
         сброс = _кнопка("КАК БЫЛО", C.TEXT_DIM)
         сброс.clicked.connect(_вернуть_как_было)
         кнопки.addWidget(сброс)
+
+        отмена = _кнопка("ОТМЕНА", C.TEXT_DIM)
+        отмена.clicked.connect(окно.reject)
+        кнопки.addWidget(отмена)
+
+        сохранить = _кнопка("СОХРАНИТЬ", C.PRI)
+        сохранить.clicked.connect(_сохранить)
+        кнопки.addWidget(сохранить)
+
+        сетка.addLayout(кнопки)
+        окно.exec()
+
+    def _open_tool_switchboard(self):
+        """Что Джарвис умеет — и что из этого ему не нужно.
+
+        Тридцать пять объявлений уходят в промпт на КАЖДОМ подключении, а
+        подключается сессия сама каждые несколько минут. Человеку, у которого
+        нет ни Spotify, ни Obsidian, ни игр, всё это оплачивается токенами и,
+        что хуже, сбивает выбор: чем длиннее список, тем чаще модель берёт из
+        него не тот инструмент.
+        """
+        import main as jarvis_main
+        from core import settings as conv
+
+        выключены = conv.disabled_tools()
+
+        группы = [
+            ("ВСТРОЕННЫЕ", [t["name"] for t in jarvis_main.INLINE_TOOLS]),
+            ("ДЕЙСТВИЯ", sorted(jarvis_main._ACTIONS.names())),
+        ]
+        плагины = sorted(jarvis_main._PLUGINS.names())
+        if плагины:
+            группы.append(("ПЛАГИНЫ", плагины))
+
+        # Выключенные в реестр не попадают вовсе, иначе модель видела бы
+        # способность, которой её лишили. Значит, в окне их надо добавить
+        # руками — иначе включить обратно было бы нечего.
+        известные = {и for _, имена in группы for и in имена}
+        потерянные = sorted(выключены - известные)
+        if потерянные:
+            группы.append(("ВЫКЛЮЧЕННЫЕ РАНЬШЕ", потерянные))
+
+        окно = QDialog(self)
+        окно.setWindowTitle("Инструменты")
+        окно.setMinimumSize(460, 560)
+        окно.setStyleSheet(f"QDialog {{ background: {C.BG}; color: {C.TEXT}; }}")
+
+        сетка = QVBoxLayout(окно)
+        сетка.setContentsMargins(16, 14, 16, 14)
+        сетка.setSpacing(8)
+
+        итог = QLabel("")
+        итог.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        итог.setStyleSheet(f"color: {C.TEXT_DIM}; letter-spacing: 1px;")
+        сетка.addWidget(итог)
+
+        прокрутка = QScrollArea()
+        прокрутка.setWidgetResizable(True)
+        прокрутка.setStyleSheet(
+            f"QScrollArea {{ border: 1px solid {C.BORDER}; border-radius: 4px; "
+            f"background: #000d12; }}")
+        сетка.addWidget(прокрутка, stretch=1)
+
+        содержимое = QWidget()
+        столбец = QVBoxLayout(содержимое)
+        столбец.setContentsMargins(8, 8, 8, 8)
+        столбец.setSpacing(3)
+        прокрутка.setWidget(содержимое)
+
+        галочки: dict[str, QCheckBox] = {}
+
+        def _обновить_итог():
+            включено = sum(1 for г in галочки.values() if г.isChecked())
+            итог.setText(f"ВКЛЮЧЕНО {включено} ИЗ {len(галочки)}")
+
+        for заголовок, имена in группы:
+            подпись = QLabel(f"◈ {заголовок}")
+            подпись.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            подпись.setStyleSheet(f"color: {C.ACC2}; letter-spacing: 1px;")
+            столбец.addWidget(подпись)
+
+            for имя in имена:
+                г = QCheckBox(имя)
+                г.setFont(QFont("Segoe UI", 9))
+                г.setChecked(имя not in выключены)
+                несущий = имя in conv.НЕВЫКЛЮЧАЕМЫЕ
+                if несущий:
+                    # Не «спрятать», а показать запертым: иначе человек будет
+                    # искать в окне то, чего там нет, и думать, что сломалось.
+                    г.setEnabled(False)
+                    г.setToolTip("Без этого ассистент перестанет быть собой")
+                г.setStyleSheet(
+                    f"color: {C.TEXT_DIM if несущий else C.TEXT};")
+                г.stateChanged.connect(lambda _=0: _обновить_итог())
+                столбец.addWidget(г)
+                галочки[имя] = г
+
+        столбец.addStretch()
+        _обновить_итог()
+
+        когда = QLabel("Изменения вступят в силу после перезапуска: список "
+                       "способностей собирается при старте.")
+        когда.setFont(QFont("Segoe UI", 8))
+        когда.setStyleSheet(f"color: {C.ACC2};")
+        когда.setWordWrap(True)
+        сетка.addWidget(когда)
+
+        кнопки = QHBoxLayout()
+        кнопки.setSpacing(6)
+
+        def _кнопка(надпись: str, цвет: str) -> QPushButton:
+            b = QPushButton(надпись)
+            b.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            b.setFixedHeight(28)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {цвет};
+                    border: 1px solid {цвет}; border-radius: 3px;
+                }}
+                QPushButton:hover {{ background: {C.BORDER_A}; }}
+            """)
+            return b
+
+        def _включить_всё():
+            for г in галочки.values():
+                г.setChecked(True)
+
+        def _сохранить():
+            выключить = [и for и, г in галочки.items() if not г.isChecked()]
+            conv.set_disabled_tools(выключить)
+            self.write_log(f"SYS: инструментов выключено — {len(выключить)}; "
+                           f"применится после перезапуска")
+            окно.accept()
+
+        всё = _кнопка("ВКЛЮЧИТЬ ВСЁ", C.TEXT_DIM)
+        всё.clicked.connect(_включить_всё)
+        кнопки.addWidget(всё)
 
         отмена = _кнопка("ОТМЕНА", C.TEXT_DIM)
         отмена.clicked.connect(окно.reject)
