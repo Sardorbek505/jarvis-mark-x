@@ -16,6 +16,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main as jarvis_main
+from core.barge_in import Перебивание
 from core.latency import LatencyTracker
 
 _TEXT = ("Первое предложение достаточной длины для отдельного куска. "
@@ -34,6 +35,10 @@ class _Stub:
         self.logs: list[str] = []
         self.ui = SimpleNamespace(write_log=self.logs.append)
         self._latency = LatencyTracker(enabled=False)
+        # Состояние перебивания: `_speak_fish` сверяет номер реплики перед
+        # каждым куском и снимает признак речи в конце.
+        self._speech_gen = 0
+        self._barge = Перебивание()
 
     def set_speaking(self, value: bool) -> None:
         self._is_speaking = value

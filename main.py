@@ -90,6 +90,7 @@ from core import acknowledge
 from core import watcher as topic_watcher
 from core import settings as conv_settings
 from core import session_log
+from core.barge_in import Перебивание
 from core import undo as undo_stack
 from core.action_loader import discover_actions
 from core import audio_devices
@@ -891,6 +892,13 @@ class Jarvis:
         self._is_speaking    = False
         self._speaking_lock  = threading.Lock()
         self._active_synth_tasks = 0
+        # Перебивание по имени. Политика — в core/barge_in.py, механика гашения
+        # здесь: сбросить очередь звука может только тот, кто ею владеет.
+        self._barge = Перебивание()
+        # Номер реплики. Растёт при каждом гашении, и синтез, начатый до него,
+        # перестаёт докладывать звук в очередь. Надёжнее отмены задач: отменять
+        # приходилось бы и внешнюю, и вложенную, а гонку между ними не видно.
+        self._speech_gen = 0
         self._speaker_meter  = None   # см. _listen_audio: не слушаем свои динамики
         self._turn_done_event: asyncio.Event | None = None
 
@@ -919,6 +927,13 @@ class Jarvis:
             )
         else:
             logger.info("Экранное подтверждение недоступно: интерфейс без баннера")
+
+        # Escape — «замолчи» без слов, для тех минут, когда человек у
+        # клавиатуры и называть ассистента по имени незачем.
+        try:
+            self.ui.bind_hush(self._hush)
+        except Exception as exc:
+            logger.debug("Escape не привязан: %s", exc)
 
         # Слежение за темами. Проверяет фоновый поток, а говорит — эта же
         # сессия: `_send_text_to_session` потокобезопасен (внутри
@@ -1005,6 +1020,12 @@ class Jarvis:
             if self.ui.muted:
                 self.ui.toggle_mute()
             self.ui.set_state("LISTENING")
+            # Смысл «зажми и говори» в том, что на окно не смотрят. Значит,
+            # и подтверждение должно быть слышно, а не видно.
+            if self._is_speaking:
+                self._interrupt_from_audio_thread("зажали клавишу")
+            else:
+                self._say_attention()
         else:
             self.ui.set_state("IDLE")
 
@@ -1025,6 +1046,9 @@ class Jarvis:
             ducking_controller.duck()
         except Exception:
             pass
+        # F8 жмут из полноэкранной игры, не глядя на окно. Поднять окно и
+        # промолчать — значит не сказать человеку ничего.
+        self._say_attention()
 
     def _on_hotkey_mute(self):
         """Реакция на глобальный хоткей Ctrl+Shift+M из любого приложения."""
@@ -1131,7 +1155,27 @@ class Jarvis:
     # ── Управление состоянием ─────────────────────────────────────────────────
     def set_speaking(self, value: bool):
         with self._speaking_lock:
+            стало = value and not self._is_speaking
             self._is_speaking = value
+
+        if стало:
+            # Начало речи — момент, когда буфер детектора надо очистить.
+            #
+            # Человек зовёт его ПО ИМЕНИ: «Джарвис, какая погода?». Значит, к
+            # первому слову ответа слово «Джарвис» ещё лежит в двухсекундном
+            # кольцевом буфере — сказанное самим человеком полторы секунды
+            # назад. Без очистки Джарвис обрывал бы себя на первом слове
+            # КАЖДОГО ответа, а выглядело бы это как «он меня не дослушивает».
+            if self._wake_detector is not None:
+                try:
+                    self._wake_detector.reset()
+                except Exception as exc:
+                    logger.debug("Буфер детектора не очищен: %s", exc)
+            if not self._barge.говорит:
+                # Голос самой модели: текста здесь нет, но отсчёт разгона
+                # начать нужно всё равно.
+                self._barge.заговорил("")
+
         if value:
             self.ui.set_state("SPEAKING")
             try:
@@ -1146,6 +1190,82 @@ class Jarvis:
                 ducking_controller.set_state(DuckingState.RESTORING)
             except Exception:
                 pass
+
+    def _silence_now(self, причина: str, откликаться: bool = False) -> None:
+        """Гасит собственную речь немедленно. Зовётся ИЗ ЦИКЛА СОБЫТИЙ.
+
+        Трёх вещей мало по отдельности, нужны все три:
+
+          * поднять номер реплики — иначе синтез, который уже идёт, продолжит
+            докладывать готовые куски в очередь;
+          * вычерпать очередь — иначе он «замолчит» и через секунду договорит
+            хвост, который в ней лежал. Это хуже, чем не перебивать вовсе;
+          * снять признак речи — иначе микрофонный шлюз останется закрытым и
+            сказанное следом никуда не уедет.
+
+        Кадр, уже отданный звуковому устройству, доиграет: это десятки
+        миллисекунд, и забрать его оттуда нечем.
+        """
+        self._speech_gen += 1
+        сброшено = 0
+        очередь = self.audio_in_queue
+        if очередь is not None:
+            while True:
+                try:
+                    очередь.get_nowait()
+                    сброшено += 1
+                except asyncio.QueueEmpty:
+                    break
+
+        self.set_speaking(False)
+        self._barge.обрыв_принят()
+        logger.info("Речь оборвана (%s), выброшено кусков: %d", причина, сброшено)
+        self.ui.write_log(f"SYS: перебили — {причина}")
+
+        # Откликаться или нет — зависит от того, чем перебили.
+        #
+        # Именем: человек позвал и ждёт ответа. Оборвать молча — значит
+        # оставить его гадать, услышали его или Джарвис просто закончил.
+        # Клавишей: он смотрит на экран и сам видит, что звук прекратился, а
+        # при «зажми и говори» уже набирает воздух — отклик наложился бы на
+        # его же первое слово.
+        if откликаться:
+            self._say_attention()
+
+    def _hush(self) -> None:
+        """Escape: замолчать немедленно и молча — отклика тут не нужно,
+        человек видит, что звук прекратился."""
+        if not self._is_speaking:
+            return
+        петля = self._loop
+        if петля is None or not петля.is_running():
+            return
+        петля.call_soon_threadsafe(self._silence_now, "нажали Escape")
+
+    def _say_attention(self) -> None:
+        """Короткий отклик на пробуждение. Безопасен из любого потока."""
+        if get_voice_provider() != "fish":
+            return
+        фраза = acknowledge.attention()
+
+        def _сказать():
+            try:
+                asyncio.create_task(self._speak_fish(фраза, метрики=False))
+            except Exception as exc:
+                logger.debug("Отклик не прозвучал: %s", exc)
+
+        петля = self._loop
+        if петля is None or not петля.is_running():
+            return
+        петля.call_soon_threadsafe(_сказать)
+
+    def _interrupt_from_audio_thread(self, причина: str,
+                                     откликаться: bool = False) -> None:
+        """Мост из потока звука в цикл событий: asyncio.Queue не потокобезопасна."""
+        петля = self._loop
+        if петля is None or not петля.is_running():
+            return
+        петля.call_soon_threadsafe(self._silence_now, причина, откликаться)
 
     def speak(self, text: str):
         """Отправляет текст в сессию для озвучки."""
@@ -1769,6 +1889,41 @@ class Jarvis:
         self._frame_was_loud = False
         return self._quiet_frames <= MIC_HANGOVER_FRAMES
 
+    def _listen_for_name(self, indata) -> None:
+        """Слушает имя, пока Джарвис говорит. Зовётся из потока звука.
+
+        Тут нельзя ничего тяжёлого и нельзя ничего, что трогает цикл событий:
+        колбэк звуковой карты обязан вернуться раньше следующего кадра.
+        Поэтому здесь только детектор, а гашение уходит в петлю через мост.
+        """
+        детектор = self._wake_detector
+        if детектор is None:
+            return
+
+        можно, почему = self._barge.можно_обрывать()
+        if not можно:
+            # Кадр всё равно скармливаем: детектору нужен непрерывный поток,
+            # иначе слово, начатое в «запретную» долю секунды, не соберётся.
+            self._feed_name_detector(indata, слушать=False)
+            self._note_gate(f"Джарвис говорит — обрыв не принимается: {почему}")
+            return
+
+        if self._feed_name_detector(indata, слушать=True):
+            self._interrupt_from_audio_thread("услышал своё имя", откликаться=True)
+
+    def _feed_name_detector(self, indata, слушать: bool) -> bool:
+        """Отдаёт кадр детектору с порогами под текущее состояние."""
+        детектор = self._wake_detector
+        try:
+            низкий, высокий = self._barge.пороги
+            детектор.threshold_stage1 = низкий
+            детектор.threshold_stage2 = высокий
+            услышано = детектор.process_pcm(indata.tobytes())
+            return bool(услышано) and слушать
+        except Exception as exc:
+            logger.debug("Детектор имени споткнулся: %s", exc, exc_info=True)
+            return False
+
     async def _listen_audio(self):
         print("[ДЖАРВИС] 🎤 Микрофон запущен")
         loop = asyncio.get_event_loop()
@@ -1794,7 +1949,11 @@ class Jarvis:
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
             if jarvis_speaking:
-                self._note_gate("Джарвис говорит сам")
+                # Микрофон больше не закрыт наглухо. Кадр не уезжает в облако,
+                # но проходит через детектор ключевого слова: назвать по имени
+                # — единственный способ оборвать ответ голосом.
+                self._listen_for_name(indata)
+                self._note_gate("Джарвис говорит — жду «Джарвис»")
                 preroll.clear()
                 return
             if self.ui.muted:
@@ -1881,6 +2040,11 @@ class Jarvis:
         with self._speaking_lock:
             self._active_synth_tasks += 1
         self.set_speaking(True)
+        # Номер реплики на момент старта. Если его поднимут (перебили), всё,
+        # что синтезируется сейчас, в очередь уже не попадёт.
+        моя_реплика = self._speech_gen
+        if метрики:
+            self._barge.заговорил(text)
 
         try:
             from telegram_bot import tts_fish
@@ -1927,11 +2091,19 @@ class Jarvis:
                         pending.cancel()
                     break
 
+                if моя_реплика != self._speech_gen:
+                    # Перебили, пока синтезировался этот кусок.
+                    if pending:
+                        pending.cancel()
+                    break
+
                 if not spoken and метрики:
                     self._latency.mark_answer_audio()
                 spoken += len(pcm)
 
                 for j in range(0, len(pcm), step):
+                    if моя_реплика != self._speech_gen:
+                        break
                     try:
                         self.audio_in_queue.put_nowait(pcm[j:j + step])
                     except asyncio.QueueFull:
@@ -1945,6 +2117,8 @@ class Jarvis:
         finally:
             with self._speaking_lock:
                 self._active_synth_tasks = max(0, self._active_synth_tasks - 1)
+            if метрики and моя_реплика == self._speech_gen:
+                self._barge.замолчал()
 
     # ── Получение ответа от Gemini ────────────────────────────────────────────
     def _catch_resume_handle(self, response) -> None:

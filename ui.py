@@ -1064,6 +1064,8 @@ class MainWindow(QMainWindow):
         self._confirm_banner.hide()
 
         # ── Горячие клавиши ─────────────────────────────────────────
+        self._hush_callback = None
+        QShortcut(QKeySequence("Esc"), self).activated.connect(self._hush)
         QShortcut(QKeySequence("Ctrl+M"), self).activated.connect(self._toggle_mute)
         QShortcut(QKeySequence("Ctrl+L"), self).activated.connect(self._clear_log)
 
@@ -1212,6 +1214,15 @@ class MainWindow(QMainWindow):
 
 
     # ── Push-to-talk в окне ───────────────────────────────────────────────────
+    def bind_hush(self, on_hush):
+        """Escape — «замолчи», мгновенно и молча.
+
+        Голосом Джарвиса обрывают по имени, и это правильно в комнате со
+        звуком. Но когда человек сидит у клавиатуры, называть ассистента по
+        имени, чтобы он замолчал, — лишний шаг: у него под рукой клавиша.
+        """
+        self._hush_callback = on_hush
+
     def bind_push_to_talk(self, on_change):
         """Ловит удержание Ctrl+Space, пока окно в фокусе.
 
@@ -1827,6 +1838,16 @@ class MainWindow(QMainWindow):
             "ИНИЦИАЛИЗАЦИЯ": C.PRI,
         }.get(ru, C.TEXT_DIM)
         self._status_lbl.setStyleSheet(f"color: {color};")
+
+    def _hush(self):
+        """Escape нажали. Молчание здесь — часть ответа: человек и так видит,
+        что звук прекратился."""
+        if self._hush_callback is None:
+            return
+        try:
+            self._hush_callback()
+        except Exception as exc:
+            _logger.debug("Замолчать не вышло: %s", exc, exc_info=True)
 
     def _toggle_mute(self):
         self.muted = not self.muted
