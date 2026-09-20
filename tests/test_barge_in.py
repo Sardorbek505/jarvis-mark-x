@@ -182,6 +182,10 @@ def _джарвис(говорит=True):
     j._echo_ref = ОпорныйСигнал(частота_микрофона=16000)
     j._aec = None
     j._aec_erle = 0.0
+    # Счётчики диагностики.
+    j._name_hits = 0
+    j._barge_count = 0
+    j._last_barge_refusal = ""
     j._loop = None
     j.audio_in_queue = asyncio.Queue()
     j.сказанное = []
@@ -408,3 +412,18 @@ def test_начало_реплики_чистит_опорный_сигнал():
     j.set_speaking(True)
 
     assert j._echo_ref.в_очереди == 0
+
+
+def test_услышанное_но_отклонённое_имя_попадает_в_диагностику():
+    """«Почему он не замолчал, я же его позвал» — самый частый вопрос к
+    такой машине. Ответ на него должен где-то лежать."""
+    j = _джарвис()
+    j._wake_detector = _Детектор(слышит=True)
+    j._barge.заговорил("Сейчас посмотрю.")      # разгон ещё не прошёл
+    j._note_gate = lambda причина=None: None
+
+    j._listen_for_name(_Кадр())
+
+    assert j._name_hits == 1
+    assert j._barge_count == 0
+    assert "только начался" in j._last_barge_refusal

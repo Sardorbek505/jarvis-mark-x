@@ -907,6 +907,21 @@ class Jarvis:
         self._echo_ref = ОпорныйСигнал(частота_микрофона=SEND_SAMPLE_RATE)
         self._aec = None
         self._aec_erle = 0.0
+
+        # Счётчики для панели диагностики. Обе половины голосового круга
+        # отказывают МОЛЧА: распознавание, которое вас игнорирует, и синтез
+        # без звука снаружи выглядят одинаково. Это не отладочная роскошь, а
+        # прибор, превращающий «не работает» в конкретный ответ.
+        self._gate_totals: dict[str, int] = {}
+        self._gate_passed_total = 0
+        self._last_pass_at = 0.0
+        self._last_gate_reason = ""
+        self._name_hits = 0             # детектор услышал имя
+        self._barge_count = 0           # из них приняты как обрыв
+        self._last_barge_refusal = ""   # почему не приняли последний раз
+        self._spoken_count = 0          # произнесённых ответов
+        self._fish_fallbacks = 0        # Fish смолчал, договаривал Edge
+        self._reconnects = 0
         try:
             from core.aec_pipeline import AECPipeline
             self._aec = AECPipeline(sample_rate=SEND_SAMPLE_RATE)
@@ -951,6 +966,14 @@ class Jarvis:
             self.ui.bind_hush(self._hush)
         except Exception as exc:
             logger.debug("Escape не привязан: %s", exc)
+
+        # Ctrl+D — «почему он меня не слышит». Снимок собирается по запросу:
+        # наблюдатель не должен менять тайминг наблюдаемого.
+        try:
+            from core.diagnostics import собрать
+            self.ui.bind_diagnostics(lambda: собрать(self))
+        except Exception as exc:
+            logger.debug("Диагностика не привязана: %s", exc)
 
         # Слежение за темами. Проверяет фоновый поток, а говорит — эта же
         # сессия: `_send_text_to_session` потокобезопасен (внутри
@@ -1848,11 +1871,18 @@ class Jarvis:
         now = time.monotonic()
         if reason is None:
             self._gate_passed = getattr(self, "_gate_passed", 0) + 1
+            # Накопительные счётчики живут отдельно: сводка в лог обнуляет
+            # свои каждые несколько секунд, а панели диагностики нужен итог
+            # за сессию — «сколько раз он меня вообще услышал».
+            self._gate_passed_total += 1
+            self._last_pass_at = time.time()
         else:
             counts = getattr(self, "_gate_counts", None)
             if counts is None:
                 counts = self._gate_counts = {}
             counts[reason] = counts.get(reason, 0) + 1
+            self._gate_totals[reason] = self._gate_totals.get(reason, 0) + 1
+            self._last_gate_reason = reason
 
         last = getattr(self, "_gate_reported_at", 0.0)
         if now - last < _GATE_REPORT_SEC:
@@ -1924,11 +1954,19 @@ class Jarvis:
         if not можно:
             # Кадр всё равно скармливаем: детектору нужен непрерывный поток,
             # иначе слово, начатое в «запретную» долю секунды, не соберётся.
-            self._feed_name_detector(indata, слушать=False)
+            if self._feed_name_detector(indata, слушать=False):
+                # Имя прозвучало, но обрыв не приняли. Это и есть самый
+                # частый вопрос к такой машине — «почему он не замолчал», —
+                # и ответ на него должен где-то лежать.
+                self._name_hits += 1
+                self._last_barge_refusal = почему
             self._note_gate(f"Джарвис говорит — обрыв не принимается: {почему}")
             return
 
         if self._feed_name_detector(indata, слушать=True):
+            self._name_hits += 1
+            self._barge_count += 1
+            self._last_barge_refusal = ""
             self._interrupt_from_audio_thread("услышал своё имя", откликаться=True)
 
     def _feed_name_detector(self, indata, слушать: bool) -> bool:
@@ -1938,8 +1976,10 @@ class Jarvis:
             низкий, высокий = self._barge.пороги
             детектор.threshold_stage1 = низкий
             детектор.threshold_stage2 = высокий
-            услышано = детектор.process_pcm(self._without_own_voice(indata))
-            return bool(услышано) and слушать
+            # `слушать` здесь уже не спрашивается: факт срабатывания нужен
+            # вызывающему в обоих случаях — и чтобы оборвать, и чтобы
+            # записать в диагностику, что имя слышали, а обрыв не приняли.
+            return bool(детектор.process_pcm(self._without_own_voice(indata)))
         except Exception as exc:
             logger.debug("Детектор имени споткнулся: %s", exc, exc_info=True)
             return False
@@ -2113,6 +2153,7 @@ class Jarvis:
                     if pcm:
                         return pcm
                     fish_alive = False
+                    self._fish_fallbacks += 1
                     self.ui.write_log("SYS: Fish молчит — остаток ответа озвучит Edge-TTS")
                 return await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
 
@@ -2152,6 +2193,7 @@ class Jarvis:
                         await self.audio_in_queue.put(pcm[j:j + step])
 
             if spoken:
+                self._spoken_count += 1
                 logger.info("Голос Fish: %.1f с звука, %d фрагмент(ов) на %d символов",
                             spoken / 2 / RECV_SAMPLE_RATE, len(chunks), len(text))
             if метрики:
@@ -2604,6 +2646,9 @@ class Jarvis:
                 self.set_speaking(False)
                 self.ui.set_state("THINKING")
                 retry_count += 1
+                # Счётчик для панели: «он замолкает каждые пять минут» — это
+                # про обрывы, и увидеть их надо числом, а не по ощущению.
+                self._reconnects += 1
                 if retry_count > max_retries:
                     print(f"[ДЖАРВИС] ❌ Превышен лимит попыток ({max_retries})")
                     self.ui.write_log("SYS: Превышен лимит попыток подключения")

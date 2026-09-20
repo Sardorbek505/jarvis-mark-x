@@ -39,6 +39,10 @@ class _Stub:
         # каждым куском и снимает признак речи в конце.
         self._speech_gen = 0
         self._barge = Перебивание()
+        # Счётчики диагностики: сколько ответов прозвучало и сколько раз
+        # Fish уступил Edge.
+        self._spoken_count = 0
+        self._fish_fallbacks = 0
 
     def set_speaking(self, value: bool) -> None:
         self._is_speaking = value

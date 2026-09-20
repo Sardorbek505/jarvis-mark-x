@@ -92,6 +92,10 @@ class HeadlessUI:
     # окна падает на первом же «выключи компьютер» (см. tests/test_headless.py).
     supports_confirm = False
 
+    def bind_diagnostics(self, source) -> None:
+        """Окна нет — снимок печатает сам человек: python scripts/selfcheck.py."""
+        return None
+
     def bind_hush(self, on_hush) -> None:
         """Клавиш в консоли нет — обрывать остаётся голосом, по имени."""
         return None

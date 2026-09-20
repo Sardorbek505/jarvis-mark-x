@@ -1065,7 +1065,9 @@ class MainWindow(QMainWindow):
 
         # ── Горячие клавиши ─────────────────────────────────────────
         self._hush_callback = None
+        self._diag_source = None
         QShortcut(QKeySequence("Esc"), self).activated.connect(self._hush)
+        QShortcut(QKeySequence("Ctrl+D"), self).activated.connect(self._toggle_diagnostics)
         QShortcut(QKeySequence("Ctrl+M"), self).activated.connect(self._toggle_mute)
         QShortcut(QKeySequence("Ctrl+L"), self).activated.connect(self._clear_log)
 
@@ -1214,6 +1216,11 @@ class MainWindow(QMainWindow):
 
 
     # ── Push-to-talk в окне ───────────────────────────────────────────────────
+    def bind_diagnostics(self, source):
+        """Откуда брать снимок голосового круга. `source()` возвращает
+        разделы из core/diagnostics.py."""
+        self._diag_source = source
+
     def bind_hush(self, on_hush):
         """Escape — «замолчи», мгновенно и молча.
 
@@ -1838,6 +1845,92 @@ class MainWindow(QMainWindow):
             "ИНИЦИАЛИЗАЦИЯ": C.PRI,
         }.get(ru, C.TEXT_DIM)
         self._status_lbl.setStyleSheet(f"color: {color};")
+
+    def _toggle_diagnostics(self):
+        """Ctrl+D — «почему он меня не слышит».
+
+        Панель ОПРАШИВАЕТ состояние, а не подписывается на события:
+        наблюдатель, меняющий тайминг наблюдаемого, здесь бесполезен —
+        половина бед голосового круга это как раз задержки в доли секунды.
+        """
+        панель = getattr(self, "_diag_panel", None)
+        if панель is not None and панель.isVisible():
+            панель.close()
+            return
+        if self._diag_source is None:
+            self.write_log("SYS: диагностика недоступна — ассистент ещё не запущен")
+            return
+
+        from PyQt6.QtWidgets import QPlainTextEdit
+
+        панель = QDialog(self)
+        self._diag_panel = панель
+        панель.setWindowTitle("Диагностика голоса")
+        панель.setMinimumSize(520, 560)
+        панель.setStyleSheet(f"QDialog {{ background: {C.BG}; color: {C.TEXT}; }}")
+
+        сетка = QVBoxLayout(панель)
+        сетка.setContentsMargins(14, 12, 14, 12)
+        сетка.setSpacing(8)
+
+        подпись = QLabel("ОБНОВЛЯЕТСЯ САМА · CTRL+D ЧТОБЫ ЗАКРЫТЬ")
+        подпись.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        подпись.setStyleSheet(f"color: {C.TEXT_DIM}; letter-spacing: 1px;")
+        сетка.addWidget(подпись)
+
+        текст = QPlainTextEdit()
+        текст.setReadOnly(True)
+        текст.setFont(QFont("Courier New", 9))
+        текст.setStyleSheet(
+            f"QPlainTextEdit {{ background: #000d12; color: {C.TEXT}; "
+            f"border: 1px solid {C.BORDER}; border-radius: 4px; padding: 6px; }}")
+        сетка.addWidget(текст, stretch=1)
+
+        строка_копии = QHBoxLayout()
+        копировать = QPushButton("СКОПИРОВАТЬ")
+        копировать.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        копировать.setFixedHeight(28)
+        копировать.setCursor(Qt.CursorShape.PointingHandCursor)
+        копировать.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.TEXT_DIM};
+                border: 1px solid {C.BORDER}; border-radius: 3px;
+            }}
+            QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
+        """)
+        # Чтобы «у меня не работает» можно было прислать одним куском, а не
+        # пересказывать по памяти.
+        копировать.clicked.connect(
+            lambda: QApplication.clipboard().setText(текст.toPlainText()))
+        строка_копии.addWidget(копировать)
+        сетка.addLayout(строка_копии)
+
+        def _перерисовать():
+            if not панель.isVisible():
+                return
+            try:
+                разделы = self._diag_source()
+            except Exception as exc:
+                текст.setPlainText(f"Снимок не собрался: {exc}")
+                return
+            from core.diagnostics import текстом
+
+            # Позицию прокрутки сохраняем: панель обновляется каждые полсекунды,
+            # и без этого читать её было бы невозможно.
+            полоса = текст.verticalScrollBar()
+            было = полоса.value()
+            текст.setPlainText(текстом(разделы))
+            полоса.setValue(было)
+
+        таймер = QTimer(панель)
+        таймер.timeout.connect(_перерисовать)
+        таймер.start(500)
+
+        # Показать ДО первой отрисовки: `_перерисовать` пропускает скрытую
+        # панель (чтобы не считать снимок для закрытого окна), и при обратном
+        # порядке первые полсекунды она стояла бы пустой.
+        панель.show()
+        _перерисовать()
 
     def _hush(self):
         """Escape нажали. Молчание здесь — часть ответа: человек и так видит,
