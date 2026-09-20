@@ -92,6 +92,7 @@ from core import settings as conv_settings
 from core import session_log
 from core.barge_in import Перебивание
 from core.echo_reference import ОпорныйСигнал
+from core.wake_gate import Шлюз
 from core import undo as undo_stack
 from core.action_loader import discover_actions
 from core import audio_devices
@@ -912,6 +913,14 @@ class Jarvis:
         # отказывают МОЛЧА: распознавание, которое вас игнорирует, и синтез
         # без звука снаружи выглядят одинаково. Это не отладочная роскошь, а
         # прибор, превращающий «не работает» в конкретный ответ.
+        # Шлюз «пока не позвали — наружу ничего». Выключен по умолчанию:
+        # детектор обучен на английском «hey Jarvis», и запирать за ним весь
+        # вход, не убедившись, что русское «Джарвис» он слышит, значит
+        # рискнуть оглохнуть. Для перебивания той же надёжности хватает —
+        # там цена промаха «нажми Escape», а не «ассистент не отвечает».
+        self._gate = Шлюз(требовать_имя=bool(conv_settings.get("wake_required")))
+        self._wake_chimes = 0
+
         self._gate_totals: dict[str, int] = {}
         self._gate_passed_total = 0
         self._last_pass_at = 0.0
@@ -1060,6 +1069,7 @@ class Jarvis:
             if self.ui.muted:
                 self.ui.toggle_mute()
             self.ui.set_state("LISTENING")
+            self._gate.разбудить("Ctrl+Space")
             # Смысл «зажми и говори» в том, что на окно не смотрят. Значит,
             # и подтверждение должно быть слышно, а не видно.
             if self._is_speaking:
@@ -1086,6 +1096,9 @@ class Jarvis:
             ducking_controller.duck()
         except Exception:
             pass
+        # Клавишей будят так же, как именем: шлюз должен открыться, иначе
+        # человек нажмёт F8, заговорит — и не будет услышан.
+        self._gate.разбудить("F8")
         # F8 жмут из полноэкранной игры, не глядя на окно. Поднять окно и
         # промолчать — значит не сказать человеку ничего.
         self._say_attention()
@@ -1939,6 +1952,47 @@ class Jarvis:
         self._frame_was_loud = False
         return self._quiet_frames <= MIC_HANGOVER_FRAMES
 
+    def _hear_name_while_asleep(self, indata) -> bool:
+        """Слушает имя, пока шлюз закрыт. Зовётся из потока звука.
+
+        Без детектора шлюз держать нельзя: запертый вход без ключа — это
+        ассистент, который не отвечает никогда. Поэтому нет детектора —
+        считаем, что позвали.
+        """
+        детектор = self._wake_detector
+        if детектор is None:
+            return True
+        try:
+            низкий, высокий = self._barge.пороги      # он молчит — пороги мягкие
+            детектор.threshold_stage1 = низкий
+            детектор.threshold_stage2 = высокий
+            return bool(детектор.process_pcm(indata.tobytes()))
+        except Exception as exc:
+            logger.debug("Детектор имени споткнулся: %s", exc, exc_info=True)
+            # Так же: сломанный детектор не должен запирать вход навсегда.
+            return True
+
+    def _wake_from_audio_thread(self, кто: str) -> None:
+        """Проснуться. Отклик — только на переход изо сна, не на продление:
+        иначе Джарвис звенел бы на каждую фразу разговора."""
+        self._name_hits += 1
+        if not self._gate.разбудить(кто):
+            return
+
+        self._wake_chimes += 1
+        петля = self._loop
+        if петля is not None and петля.is_running():
+            петля.call_soon_threadsafe(self.ui.write_log, f"SYS: проснулся ({кто})")
+
+        # Звук, а не фраза. «Да, сэр?» перед каждой просьбой означал бы, что
+        # на «Джарвис, какая погода» человек сначала слушает отклик, а потом
+        # ответ — две задержки вместо одной.
+        try:
+            from core.wakeword import play_activation_chime
+            play_activation_chime()
+        except Exception as exc:
+            logger.debug("Сигнал пробуждения не прозвучал: %s", exc)
+
     def _listen_for_name(self, indata) -> None:
         """Слушает имя, пока Джарвис говорит. Зовётся из потока звука.
 
@@ -1949,6 +2003,10 @@ class Jarvis:
         детектор = self._wake_detector
         if детектор is None:
             return
+
+        # Отвечающий Джарвис — это продолжающийся разговор: засыпать посреди
+        # собственного ответа значит требовать имя на каждую вторую реплику.
+        self._gate.слышна_речь()
 
         можно, почему = self._barge.можно_обрывать()
         if not можно:
@@ -2068,6 +2126,19 @@ class Jarvis:
                 preroll.append(pcm_bytes)
                 return
 
+            # Спит — значит наружу не уходит ничего. Кадр всё равно копится в
+            # предбуфере и идёт в локальный детектор: когда имя прозвучит,
+            # начало фразы вместе с ним уедет в облако, и Gemini услышит
+            # «Джарвис, какая погода», а не обрубок.
+            if not self._gate.бодрствует:
+                preroll.append(pcm_bytes)
+                if self._hear_name_while_asleep(indata):
+                    self._wake_from_audio_thread("имя")
+                else:
+                    self._note_gate("сплю — скажите «Джарвис»")
+                    return
+
+            self._gate.слышна_речь()
             self._note_gate(None)
             if self._frame_was_loud:
                 self._latency.mark_voice_frame()

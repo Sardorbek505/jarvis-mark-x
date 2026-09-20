@@ -25,6 +25,7 @@ if str(_BASE) not in sys.path:
 from core import barge_in
 from core.barge_in import Перебивание
 from core.echo_reference import ОпорныйСигнал
+from core.wake_gate import Шлюз
 
 
 class _Часы:
@@ -186,6 +187,8 @@ def _джарвис(говорит=True):
     j._name_hits = 0
     j._barge_count = 0
     j._last_barge_refusal = ""
+    # Шлюз «пока не позвали»: отвечающий Джарвис продлевает бодрствование.
+    j._gate = Шлюз(требовать_имя=False)
     j._loop = None
     j.audio_in_queue = asyncio.Queue()
     j.сказанное = []
