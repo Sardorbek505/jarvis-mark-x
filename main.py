@@ -127,6 +127,30 @@ from core.command_context import PendingGeminiTurn
 _SILENT_ROUTES = ("LOCAL", "DISCARDED")
 
 
+def speech_followed_the_wake(
+    local_speech: bool,
+    local_stt_available: bool,
+    cloud_transcript_started: bool,
+) -> bool:
+    """Прозвучала ли речь после слова «Джарвис».
+
+    Расшифровка Gemini для этого не годится: она идёт по всему, что слышит
+    микрофон. При играющем телевизоре куски приходят постоянно, и признак
+    «расшифровка началась» срабатывал всегда — монолог из ролика принимался за
+    обращение (живой прогон 21.09.2026).
+
+    Локальный распознаватель слышит только звук ПОСЛЕ слова: конвейер
+    сбрасывает его при пробуждении. Его молчание и значит «речи не было».
+    Если его нет вовсе, судить не по чему — откатываемся на прежний признак,
+    иначе сбой Vosk сделал бы Джарвиса глухим ко всем обращениям сразу.
+    """
+    if local_speech:
+        return True
+    if not local_stt_available:
+        return cloud_transcript_started
+    return False
+
+
 
 # ─── Пути и константы ─────────────────────────────────────────────────────────
 from core.paths import get_base_dir, get_config_path, get_prompt_path
@@ -1359,6 +1383,12 @@ class Jarvis:
         # Сроки годности ходов Gemini, которые уже отработаны локально и чью
         # расшифровку исполнять второй раз нельзя. См. _mark_cloud_turn_settled.
         self._settled_cloud_turns: collections.deque = collections.deque()
+        # Услышал ли ЛОКАЛЬНЫЙ распознаватель речь после слова «Джарвис».
+        # Расшифровка Gemini для этого не годится: она идёт по всему, что
+        # слышит микрофон, включая телевизор (см. _on_listen_silence_timeout).
+        self._local_speech_since_wake: bool = False
+        # Какой реплике принадлежат накопленные куски расшифровки Gemini.
+        self._in_buf_utterance_id: str = ""
 
         # Автоматический запуск мобильного Telegram-бота (@Aimyjarvisbot) в фоне
         self._telegram_proc = self._start_telegram_bot()
@@ -1404,6 +1434,28 @@ class Jarvis:
     def _forget_settled_cloud_turns(self) -> None:
         """Сброс при переподключении: ходы той сессии уже никогда не закроются."""
         self._settled_cloud_turns.clear()
+
+    def _drop_foreign_transcript_chunks(self, in_buf: list, pt) -> None:
+        """Выбрасывает куски расшифровки, оставшиеся от другой реплики.
+
+        `in_buf` чистился только в turn_complete. Но ход закрывается не всегда:
+        шлюз может закрыться по тишине, и куски остаются лежать. Следующее
+        пробуждение получало их в наследство и озвучивало ответ на чужую речь
+        минутной давности (живой прогон 21.09.2026: в 10:49 микрофон поймал
+        монолог из ролика, шлюз закрылся, а в 10:51 — через 70 секунд — Джарвис
+        ответил на «Коммуникация — это называется доминирующее присутствие»,
+        оборванное ровно там, где кончились старые куски).
+        """
+        utterance_id = pt.utterance_id if pt is not None else ""
+        if utterance_id == self._in_buf_utterance_id:
+            return
+        if in_buf:
+            logger.info(
+                "Dialog: выброшено %d кусков расшифровки от брошенной реплики",
+                len(in_buf),
+            )
+            in_buf.clear()
+        self._in_buf_utterance_id = utterance_id
 
     def _begin_new_utterance(self) -> str:
         """Создаёт новый utterance_id и инициализирует буфер карантина ответа Gemini."""
@@ -1477,6 +1529,7 @@ class Jarvis:
     def _on_wake_spotted(self):
         """Реакция на фиксацию ключевого слова 'Джарвис'."""
         self._begin_new_utterance()
+        self._local_speech_since_wake = False
         self._pending_gemini_turn.addressed = True
         self._pending_gemini_turn.addressed_at = time.monotonic()
         self._wake_active_until = time.monotonic() + 8.0
@@ -2946,8 +2999,24 @@ class Jarvis:
         self._hotkey_active_until = 0.0
         # Слово было, а речи за ним так и не последовало — обращение
         # не состоялось: фраза, пришедшая позже, к нему не относится.
+        #
+        # Судить об этом по расшифровке Gemini нельзя: она идёт по всему, что
+        # слышит микрофон. При играющем телевизоре куски приходят постоянно,
+        # `first_transcript_at` выставлялся, признак не срабатывал — и монолог
+        # из ролика уезжал в модель как обращение к Джарвису (живой прогон
+        # 21.09.2026: ложные срабатывания шли цепочкой каждые 8 с, микрофон не
+        # закрывался, Джарвис отвечал вслух на речь из видео).
+        #
+        # Локальный распознаватель слышит только звук ПОСЛЕ слова — конвейер
+        # сбрасывает его при пробуждении. Его молчание и значит «речи не было».
         pt = getattr(self, "_pending_gemini_turn", None)
-        if pt is not None and pt.addressed and pt.first_transcript_at is None:
+        pipeline = getattr(self, "audio_pipeline", None)
+        heard = speech_followed_the_wake(
+            local_speech=getattr(self, "_local_speech_since_wake", False),
+            local_stt_available=pipeline is not None and getattr(pipeline, "local_stt", None) is not None,
+            cloud_transcript_started=pt is not None and pt.first_transcript_at is not None,
+        )
+        if pt is not None and pt.addressed and not heard:
             pt.addressed = False
         logger.info("Dialog: тишина затянулась — шлюз закрыт, жду обращения по имени")
 
@@ -3205,6 +3274,11 @@ class Jarvis:
         Пока Gemini ещё 3–5 с молчит, команда уже может исполниться: тот же
         арбитраж, но только локальные роутеры — модель ход не получает.
         """
+        # Локальный распознаватель слышит только звук ПОСЛЕ слова: при
+        # пробуждении конвейер его сбрасывает. Значит, текст отсюда —
+        # доказательство, что за словом действительно последовала речь.
+        self._local_speech_since_wake = True
+
         loop = getattr(self, "_loop", None)
         if not loop or not loop.is_running():
             return
@@ -3542,6 +3616,7 @@ class Jarvis:
 
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = sc.input_transcription.text
+                            self._drop_foreign_transcript_chunks(in_buf, pt)
                             in_buf.append(txt)
                             self._latency.mark_transcript()
                             if pt is not None and pt.first_transcript_at is None:
@@ -3569,6 +3644,7 @@ class Jarvis:
                                 self._begin_new_utterance()
                                 continue
 
+                            self._drop_foreign_transcript_chunks(in_buf, pt)
                             raw_in = "".join(in_buf)
                             full_in = _clean_dialog_text(raw_in)
                             in_buf.clear()
