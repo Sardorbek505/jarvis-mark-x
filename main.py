@@ -38,6 +38,7 @@ if sys.platform == "win32":
         sys.stderr = io.StringIO()
 
 import asyncio
+import collections
 import json
 import traceback
 import random
@@ -1355,10 +1356,54 @@ class Jarvis:
         self._current_generation_id: int = 0
         self._active_speech_generation_id: int = 0
         self._pending_gemini_turn: Optional[PendingGeminiTurn] = None
+        # Сроки годности ходов Gemini, которые уже отработаны локально и чью
+        # расшифровку исполнять второй раз нельзя. См. _mark_cloud_turn_settled.
+        self._settled_cloud_turns: collections.deque = collections.deque()
 
         # Автоматический запуск мобильного Telegram-бота (@Aimyjarvisbot) в фоне
         self._telegram_proc = self._start_telegram_bot()
         atexit.register(self.cleanup)
+
+    # ── Ходы Gemini, уже отработанные локально ────────────────────────────────
+    #
+    # Локальная расшифровка (Vosk) готова через ~0.1 с после конца речи, а
+    # облачная приходит на 3–5 с позже. Команда исполняется по первой, и от
+    # второго исполнения защищал флаг `arbitrated` на объекте хода.
+    #
+    # Флаг живёт на объекте, а объект пересоздаётся в `_begin_new_utterance()`
+    # при КАЖДОМ пробуждении. Ложное срабатывание слова в эти 3–5 с подменяло
+    # ход на чистый, и расшифровка той же реплики исполнялась второй раз
+    # (живой прогон 17.09.2026: «поставь фильм Железный человек» запустил VK
+    # дважды, второй запуск сбил полноэкранный режим и оставил в трекере
+    # сессию на несуществующее окно — пауза потом не работала).
+    #
+    # Поэтому счёт ведётся не на объекте хода, а рядом: сколько ходов Gemini
+    # уже отработано. Каждый `turn_complete` гасит ровно одну запись, так что
+    # следующая настоящая команда не пострадает. Срок годности — страховка от
+    # утечки, если ход так и не закрылся (обрыв связи, переподключение).
+    CLOUD_TURN_SETTLED_TTL_SEC = 12.0
+
+    def _mark_cloud_turn_settled(self) -> None:
+        """Реплика исполнена локально, пока ход Gemini для неё ещё открыт."""
+        self._settled_cloud_turns.append(time.monotonic() + self.CLOUD_TURN_SETTLED_TTL_SEC)
+
+    def _consume_settled_cloud_turn(self) -> bool:
+        """Закрывшийся ход Gemini — эхо уже исполненной реплики?
+
+        Гасит одну запись и отвечает True. Просроченные записи выбрасываются:
+        ход, который так и не закрылся, не должен глушить будущую команду.
+        """
+        now = time.monotonic()
+        while self._settled_cloud_turns and self._settled_cloud_turns[0] <= now:
+            self._settled_cloud_turns.popleft()
+        if not self._settled_cloud_turns:
+            return False
+        self._settled_cloud_turns.popleft()
+        return True
+
+    def _forget_settled_cloud_turns(self) -> None:
+        """Сброс при переподключении: ходы той сессии уже никогда не закроются."""
+        self._settled_cloud_turns.clear()
 
     def _begin_new_utterance(self) -> str:
         """Создаёт новый utterance_id и инициализирует буфер карантина ответа Gemini."""
@@ -3183,6 +3228,23 @@ class Jarvis:
         if pt and pt.arbitrated:
             return pt.routed_to == "LOCAL"
 
+        # Расшифровка Gemini для реплики, которую локальный роутер уже исполнил.
+        # Флаг `arbitrated` её не ловит: ложное пробуждение в эти 3–5 с успевает
+        # подменить объект хода на чистый (см. _mark_cloud_turn_settled).
+        # getattr — метод заимствуют заглушки из тестов, у них полного Jarvis нет
+        # (как и у всех остальных обращений к состоянию в этом методе).
+        consume_settled = getattr(self, "_consume_settled_cloud_turn", None)
+        if not local_only and consume_settled is not None and consume_settled():
+            logger.info("Dialog: «%s» уже исполнено локально — ход Gemini погашен", full_in)
+            if pt:
+                pt.arbitrated = True
+                pt.routed_to = "DISCARDED"
+                pt.clear()
+            out_buf.clear()
+            in_buf.clear()
+            self._clear_audio_in_queue()
+            return True
+
         is_hotkey = time.monotonic() < getattr(self, "_hotkey_active_until", 0.0)
         is_wake = time.monotonic() < getattr(self, "_wake_active_until", 0.0)
         has_active_cmd = (
@@ -3238,6 +3300,11 @@ class Jarvis:
             if local_only:
                 self.ui.write_log(f"Вы: {full_in}")
                 self._latency.mark_transcript()
+                # Ход Gemini для этой же реплики ещё открыт — его расшифровку
+                # исполнять повторно нельзя.
+                mark_settled = getattr(self, "_mark_cloud_turn_settled", None)
+                if mark_settled is not None:
+                    mark_settled()
             if pt:
                 pt.arbitrated = True
                 pt.routed_to = "LOCAL"
@@ -3301,6 +3368,9 @@ class Jarvis:
                 if local_only:
                     self.ui.write_log(f"Вы: {full_in}")
                     self._latency.mark_transcript()
+                    mark_settled = getattr(self, "_mark_cloud_turn_settled", None)
+                    if mark_settled is not None:
+                        mark_settled()
                 if pt:
                     pt.arbitrated = True
                     pt.routed_to = "LOCAL"
@@ -3871,6 +3941,9 @@ class Jarvis:
                 "Продолжаю пробовать реже — проверьте интернет и ключ API."
             )
         self.ui.set_state("RECONNECTING")
+        # Ходы оборванной сессии уже не закроются — их записи иначе погасили бы
+        # первые команды после восстановления связи.
+        self._forget_settled_cloud_turns()
         sm = getattr(self, "state_machine", None)
         if sm:
             from core.conversation_state import ConversationState

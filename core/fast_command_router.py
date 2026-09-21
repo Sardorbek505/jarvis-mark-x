@@ -44,12 +44,19 @@ _WAKE_PREFIX_RE = re.compile(
     re.IGNORECASE | re.UNICODE,
 )
 _PUNCT_RE = re.compile(r"[\.,!\?]+$", re.UNICODE)
+# Расшифровка Gemini берёт названия в кавычки: «поставь фильм "Железный
+# человек"». В голосовой команде они ничего не значат, а в название попадали
+# целиком — в MediaOrchestrator уходило «"железный человек "», и поиск шёл по
+# строке с кавычкой внутри (живой прогон 17.09.2026). Апостроф не трогаем: он
+# часть английских названий («Don't Stop Me Now»).
+_QUOTES_RE = re.compile(r"[\"«»„“”]", re.UNICODE)
 
 
 def normalize_command_text(text: str) -> str:
-    """Очищает строку от имени ассистента и концевой пунктуации."""
+    """Очищает строку от имени ассистента, кавычек и концевой пунктуации."""
     t = (text or "").strip().lower()
     t = _WAKE_PREFIX_RE.sub("", t).strip()
+    t = _QUOTES_RE.sub("", t)
     t = _PUNCT_RE.sub("", t).strip()
     return t
 
