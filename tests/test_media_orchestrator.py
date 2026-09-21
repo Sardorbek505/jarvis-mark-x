@@ -229,21 +229,35 @@ def test_browser_bridge_token_security():
     assert server.verify_token("") is False
 
 
-def test_gemini_tool_adapters_compatibility():
-    play_res = movie_player({"action": "play", "title": "Матрица"})
-    assert isinstance(play_res, str)
+def test_gemini_tool_adapters_compatibility(monkeypatch):
+    """Адаптеры Gemini всегда отдают строку — в том числе когда ничего не нашли.
 
-    pause_res = movie_player({"action": "pause"})
-    assert isinstance(pause_res, str)
+    Раньше тест звал play без подмены и по-настоящему открывал браузер и
+    Spotify на машине разработчика. А «не нашёл» прилетало исключением
+    MediaNotFound мимо объявленного `-> str`: в main._execute_tool его ловил
+    общий except и модель получала «Ошибка инструмента 'music_player': …»
+    вместо готовой фразы.
+    """
+    from core.media import orchestrator as orch_mod
+    from core.media.models import MediaNotFound
 
-    seek_res = movie_player({"action": "seek_forward", "seconds": "30"})
-    assert isinstance(seek_res, str)
+    orchestrator = orch_mod.get_media_orchestrator()
+    monkeypatch.setattr(
+        orchestrator, "play_media",
+        lambda title, params=None: (_ for _ in ()).throw(MediaNotFound(title)),
+    )
 
-    music_res = music_player({"action": "play", "query": "Queen"})
-    assert isinstance(music_res, str)
+    for res in (
+        movie_player({"action": "play", "title": "Матрица"}),
+        movie_player({"action": "pause"}),
+        movie_player({"action": "seek_forward", "seconds": "30"}),
+        music_player({"action": "play", "query": "Queen"}),
+        music_player({"action": "stop"}),
+    ):
+        assert isinstance(res, str) and res, res
 
-    stop_res = music_player({"action": "stop"})
-    assert isinstance(stop_res, str)
+    assert "Матрица" in movie_player({"action": "play", "title": "Матрица"})
+    assert "Queen" in music_player({"action": "play", "query": "Queen"})
 
 
 def test_search_penalty_scoring():

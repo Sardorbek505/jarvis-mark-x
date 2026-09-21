@@ -77,13 +77,19 @@ class TestPcServerAndSystemFixes(unittest.TestCase):
 
     @patch("os.startfile")
     def test_open_app_direct_path_quoted(self, mock_startfile):
-        test_path = r"C:\Users\User\Desktop\Counter-Strike 2.url"
-        quoted_path = f'"{test_path}"'
-        res = open_app({"app_name": quoted_path})
-        self.assertTrue("Открыл" in res or "Запущено" in res)
-        mock_startfile.assert_called_once()
-        called_arg = mock_startfile.call_args[0][0]
-        self.assertEqual(called_arg, test_path)
+        # Путь обязан существовать: open_app запускает файл напрямую только
+        # после os.path.exists. Хардкод чужого рабочего стола проходил лишь на
+        # машине, где этот ярлык лежал, и падал у всех остальных.
+        with tempfile.TemporaryDirectory() as tmp:
+            test_path = os.path.join(tmp, "Counter-Strike 2.url")
+            with open(test_path, "w", encoding="utf-8") as fh:
+                fh.write("[InternetShortcut]\nURL=steam://rungameid/730\n")
+
+            res = open_app({"app_name": f'"{test_path}"'})
+
+            self.assertTrue("Открыл" in res or "Запущено" in res, res)
+            mock_startfile.assert_called_once()
+            self.assertEqual(mock_startfile.call_args[0][0], test_path)
 
     @patch("os.startfile")
     def test_open_app_game_aliases(self, mock_startfile):

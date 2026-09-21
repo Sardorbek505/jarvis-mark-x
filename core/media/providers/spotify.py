@@ -37,7 +37,7 @@ class SpotifyProvider(BaseProvider):
             from actions.music_player import (
                 _https_to_spotify_uri,
                 _open_spotify_uri,
-                _spotify_search_track_uri,
+                _spotify_search_track,
                 _ui_automation_search,
                 _focus_spotify_window,
                 _send_media_key,
@@ -59,11 +59,17 @@ class SpotifyProvider(BaseProvider):
 
             # 2. Поиск трека по названию
             if query:
-                track_uri = _spotify_search_track_uri(query)
+                found = _spotify_search_track(query)
+                track_uri, track_name = found if found else (None, "")
                 if track_uri and _open_spotify_uri(track_uri):
-                    time.sleep(1.0)
-                    _focus_spotify_window()
-                    _send_media_key("playpause")
+                    # Media-клавиша play продолжила бы прошлый плейлист, а не
+                    # открытый трек. Кнопка «Слушать» страницы включает сам
+                    # трек, дальше Spotify подбирает похожие (автовоспроизведение).
+                    from actions.spotify_uia import play_open_track_page
+                    if not play_open_track_page(track_name):
+                        logger.warning("Spotify: кнопка трека не нажалась — media-клавиша")
+                        _focus_spotify_window()
+                        _send_media_key("playpause")
                     return ProviderResult(
                         success=True,
                         url=track_uri,

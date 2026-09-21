@@ -117,7 +117,10 @@ def test_music_routing_queen_default_spotify():
     assert req.media_type == MediaType.MUSIC
     assert req.provider == "spotify"
 
-    with patch.object(router.providers["spotify"], "search_and_open") as mock_spot:
+    # is_available у Spotify спрашивает систему, установлено ли приложение.
+    # Без подмены тест маршрутизации падал на машинах без Spotify: роутер
+    # отвечал «Провайдер SPOTIFY недоступен» и до search_and_open не доходил.
+    with patch.object(router.providers["spotify"], "search_and_open") as mock_spot,          patch.object(router.providers["spotify"], "is_available", return_value=True):
         mock_spot.return_value = ProviderResult(
             success=True, url="spotify:track:1", message="Spotify", controller=None, provider="spotify"
         )

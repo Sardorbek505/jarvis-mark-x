@@ -20,6 +20,38 @@ logger = logging.getLogger("jarvis-audio-capture")
 
 TARGET_SAMPLE_RATE = 16000
 BLOCK_SIZE = 1024  # ~64 мс на чанк при 16 кГц
+# Непрерывное чтение опорного сигнала пересинхронизируется с часами, только
+# если разошлось больше чем на столько. Колонки приходят пачками по ~70 мс,
+# поэтому меньший порог сам создаёт скачки; остаток задержки добирает AEC3.
+REF_RESYNC_SEC = 0.3
+
+
+class _StreamResampler:
+    """Потоковый ресэмплер loopback → 16 кГц mono int16 с состоянием между блоками.
+
+    Живой замер 17.09.2026: loopback Realtek отдаёт 192 кГц стерео, а
+    `resample_to_16k` на каждом блоке (~170 выходных семплов) растягивал сетку
+    linspace и не резал частоты выше 8 кГц — копия музыки совпадала с
+    исходником лишь на 0.29, и вычитать было нечего.
+    """
+
+    def __init__(self, orig_sr: int):
+        self.orig_sr = orig_sr
+        self._stream = None
+        if orig_sr != TARGET_SAMPLE_RATE:
+            try:
+                import soxr
+                self._stream = soxr.ResampleStream(orig_sr, TARGET_SAMPLE_RATE, 1, dtype="int16", quality="HQ")
+            except Exception as e:  # без soxr — прежний грубый путь
+                logger.warning("soxr недоступен (%s): опорный сигнал будет искажён", e)
+
+    def process(self, arr: np.ndarray) -> np.ndarray:
+        if arr.ndim > 1:
+            arr = arr.mean(axis=1)
+        if self._stream is None:
+            return resample_to_16k(arr, self.orig_sr)
+        mono = np.clip(arr, -32768, 32767).astype(np.int16)
+        return self._stream.resample_chunk(mono)
 
 
 def resample_to_16k(audio_arr: np.ndarray, orig_sr: int) -> np.ndarray:
@@ -69,6 +101,9 @@ class AudioCaptureEngine:
         # Момент, которому соответствует ПОСЛЕДНИЙ семпл в буфере. Без него
         # выровнять потоки нельзя: они идут на разных часах и разными блоками.
         self._ref_end_time: Optional[float] = None
+        # Сколько семплов записано за всё время и где читаем дальше (абсолютно)
+        self._ref_total_samples = 0
+        self._ref_cursor: Optional[int] = None
 
     # ── Опорный поток: запись и выборка по времени ────────────────────────────
     def _push_ref(self, pcm_bytes: bytes, ts: float):
@@ -77,6 +112,7 @@ class AudioCaptureEngine:
             return
         with self._ref_lock:
             self._ref_buffer.extend(pcm_bytes)
+            self._ref_total_samples += len(pcm_bytes) // 2
             if len(self._ref_buffer) > self._max_ref_bytes:
                 del self._ref_buffer[:-self._max_ref_bytes]
             self._ref_end_time = ts
@@ -89,7 +125,36 @@ class AudioCaptureEngine:
         нечего вычитать и эхоподавления не существует.
         Часы должны совпадать с теми, которыми помечается буфер: `time.perf_counter()`.
         """
-        return self._ref_window(ts, n_bytes)
+        return self._ref_window_continuous(ts, n_bytes)
+
+    def _ref_window_continuous(self, ts: float, n_bytes: int) -> bytes:
+        """Следующий НЕПРЕРЫВНЫЙ кусок опорного сигнала.
+
+        Выборка по часам на каждом кадре дрожит на десятки миллисекунд (колбэки
+        приходят неравномерно): опорный сигнал рвётся и скачет, и адаптивный
+        фильтр не сходится никогда. Поэтому читаем подряд, а метку времени
+        используем только как ориентир: разошлись больше REF_RESYNC_SEC —
+        перескакиваем на неё.
+        """
+        n_samples = n_bytes // 2
+        with self._ref_lock:
+            if self._ref_end_time is None or not self._ref_buffer:
+                return b"\x00" * n_bytes
+            lag = int((self._ref_end_time - ts) * TARGET_SAMPLE_RATE)
+            target = self._ref_total_samples - lag - n_samples
+            if self._ref_cursor is None or abs(self._ref_cursor - target) > REF_RESYNC_SEC * TARGET_SAMPLE_RATE:
+                self._ref_cursor = target
+            start_abs = self._ref_cursor
+            self._ref_cursor += n_samples
+            buffer_start_abs = self._ref_total_samples - len(self._ref_buffer) // 2
+            start = (start_abs - buffer_start_abs) * 2
+            end = start + n_bytes
+            buffer_len = len(self._ref_buffer)
+            if end <= 0 or start >= buffer_len:
+                return b"\x00" * n_bytes
+            head = b"\x00" * max(0, -start)
+            tail = b"\x00" * max(0, end - buffer_len)
+            return head + bytes(self._ref_buffer[max(0, start):min(end, buffer_len)]) + tail
 
     def _ref_window(self, ts: float, n_bytes: int) -> bytes:
         """Опорный сигнал за то же окно времени, что и кадр микрофона.
@@ -185,13 +250,14 @@ class AudioCaptureEngine:
             try:
                 lb_sr = int(loopback_dev["defaultSampleRate"])
                 lb_ch = int(loopback_dev["maxInputChannels"])
+                resampler = _StreamResampler(lb_sr)
 
                 def _lb_callback(in_data, frame_count, time_info, status):
                     if in_data and self._running:
                         arr = np.frombuffer(in_data, dtype=np.int16)
                         if lb_ch > 1:
                             arr = arr.reshape(-1, lb_ch)
-                        resampled = resample_to_16k(arr, lb_sr)
+                        resampled = resampler.process(arr.astype(np.float32))
                         self._push_ref(resampled.tobytes(), time.perf_counter())
                     return (None, pyaudio.paContinue)
 
@@ -225,7 +291,7 @@ class AudioCaptureEngine:
 
             ts = time.perf_counter()
             mic_bytes = in_data
-            ref_bytes = self._ref_window(ts, len(mic_bytes))
+            ref_bytes = self._ref_window_continuous(ts, len(mic_bytes))
 
             if self.on_frame:
                 self.on_frame(mic_bytes, ref_bytes, ts)

@@ -22,14 +22,17 @@ from actions.spotify_desktop import (  # noqa: F401 — реэкспорт
     _open_spotify_uri,
     _send_media_key,
     _spotify_search_track_uri,
+    _spotify_search_track,
     _ui_automation_search,
 )
 from core.media.models import MediaType
 from core.media.orchestrator import get_media_orchestrator
+from core.media.tool_contract import media_tool
 
 logger = logging.getLogger(__name__)
 
 
+@media_tool
 def music_player(parameters: dict, player=None) -> str:
     """
     Главная точка входа для Gemini Live tool 'music_player'.

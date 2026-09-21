@@ -592,3 +592,16 @@ VAD 400 мс. Клиент уже ЗНАЕТ, когда речь кончила
 - [ ] шаг 3 — WebRTC APM: ОТЛОЖЕН (нужен MSVC Build Tools, ~4 ГБ; включать при жалобах на шум)
 - [x] шаг 4 — хвост тишины: НЕ НУЖЕН (выигрыша нет, см. lessons)
 - [x] шаг 5 — голосовой отпечаток владельца, опция JARVIS_OWNER_ONLY=1; стенд: чужой голос 0.52–0.56 отброшен вместе с tool_call Gemini
+
+## Зелёный прогон и разбор WIP (21.09.2026)
+- [x] Проверить WIP на чистом worktree HEAD — три падавших теста падали и БЕЗ него
+- [x] `test_open_app_direct_path_quoted` — путь через `tempfile`, а не с чужой машины
+- [x] `test_music_routing_queen_default_spotify` — мокнуть `is_available`, не только `search_and_open`
+- [x] `test_gemini_tool_adapters_compatibility` — убрать реальный запуск браузера/Spotify из прогона
+- [x] `media_tool`: `MediaException` → готовая фраза вместо «Ошибка инструмента …»
+- [x] Тесты на новый опорный тракт AEC (`tests/test_audio_reference_stream.py`) — их не было совсем
+- [x] `soxr` в `requirements.txt` — был рантайм-импортом без объявления
+- [x] ruff E702 в `scripts/aec_record.py`
+- [x] Полный прогон: 808 тестов, 0 падений; ruff чист
+- [ ] `play_open_track_page` (Spotify UIA) НЕ проверен: Spotify на машине не установлен
+- [ ] `test_provider_router_fallback` всё ещё реально открывает VK в браузере при прогоне

@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from actions.keyboard import send_key as _send_key
 from core.media.orchestrator import get_media_orchestrator
+from core.media.tool_contract import media_tool
 
 logger = logging.getLogger(__name__)
 _OS = platform.system()
@@ -196,6 +197,7 @@ def _log(player, text: str) -> None:
 
 
 # ─── Публичная точка входа ────────────────────────────────────────────────────
+@media_tool
 def movie_player(parameters: dict, player=None) -> str:
     """
     Главная точка входа для Gemini Live tool 'movie_player'.

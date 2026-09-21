@@ -79,3 +79,4 @@ logs/voicecheck/
 memory/voice_cache/
 data/
 config/owner_voice.npy
+data/aec/

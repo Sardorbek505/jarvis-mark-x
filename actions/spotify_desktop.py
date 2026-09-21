@@ -331,6 +331,12 @@ def _spotify_search_track_uri(query: str) -> Optional[str]:
     """
     Ищет трек через Spotify Web API и возвращает его URI (spotify:track:ID).
     """
+    found = _spotify_search_track(query)
+    return found[0] if found else None
+
+
+def _spotify_search_track(query: str) -> Optional[tuple[str, str]]:
+    """(URI, название) трека: по названию узнаём открывшуюся страницу трека."""
     token = _get_spotify_token()
     if not token:
         return None
@@ -358,8 +364,8 @@ def _spotify_search_track_uri(query: str) -> Optional[str]:
                 for item in items:
                     track_name = item.get("name", "").lower()
                     if variant.lower() in track_name or track_name in variant.lower():
-                        return item.get("uri")
-                return items[0].get("uri")
+                        return item.get("uri"), item.get("name", "")
+                return items[0].get("uri"), items[0].get("name", "")
         except Exception as exc:
             _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
             continue
