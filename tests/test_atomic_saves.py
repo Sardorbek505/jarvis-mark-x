@@ -113,3 +113,37 @@ def test_модули_видят_общее_хранилище():
     assert news_manager.atomic_write_json is canonical
     assert smart_reminders.atomic_write_json is canonical
     assert calendar_manager.atomic_write_json is canonical
+
+
+def test_broken_json_is_kept_aside_before_defaults_overwrite_it(tmp_path):
+    """Битый файл не должен молча затираться умолчаниями при следующем сохранении."""
+    from core.storage import load_json_or_quarantine
+    import pytest as _pytest
+
+    broken = tmp_path / "calendar.json"
+    broken.write_bytes('{"events": [{"title": "Сессия"'.encode("cp1251"))
+    with _pytest.raises(Exception):
+        with open(broken, "r", encoding="utf-8") as f:
+            load_json_or_quarantine(f)
+    assert not broken.exists()
+    assert list(tmp_path.glob("calendar.json.broken-*")), "оригинал не сохранён"
+
+
+def test_parallel_writes_to_same_file_do_not_collide(tmp_path):
+    import threading as _t
+    from core.storage import atomic_write_json
+
+    target = tmp_path / "profile.json"
+    errors = []
+
+    def writer(i):
+        try:
+            for _ in range(20):
+                atomic_write_json(target, {"n": i})
+        except Exception as e:           # WinError 32 раньше
+            errors.append(e)
+    threads = [_t.Thread(target=writer, args=(i,)) for i in range(4)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert not errors
+    assert not list(tmp_path.glob("*.tmp"))

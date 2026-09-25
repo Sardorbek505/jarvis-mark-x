@@ -112,9 +112,11 @@ from core import (
 
 
 # ─── Пути и константы ─────────────────────────────────────────────────────────
-from core.paths import get_base_dir, get_config_path, get_prompt_path
+from core.paths import get_base_dir, get_config_path, get_data_root, get_prompt_path
 
 BASE_DIR      = get_base_dir()
+# Изменяемые данные (профиль, прогнозы, команда): в .exe — %APPDATA%/JARVIS.
+DATA_DIR      = get_data_root()
 API_CONFIG    = get_config_path("api_keys.json")
 PROMPT_PATH   = get_prompt_path()
 
@@ -1180,10 +1182,10 @@ class Jarvis:
         self._resume_handle: str | None = None  # возобновление сессии после разрыва
 
         # Новый мозг ДЖАРВИС
-        self.user_profile = UserProfile(BASE_DIR)
+        self.user_profile = UserProfile(DATA_DIR)
         self.initiative_engine = InitiativeEngine()
-        self.proactive_engine = ProactiveEngine(BASE_DIR)
-        self.team_engine = TeamCollaborationEngine(BASE_DIR)
+        self.proactive_engine = ProactiveEngine(DATA_DIR)
+        self.team_engine = TeamCollaborationEngine(DATA_DIR)
         self.last_user_text = ""
         self._user_turn = 0      # номер последней реплики пользователя (для подтверждений)
 
@@ -2750,6 +2752,10 @@ def main():
             asyncio.run(jarvis.run())
         except KeyboardInterrupt:
             print("\n🔴 Завершение работы...")
+        except SystemExit:
+            # sys.exit в рабочем потоке гасил только поток: окно оставалось
+            # висеть и молчать. Теперь хотя бы видно, почему.
+            ui.write_log("SYS: ❌ Ключ Gemini не найден. Перезапустите и введите ключ.")
         finally:
             jarvis.cleanup()
             summary = jarvis._latency.summary()

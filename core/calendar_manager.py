@@ -7,13 +7,12 @@ Calendar Manager — управление локальным календарё�
 - Recurring события
 """
 
-import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import re
 
-from core.storage import atomic_write_json
+from core.storage import atomic_write_json, load_json_or_quarantine
 
 import logging
 
@@ -22,10 +21,8 @@ _logger = logging.getLogger(__name__)
 
 # ─── Пути ─────────────────────────────────────────────────────────────────────
 def _get_base_dir() -> Path:
-    import sys
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+    from core.paths import get_data_root   # см. там: .exe пишет в %APPDATA%
+    return get_data_root()
 
 
 BASE_DIR = _get_base_dir()
@@ -154,7 +151,7 @@ def _load_calendar() -> Dict[str, Any]:
     try:
         if CALENDAR_FILE.exists():
             with open(CALENDAR_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                return load_json_or_quarantine(f)
     except Exception as exc:
         _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
     

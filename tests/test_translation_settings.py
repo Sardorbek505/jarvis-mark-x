@@ -34,6 +34,7 @@ def prefs_file(tmp_path, monkeypatch):
     path = tmp_path / "config" / "translation_preferences.json"
     path.write_text(json.dumps(DEFAULTS, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(tm, "_BASE", tmp_path)
+    monkeypatch.setattr(tm, "_DATA", tmp_path)
     return path
 
 

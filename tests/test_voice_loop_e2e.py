@@ -142,6 +142,7 @@ def стенд(tmp_path, monkeypatch):
     # Профиль, паттерны и данные команды пишутся от BASE_DIR — уводим в tmp,
     # чтобы тест не трогал настоящие файлы пользователя.
     monkeypatch.setattr(jarvis_main, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(jarvis_main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(jarvis_main, "_IGNORE_SPEAKERS", False)
     monkeypatch.setattr(jarvis_main, "_pick_input_device", lambda: None)
     # Тракт озвучки закрепляем явно: по умолчанию говорит Fish, и тогда звук

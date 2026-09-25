@@ -1,25 +1,35 @@
 """
 Модуль для перевода в реальном времени
 """
-import json
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import google.genai as genai
 
-from core.storage import atomic_write_json
+from core.storage import atomic_write_json, load_json_or_quarantine
 
 _logger = logging.getLogger(__name__)
 
 _BASE = Path(__file__).parent.parent
+from core.paths import get_data_root, load_api_keys  # noqa: E402
+
+_DATA = get_data_root()
+
+
+def _gemini_key() -> str:
+    """Ключ из тех же мест, что и у остального Джарвиса (%APPDATA%, env).
+    Раньше читался только config/api_keys.json в папке проекта, а мастер
+    сохраняет ключ в %APPDATA% — перевод работал с пустым ключом."""
+    import os
+    return (os.getenv("GEMINI_API_KEY") or load_api_keys().get("gemini_api_key", "")).strip()
 
 
 class TranslationPreferences:
     """Управляет предпочтениями для перевода."""
     
     def __init__(self):
-        self.preferences_file = _BASE / "config" / "translation_preferences.json"
+        self.preferences_file = _DATA / "config" / "translation_preferences.json"
         self.preferences = self._load_preferences()
     
     def _load_preferences(self) -> Dict[str, Any]:
@@ -29,7 +39,7 @@ class TranslationPreferences:
         
         try:
             with open(self.preferences_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                return load_json_or_quarantine(f)
         except Exception:
             return self._get_default_preferences()
     
@@ -124,7 +134,7 @@ class TranslationHistory:
     
     def __init__(self, preferences: TranslationPreferences):
         self.preferences = preferences
-        self.history_file = _BASE / "config" / "translation_history.json"
+        self.history_file = _DATA / "config" / "translation_history.json"
         self.history = self._load_history()
     
     def _load_history(self) -> List[Dict[str, Any]]:
@@ -134,7 +144,7 @@ class TranslationHistory:
         
         try:
             with open(self.history_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                return load_json_or_quarantine(f)
         except Exception:
             return []
     
@@ -212,7 +222,7 @@ class ContextMemory:
     
     def __init__(self, preferences: TranslationPreferences):
         self.preferences = preferences
-        self.context_file = _BASE / "config" / "translation_context.json"
+        self.context_file = _DATA / "config" / "translation_context.json"
         self.context = self._load_context()
     
     def _load_context(self) -> List[Dict[str, Any]]:
@@ -222,7 +232,7 @@ class ContextMemory:
         
         try:
             with open(self.context_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                return load_json_or_quarantine(f)
         except Exception:
             return []
     
@@ -431,17 +441,7 @@ def translate_text(text: str, target_lang: str = "english") -> str:
     Returns:
         Переведённый текст
     """
-    import json
-    from pathlib import Path
-    
-    _BASE = Path(__file__).parent.parent
-    api_key_file = _BASE / "config" / "api_keys.json"
-    
-    try:
-        with open(api_key_file, "r", encoding="utf-8") as f:
-            api_key = json.load(f).get("gemini_api_key", "")
-    except Exception:
-        api_key = ""
+    api_key = _gemini_key()
     
     manager = TranslationManager(api_key)
     return manager.translate(text, target_lang)
@@ -457,17 +457,7 @@ def get_translation_history(date_range: str = "all") -> List[Dict[str, Any]]:
     Returns:
         Список переводов
     """
-    import json
-    from pathlib import Path
-    
-    _BASE = Path(__file__).parent.parent
-    api_key_file = _BASE / "config" / "api_keys.json"
-    
-    try:
-        with open(api_key_file, "r", encoding="utf-8") as f:
-            api_key = json.load(f).get("gemini_api_key", "")
-    except Exception:
-        api_key = ""
+    api_key = _gemini_key()
     
     manager = TranslationManager(api_key)
     
@@ -487,17 +477,7 @@ def search_translations(query: str) -> List[Dict[str, Any]]:
     Returns:
         Список найденных переводов
     """
-    import json
-    from pathlib import Path
-
-    _BASE = Path(__file__).parent.parent
-    api_key_file = _BASE / "config" / "api_keys.json"
-
-    try:
-        with open(api_key_file, "r", encoding="utf-8") as f:
-            api_key = json.load(f).get("gemini_api_key", "")
-    except Exception:
-        api_key = ""
+    api_key = _gemini_key()
 
     manager = TranslationManager(api_key)
     return manager.history.search_translations(query)

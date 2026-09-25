@@ -40,6 +40,22 @@ def get_user_data_dir() -> Path:
     return user_dir
 
 
+def get_data_root() -> Path:
+    """Корень изменяемых данных (профиль, память, календарь, кэши).
+
+    Из исходников — папка проекта, как и раньше: данные остаются на месте.
+    В собранном .exe — %APPDATA%/JARVIS. Раньше данные писались в папку
+    программы: в Program Files запись запрещена, и профиль, память и
+    календарь молча не сохранялись, а переустановка стирала их.
+    """
+    if getattr(sys, "frozen", False):
+        root = get_user_data_dir()
+        for sub in ("config", "memory"):
+            (root / sub).mkdir(parents=True, exist_ok=True)
+        return root
+    return Path(__file__).resolve().parent.parent
+
+
 def get_config_path(filename: str = "api_keys.json", for_writing: bool = False) -> Path:
     """Возвращает путь к файлу конфигурации.
 

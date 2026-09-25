@@ -6,13 +6,16 @@ import sys
 from pathlib import Path
 
 _BASE = Path(__file__).resolve().parent.parent
-_MEMORY_FILE = _BASE / "memory" / "data.json"
 
 # Гарантируем что core/ доступен (memory/ соседний с core/)
 if str(_BASE) not in sys.path:
     sys.path.insert(0, str(_BASE))
 
+from core.paths import get_data_root
 from core.storage import atomic_write_json, safe_read_json
+
+# В .exe — %APPDATA%/JARVIS/memory (см. get_data_root), из исходников — как раньше.
+_MEMORY_FILE = get_data_root() / "memory" / "data.json"
 
 
 def load_memory() -> dict:

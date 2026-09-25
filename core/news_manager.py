@@ -1,7 +1,6 @@
 """
 Модуль для умных новостей с персонализацией
 """
-import json
 import logging
 import re
 import time
@@ -11,7 +10,7 @@ from typing import Any, Dict, List, Optional
 import feedparser
 import requests
 
-from core.storage import atomic_write_json
+from core.storage import atomic_write_json, load_json_or_quarantine
 
 _logger = logging.getLogger(__name__)
 
@@ -20,13 +19,16 @@ _RSS_TIMEOUT = 5  # секунд
 _RSS_USER_AGENT = "Mozilla/5.0 (compatible; JARVIS-RU/1.0; +https://github.com)"
 
 _BASE = Path(__file__).parent.parent
+from core.paths import get_data_root  # noqa: E402
+
+_DATA = get_data_root()
 
 
 class NewsPreferences:
     """Управляет предпочтениями пользователя для новостей."""
     
     def __init__(self):
-        self.preferences_file = _BASE / "config" / "news_preferences.json"
+        self.preferences_file = _DATA / "config" / "news_preferences.json"
         self.preferences = self._load_preferences()
     
     def _load_preferences(self) -> Dict[str, Any]:
@@ -36,7 +38,7 @@ class NewsPreferences:
         
         try:
             with open(self.preferences_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                return load_json_or_quarantine(f)
         except Exception:
             return self._get_default_preferences()
     
@@ -338,7 +340,7 @@ class NewsManager:
         self.aggregator = NewsAggregator(self.preferences)
         self.filter = NewsFilter(self.preferences)
         self.summarizer = NewsSummarizer()
-        self.news_cache_file = _BASE / "config" / "news_cache.json"
+        self.news_cache_file = _DATA / "config" / "news_cache.json"
     
     def get_personalized_news(self, limit: int = 5) -> List[Dict[str, Any]]:
         """
