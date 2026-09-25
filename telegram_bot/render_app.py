@@ -24,6 +24,7 @@ from telegram import Update
 from telegram_bot.config import is_decommissioned, load as load_config
 from telegram_bot.gemini_client import GeminiClient
 from telegram_bot.pc_bridge import PCBridge
+from telegram_bot.pc_notice import PCStatusNotifier
 from telegram_bot import miniapp_server
 from telegram_bot import proactive
 from telegram_bot import context_builder
@@ -73,8 +74,6 @@ miniapp_server._memory = memory
 
 
 # ── PC online/offline → keep Mini App in sync AND ping the user in Telegram ────
-_pc_online_notified = False
-_pc_offline_task = None
 
 
 async def _notify_users(text: str):
@@ -113,35 +112,13 @@ async def _flush_outbox():
 
 async def _on_pc_status(online: bool):
     await miniapp_server.broadcast_pc_status(online)   # Mini App badge
-    global _pc_online_notified, _pc_offline_task
+    await _pc_notice.on_change(online)
     if online:
-        if _pc_offline_task:
-            _pc_offline_task.cancel()
-            _pc_offline_task = None
-        if not _pc_online_notified:
-            _pc_online_notified = True
-            await _notify_users("🖥 ПК онлайн — можно управлять компьютером.")
         asyncio.create_task(_flush_outbox())   # deliver anything queued while offline
-    else:
-        # Debounce: brief reconnects flap online/offline. Only announce offline
-        # after 20s without a reconnect, so we don't spam on network blips.
-        if _pc_offline_task:
-            return
-
-        async def _confirm_offline():
-            global _pc_online_notified, _pc_offline_task
-            try:
-                await asyncio.sleep(20)
-            except asyncio.CancelledError:
-                return
-            _pc_offline_task = None
-            if not bridge.connected:
-                _pc_online_notified = False
-                await _notify_users("🌙 ПК офлайн.")
-
-        _pc_offline_task = asyncio.create_task(_confirm_offline())
 
 
+# Когда писать в Telegram о пропаже ПК — см. pc_notice.py.
+_pc_notice = PCStatusNotifier(lambda text: _notify_users(text), lambda: bridge.connected)
 bridge.on_status_change(_on_pc_status)
 
 
