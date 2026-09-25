@@ -116,6 +116,7 @@ from core.proactive_engine import ProactiveEngine
 from core.team_collaboration import TeamCollaborationEngine
 from core.onboarding import ensure_gemini_key
 from core.latency import LatencyTracker
+from core.result_card import build_card, capture_foreground_png
 from core.headless_ui import HeadlessUI, headless_requested
 from actions.open_app import open_app
 from actions.weather import weather_action
@@ -2360,7 +2361,30 @@ class Jarvis:
                     int((time.perf_counter() - _tool_started) * 1000),
                 )
             responses.append(fr)
+            self._show_card(fc, fr)
         await self.session.send_tool_response(function_responses=responses)
+
+    def _show_card(self, fc, fr):
+        """Карточка «что сделал» рядом с шаром. Окно, которое команда
+        открыла, снимается чуть позже — ему нужно время появиться."""
+        show = getattr(self.ui, "show_card", None)
+        if not show:
+            return
+        try:
+            card = build_card(fc.name, dict(fc.args or {}), getattr(fr, "response", None))
+        except Exception as exc:
+            logger.debug("Карточка не собралась: %s", exc)
+            return
+        if not card:
+            return
+        show(card["title"], card["address"], card["body"], b"")
+        if card["want_shot"]:
+            def _shot():
+                time.sleep(1.8)
+                png = capture_foreground_png()
+                if png:
+                    show(card["title"], card["address"], card["body"], png)
+            threading.Thread(target=_shot, daemon=True, name="card-shot").start()
 
     async def _deferred_tool_calls(self, function_calls, named: asyncio.Event):
         """Вызов пришёл раньше расшифровки с именем — ждём её немного.

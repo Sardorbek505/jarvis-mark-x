@@ -162,6 +162,7 @@ _TOOL_SHAPE = {
     "look_at_screen": "screen", "look_at_camera": "screen",
 }
 _SHAPE_HOLD_SEC = 7.0    # фигура держится после команды, пока Джарвис отвечает
+_CARD_HOLD_SEC = 14.0    # карточка результата висит после ответа
 
 
 class HudCanvas(QWidget):
@@ -195,6 +196,11 @@ class HudCanvas(QWidget):
 
         self._shape_until = 0.0
 
+        # Карточка «что сделал»: {'title', 'address', 'body', 'img'}.
+        self._card: dict | None = None
+        self._card_t = 0.0
+        self._card_vis = 0.0                  # 0..1, проявление карточки
+
         self._sub_text = ""
         self._sub_t = 0.0
         self._sub_alpha = 0.0
@@ -215,6 +221,19 @@ class HudCanvas(QWidget):
         if shape:
             self._orb.set_shape(shape)
             self._shape_until = time.monotonic() + _SHAPE_HOLD_SEC
+
+    def show_card(self, title: str, address: str, body: str, png: bytes = b""):
+        img = None
+        if png:
+            from PyQt6.QtGui import QImage
+            img = QImage.fromData(png)
+            if img.isNull():
+                img = None
+        same = self._card and self._card["address"] == address and self._card["title"] == title
+        if img is None and same:
+            img = self._card.get("img")       # текст пришёл раньше снимка — снимок не теряем
+        self._card = {"title": title, "address": address, "body": body, "img": img}
+        self._card_t = time.monotonic()
 
     def set_subtitle(self, text: str):
         text = " ".join((text or "").split())
@@ -264,6 +283,15 @@ class HudCanvas(QWidget):
         target = 1.0 if self._tool else 0.0
         self._tool_lock += (target - self._tool_lock) * (1.0 - math.exp(-dt * 9.0))
 
+        if self._card:
+            if busy or self.speaking:
+                self._card_t = max(self._card_t, now - _CARD_HOLD_SEC + 4.0)
+            shown = now - self._card_t < _CARD_HOLD_SEC
+            rate = 5.0 if shown else 3.0
+            self._card_vis += ((1.0 if shown else 0.0) - self._card_vis) * (1.0 - math.exp(-dt * rate))
+            if not shown and self._card_vis < 0.01:
+                self._card, self._card_vis = None, 0.0
+
         visible = bool(self._sub_text) and (self.speaking or now - self._sub_t < _SUB_HOLD_SEC)
         rate = 6.0 if visible else 2.5
         self._sub_alpha += ((1.0 if visible else 0.0) - self._sub_alpha) * (1.0 - math.exp(-dt * rate))
@@ -296,6 +324,77 @@ class HudCanvas(QWidget):
             out.append((lo, hi, poly, view))
         self._layer_cache = (n, out)
         return out
+
+    def _paint_card(self, p: QPainter, W: int, H: int, cw: float, k: float):
+        """Окошко как мини-браузер: три точки, адресная строка, внутри снимок
+        окна или текст результата. Выезжает справа и проявляется."""
+        from PyQt6.QtGui import QPainterPath
+
+        card = self._card
+        img = card.get("img")
+        head = 30.0
+        if img is not None:
+            ch = min(H - 90.0, cw * 0.62 + head)
+        else:
+            # Высота по тексту: две строки ответа — маленькая карточка, а не
+            # пустая коробка.
+            p.setFont(QFont("Segoe UI", 9))
+            text_h = p.fontMetrics().boundingRect(
+                QRectF(0, 0, cw - 32, 1000).toRect(),
+                int(Qt.TextFlag.TextWordWrap), card["body"] or "Готово.").height()
+            ch = min(H - 90.0, head + 36 + text_h + 18)
+        x = W - cw - 16 + (1.0 - k) * 36
+        y = 56.0
+        rect = QRectF(x, y, cw, ch)
+        p.save()
+        p.setOpacity(k)
+
+        path = QPainterPath()
+        path.addRoundedRect(rect, 12, 12)
+        p.fillPath(path, qcol(C.PANEL, 245))
+        p.setPen(QPen(self._col(110), 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+
+        # Шапка: три точки и «адрес».
+        for i, col in enumerate(("#ff5f57", "#febc2e", "#28c840")):
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(col))
+            p.drawEllipse(QPointF(x + 16 + i * 14, y + head / 2), 4.2, 4.2)
+        bar = QRectF(x + 62, y + 6, cw - 74, head - 12)
+        p.setBrush(qcol(C.BG, 220))
+        p.drawRoundedRect(bar, 9, 9)
+        p.setFont(QFont("Consolas", 8))
+        p.setPen(qcol(C.TEXT_MED))
+        addr = p.fontMetrics().elidedText(card["address"], Qt.TextElideMode.ElideRight,
+                                          int(bar.width() - 20))
+        p.drawText(bar.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter, addr)
+
+        body = QRectF(x + 1, y + head, cw - 2, ch - head - 1)
+        clip = QPainterPath()
+        clip.addRoundedRect(body, 11, 11)
+        p.setClipPath(clip)
+        if img is not None:
+            # Снимок по ширине карточки; длинная страница медленно едет вниз,
+            # как прокрутка на видео.
+            scale = body.width() / img.width()
+            full_h = img.height() * scale
+            extra = max(0.0, full_h - body.height())
+            off = min(extra, max(0.0, (time.monotonic() - self._card_t - 1.5) * 14.0))
+            p.drawImage(QRectF(body.left(), body.top() - off, body.width(), full_h), img)
+        else:
+            p.setPen(self._col(235, lift=0.2))
+            f = QFont("Segoe UI", 9, QFont.Weight.Bold)
+            f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.2)
+            p.setFont(f)
+            p.drawText(body.adjusted(16, 12, -16, 0), Qt.AlignmentFlag.AlignTop,
+                       card["title"].upper())
+            p.setFont(QFont("Segoe UI", 9))
+            p.setPen(qcol(C.TEXT))
+            p.drawText(body.adjusted(16, 36, -16, -12),
+                       Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
+                       card["body"] or "Готово.")
+        p.restore()
 
     def _glow(self, R: float) -> QPixmap:
         key = (int(R), *(int(c) // 6 for c in self._rgb))
@@ -331,8 +430,11 @@ class HudCanvas(QWidget):
 
         e = self._orb.energy
         fw = min(W, H)
-        R = fw * 0.25 * (1.0 + 0.05 * e)
-        cx, cy = W / 2, H / 2 - fw * 0.03
+        # Карточка справа — шар плавно уступает место влево и чуть сжимается.
+        cv = self._card_vis * self._card_vis * (3 - 2 * self._card_vis)
+        card_w = min(W * 0.42, 440.0) if W > 560 else 0.0
+        R = fw * 0.25 * (1.0 + 0.05 * e) * (1.0 - 0.14 * cv * (card_w > 0))
+        cx, cy = W / 2 - cv * card_w * 0.42, H / 2 - fw * 0.03
 
         # Свечение за шаром — сильнее, когда он говорит. Градиент во весь шар
         # дорог (2+ мс), поэтому он рисуется в картинку один раз на размер и
@@ -406,8 +508,11 @@ class HudCanvas(QWidget):
         if self._tool_lock > 0.02 and self._tool:
             p.setFont(QFont("Consolas", 9))
             p.setPen(QPen(self._col(220 * self._tool_lock, lift=0.2), 1))
-            p.drawText(QRectF(0, pill.bottom() + 6, W, 18), Qt.AlignmentFlag.AlignCenter,
+            p.drawText(QRectF(cx - 200, pill.bottom() + 6, 400, 18), Qt.AlignmentFlag.AlignCenter,
                        "▸ " + self._tool.replace("_", " ").upper())
+
+        if self._card and cv > 0.01 and card_w > 0:
+            self._paint_card(p, W, H, card_w, cv)
 
         # Субтитры: то, что Джарвис говорит сейчас. Длинный ответ — хвост.
         if self._sub_alpha > 0.02 and self._sub_text:
@@ -742,6 +847,7 @@ class MainWindow(QMainWindow):
     _level_sig = pyqtSignal(float)
     _tool_sig  = pyqtSignal(str)
     _sub_sig   = pyqtSignal(str)
+    _card_sig  = pyqtSignal(str, str, str, bytes)
     # Глобальные хоткеи приходят из потока Win32-сообщений — тоже чужого.
     _mute_sig  = pyqtSignal()
     _front_sig = pyqtSignal()
@@ -927,6 +1033,7 @@ class MainWindow(QMainWindow):
         self._tool_sig.connect(self._hud.lock_on)
         self._tool_sig.connect(self._count_tool)
         self._sub_sig.connect(self._hud.set_subtitle)
+        self._card_sig.connect(self._hud.show_card)
         self._mute_sig.connect(self._toggle_mute)
         self._front_sig.connect(self._bring_to_front)
         self._overlay_sig.connect(self._show_overlay)
@@ -941,6 +1048,10 @@ class MainWindow(QMainWindow):
     def set_subtitle(self, text: str):
         """Субтитр под шаром — то, что Джарвис произносит. Из любого потока."""
         self._sub_sig.emit(str(text))
+
+    def show_card(self, title: str, address: str, body: str, png: bytes = b""):
+        """Карточка результата рядом с шаром. Из любого потока."""
+        self._card_sig.emit(str(title), str(address), str(body), bytes(png or b""))
 
     def set_state(self, state: str):
         self._state_sig.emit(state)
