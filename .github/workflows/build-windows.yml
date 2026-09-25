@@ -53,6 +53,29 @@ jobs:
           if ($leaks) { $leaks | ForEach-Object { $_.FullName }; throw "В сборку попали секреты" }
           "Собрано: $($setup.Name) ($([math]::Round($setup.Length / 1MB, 1)) MB)"
 
+      - name: Smoke test - install and launch
+        # Ставим установщик тихо и запускаем JARVIS.exe: если сборке не хватает
+        # модуля или запуск падает, это видно здесь, а не на ПК пользователя.
+        # Ключ заведомо неверный — окно мастера не открывается, Джарвис идёт
+        # дальше, получает отказ Gemini и остаётся жить с сообщением в окне.
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist\JARVIS_Setup_v*.exe | Select-Object -First 1).FullName
+          Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/DIR=C:\jarvis-smoke' -Wait
+          if (-not (Test-Path C:\jarvis-smoke\JARVIS.exe)) { throw "Установщик не поставил JARVIS.exe" }
+          $env:GEMINI_API_KEY = "smoke-test-not-a-real-key"
+          $p = Start-Process C:\jarvis-smoke\JARVIS.exe -PassThru
+          Start-Sleep -Seconds 30
+          $log = Join-Path $env:APPDATA "JARVIS\jarvis.log"
+          if (Test-Path $log) { Get-Content $log -Tail 40 }
+          if ($p.HasExited) { throw "JARVIS.exe завершился при запуске (код $($p.ExitCode))" }
+          Stop-Process -Id $p.Id -Force
+          if (-not (Test-Path $log)) { throw "Лог не создан — Джарвис не дошёл до старта" }
+          $text = Get-Content $log -Raw
+          if ($text -match "Необработанная ошибка") { throw "В логе необработанная ошибка" }
+          if ($text -notmatch "Подключение к Gemini|Сессия Gemini") { throw "Джарвис не дошёл до подключения к Gemini" }
+          "OK: установлен, запущен, дошёл до Gemini без падений"
+
       - uses: actions/upload-artifact@v4
         with:
           name: JARVIS-Setup

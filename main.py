@@ -50,12 +50,41 @@ from datetime import datetime
 import logging
 
 # Configure logging
+#
+# Лог пишется ещё и в файл %APPDATA%/JARVIS/jarvis.log. В оконной сборке
+# (.exe без консоли) stderr нет вовсе, и раньше логи не попадали никуда:
+# при любой поломке у пользователя диагностировать было нечем.
+def _log_handlers() -> list:
+    from logging.handlers import RotatingFileHandler
+    from core.paths import get_user_data_dir   # только stdlib — безопасно до Qt
+    handlers = []
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler())
+    try:
+        handlers.append(RotatingFileHandler(
+            get_user_data_dir() / "jarvis.log", maxBytes=2_000_000,
+            backupCount=2, encoding="utf-8"))
+    except OSError:
+        pass
+    return handlers
+
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%H:%M:%S'
+    datefmt='%H:%M:%S',
+    handlers=_log_handlers(),
 )
 logger = logging.getLogger('JARVIS')
+
+
+def _log_unhandled(exc_type, exc, tb):
+    logger.critical("Необработанная ошибка", exc_info=(exc_type, exc, tb))
+
+
+sys.excepthook = _log_unhandled
+# Падение рабочего потока раньше было беззвучным: окно жило, Джарвис — нет.
+threading.excepthook = lambda args: _log_unhandled(args.exc_type, args.exc_value, args.exc_traceback)
 
 import sounddevice as sd
 from google import genai
