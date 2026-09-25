@@ -17,8 +17,15 @@ import threading
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from core.wake_vosk import LocalWake  # noqa: E402
+# Модуль грузим прямо из файла: `import core.wake_vosk` тянет core/__init__.py,
+# а он — половину Джарвиса (новости, feedparser…), которой в этой проверке нет.
+import importlib.util  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location(
+    "wake_vosk", Path(__file__).resolve().parent.parent / "core" / "wake_vosk.py")
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+LocalWake = _mod.LocalWake
 
 VOICES = ["ru-RU-DmitryNeural", "ru-RU-SvetlanaNeural"]
 WITH_NAME = [
