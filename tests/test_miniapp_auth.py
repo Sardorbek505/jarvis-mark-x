@@ -6,7 +6,7 @@ import json
 import time
 from urllib.parse import urlencode
 
-from telegram_bot.miniapp_server import verify_init_data
+from telegram_bot.webapp_auth import verify_init_data
 
 TOKEN = "123456:TEST-token"
 

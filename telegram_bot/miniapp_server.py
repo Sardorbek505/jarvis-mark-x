@@ -30,51 +30,7 @@ _DEFAULT_CITY = os.getenv("DEFAULT_CITY", "Шымкент")
 # Shared secret — the home PC must present this to link. Set via env on Render.
 PC_LINK_TOKEN = os.getenv("PC_LINK_TOKEN", "")
 
-
-_CFG = None
-
-
-def _cfg():
-    global _CFG
-    if _CFG is None:
-        from telegram_bot.config import load
-        _CFG = load(require_bot=False)
-    return _CFG
-
-
-def _pc_link_token() -> str:
-    return (PC_LINK_TOKEN or getattr(_cfg(), "pc_link_token", "") or "").strip()
-
-
-def verify_init_data(init_data: str, bot_token: str, max_age_sec: int = 7 * 86400) -> int | None:
-    """id пользователя из initData Telegram, если подпись верна; иначе None.
-
-    Раньше user_id брался из строки запроса как есть: любой, кто знал адрес
-    Space, открывал /ws?user_id=<id владельца> и читал его факты, задачи и
-    напоминания, писал от его имени и командовал его ПК.
-    Проверка — по документации Telegram Mini Apps: HMAC-SHA256 с ключом
-    HMAC_SHA256("WebAppData", bot_token).
-    """
-    import hashlib
-    import hmac
-    import json as _json
-    import time as _time
-    from urllib.parse import parse_qsl
-    if not init_data or not bot_token:
-        return None
-    pairs = dict(parse_qsl(init_data, keep_blank_values=True))
-    received = pairs.pop("hash", "")
-    check = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
-    secret = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
-    expected = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
-    if not received or not hmac.compare_digest(expected, received):
-        return None
-    try:
-        if _time.time() - int(pairs.get("auth_date", "0")) > max_age_sec:
-            return None
-        return int(_json.loads(pairs.get("user", "{}")).get("id"))
-    except (ValueError, TypeError, AttributeError):
-        return None
+from telegram_bot.webapp_auth import verify_init_data  # noqa: E402
 
 _PC_KEYWORDS = [
     "play", "stop", "pause", "next", "prev", "volume",
@@ -94,6 +50,21 @@ _PC_KEYWORDS = [
     "разблокир", "разблок", "нажми enter", "нажать enter", "нажми интер", "enter", "интер",
     "выключи пк", "перезагрузи", "restart", "shutdown",
 ]
+
+
+_CFG = None
+
+
+def _cfg():
+    global _CFG
+    if _CFG is None:
+        from telegram_bot.config import load
+        _CFG = load(require_bot=False)
+    return _CFG
+
+
+def _pc_link_token() -> str:
+    return (PC_LINK_TOKEN or getattr(_cfg(), "pc_link_token", "") or "").strip()
 
 
 def _looks_like_pc_command(text: str) -> bool:
