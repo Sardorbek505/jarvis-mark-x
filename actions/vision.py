@@ -7,7 +7,7 @@ import io
 import logging
 import os
 import sys
-import threading
+import time
 from typing import Optional
 
 from core.paths import load_api_keys
@@ -23,135 +23,136 @@ def _get_api_key() -> str:
 
 
 # ── Захват экрана ─────────────────────────────────────────────────────────────
-def capture_screen_jpeg(max_size: int = 1280, quality: int = 80) -> bytes | None:
-    """Делает снимок основного экрана, масштабирует и возвращает JPEG-байты."""
-    # 1. Сначала пробуем нативный захват через PyQt6 (наиболее стабильно на Windows)
-    try:
-        # Qt-снимок — только из GUI-потока. Инструменты идут в пуле потоков,
-        # а виджеты/экран Qt из чужого потока — это падение процесса.
-        if threading.current_thread() is not threading.main_thread():
-            raise RuntimeError("не GUI-поток — снимаем через PIL/mss")
-        from PyQt6.QtCore import QBuffer, QIODevice, Qt
-        from PyQt6.QtGui import QGuiApplication
-        from PyQt6.QtWidgets import QApplication
+# Снимаем через mss из любого потока. Раньше основным был Qt-снимок, а он
+# возможен только из GUI-потока — инструменты же идут в пуле потоков, так что
+# «активное окно» всегда молча превращалось в снимок всего экрана.
 
-        _app = QApplication.instance() or QApplication(sys.argv)
-        del _app
-        screen = QGuiApplication.primaryScreen()
-        if screen:
-            pix = screen.grabWindow(0)
-            if not pix.isNull():
-                if max(pix.width(), pix.height()) > max_size:
-                    pix = pix.scaled(
-                        max_size,
-                        max_size,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                buf = QBuffer()
-                buf.open(QIODevice.OpenModeFlag.WriteOnly)
-                pix.save(buf, "JPEG", quality)
-                return bytes(buf.data())
+def _to_jpeg(img, max_size: int, quality: int) -> bytes:
+    from PIL import Image
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    w, h = img.size
+    if max(w, h) > max_size:
+        r = max_size / float(max(w, h))
+        img = img.resize((int(w * r), int(h * r)), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality, optimize=True)
+    return buf.getvalue()
+
+
+def _grab(region: dict):
+    import mss
+    from PIL import Image
+    mss_cls = getattr(mss, "MSS", mss.mss)
+    with mss_cls() as sct:
+        raw = sct.grab(region)
+    return Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+
+
+def _foreground_rect() -> dict | None:
+    """Прямоугольник окна впереди (не Джарвиса)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        from core import win_apps
+        fg = win_apps.foreground()
+        if not fg:
+            return None
+        rect = wintypes.RECT()
+        ctypes.windll.user32.GetWindowRect(fg.hwnd, ctypes.byref(rect))
+        w, h = rect.right - rect.left, rect.bottom - rect.top
+        if w < 80 or h < 80:
+            return None
+        return {"left": rect.left, "top": rect.top, "width": w, "height": h}
+    except Exception as exc:
+        logger.debug("Окно впереди: %s", exc)
+        return None
+
+
+def _monitor_for(rect: dict | None) -> dict:
+    """Монитор, на котором окно впереди. Раньше снимался только основной —
+    ошибка в коде на втором мониторе оставалась невидимой."""
+    import mss
+    mss_cls = getattr(mss, "MSS", mss.mss)
+    with mss_cls() as sct:
+        mons = sct.monitors[1:] or sct.monitors
+        if rect:
+            cx, cy = rect["left"] + rect["width"] // 2, rect["top"] + rect["height"] // 2
+            for m in mons:
+                if m["left"] <= cx < m["left"] + m["width"] and m["top"] <= cy < m["top"] + m["height"]:
+                    return dict(m)
+        return dict(mons[0])
+
+
+def capture_screen_jpeg(max_size: int = 1600, quality: int = 82) -> bytes | None:
+    """Снимок монитора, на котором сейчас работает пользователь."""
+    try:
+        return _to_jpeg(_grab(_monitor_for(_foreground_rect())), max_size, quality)
     except Exception as e:
-        logger.debug("PyQt6 screen grab error: %s", e)
-
-    # 2. Фолбэк на PIL ImageGrab / mss
+        logger.debug("mss: %s", e)
     try:
-        from PIL import Image, ImageGrab
-
-        try:
-            img = ImageGrab.grab()
-        except Exception:
-            import mss
-            mss_cls = getattr(mss, "MSS", mss.mss)
-            with mss_cls() as sct:
-                monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
-                sct_img = sct.grab(monitor)
-                img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-
-        w, h = img.size
-        if max(w, h) > max_size:
-            ratio = max_size / float(max(w, h))
-            new_size = (int(w * ratio), int(h * ratio))
-            img = img.resize(new_size, Image.Resampling.LANCZOS)
-
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=quality, optimize=True)
-        return buf.getvalue()
+        from PIL import ImageGrab
+        return _to_jpeg(ImageGrab.grab(all_screens=False), max_size, quality)
     except Exception as e:
         logger.error("Ошибка захвата экрана: %s", e)
         return None
 
 
-def capture_active_window_jpeg(max_size: int = 1280, quality: int = 80) -> bytes | None:
-    """Делает снимок только активного окна пользователя."""
-    try:
-        if sys.platform == "win32":
-            try:
-                import pygetwindow as gw
-                win = gw.getActiveWindow()
-                on_gui_thread = threading.current_thread() is threading.main_thread()
-                if on_gui_thread and win and win.width > 50 and win.height > 50:
-                    from PyQt6.QtCore import QBuffer, QIODevice, Qt
-                    from PyQt6.QtGui import QGuiApplication
-                    from PyQt6.QtWidgets import QApplication
-
-                    _app = QApplication.instance() or QApplication(sys.argv)
-                    del _app
-                    screen = QGuiApplication.primaryScreen()
-                    if screen:
-                        pix = screen.grabWindow(0, win.left, win.top, win.width, win.height)
-                        if not pix.isNull():
-                            if max(pix.width(), pix.height()) > max_size:
-                                pix = pix.scaled(
-                                    max_size,
-                                    max_size,
-                                    Qt.AspectRatioMode.KeepAspectRatio,
-                                    Qt.TransformationMode.SmoothTransformation,
-                                )
-                            buf = QBuffer()
-                            buf.open(QIODevice.OpenModeFlag.WriteOnly)
-                            pix.save(buf, "JPEG", quality)
-                            return bytes(buf.data())
-            except Exception as e:
-                logger.debug("Active window grab via pygetwindow failed: %s", e)
-    except Exception:
-        pass
-
-    # Фолбэк на общий экран
+def capture_active_window_jpeg(max_size: int = 2000, quality: int = 85) -> bytes | None:
+    """Только окно впереди — крупнее, чтобы читался мелкий текст кода."""
+    rect = _foreground_rect()
+    if rect:
+        try:
+            return _to_jpeg(_grab(rect), max_size, quality)
+        except Exception as e:
+            logger.debug("Снимок окна: %s", e)
     return capture_screen_jpeg(max_size, quality)
 
 
-def capture_camera_jpeg(quality: int = 80) -> bytes | None:
-    """Делает один снимок с подключенной веб-камеры."""
+_CAMERA_ERROR = ""
+
+
+def capture_camera_jpeg(quality: int = 82) -> bytes | None:
+    """Кадр с веб-камеры. На Windows сначала DirectShow (MSMF открывается
+    до 10 секунд), прогрев — пока кадр не перестанет быть чёрным."""
+    global _CAMERA_ERROR
+    _CAMERA_ERROR = ""
     try:
         import cv2
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            logger.warning("Веб-камера (индекс 0) не открылась")
-            return None
-
-        # Прогрев камеры (первые пару кадров могут быть темными)
-        for _ in range(3):
-            cap.read()
-        ret, frame = cap.read()
-        cap.release()
-
-        if not ret or frame is None:
-            return None
-
-        # Конвертация BGR -> JPEG
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
-        ret_enc, buf = cv2.imencode(".jpg", frame, encode_param)
-        if ret_enc:
-            return buf.tobytes()
+    except ImportError:
+        _CAMERA_ERROR = "не установлен OpenCV"
         return None
-    except Exception as e:
-        logger.error("Ошибка захвата камеры: %s", e)
-        return None
+    index = int(os.getenv("JARVIS_CAMERA_INDEX", "0") or 0)
+    backends = [getattr(cv2, "CAP_DSHOW", None), getattr(cv2, "CAP_MSMF", None), None] \
+        if sys.platform == "win32" else [None]
+    for backend in backends:
+        cap = cv2.VideoCapture(index, backend) if backend is not None else cv2.VideoCapture(index)
+        try:
+            if not cap or not cap.isOpened():
+                continue
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            frame, end = None, time.monotonic() + 1.5
+            while time.monotonic() < end:
+                ok, f = cap.read()
+                if ok and f is not None:
+                    frame = f
+                    if float(f.mean()) > 15:        # экспозиция выставилась
+                        break
+                time.sleep(0.05)
+            if frame is None:
+                continue
+            ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+            if ok:
+                return buf.tobytes()
+        finally:
+            if cap is not None:
+                cap.release()
+    _CAMERA_ERROR = ("камера не открылась: она занята другой программой (Zoom, Teams) или "
+                     "запрещена в Параметры → Конфиденциальность → Камера")
+    return None
 
 
 # ── Анализ изображения через Gemini 2.5 ───────────────────────────────────────
@@ -176,7 +177,7 @@ def analyze_vision(
         if src in ("camera", "webcam"):
             image_bytes = capture_camera_jpeg()
             if not image_bytes:
-                return "Сэр, не удалось получить изображение с веб-камеры. Проверьте подключение камеры."
+                return f"Сэр, не удалось получить кадр с веб-камеры: {_CAMERA_ERROR or 'нет камеры'}."
         elif src in ("window", "active_window", "active"):
             image_bytes = capture_active_window_jpeg()
             if not image_bytes:
@@ -187,38 +188,51 @@ def analyze_vision(
                 return "Сэр, не удалось сделать снимок экрана."
 
     try:
-        from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=key)
-
         system_instruction = (
-            "Ты — Джарвис, высокоинтеллектуальный ИИ-ассистент Тони Старка. "
-            "Тебе передан снимок экрана пользователя или камеры. "
-            "Отвечай кратко, по делу, естественным русским языком. "
-            "Формулируй ответ так, чтобы его было удобно произнести голосом (без сложных таблиц и громоздких markdown конструкций)."
+            "Ты — Джарвис. Тебе передан снимок экрана пользователя или кадр с камеры. "
+            "Отвечай на вопрос по тому, что реально видно, коротко (1–3 фразы), естественным "
+            "русским языком, чтобы удобно было произнести. Если просят найти ошибку в коде — "
+            "назови файл/строку и суть ошибки. Не видно — так и скажи, не выдумывай."
         )
-
         image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+        user_query = prompt if prompt.strip() else "Кратко: что на экране и на что стоит обратить внимание?"
 
-        user_query = prompt if prompt.strip() else "Опиши кратко, что изображено на экране и на что стоит обратить внимание."
-
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
+        response = _client(key).models.generate_content(
+            model=_VISION_MODEL,
             contents=[image_part, user_query],
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
-                temperature=0.4,
-                max_output_tokens=300,
+                temperature=0.3,
+                # Думание у 2.5-flash тратит тот же лимит токенов: при 300 и
+                # включённом думании ответ приходил пустым или обрезанным —
+                # «не смог выделить деталей». Думание выключено, лимит шире.
+                max_output_tokens=900,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+                media_resolution=types.MediaResolution.MEDIA_RESOLUTION_HIGH,
             ),
         )
-
         if response and response.text:
             return response.text.strip()
-        return "Сэр, я проанализировал изображение, но не смог выделить деталей по вашему запросу."
+        return "Сэр, я посмотрел, но не разобрал деталей — попробуйте спросить точнее."
     except Exception as e:
         logger.error("Vision analysis failed: %s", e)
-        return f"Сэр, произошла ошибка при зрительном анализе: {e}"
+        return f"Сэр, не получилось разобрать изображение: {e}"
+
+
+_VISION_MODEL = os.getenv("JARVIS_VISION_MODEL", "gemini-2.5-flash")
+_clients: dict = {}
+
+
+def _client(key: str):
+    """Один клиент на ключ, с таймаутом: раньше без него зависшая сеть
+    держала весь приём звука до 45 секунд."""
+    if key not in _clients:
+        from google import genai
+        from google.genai import types
+        _clients[key] = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=20000))
+    return _clients[key]
 
 
 # ── Точка входа для инструментов (Tool Call) ──────────────────────────────────

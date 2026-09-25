@@ -1034,20 +1034,18 @@ TOOLS = [
     {
         "name": "look_at_screen",
         "description": (
-            "Захватывает текущий экран или активное окно и анализирует его с помощью компьютерного зрения. "
-            "Вызывай когда пользователь просит посмотреть на экран, найти ошибку в коде, оценить дизайн, "
-            "прочитать что написано на мониторе, или говорит 'что на экране'."
+            "ЕДИНСТВЕННЫЙ способ увидеть экран. Вызывай на «что у меня на экране», «посмотри», "
+            "«где ошибка в коде», «прочитай», «оцени дизайн», «что это за окно». Никогда не описывай "
+            "экран без вызова. После ответа кадр остаётся у тебя — на уточнения отвечай по нему."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "prompt": {
-                    "type": "STRING",
-                    "description": "Что конкретно нужно проанализировать или найти на экране"
-                },
+                "prompt": {"type": "STRING", "description": "Вопрос пользователя про экран, его словами"},
                 "source": {
                     "type": "STRING",
-                    "description": "Источник: 'screen' (весь монитор) или 'active_window' (только активное окно)"
+                    "enum": ["screen", "active_window"],
+                    "description": "active_window — для кода, текста, одной программы (чётче); screen — весь монитор"
                 }
             },
             "required": ["prompt"]
@@ -1056,16 +1054,13 @@ TOOLS = [
     {
         "name": "look_at_camera",
         "description": (
-            "Делает снимок с веб-камеры и анализирует окружающую обстановку. "
-            "Вызывай когда пользователь просит взглянуть через камеру, посмотреть на него или показать предмет."
+            "Посмотреть через веб-камеру: «что у меня в руке», «как я выгляжу», «посмотри на меня», "
+            "«что это за предмет»."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "prompt": {
-                    "type": "STRING",
-                    "description": "Вопрос или задача для анализа изображения с камеры"
-                }
+                "prompt": {"type": "STRING", "description": "Вопрос пользователя, его словами"}
             },
             "required": ["prompt"]
         }
@@ -1656,10 +1651,24 @@ class Jarvis:
 
             # ── Инструмент: Vision (анализ экрана и камеры) ─────────
             elif name in ("look_at_screen", "look_at_camera", "vision_review"):
-                from actions.vision import vision_action
+                from actions import vision
                 source = "camera" if name == "look_at_camera" else args.get("source", "screen")
                 args["source"] = source
-                r = await loop.run_in_executor(None, lambda: vision_action(args))
+                grab = (vision.capture_camera_jpeg if source == "camera"
+                        else vision.capture_active_window_jpeg if source == "active_window"
+                        else vision.capture_screen_jpeg)
+                jpeg = await loop.run_in_executor(None, grab)
+                # Кадр — и в саму голосовую сессию: тогда на «а что справа?»
+                # модель отвечает по картинке, а не по пересказу. Точный разбор
+                # (мелкий текст, код) делает отдельный запрос ниже.
+                if jpeg and self.session is not None:
+                    try:
+                        await self.session.send_realtime_input(
+                            video=types.Blob(data=jpeg, mime_type="image/jpeg"))
+                    except Exception as exc:
+                        logger.debug("Кадр в Live-сессию не ушёл: %s", exc)
+                r = await loop.run_in_executor(
+                    None, lambda: vision.analyze_vision(args.get("prompt", ""), source, jpeg))
                 result = r or "Анализ изображения завершен."
 
             # ── Инструмент: отправка в Telegram ──────────────────────
