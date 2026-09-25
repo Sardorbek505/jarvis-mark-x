@@ -101,48 +101,47 @@ def _film_base(n: int) -> np.ndarray:
 
 
 def _reactor_base(n: int) -> np.ndarray:
-    """Дуговой реактор Старка в плоскости экрана: (радиус, угол, крутится ли,
-    яркость). Ядро, кольца, треугольник и десять катушек по кругу."""
+    """Дуговой реактор Старка (Mark I) в плоскости экрана: (радиус, угол,
+    крутится ли, яркость). Светящееся ядро, кольцо вокруг него, спицы к
+    десяти медным катушкам и внешний обод.
+
+    Треугольника тут нет намеренно: треугольник с кругом внутри читался
+    как «всевидящее око», а не реактор."""
     parts = []
 
     def ring(r, k, rot=0.0, z=0.0):
         a = np.linspace(0, 2 * math.pi, k, endpoint=False)
         parts.append(np.stack([np.full(k, r), a, np.full(k, rot), np.full(k, z)], 1))
 
-    k_core = int(n * 0.10)
+    k_core = int(n * 0.12)
     i = np.arange(k_core)                                   # ядро — диск по спирали
-    parts.append(np.stack([0.16 * np.sqrt((i + 0.5) / k_core), i * _GOLDEN,
+    parts.append(np.stack([0.18 * np.sqrt((i + 0.5) / k_core), i * _GOLDEN,
                            np.zeros(k_core), np.full(k_core, 0.55)], 1))
-    ring(0.22, int(n * 0.05), z=0.35)
-    # треугольник, вписанный в r=0.40, вершиной вниз
-    k_tri = int(n * 0.10)
-    corners = [math.pi / 2 + j * 2 * math.pi / 3 + math.pi for j in range(3)]
-    pts = []
-    for j in range(3):
-        a0, a1 = corners[j], corners[(j + 1) % 3]
-        t = np.linspace(0, 1, k_tri // 3, endpoint=False)
-        x = 0.40 * ((1 - t) * math.cos(a0) + t * math.cos(a1))
-        y = 0.40 * ((1 - t) * math.sin(a0) + t * math.sin(a1))
-        pts.append(np.stack([np.hypot(x, y), np.arctan2(y, x)], 1))
-    tri = np.concatenate(pts)
-    parts.append(np.column_stack([tri, np.zeros(len(tri)), np.full(len(tri), 0.3)]))
-    ring(0.47, int(n * 0.06))
-    ring(0.58, int(n * 0.07))
-    # десять катушек: каждая — несколько дуг шириной 22° между r 0.63 и 0.86
+    ring(0.23, int(n * 0.05), z=0.4)
+    ring(0.30, int(n * 0.05), z=0.2)
+    # десять спиц от кольца ядра к катушкам — между катушками
+    k_sp = int(n * 0.08)
+    per = k_sp // 10
+    for c in range(10):
+        a = (c + 0.5) * 2 * math.pi / 10
+        r = np.linspace(0.31, 0.60, per)
+        parts.append(np.stack([r, np.full(per, a), np.ones(per), np.full(per, 0.1)], 1))
+    ring(0.60, int(n * 0.06))
+    # десять катушек: намотка — плотные дуги поперёк, 26° каждая
     used = sum(len(x) for x in parts)
-    k_out = int(n * 0.14)
+    k_out = int(n * 0.13)
     k_coil = n - used - k_out
     per_coil = k_coil // 10
-    rows = 5
+    rows = 8
     for c in range(10):
         base = c * 2 * math.pi / 10
         for r_i in range(rows):
             k = per_coil // rows + (1 if r_i < per_coil % rows else 0)
-            r = 0.63 + 0.23 * r_i / (rows - 1)
-            a = base + np.linspace(-math.radians(11), math.radians(11), k)
+            r = 0.65 + 0.21 * r_i / (rows - 1)
+            a = base + np.linspace(-math.radians(13), math.radians(13), k)
             parts.append(np.stack([np.full(k, r), a, np.ones(k), np.full(k, 0.15)], 1))
     used = sum(len(x) for x in parts)
-    ring(0.93, (n - used) // 2)
+    ring(0.92, (n - used) // 2)
     ring(1.0, n - used - (n - used) // 2)
     return np.concatenate(parts)[:n]
 
