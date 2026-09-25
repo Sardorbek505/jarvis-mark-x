@@ -614,8 +614,9 @@ TOOLS = [
     {
         "name": "web_search",
         "description": (
-            "Ищет информацию в интернете по запросу пользователя. "
-            "Используй когда нужны актуальные данные, факты, новости или что-либо неизвестное."
+            "Найти в интернете и получить результаты ТЕКСТОМ, чтобы ответить вслух: факты, новости, "
+            "цены, «кто такой», «что случилось». Не открывает браузер. Если пользователь хочет сам "
+            "посмотреть выдачу на экране — browser."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -655,19 +656,18 @@ TOOLS = [
     {
         "name": "browser",
         "description": (
-            "Управляет браузером: открывает сайты, выполняет поиск в браузере."
+            "Открыть сайт или поисковую выдачу НА ЭКРАНЕ: «открой ютуб», «зайди на vk.com», "
+            "«покажи в гугле …». Для ответа голосом без браузера — web_search."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {
-                    "type": "STRING",
-                    "description": "go_to — открыть сайт | search — поиск в браузере"
-                },
-                "url":    {"type": "STRING", "description": "URL для go_to"},
-                "query":  {"type": "STRING", "description": "Поисковый запрос для search"},
-                "engine": {"type": "STRING", "description": "google | yandex | duckduckgo (по умолчанию google)"},
-                "browser": {"type": "STRING", "description": "chrome | firefox | edge (необязательно)"}
+                "action": {"type": "STRING", "enum": ["go_to", "search"]},
+                "url":    {"type": "STRING", "description": "Адрес для go_to (youtube.com, https://…)"},
+                "query":  {"type": "STRING", "description": "Запрос для search"},
+                "engine": {"type": "STRING", "enum": ["google", "yandex", "duckduckgo", "bing"]},
+                "browser": {"type": "STRING", "enum": ["chrome", "edge", "firefox", "yandex", "opera", "brave"],
+                            "description": "Только если пользователь назвал браузер"}
             },
             "required": ["action"]
         }
@@ -777,29 +777,20 @@ TOOLS = [
     {
         "name": "movie_player",
         "description": (
-            "Управляет видеоплеером фильмов и сериалов через VK Видео (https://vkvideo.ru/): "
-            "запуск фильма на vkvideo.ru, пауза (Space), полный экран (F), "
-            "перемотка вперед/назад на 10 сек (←/→), громкость (↑/↓), выход. "
-            "Вызывай когда пользователь говорит: включи фильм X, поставь X, фильм X, "
-            "пауза, продолжай, перемотай, полный экран, вперёд, назад, громче фильм, тише, выйти из фильма."
+            "Фильмы и сериалы: play + title — найти и открыть фильм (VK Видео, Кинопоиск, IVI, Okko; "
+            "provider — если пользователь назвал сайт). Управление тем, что идёт в браузере: pause, "
+            "resume, fullscreen, seek_forward/seek_back (±10 с), exit — закрыть вкладку с фильмом."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action": {
                     "type": "STRING",
-                    "description": (
-                        "play (запустить фильм на vkvideo.ru) | pause (Space, переключатель) | "
-                        "resume (Space) | fullscreen (F) | "
-                        "seek_forward (→ 10 сек) | seek_back (← 10 сек) | "
-                        "volume_up (громкость +10%) | volume_down (-10%) | "
-                        "exit (выход + закрыть вкладку)"
-                    )
+                    "enum": ["play", "pause", "resume", "fullscreen", "seek_forward", "seek_back",
+                             "volume_up", "volume_down", "exit"],
                 },
-                "title": {
-                    "type": "STRING",
-                    "description": "Название фильма для воспроизведения на vkvideo.ru (для action=play)"
-                }
+                "title": {"type": "STRING", "description": "Название фильма/сериала для play"},
+                "provider": {"type": "STRING", "enum": ["auto", "vk", "kinopoisk", "ivi", "okko", "youtube"]},
             },
             "required": ["action"]
         }
@@ -1502,7 +1493,11 @@ class Jarvis:
             output_audio_transcription={},
             input_audio_transcription={},  # Без language_code (Pydantic не принимает)
             system_instruction="\n".join(parts),
-            tools=[{"function_declarations": TOOLS}],
+            # Встроенный Google Search: «кто выиграл», «курс доллара», новости —
+            # модель ищет сама и отвечает по свежим данным. Сессия с ним не
+            # подключается — run() отключает его и пробует без (_grounding).
+            tools=([{"google_search": {}}] if getattr(self, "_grounding", False) else [])
+                  + [{"function_declarations": TOOLS}],
             # Голосовая сессия без сжатия контекста живёт ~15 минут, потом
             # сервер её закрывает. Скользящее окно снимает лимит, а handle
             # возобновления переносит разговор через разрыв: раньше после
@@ -2686,9 +2681,11 @@ class Jarvis:
         # Теперь пробуем бесконечно, фатальны только проблемы с ключом.
         failures = 0
         first_connect = True
+        self._grounding = os.getenv("JARVIS_GOOGLE_SEARCH", "1") != "0"
 
         while True:
             connected = 0.0
+            low = ""
             try:
                 print("[ДЖАРВИС] 🔌 Подключение к Gemini...")
                 self.ui.set_state("RECONNECTING")
@@ -2777,6 +2774,13 @@ class Jarvis:
                 # это неудача, а не разрыв: пауза растёт.
                 failures += 1
                 delay = min(2 ** failures, _RECONNECT_MAX_SEC)
+                # Сессия с поиском Google падает сразу — значит, модель его
+                # не принимает: работаем без него, чем не работать вовсе.
+                if self._grounding and (failures >= 2 or "search" in low or "tool" in low):
+                    self._grounding = False
+                    logger.warning("Встроенный поиск Google отключён: сессия с ним не подключается")
+                    self.ui.write_log("SYS: встроенный поиск Google недоступен — ищу своим поиском")
+                    delay = 0.5
                 # Протухший handle возобновления сервер не примет — и цикл
                 # бился бы в него бесконечно. Со второй неудачи — чистый старт.
                 if failures >= 2:
