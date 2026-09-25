@@ -76,6 +76,7 @@ class _MicStream:
         self._frames = frames
         self._callback = kwargs.get("callback")
         self.delivered = 0
+        self.active = True
 
     def __enter__(self):
         for frame in self._frames:
@@ -153,6 +154,7 @@ def стенд(tmp_path, monkeypatch):
 
     ui = _UI()
     jarvis = jarvis_main.Jarvis(ui)
+    jarvis._input_device = None     # устройство уже выбрано (как после первого подключения)
     out = _OutStream()
     jarvis._open_output = lambda: out
 
@@ -509,7 +511,7 @@ async def test_команда_из_чужой_речи_не_выполняетс
     j._turn_done_event = asyncio.Event()
 
     task = asyncio.create_task(j._receive_audio())
-    for _ in range(50):
+    for _ in range(300):
         if session.tool_responses:
             break
         await asyncio.sleep(0.01)
@@ -554,3 +556,72 @@ def test_причина_разрыва_видна_сквозь_exceptiongroup():
     err = BaseExceptionGroup("unhandled errors in a TaskGroup",
                              [RuntimeError("1008 policy violation")])
     assert "1008" in jarvis_main._root_error_text(err)
+
+
+@pytest.mark.asyncio
+async def test_команда_выполняется_если_имя_пришло_после_вызова(по_имени, monkeypatch):
+    """Расшифровка с именем отстала от вызова инструмента — команда не теряется."""
+    выполнено = []
+
+    async def поддельный_инструмент(self, fc):
+        выполнено.append(fc.name)
+        return jarvis_main.types.FunctionResponse(id=fc.id, name=fc.name, response={"ok": True})
+    monkeypatch.setattr(jarvis_main.Jarvis, "_execute_tool", поддельный_инструмент)
+
+    j = по_имени.jarvis
+    session = _ToolSession([
+        _resp(heard="открой хром"),
+        _tool_resp("open_app", {"app_name": "chrome"}),
+        _resp(heard=" Джарвис"),
+    ])
+    j.session = session
+    j.audio_in_queue = asyncio.Queue()
+    j._turn_done_event = asyncio.Event()
+
+    task = asyncio.create_task(j._receive_audio())
+    for _ in range(300):
+        if session.tool_responses:
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+
+    assert выполнено == ["open_app"]
+
+
+class _SwitchSession(_Session):
+    """Посреди ответа голос переключают на gemini (инструмент switch_voice)."""
+
+    async def receive(self):
+        yield _resp(heard="включи голос джемини")
+        yield _resp(said="Секунду, сэр. ")
+        await asyncio.sleep(0.05)
+        jarvis_main.set_voice_provider.__globals__["_VOICE_PROVIDER"] = "gemini"
+        yield _resp(said="", turn_complete=True)
+        while True:
+            await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_голос_переключили_посреди_ответа_микрофон_не_глохнет(стенд, поддельный_fish):
+    """Fish начал ответ, голос сменили на gemini — воркер обязан завершиться."""
+    j = стенд.jarvis
+    j.session = _SwitchSession([])
+    j.audio_in_queue = asyncio.Queue()
+    j._turn_done_event = asyncio.Event()
+    task = asyncio.create_task(j._receive_audio())
+    await asyncio.sleep(0.3)
+    task.cancel()
+
+    assert поддельный_fish == ["Секунду, сэр."]
+    assert j._active_synth_tasks == 0, "воркер Fish висит — микрофон глух навсегда"
+
+
+def test_разговор_без_имени_продлевается_ограниченно(по_имени):
+    j = по_имени.jarvis
+    j.wake()
+    продлений = 0
+    for _ in range(jarvis_main._FOLLOWUPS + 3):
+        before = j._followups_left
+        j._continue_conversation()
+        продлений += before > j._followups_left
+    assert продлений == jarvis_main._FOLLOWUPS

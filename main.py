@@ -249,7 +249,9 @@ _WAKE_MODE = os.getenv("JARVIS_WAKE_MODE", "wake_word").strip().lower()
 _AWAKE_SEC = float(os.getenv("JARVIS_AWAKE_SEC", "30"))
 # Расшифровка пишет имя по-разному: Джарвис, Жарвис, Джервис, Джарвиз,
 # Jarvis — плюс узбекская/казахская латиница и падежи («Джарвису»).
-_WAKE_RE = re.compile(r"(?:д?ж|дз|ч)[аеэя]р[вф]и|j[ae]rv[iy]|djarvi|jarvi", re.IGNORECASE)
+_WAKE_RE = re.compile(
+    r"(?<![а-яёa-z])(?:дж|ж|дз|ҷ)[аеэя]р?[вф][иеэыіа]|(?<![a-z])(?:dj|j|ch)[ae]r?v[iey]",
+    re.IGNORECASE)
 
 
 def _has_wake_word(text: str) -> bool:
@@ -263,15 +265,34 @@ _ECHO_TAIL_SEC = float(os.getenv("JARVIS_ECHO_TAIL_SEC", "0.5"))
 
 # Потолок паузы между попытками подключения к Gemini.
 _RECONNECT_MAX_SEC = 30.0
+# Сессия считается здоровой, если прожила столько — иначе разрыв сразу после
+# подключения идёт с нарастающей паузой, а не крутится по два раза в секунду.
+_SESSION_HEALTHY_SEC = 10.0
+# Сколько секунд без кадров считать, что микрофон отвалился (см. _listen_audio).
+_MIC_STALL_SEC = 2.0
+# Fish ждёт следующий кусок ответа не дольше этого (см. _fish_worker).
+_FISH_IDLE_SEC = 20.0
+# Сколько ждать расшифровку с именем, если вызов инструмента пришёл раньше.
+_TOOL_WAKE_WAIT_SEC = 1.5
+# Сколько реплик подряд без имени продолжают разговор (см. _continue_conversation).
+_FOLLOWUPS = int(os.getenv("JARVIS_FOLLOWUPS", "4"))
 
 
-def _device_is_silent(index: int, seconds: float = 0.05) -> bool:
-    """Проверяет, является ли устройство мёртвым или фантомным виртуальным входом."""
+def _device_is_silent(index: int, seconds: float = 0.05, need_signal: bool = True) -> bool:
+    """Проверяет, является ли устройство мёртвым или фантомным виртуальным входом.
+
+    need_signal=False — достаточно, что устройство открывается и пишет.
+    Гарнитура и микрофон с шумоподавлением (ASUS AI, Krisp) в тихой комнате
+    честно отдают цифровой ноль, и проверка «есть ли сигнал» отбрасывала их
+    в пользу встроенного массива.
+    """
     try:
         import numpy as np
         rec = sd.rec(int(seconds * SEND_SAMPLE_RATE), samplerate=SEND_SAMPLE_RATE,
                      channels=1, dtype="int16", device=index)
         sd.wait()
+        if not need_signal:
+            return False
         peak = int(np.abs(rec).max())
         return peak == 0
     except Exception as exc:
@@ -300,7 +321,7 @@ def _pick_input_device():
         if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
             continue
         name = d["name"].lower()
-        if any(k in name for k in ("headset", "headphone", "bluetooth", "wireless", "buds", "airpods", "freebuds", "wh-1000", "airdots", "гарнитур", "наушник", "hands-free", "usb")) and not _device_is_silent(i):
+        if any(k in name for k in ("headset", "headphone", "bluetooth", "wireless", "buds", "airpods", "freebuds", "wh-1000", "airdots", "гарнитур", "наушник", "hands-free", "usb")) and not _device_is_silent(i, need_signal=False):
             # Веб-камера тоже «USB», но её микрофон — через всю комнату.
             is_camera = any(k in name for k in ("cam", "камер"))
             if not is_camera and "virtual" not in name and "line" not in name and "output" not in name:
@@ -313,7 +334,7 @@ def _pick_input_device():
         if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
             continue
         name = d["name"].lower()
-        if any(k in name for k in ("noise-cancelling", "noise cancelling", "noise-canceling", "шумоподавлен", "ai noise")) and not _device_is_silent(i):
+        if any(k in name for k in ("noise-cancelling", "noise cancelling", "noise-canceling", "шумоподавлен", "ai noise")) and not _device_is_silent(i, need_signal=False):
             if "virtual line" not in name and "output" not in name:
                 logger.info("Выбран микрофон с аппаратным шумоподавлением: «%s» (индекс %d)", d["name"], i)
                 return i
@@ -1150,6 +1171,9 @@ class Jarvis:
         self._speaker_meter  = None   # см. _listen_audio: не слушаем свои динамики
         self._turn_done_event: asyncio.Event | None = None
         self._awake_until    = 0.0    # см. _WAKE_MODE: до какого момента идёт разговор
+        self._followups_left = 0      # сколько реплик без имени ещё продолжат разговор
+        self._rearm_after_speech = False
+        self._fish_task: asyncio.Task | None = None
         self._echo_guard_until = 0.0  # см. _ECHO_TAIL_SEC
         self._resume_handle: str | None = None  # возобновление сессии после разрыва
 
@@ -1260,6 +1284,12 @@ class Jarvis:
 
     def cleanup(self):
         """Корректное освобождение системных ресурсов и дочерних процессов."""
+        try:
+            import core.ducking_controller as dc
+            if dc._singleton is not None:
+                dc._singleton.close()     # вернуть громкость другим программам
+        except Exception:
+            pass
         if hasattr(self, "_hotkey_mgr") and self._hotkey_mgr:
             try:
                 self._hotkey_mgr.stop()
@@ -1276,19 +1306,30 @@ class Jarvis:
     # ── Текстовый ввод ────────────────────────────────────────────────────────
     def _send_text_to_session(self, text: str):
         """Отправляет текстовое сообщение в Live-сессию с корректной структурой типов."""
-        if not self._loop or not self.session or not self._loop.is_running() or not text:
+        if not text:
+            return
+        if not self._loop or not self.session or not self._loop.is_running():
+            # Раньше текст молча пропадал — команда «ушла», ответа нет.
+            logger.warning("Нет связи с Gemini — сообщение не отправлено: %s", text[:60])
+            self.ui.write_log("SYS: нет связи с Gemini, повторите через пару секунд")
             return
         content = types.Content(
             role="user",
             parts=[types.Part.from_text(text=text)],
         )
-        asyncio.run_coroutine_threadsafe(
+        fut = asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
                 turns=[content],
                 turn_complete=True,
             ),
             self._loop,
         )
+
+        def _report(f):
+            if not f.cancelled() and f.exception():
+                logger.warning("Сообщение в Gemini не ушло: %s", f.exception())
+                self.ui.write_log("SYS: сообщение не отправилось — повторите")
+        fut.add_done_callback(_report)
 
     def _on_text_command(self, text: str):
         # Normalize text before sending
@@ -1304,10 +1345,24 @@ class Jarvis:
         """Открывает окно разговора: следующие _AWAKE_SEC Джарвис отвечает
         без имени. Зовут: имя в речи, F8, текстовая команда, сам Джарвис."""
         was_awake = self.is_awake()
-        self._awake_until = time.monotonic() + _AWAKE_SEC
+        self._followups_left = _FOLLOWUPS
+        self._arm()
         if not was_awake:
             logger.info("Джарвис слушает (окно %.0f с)", _AWAKE_SEC)
             self._show_listen_state()
+
+    def _arm(self):
+        self._awake_until = time.monotonic() + _AWAKE_SEC
+        # Окно отсчитывается от конца ответа — один раз на выданное окно.
+        self._rearm_after_speech = True
+
+    def _continue_conversation(self):
+        """Реплика без имени в окне разговора продлевает его ограниченное
+        число раз. Раньше каждый ответ продлевал окно заново, и речь из
+        телевизора держала Джарвиса «проснувшимся» без конца."""
+        if self._followups_left > 0:
+            self._followups_left -= 1
+            self._arm()
 
     def is_awake(self) -> bool:
         return _WAKE_MODE == "always_on" or time.monotonic() < self._awake_until
@@ -1324,9 +1379,10 @@ class Jarvis:
         if was and not value:
             self._echo_guard_until = time.monotonic() + _ECHO_TAIL_SEC
             # Окно разговора отсчитывается от конца ответа, а не от начала:
-            # иначе длинный ответ съедал бы его целиком.
-            if self.is_awake():
-                self.wake()
+            # иначе длинный ответ съедал бы его целиком. Только раз на окно.
+            if self._rearm_after_speech and self.is_awake():
+                self._rearm_after_speech = False
+                self._awake_until = time.monotonic() + _AWAKE_SEC
         if value:
             self.ui.set_state("SPEAKING")
             try:
@@ -1334,13 +1390,19 @@ class Jarvis:
                 ducking_controller.set_state(DuckingState.SPEAKING)
             except Exception:
                 pass
-        elif not self.ui.muted:
-            self._show_listen_state(force=True)
-            try:
-                from core.ducking_controller import ducking_controller, DuckingState
-                ducking_controller.set_state(DuckingState.RESTORING)
-            except Exception:
-                pass
+        else:
+            if not self.ui.muted:
+                self._show_listen_state(force=True)
+            # Вернуть звук — всегда, и при выключенном микрофоне: раньше
+            # Ctrl+M во время ответа оставлял музыку приглушённой навсегда.
+            self._release_ducking()
+
+    def _release_ducking(self):
+        try:
+            from core.ducking_controller import ducking_controller, DuckingState
+            ducking_controller.set_state(DuckingState.RESTORING)
+        except Exception:
+            pass
 
     def _show_listen_state(self, force: bool = False):
         """«СЛУШАЕТ» — идёт разговор и имя не нужно; «ОЖИДАЕТ» — ждёт «Джарвис».
@@ -1796,6 +1858,7 @@ class Jarvis:
                     import time
                     import os
                     time.sleep(1.5)
+                    self.cleanup()     # os._exit не зовёт atexit: иначе звук остался бы приглушён
                     os._exit(0)
                 threading.Thread(target=_shutdown, daemon=True).start()
 
@@ -1803,46 +1866,53 @@ class Jarvis:
                 result = f"Неизвестный инструмент: {name}"
 
         except Exception as e:
+            # Ошибку модель получает в ответе инструмента и сама скажет о ней.
+            # Раньше здесь ещё и speak_error() слал отдельную реплику в сессию —
+            # Джарвис отвечал дважды, второй раз «сам себе».
             result = f"Ошибка инструмента '{name}': {e}"
             traceback.print_exc()
-            self.speak_error(name, e)
+            self.ui.write_log(f"ERR: {name} — {str(e)[:100]}")
 
-        # Обновление контекста (новый мозг)
-        if name in ["movie_player", "music_player", "set_mode"]:
-            activity = name
-            if name == "movie_player":
-                action = args.get("action", "")
-                if action == "play":
-                    title = args.get("title", "")
-                    if title:
-                        self.user_profile.add_to_history("recent_movies", title)
-                        activity = f"watching_movie: {title}"
-            elif name == "music_player":
-                action = args.get("action", "")
-                if action == "play":
-                    query = args.get("query", "")
-                    if query:
-                        self.user_profile.add_to_history("recent_music", query)
-                        activity = f"listening_music: {query}"
-            elif name == "set_mode":
-                mode = args.get("mode", "")
-                activity = f"mode_{mode}"
-
-            self.user_profile.update_context(activity=activity)
-
-            # Запись действия для прогнозирования (новый мозг)
-            context = {
-                "time": datetime.now().strftime("%H:%M"),
-                "emotion": self.user_profile.get_context().get("last_emotion", "neutral"),
-                "mode": get_current_mode().get("mode", "normal")
-            }
-            self.proactive_engine.record_action(name, context)
+        # Профиль и прогнозы пишутся на диск — в поток, и их сбой не должен
+        # рвать сессию: без ответа на вызов модель ждёт его и после реконнекта.
+        try:
+            await asyncio.to_thread(self._remember_tool_use, name, args)
+        except Exception as exc:
+            logger.debug("Профиль не обновлён: %s", exc, exc_info=True)
 
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
         print(f"[ДЖАРВИС] 📤 {name} → {str(result)[:80]}")
         return types.FunctionResponse(id=fc.id, name=name, response={"result": result})
+
+    def _remember_tool_use(self, name: str, args: dict):
+        """Обновление контекста (новый мозг)."""
+        if name not in ("movie_player", "music_player", "set_mode"):
+            return
+        activity = name
+        if name == "movie_player" and args.get("action", "") == "play":
+            title = args.get("title", "")
+            if title:
+                self.user_profile.add_to_history("recent_movies", title)
+                activity = f"watching_movie: {title}"
+        elif name == "music_player" and args.get("action", "") == "play":
+            query = args.get("query", "")
+            if query:
+                self.user_profile.add_to_history("recent_music", query)
+                activity = f"listening_music: {query}"
+        elif name == "set_mode":
+            activity = f"mode_{args.get('mode', '')}"
+
+        self.user_profile.update_context(activity=activity)
+
+        # Запись действия для прогнозирования (новый мозг)
+        context = {
+            "time": datetime.now().strftime("%H:%M"),
+            "emotion": self.user_profile.get_context().get("last_emotion", "neutral"),
+            "mode": get_current_mode().get("mode", "normal")
+        }
+        self.proactive_engine.record_action(name, context)
 
     # ── Отправка аудио на сервер ──────────────────────────────────────────────
     async def _send_realtime(self):
@@ -1946,6 +2016,7 @@ class Jarvis:
         preroll = collections.deque(maxlen=10)
 
         def callback(indata, frames, time_info, status):
+            self._mic_last_cb = time.monotonic()
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
             if jarvis_speaking or time.monotonic() < self._echo_guard_until:
@@ -2006,26 +2077,47 @@ class Jarvis:
                 {"data": pcm_bytes, "mime_type": "audio/pcm"},
             )
 
-        try:
-            with sd.InputStream(
-                samplerate=SEND_SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="int16",
-                blocksize=CHUNK_SIZE,
-                device=_pick_input_device(),
-                latency="low",
-                callback=callback,
-            ):
-                print("[ДЖАРВИС] 🎤 Поток микрофона открыт")
-                while True:
-                    await asyncio.sleep(0.1)
-                    self._show_listen_state()   # окно разговора истекло → «ОЖИДАЕТ»
-        except Exception as e:
-            logger.error(f"Microphone error: {e}")
-            traceback.print_exc()
-            # Don't raise - let the task be recreated
-            # Brief pause before attempting to continue
-            await asyncio.sleep(1)
+        # Поток микрофона живёт в цикле. Раньше при выдернутой гарнитуре или
+        # смене устройства в Windows колбэк просто переставал вызываться, а
+        # задача спала дальше; при ошибке открытия — выходила, и микрофона не
+        # было до следующего переподключения. Джарвис «игнорировал».
+        backoff = 1.0
+        while True:
+            device = getattr(self, "_input_device", "unset")
+            if device == "unset":
+                # Перебор устройств пишет пробы звука — не в событийном цикле.
+                device = await asyncio.to_thread(_pick_input_device)
+                self._input_device = device
+            try:
+                with sd.InputStream(
+                    samplerate=SEND_SAMPLE_RATE,
+                    channels=CHANNELS,
+                    dtype="int16",
+                    blocksize=CHUNK_SIZE,
+                    device=device,
+                    latency="low",
+                    callback=callback,
+                ) as stream:
+                    print("[ДЖАРВИС] 🎤 Поток микрофона открыт")
+                    self._mic_last_cb = time.monotonic()
+                    backoff = 1.0
+                    while True:
+                        await asyncio.sleep(0.1)
+                        self._show_listen_state()   # окно разговора истекло → «ОЖИДАЕТ»
+                        silent_for = time.monotonic() - self._mic_last_cb
+                        if not stream.active or silent_for > _MIC_STALL_SEC:
+                            logger.warning("Микрофон замолчал (%.1f с без кадров) — переоткрываю", silent_for)
+                            self.ui.write_log("SYS: микрофон пропал — переподключаю…")
+                            break
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("Microphone error: %s", e)
+                self.ui.write_log("SYS: микрофон не открывается — пробую снова…")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 10.0)
+            # Устройство могло исчезнуть — выбираем заново.
+            self._input_device = "unset"
 
     async def _speak_fish(self, text: str):
         """Озвучивает готовый текст голосом Джарвиса из Telegram-бота."""
@@ -2080,7 +2172,13 @@ class Jarvis:
 
             async def feed():
                 while True:
-                    fragment = await fragments.get()
+                    # Страховка: конец ответа не пришёл (разрыв, сбой) — не
+                    # держать микрофон глухим вечно.
+                    try:
+                        fragment = await asyncio.wait_for(fragments.get(), _FISH_IDLE_SEC)
+                    except asyncio.TimeoutError:
+                        logger.warning("Fish: конец ответа не пришёл за %.0f с — закрываю", _FISH_IDLE_SEC)
+                        break
                     if fragment is None:
                         break
                     ordered.put_nowait(asyncio.create_task(synth(fragment)))
@@ -2171,6 +2269,69 @@ class Jarvis:
             except (asyncio.QueueEmpty, asyncio.QueueFull):
                 pass
 
+    def _drop_pending_speech(self):
+        """Выбросить недоигранный ответ: Gemini прервал ход или начался новый.
+        Иначе старый ответ доигрывал поверх нового."""
+        task = getattr(self, "_fish_task", None)
+        if task and not task.done():
+            task.cancel()
+        self._fish_task = None
+        q = self.audio_in_queue
+        if q is not None:
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+    async def _run_tool_calls(self, function_calls, allowed: bool):
+        responses = []
+        for fc in function_calls:
+            if not allowed:
+                # Команда из чужого разговора: «выключи свет»
+                # по телевизору не должно выключать свет.
+                logger.info("Инструмент %s не выполнен: обращались не ко мне", fc.name)
+                responses.append(types.FunctionResponse(
+                    id=fc.id, name=fc.name,
+                    response={"result": "Не выполнено: реплика адресована не Джарвису. Промолчи."},
+                ))
+                continue
+            print(f"[ДЖАРВИС] 📞 {fc.name}")
+            # Джарвис у Старка не работает молча: HUD всегда
+            # показывает, на что наведён.
+            try:
+                self.ui.lock_on(fc.name)
+            except Exception as exc:
+                logger.debug("Прицел не встал: %s", exc, exc_info=True)
+            _tool_started = time.perf_counter()
+            try:
+                fr = await self._execute_tool(fc)
+            except Exception as exc:
+                # Сбой инструмента не должен рвать сессию: без ответа на
+                # вызов модель так и ждёт его после переподключения.
+                logger.exception("Инструмент %s упал", fc.name)
+                fr = types.FunctionResponse(id=fc.id, name=fc.name,
+                                            response={"result": f"Ошибка: {exc}"})
+            finally:
+                # Медленный инструмент — самая частая причина
+                # паузы, которую слышно как «завис».
+                self._latency.add_tool(
+                    fc.name,
+                    int((time.perf_counter() - _tool_started) * 1000),
+                )
+            responses.append(fr)
+        await self.session.send_tool_response(function_responses=responses)
+
+    async def _deferred_tool_calls(self, function_calls, named: asyncio.Event):
+        """Вызов пришёл раньше расшифровки с именем — ждём её немного.
+        Раньше такой вызов отклонялся сразу: «Джарвис, открой хром» при
+        отставшей расшифровке молча не выполнялось."""
+        try:
+            await asyncio.wait_for(named.wait(), _TOOL_WAKE_WAIT_SEC)
+        except asyncio.TimeoutError:
+            pass
+        await self._run_tool_calls(function_calls, named.is_set() or self.is_awake())
+
     async def _receive_audio(self):
         print("[ДЖАРВИС] 👂 Приём запущен")
         out_buf, in_buf = [], []
@@ -2178,28 +2339,37 @@ class Jarvis:
         # Джарвису, False — речь не к нему. Звук ответа до решения копится в
         # held: имя может прийти в расшифровке чуть позже первых байт ответа.
         addressed: bool | None = None
+        named = asyncio.Event()      # в этом ходе прозвучало имя
         held: list[bytes] = []
         # Голос Fish: расшифровка ответа ещё не отданная в синтез и очередь
         # кусков для _fish_worker этого хода (см. _take_speakable).
         fish_text = ""
         fish_q: asyncio.Queue | None = None
 
-        def fish_flush(final: bool = False):
-            nonlocal fish_text, fish_q
-            if not addressed or get_voice_provider() != "fish":
-                return
-            chunks, fish_text = _take_speakable(fish_text, fish_q is None, final)
-            if chunks and fish_q is None:
-                fish_q = asyncio.Queue()
-                self._spawn(self._fish_worker(fish_q))
-            for chunk in chunks:
-                fish_q.put_nowait(chunk)
-            if final and fish_q is not None:
+        def fish_close():
+            nonlocal fish_q
+            # Закрываем очередь всегда, при любом голосе: пока её не закрыли,
+            # воркер считается говорящим, и микрофон глух. Раньше закрытие
+            # пропускалось, если голос переключили на gemini посреди ответа.
+            if fish_q is not None:
                 fish_q.put_nowait(None)
                 fish_q = None
 
+        def fish_flush(final: bool = False):
+            nonlocal fish_text, fish_q
+            if addressed and get_voice_provider() == "fish":
+                chunks, fish_text = _take_speakable(fish_text, fish_q is None, final)
+                if chunks and fish_q is None:
+                    self._drop_pending_speech()   # один голос за раз
+                    fish_q = asyncio.Queue()
+                    self._fish_task = self._spawn(self._fish_worker(fish_q))
+                for chunk in chunks:
+                    fish_q.put_nowait(chunk)
+            if final:
+                fish_close()
+
         def decide() -> bool:
-            return self.is_awake() or _has_wake_word("".join(in_buf))
+            return self.is_awake() or named.is_set()
 
         try:
             while True:
@@ -2214,15 +2384,25 @@ class Jarvis:
                         logger.info("Gemini просит переподключиться (GoAway)")
                         raise ConnectionResetError("GoAway от сервера")
 
-                    if response.server_content and response.server_content.input_transcription:
-                        txt = response.server_content.input_transcription.text
+                    sc = response.server_content
+
+                    if sc and getattr(sc, "interrupted", None):
+                        # Сервер оборвал ответ (новая реплика) — хвост не доигрываем.
+                        self._drop_pending_speech()
+                        held = []
+                        fish_text = ""
+                        fish_close()
+
+                    if sc and sc.input_transcription:
+                        txt = sc.input_transcription.text
                         if txt:
                             in_buf.append(txt)
                             self._latency.mark_transcript()
                             print(f"[ДЖАРВИС] 🎤 Фрагмент: '{txt}'")
-                            if _has_wake_word("".join(in_buf)):
+                            if not named.is_set() and _has_wake_word("".join(in_buf)):
+                                named.set()
                                 self.wake()
-                                if addressed is False or addressed is None:
+                                if addressed is not True:
                                     addressed = True
                                     for chunk in held:
                                         if get_voice_provider() != "fish":
@@ -2244,9 +2424,7 @@ class Jarvis:
                         else:
                             held.append(response.data)
 
-                    if response.server_content:
-                        sc = response.server_content
-
+                    if sc:
                         if sc.output_transcription and sc.output_transcription.text:
                             out_buf.append(sc.output_transcription.text)
                             fish_text += sc.output_transcription.text
@@ -2268,12 +2446,15 @@ class Jarvis:
 
                             full_in = _clean_dialog_text("".join(in_buf))
                             full_out = _clean_dialog_text("".join(out_buf))
+                            by_name = named.is_set()
                             in_buf, out_buf, held = [], [], []
                             was_addressed, addressed = addressed, None
+                            named = asyncio.Event()
 
                             if not was_addressed:
                                 if full_in:
                                     logger.info("Не ко мне, молчу: «%s»", full_in[:80])
+                                self._release_ducking()
                                 continue
 
                             if full_in:
@@ -2284,44 +2465,23 @@ class Jarvis:
                                 asyncio.get_running_loop().run_in_executor(
                                     None, self._learn_from_phrase, full_in
                                 )
+                                # Продолжение разговора без имени продлевает окно
+                                # лишь несколько раз подряд — иначе телевизор держал
+                                # бы Джарвиса «проснувшимся» бесконечно.
+                                if not by_name:
+                                    self._continue_conversation()
 
                             if full_out:
                                 self.ui.write_log(f"Джарвис: {full_out}")
-                                self.wake()
 
                     if response.tool_call:
                         if addressed is None:
                             addressed = decide()
-                        responses = []
-                        for fc in response.tool_call.function_calls:
-                            if not addressed:
-                                # Команда из чужого разговора: «выключи свет»
-                                # по телевизору не должно выключать свет.
-                                logger.info("Инструмент %s не выполнен: обращались не ко мне", fc.name)
-                                responses.append(types.FunctionResponse(
-                                    id=fc.id, name=fc.name,
-                                    response={"result": "Не выполнено: реплика адресована не Джарвису. Промолчи."},
-                                ))
-                                continue
-                            print(f"[ДЖАРВИС] 📞 {fc.name}")
-                            # Джарвис у Старка не работает молча: HUD всегда
-                            # показывает, на что наведён.
-                            try:
-                                self.ui.lock_on(fc.name)
-                            except Exception as exc:
-                                logger.debug("Прицел не встал: %s", exc, exc_info=True)
-                            _tool_started = time.perf_counter()
-                            try:
-                                fr = await self._execute_tool(fc)
-                            finally:
-                                # Медленный инструмент — самая частая причина
-                                # паузы, которую слышно как «завис».
-                                self._latency.add_tool(
-                                    fc.name,
-                                    int((time.perf_counter() - _tool_started) * 1000),
-                                )
-                            responses.append(fr)
-                        await self.session.send_tool_response(function_responses=responses)
+                        calls = response.tool_call.function_calls
+                        if addressed:
+                            await self._run_tool_calls(calls, True)
+                        else:
+                            self._spawn(self._deferred_tool_calls(calls, named))
 
         except Exception as e:
             logger.error("Приём оборвался: %s", e)
@@ -2330,6 +2490,8 @@ class Jarvis:
             # разговор продолжится с того же места.
             self.ui.write_log("SYS: связь с Gemini оборвалась — переподключаюсь…")
             raise
+        finally:
+            fish_close()
 
     # ── Воспроизведение аудио ─────────────────────────────────────────────────
     def _open_output(self):
@@ -2446,7 +2608,7 @@ class Jarvis:
         first_connect = True
 
         while True:
-            connected = False
+            connected = 0.0
             try:
                 print("[ДЖАРВИС] 🔌 Подключение к Gemini...")
                 self.ui.set_state("RECONNECTING")
@@ -2456,8 +2618,7 @@ class Jarvis:
                     client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
                     asyncio.TaskGroup() as tg,
                 ):
-                    connected = True
-                    failures = 0
+                    connected = time.monotonic()
                     self.session            = session
                     self._loop              = asyncio.get_event_loop()
                     # maxsize защищает от unbounded роста памяти
@@ -2526,11 +2687,14 @@ class Jarvis:
 
             self.set_speaking(False)
             self.session = None
-            if connected:
+            if connected and time.monotonic() - connected >= _SESSION_HEALTHY_SEC:
                 # Сессия жила и закрылась — обычный разрыв. Возвращаемся сразу,
                 # с тем же handle'ом возобновления: разговор продолжается.
+                failures = 0
                 delay = 0.5
             else:
+                # Упала сразу после подключения (отвергнутый handle, квота) —
+                # это неудача, а не разрыв: пауза растёт.
                 failures += 1
                 delay = min(2 ** failures, _RECONNECT_MAX_SEC)
                 # Протухший handle возобновления сервер не примет — и цикл

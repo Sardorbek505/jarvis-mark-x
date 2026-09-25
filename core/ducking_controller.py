@@ -81,106 +81,122 @@ class DuckingController:
 
         self._start_worker()
 
+    # ── Громкость: виртуальный уровень + сессии других программ ──────────────
+    #
+    # Раньше приглушалась ОБЩАЯ громкость устройства. Джарвис играет через
+    # это же устройство, поэтому его ответ звучал на 20%, а при запуске из
+    # исходников сессия python.exe резалась ещё и отдельно — до ~4%, почти
+    # неслышно. Теперь «громкость» здесь — виртуальный уровень 0..1, а
+    # применяется он только к сессиям ДРУГИХ программ (Spotify, браузер,
+    # плеер). Общую громкость Windows и свой процесс не трогаем никогда.
+    #
+    # Работа с CoreAudio (COM) — только в собственном потоке: раньше она шла
+    # прямо из колбэка микрофона и срывала первые кадры речи.
+
+    _HOLD_SEC = 6.0   # приглушили, а ответа так и нет — вернуть звук
+
     def _init_endpoint(self):
-        try:
-            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-            from comtypes import CLSCTX_ALL
-            speakers = AudioUtilities.GetSpeakers()
-            if speakers:
-                interface = speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                self._endpoint_volume = ctypes.cast(interface, ctypes.POINTER(IAudioEndpointVolume))
-                self._original_volume = self._get_master_volume()
-                self._current_volume = self._original_volume
-                logger.info("Audio Ducking: CoreAudio endpoint ready")
-        except Exception as e:
-            logger.debug("Audio Ducking: CoreAudio init note: %s", e)
+        self._endpoint_volume = None          # общую громкость не трогаем
+        self._original_volume = 1.0
+        self._current_volume = 1.0
+        self._applied_level = 1.0
+        self._ducked_at = 0.0
+        self._pycaw_ok = True
 
     def _get_master_volume(self) -> float:
-        if self._endpoint_volume is not None:
-            try:
-                import pythoncom
-                pythoncom.CoInitialize()
-                return float(self._endpoint_volume.GetMasterVolumeLevelScalar())
-            except Exception:
-                pass
-        return self._original_volume or 1.0
+        return self._current_volume if self._current_volume is not None else 1.0
 
     def _set_master_volume(self, vol: float):
-        vol = max(0.0, min(1.0, vol))
-        self._current_volume = vol
-        if self._endpoint_volume is not None:
-            try:
-                import pythoncom
-                pythoncom.CoInitialize()
-                self._endpoint_volume.SetMasterVolumeLevelScalar(vol, None)
-            except Exception as e:
-                logger.debug("Set volume error: %s", e)
+        self._current_volume = max(0.0, min(1.0, vol))
 
-    def _duck_active_sessions(self, target_ratio: float):
-        """Приглушает громкость активных медиа-сессий (Spotify, Chrome, Браузеры, VLC)."""
+    def _sessions(self):
+        """Аудиосессии чужих программ. Пусто, если pycaw недоступен."""
+        if not self._pycaw_ok:
+            return []
         try:
-            import pythoncom
-            pythoncom.CoInitialize()
             from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
+        except Exception:
+            self._pycaw_ok = False
+            logger.info("Audio Ducking: pycaw не установлен — музыка приглушаться не будет")
+            return []
+        import os
+        own = os.getpid()
+        out = []
+        for session in AudioUtilities.GetAllSessions():
+            pid = session.ProcessId
+            if not pid or pid == own:
+                continue
+            try:
+                name = (session.Process.name() if session.Process else "").lower()
+            except Exception:
+                name = ""
+            if any(k in name for k in ("jarvis", "audiodg", "system")):
+                continue
+            out.append((pid, session._ctl.QueryInterface(ISimpleAudioVolume)))
+        return out
 
-            sessions = AudioUtilities.GetAllSessions()
-            for session in sessions:
-                proc_name = (session.Process.name() if session.Process else "").lower()
-                # Не трогаем системные службы и сам JARVIS
-                if any(k in proc_name for k in ("jarvis", "denoise", "audiodg", "system")):
-                    continue
-
-                volume_ctl = session._ctl.QueryInterface(ISimpleAudioVolume)
-                current_vol = float(volume_ctl.GetMasterVolume())
-
-                if session.ProcessId not in self._saved_session_vols:
-                    self._saved_session_vols[session.ProcessId] = current_vol
-
-                orig = self._saved_session_vols.get(session.ProcessId, current_vol)
-                new_session_vol = max(0.05, orig * target_ratio)
-                volume_ctl.SetMasterVolume(new_session_vol, None)
+    def _apply_sessions(self, level: float):
+        """Выставляет чужим сессиям level от их громкости до приглушения."""
+        if abs(level - self._applied_level) < 0.01:
+            return
+        try:
+            if level >= 0.999:
+                self._restore_active_sessions()
+            else:
+                for pid, ctl in self._sessions():
+                    if pid not in self._saved_session_vols:
+                        self._saved_session_vols[pid] = float(ctl.GetMasterVolume())
+                    ctl.SetMasterVolume(max(0.02, self._saved_session_vols[pid] * level), None)
+            self._applied_level = level
         except Exception as e:
             logger.debug("Duck sessions note: %s", e)
 
-    def _restore_active_sessions(self):
-        """Восстанавливает исходную громкость всех приложений."""
-        try:
-            import pythoncom
-            pythoncom.CoInitialize()
-            from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
+    def _duck_active_sessions(self, target_ratio: float):
+        self._apply_sessions(target_ratio)
 
-            sessions = AudioUtilities.GetAllSessions()
-            for session in sessions:
-                if session.ProcessId in self._saved_session_vols:
-                    orig = self._saved_session_vols[session.ProcessId]
-                    volume_ctl = session._ctl.QueryInterface(ISimpleAudioVolume)
-                    volume_ctl.SetMasterVolume(orig, None)
-            self._saved_session_vols.clear()
-        except Exception as e:
-            logger.debug("Restore sessions note: %s", e)
+    def _restore_active_sessions(self):
+        """Возвращает чужим программам громкость до приглушения."""
+        if self._saved_session_vols:
+            try:
+                for pid, ctl in self._sessions():
+                    if pid in self._saved_session_vols:
+                        ctl.SetMasterVolume(self._saved_session_vols[pid], None)
+            except Exception as e:
+                logger.debug("Restore sessions note: %s", e)
+        self._saved_session_vols.clear()
+        self._applied_level = 1.0
 
     def _start_worker(self):
         def _loop():
+            try:
+                import comtypes
+                comtypes.CoInitialize()
+            except Exception:
+                pass
             while self._active:
                 time.sleep(self.step_sec)
                 with self._lock:
-                    if self._fade_target is None:
-                        continue
-
-                    now = time.time()
-                    elapsed = (now - self._fade_start_time) * 1000.0
-                    progress = min(1.0, elapsed / max(1.0, self._fade_duration))
-
-                    # S-curve / Экспоненциальная плавная интерполяция (Cos)
-                    blend = 0.5 * (1.0 - math.cos(progress * math.pi))
-                    new_vol = self._fade_start_vol + (self._fade_target - self._fade_start_vol) * blend
-
-                    self._set_master_volume(new_vol)
-
-                    if progress >= 1.0:
-                        self._fade_target = None
-                        if self.state == DuckingState.RESTORING:
-                            self.state = DuckingState.IDLE
+                    if self._fade_target is not None:
+                        now = time.time()
+                        elapsed = (now - self._fade_start_time) * 1000.0
+                        progress = min(1.0, elapsed / max(1.0, self._fade_duration))
+                        # S-curve / Экспоненциальная плавная интерполяция (Cos)
+                        blend = 0.5 * (1.0 - math.cos(progress * math.pi))
+                        self._set_master_volume(
+                            self._fade_start_vol + (self._fade_target - self._fade_start_vol) * blend)
+                        if progress >= 1.0:
+                            self._fade_target = None
+                            if self.state == DuckingState.RESTORING:
+                                self.state = DuckingState.IDLE
+                    # Приглушили на звук, а Джарвис так и не заговорил (кашель,
+                    # чужая речь, беззвучный инструмент) — отпускаем сами.
+                    elif (self.state in (DuckingState.LISTENING, DuckingState.THINKING)
+                          and time.time() - self._ducked_at > self._HOLD_SEC):
+                        self.state = DuckingState.RESTORING
+                        self._begin_fade(self._original_volume or 1.0, self.release_ms)
+                    level = self._get_master_volume()
+                self._apply_sessions(level)      # COM — вне блокировки
+            self._restore_active_sessions()
 
         self._fade_thread = threading.Thread(target=_loop, daemon=True, name="ducking-worker")
         self._fade_thread.start()
@@ -222,29 +238,28 @@ class DuckingController:
                     return
 
                 self._capture_original_volume()
+                self._ducked_at = time.time()
                 target_duck = max(0.05, (self._original_volume or 1.0) * self.duck_ratio)
-                logger.info("Audio Ducking: [ATTACK] -> %.0f%% за %.0f мс", target_duck * 100, self.attack_ms)
+                logger.debug("Audio Ducking: [ATTACK] -> %.0f%% за %.0f мс", target_duck * 100, self.attack_ms)
                 self._begin_fade(target_duck, self.attack_ms)
-                self._duck_active_sessions(self.duck_ratio)
 
                 if self.auto_pause_media:
                     self.pause_media()
 
             elif new_state in (DuckingState.THINKING, DuckingState.SPEAKING):
+                self._ducked_at = time.time()
                 target_duck = max(0.05, (self._original_volume or 1.0) * self.duck_ratio)
                 if abs(self._get_master_volume() - target_duck) > 0.05:
                     self._begin_fade(target_duck, 30.0)
 
             elif new_state == DuckingState.RESTORING:
                 target_restore = self._original_volume or 1.0
-                logger.info("Audio Ducking: [RELEASE] -> %.0f%% за %.0f мс", target_restore * 100, self.release_ms)
+                logger.debug("Audio Ducking: [RELEASE] -> %.0f%% за %.0f мс", target_restore * 100, self.release_ms)
                 self._begin_fade(target_restore, self.release_ms)
-                self._restore_active_sessions()
 
             elif new_state == DuckingState.IDLE:
                 if self._original_volume is not None:
                     self._begin_fade(self._original_volume, 100.0)
-                self._restore_active_sessions()
 
     def duck(self):
         """Шорткат для активации приглушения."""
@@ -273,13 +288,18 @@ class DuckingController:
             logger.debug("stop_media error: %s", e)
 
     def close(self):
+        """Остановить поток и вернуть громкость программам. Зовётся при выходе:
+        Windows помнит громкость приложений, и приглушённый Spotify остался
+        бы на 20% и после перезапуска."""
         self._active = False
-        if self._original_volume is not None:
-            try:
-                self._set_master_volume(self._original_volume)
-                self._restore_active_sessions()
-            except Exception:
-                pass
+        if self._fade_thread and self._fade_thread is not threading.current_thread():
+            self._fade_thread.join(timeout=1.0)
+        try:
+            import comtypes
+            comtypes.CoInitialize()
+        except Exception:
+            pass
+        self._restore_active_sessions()
 
 
 # ─── Ленивый общий экземпляр ──────────────────────────────────────────────────
