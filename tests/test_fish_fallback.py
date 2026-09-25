@@ -26,6 +26,8 @@ _TEXT = ("Первое предложение достаточной длины 
 class _Stub:
     """Минимальный носитель состояния для _speak_fish."""
 
+    _fish_worker = jarvis_main.Jarvis._fish_worker
+
     def __init__(self):
         self._speaking_lock = threading.Lock()
         self._active_synth_tasks = 0

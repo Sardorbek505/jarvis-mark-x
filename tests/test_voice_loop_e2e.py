@@ -96,7 +96,8 @@ def _resp(*, data=None, heard=None, said=None, turn_complete=False):
             output_transcription=SimpleNamespace(text=said) if said else None,
             turn_complete=turn_complete,
         )
-    return SimpleNamespace(data=data, server_content=content, tool_call=None)
+    return SimpleNamespace(data=data, server_content=content, tool_call=None,
+                           session_resumption_update=None, go_away=None)
 
 
 class _Session:
@@ -146,6 +147,9 @@ def стенд(tmp_path, monkeypatch):
     # Gemini намеренно выбрасывается. Тесты ниже проверяют именно путь Gemini,
     # поэтому провайдер тут не «как настроено у владельца», а заданный.
     monkeypatch.setattr(jarvis_main, "_VOICE_PROVIDER", "gemini")
+    # Проверки ниже — про сам конвейер звука, а не про обращение по имени:
+    # отвечаем на всё. Фильтр по имени проверяется отдельно, в конце файла.
+    monkeypatch.setattr(jarvis_main, "_WAKE_MODE", "always_on")
 
     ui = _UI()
     jarvis = jarvis_main.Jarvis(ui)
@@ -275,20 +279,28 @@ async def test_расшифровка_и_ответ_попадают_в_окно
     assert "Здравствуйте, сэр." in logs, "ответ Джарвиса не показан"
 
 
+@pytest.fixture
+def поддельный_fish(monkeypatch):
+    """Fish без сети: запоминает, что ему дали, и отдаёт метку вместо звука."""
+    from telegram_bot import tts_fish
+    сказанное = []
+
+    async def speak_pcm(text, sample_rate=None):
+        сказанное.append(text)
+        return b"\x11\x11" * 50
+    monkeypatch.setattr(tts_fish, "is_configured", lambda: True)
+    monkeypatch.setattr(tts_fish, "speak_pcm", speak_pcm)
+    monkeypatch.setattr(jarvis_main, "_VOICE_PROVIDER", "fish")
+    return сказанное
+
+
 @pytest.mark.asyncio
-async def test_с_голосом_fish_звук_gemini_не_играет(стенд, monkeypatch):
+async def test_с_голосом_fish_звук_gemini_не_играет(стенд, поддельный_fish):
     """Два голоса на один ответ — худшее из возможного.
 
     Когда говорит Fish, аудио Gemini обязано быть выброшено: иначе Charon и
     Джарвис произнесут одну и ту же реплику одновременно.
     """
-    monkeypatch.setattr(jarvis_main, "_VOICE_PROVIDER", "fish")
-    сказанное = []
-
-    async def поддельный_fish(self, text):
-        сказанное.append(text)
-    monkeypatch.setattr(jarvis_main.Jarvis, "_speak_fish", поддельный_fish)
-
     script = [
         _resp(heard="как дела"),
         _resp(data=b"\x01\x02" * 100),          # голос Charon — в мусор
@@ -297,8 +309,45 @@ async def test_с_голосом_fish_звук_gemini_не_играет(стен
 
     await _прогнать(стенд, [_loud()], script)
 
-    assert стенд.out.written == [], "звук Gemini не должен доходить до динамиков"
-    assert сказанное == ["Всё в норме, сэр."], "Fish должен получить текст ответа"
+    assert b"\x01\x02" * 100 not in стенд.out.written, "звук Gemini дошёл до динамиков"
+    assert поддельный_fish == ["Всё в норме, сэр."], "Fish должен получить текст ответа"
+    assert стенд.out.written == [b"\x11\x11" * 50]
+
+
+@pytest.mark.asyncio
+async def test_fish_начинает_говорить_до_конца_хода(стенд, поддельный_fish):
+    """Первое предложение уходит в синтез по своей точке, а не по turn_complete."""
+    j = стенд.jarvis
+    j.session = _Session([
+        _resp(heard="какая погода"),
+        _resp(said="Секунду, сэр. "),
+        _resp(said="Смотрю прогноз"),
+        # turn_complete нет: ход ещё идёт
+    ])
+    j.audio_in_queue = asyncio.Queue()
+    j._turn_done_event = asyncio.Event()
+
+    task = asyncio.create_task(j._receive_audio())
+    for _ in range(100):
+        if поддельный_fish:
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+
+    assert поддельный_fish == ["Секунду, сэр."], "Fish ждал конца хода"
+
+
+def test_нарезка_потока_ждёт_точку_и_порог():
+    куски, остаток = jarvis_main._take_speakable("Секунду, сэр. Смотрю", first=True, final=False)
+    assert куски == ["Секунду, сэр."] and остаток.strip() == "Смотрю"
+
+    # Без точки — ждём дальше; на конце хода — отдаём остаток.
+    assert jarvis_main._take_speakable("Смотрю прогноз", True, False) == ([], "Смотрю прогноз")
+    assert jarvis_main._take_speakable("Смотрю прогноз", True, True)[0] == ["Смотрю прогноз"]
+
+    # Короткое «Да.» не режем отдельным запросом к синтезу.
+    куски, _ = jarvis_main._take_speakable("Да. Сэр. ", first=True, final=False)
+    assert куски == []
 
 
 def test_первый_кусок_речи_короткий_остальные_содержательные():
@@ -363,3 +412,145 @@ async def test_молчание_пользователя_не_рождает_з�
     await _прогнать(стенд, [_quiet()], script)
 
     assert стенд.jarvis._latency._stats["answered"].count == 0
+
+
+# ─── Обращение по имени ───────────────────────────────────────────────────────
+
+def _tool_resp(name, args=None):
+    fc = SimpleNamespace(id="call-1", name=name, args=args or {})
+    return SimpleNamespace(data=None, server_content=None,
+                           tool_call=SimpleNamespace(function_calls=[fc]),
+                           session_resumption_update=None, go_away=None)
+
+
+class _ToolSession(_Session):
+    def __init__(self, script):
+        super().__init__(script)
+        self.tool_responses = []
+
+    async def send_tool_response(self, function_responses=None):
+        self.tool_responses.extend(function_responses or [])
+
+
+@pytest.fixture
+def по_имени(стенд):
+    стенд.monkeypatch.setattr(jarvis_main, "_WAKE_MODE", "wake_word")
+    return стенд
+
+
+@pytest.mark.asyncio
+async def test_чужая_речь_без_имени_не_озвучивается(по_имени):
+    """Телевизор и разговор по телефону не должны будить Джарвиса."""
+    script = [
+        _resp(heard="ну и что он тебе сказал"),
+        _resp(data=b"\x01\x02" * 100),
+        _resp(said="Боюсь, я не расслышал.", turn_complete=True),
+    ]
+    await _прогнать(по_имени, [_loud()], script, timeout=0.5)
+
+    assert по_имени.out.written == [], "ответ на чужую речь прозвучал"
+    assert not any("Джарвис:" in m for m in по_имени.ui.logs)
+
+
+@pytest.mark.asyncio
+async def test_обращение_по_имени_будит(по_имени):
+    script = [
+        _resp(heard="Джарвис, включи музыку"),
+        _resp(data=b"\x01\x02" * 100),
+        _resp(said="Разумеется, сэр.", turn_complete=True),
+    ]
+    await _прогнать(по_имени, [_loud()], script)
+
+    assert по_имени.out.written == [b"\x01\x02" * 100]
+    assert по_имени.jarvis.is_awake(), "после ответа разговор должен продолжаться"
+
+
+@pytest.mark.asyncio
+async def test_имя_после_первых_байт_ответа_не_теряет_звук(по_имени):
+    """Расшифровка может отстать от ответа: звук копится и доигрывает."""
+    script = [
+        _resp(heard="слушай"),
+        _resp(data=b"\x09\x09" * 50),
+        _resp(heard=" Жарвис"),
+        _resp(data=b"\x0a\x0a" * 50),
+        _resp(said="Слушаю, сэр.", turn_complete=True),
+    ]
+    await _прогнать(по_имени, [_loud()], script)
+
+    assert по_имени.out.written == [b"\x09\x09" * 50, b"\x0a\x0a" * 50]
+
+
+@pytest.mark.asyncio
+async def test_в_разговоре_имя_повторять_не_нужно(по_имени):
+    по_имени.jarvis.wake()
+    script = [
+        _resp(heard="а какая погода"),
+        _resp(data=b"\x05\x06" * 100),
+        _resp(said="Плюс двадцать, сэр.", turn_complete=True),
+    ]
+    await _прогнать(по_имени, [_loud()], script)
+
+    assert по_имени.out.written == [b"\x05\x06" * 100]
+
+
+@pytest.mark.asyncio
+async def test_команда_из_чужой_речи_не_выполняется(по_имени, monkeypatch):
+    выполнено = []
+
+    async def поддельный_инструмент(self, fc):
+        выполнено.append(fc.name)
+        return jarvis_main.types.FunctionResponse(id=fc.id, name=fc.name, response={"ok": True})
+    monkeypatch.setattr(jarvis_main.Jarvis, "_execute_tool", поддельный_инструмент)
+
+    j = по_имени.jarvis
+    session = _ToolSession([_resp(heard="выключи компьютер"), _tool_resp("computer_settings")])
+    j.session = session
+    j.audio_in_queue = asyncio.Queue()
+    j._turn_done_event = asyncio.Event()
+
+    task = asyncio.create_task(j._receive_audio())
+    for _ in range(50):
+        if session.tool_responses:
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+
+    assert выполнено == [], "инструмент из чужого разговора выполнился"
+    assert session.tool_responses and "не Джарвису" in str(session.tool_responses[0].response)
+
+
+@pytest.mark.parametrize("text", [
+    "Джарвис, привет", "джарвис", "Жарвис включи", "Джервис", "Jarvis, hi",
+    "эй Джарвиз", "Джарвису скажи", "Jarvis qalaysan",
+])
+def test_имя_узнаётся_в_расшифровке(text):
+    assert jarvis_main._has_wake_word(text)
+
+
+@pytest.mark.parametrize("text", ["привет", "включи музыку", "жара в марте", "журнал"])
+def test_без_имени_не_будит(text):
+    assert not jarvis_main._has_wake_word(text)
+
+
+# ─── Эхо, свои реплики, разрывы ──────────────────────────────────────────────
+
+def test_после_своей_речи_микрофон_ещё_не_слушает(стенд):
+    j = стенд.jarvis
+    j.set_speaking(True)
+    j.set_speaking(False)
+    import time as _t
+    assert j._echo_guard_until > _t.monotonic(), "хвост собственной речи уйдёт в облако"
+
+
+def test_speak_шлёт_указание_а_не_реплику_пользователя(стенд):
+    отправлено = []
+    стенд.jarvis._send_text_to_session = отправлено.append
+    стенд.jarvis.speak("Сэр, произошла ошибка.")
+    assert отправлено[0].startswith("[СИСТЕМА"), "модель ответит сама себе"
+    assert "Сэр, произошла ошибка." in отправлено[0]
+
+
+def test_причина_разрыва_видна_сквозь_exceptiongroup():
+    err = BaseExceptionGroup("unhandled errors in a TaskGroup",
+                             [RuntimeError("1008 policy violation")])
+    assert "1008" in jarvis_main._root_error_text(err)
