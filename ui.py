@@ -185,6 +185,8 @@ class HudCanvas(QWidget):
         # Громкость 0..1: микрофон или собственный голос. Атака мгновенная,
         # спад в _step — иначе шар дрожал бы на каждом кадре звука.
         self.level    = 0.0
+        # Сколько пикселей снизу занято полем ввода — шар и субтитры выше.
+        self.bottom_reserve = 0
 
         self._orb = DotOrb()
         self._rgb = list(_STATE_RGB["ИНИЦИАЛИЗАЦИЯ"])
@@ -435,12 +437,13 @@ class HudCanvas(QWidget):
         p.fillRect(self.rect(), qcol(C.BG))
 
         e = self._orb.energy
-        fw = min(W, H)
+        Hh = max(200, H - self.bottom_reserve)
+        fw = min(W, Hh)
         # Карточка справа — шар плавно уступает место влево и чуть сжимается.
         cv = self._card_vis * self._card_vis * (3 - 2 * self._card_vis)
         card_w = min(W * 0.42, 440.0) if W > 560 else 0.0
         R = fw * 0.25 * (1.0 + 0.05 * e) * (1.0 - 0.14 * cv * (card_w > 0))
-        cx, cy = W / 2 - cv * card_w * 0.42, H / 2 - fw * 0.03
+        cx, cy = W / 2 - cv * card_w * 0.42, Hh / 2 - fw * 0.02 + 10
 
         # Свечение за шаром — сильнее, когда он говорит. Градиент во весь шар
         # дорог (2+ мс), поэтому он рисуется в картинку один раз на размер и
@@ -529,7 +532,7 @@ class HudCanvas(QWidget):
             bw = min(W * 0.84, 640)
             top = cy + ring_r + fw * 0.05
             p.setPen(QPen(QColor(236, 242, 246, int(235 * self._sub_alpha)), 1))
-            p.drawText(QRectF(cx - bw / 2, top, bw, H - top - 8),
+            p.drawText(QRectF(cx - bw / 2, top, bw, max(20, Hh - top)),
                        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
                        | Qt.TextFlag.TextWordWrap, text)
 
@@ -924,6 +927,13 @@ class MainWindow(QMainWindow):
         self._clock.setFont(QFont("Consolas", 8))
         self._clock.setStyleSheet(f"color: {C.TEXT_DIM}; background: {C.BG};")
         head_row.addWidget(self._clock)
+        self._chat_btn = QPushButton("≡  ДИАЛОГ")
+        self._chat_btn.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+        self._chat_btn.setFixedHeight(24)
+        self._chat_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._chat_btn.setToolTip("История диалога (Ctrl+J)")
+        self._chat_btn.clicked.connect(lambda: self._show_chat(not self._chat_open))
+        head_row.addWidget(self._chat_btn)
         self._mute_btn = QPushButton()
         self._mute_btn.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
         self._mute_btn.setFixedHeight(24)
@@ -937,71 +947,50 @@ class MainWindow(QMainWindow):
         head_wrap.setLayout(head_row)
         outer.addWidget(head_wrap)
 
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 12, 12)
-        body.setSpacing(12)
-        outer.addLayout(body, stretch=1)
-
-        # ── Центральный HUD ─────────────────────────────────────────
+        # ── Центральный HUD — на всю ширину, как на видео ────────────
         self._hud = HudCanvas(face_path)
-        body.addWidget(self._hud, stretch=1)
+        self._hud.bottom_reserve = 72           # место под поле ввода
+        outer.addWidget(self._hud, stretch=1)
+        self._hud.installEventFilter(self)
 
-        # ── Панель диалога ──────────────────────────────────────────
-        # Рамка панели подсвечивается цветом состояния — как окно на видео.
-        self._chat = QFrame()
+        # ── История диалога: выезжает справа поверх шара ─────────────
+        # Постоянная колонка чата отнимала треть экрана, а сказанное и так
+        # видно в субтитрах. Теперь история — по кнопке / Ctrl+J и прячется
+        # сама, когда ею не пользуются.
+        self._chat = QFrame(self._hud)
         self._chat.setObjectName("chat")
-        self._chat.setFixedWidth(360)
         chat_lay = QVBoxLayout(self._chat)
         chat_lay.setContentsMargins(0, 10, 0, 10)
-        chat_lay.setSpacing(8)
+        chat_lay.setSpacing(6)
 
+        top = QHBoxLayout()
+        top.setContentsMargins(14, 0, 8, 0)
         title = QLabel("ДИАЛОГ")
         tf = QFont("Segoe UI", 7, QFont.Weight.Bold)
         tf.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2.5)
         title.setFont(tf)
-        title.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; padding-left: 14px;")
-        chat_lay.addWidget(title)
+        title.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        top.addWidget(title)
+        top.addStretch()
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(24, 24)
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setToolTip("Скрыть (Esc)")
+        close_btn.clicked.connect(lambda: self._show_chat(False))
+        close_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {C.TEXT_DIM}; border: none; }}
+            QPushButton:hover {{ color: {C.WHITE}; }}
+        """)
+        top.addWidget(close_btn)
+        chat_lay.addLayout(top)
 
         self._log = LogWidget()
         chat_lay.addWidget(self._log, stretch=1)
 
-        input_row = QHBoxLayout()
-        input_row.setContentsMargins(10, 0, 10, 0)
-        input_row.setSpacing(6)
-        self._input = QLineEdit()
-        self._input.setPlaceholderText("Напишите Джарвису…")
-        self._input.setFont(QFont("Segoe UI", 9))
-        self._input.setFixedHeight(34)
-        self._input.setStyleSheet(f"""
-            QLineEdit {{
-                background: {C.PANEL2}; color: {C.TEXT};
-                border: 1px solid {C.BORDER}; border-radius: 17px; padding: 0px 14px;
-            }}
-            QLineEdit:focus {{ border: 1px solid {C.BORDER_B}; }}
-        """)
-        self._input.returnPressed.connect(self._send_text)
-        input_row.addWidget(self._input)
-
-        send_btn = QPushButton("↑")
-        send_btn.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        send_btn.setFixedSize(34, 34)
-        send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        send_btn.setToolTip("Отправить (Enter)")
-        send_btn.clicked.connect(self._send_text)
-        send_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {C.WHITE}; color: {C.BG};
-                border: none; border-radius: 17px;
-            }}
-            QPushButton:hover {{ background: #ffffff; }}
-        """)
-        input_row.addWidget(send_btn)
-        chat_lay.addLayout(input_row)
-
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(14, 0, 14, 0)
         btn_row.setSpacing(14)
-        for label, slot in [("Очистить", self._clear_log), ("Свернуть", self.close)]:
+        for label, slot in [("Очистить", self._clear_log), ("Свернуть в трей", self.close)]:
             b = QPushButton(label)
             b.setFont(QFont("Segoe UI", 7))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1014,10 +1003,56 @@ class MainWindow(QMainWindow):
         btn_row.addStretch()
         chat_lay.addLayout(btn_row)
 
-        body.addWidget(self._chat)
+        self._chat_open = False
+        self._chat_touched = 0.0
+        self._unread = False
+        self._style_chat_btn()
+        from PyQt6.QtCore import QEasingCurve, QPropertyAnimation
+        self._chat_anim = QPropertyAnimation(self._chat, b"pos", self)
+        self._chat_anim.setDuration(280)
+        self._chat_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        # ── Поле ввода: «таблетка» внизу по центру ─────────────────
+        # Узкая в покое, расширяется, когда в ней печатают. Начать печатать
+        # можно откуда угодно в окне — буква сама уходит в поле.
+        self._pill = QFrame(self._hud)
+        self._pill.setObjectName("pill")
+        pill_lay = QHBoxLayout(self._pill)
+        pill_lay.setContentsMargins(16, 4, 4, 4)
+        pill_lay.setSpacing(6)
+        self._input = QLineEdit()
+        self._input.setPlaceholderText("Напишите Джарвису…")
+        self._input.setFont(QFont("Segoe UI", 9))
+        self._input.setStyleSheet(f"""
+            QLineEdit {{ background: transparent; color: {C.TEXT}; border: none; }}
+        """)
+        self._input.returnPressed.connect(self._send_text)
+        self._input.installEventFilter(self)
+        pill_lay.addWidget(self._input)
+        send_btn = QPushButton("↑")
+        send_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        send_btn.setFixedSize(30, 30)
+        send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        send_btn.setToolTip("Отправить (Enter)")
+        send_btn.clicked.connect(self._send_text)
+        send_btn.setStyleSheet(f"""
+            QPushButton {{ background: {C.WHITE}; color: {C.BG}; border: none; border-radius: 15px; }}
+            QPushButton:hover {{ background: #ffffff; }}
+        """)
+        pill_lay.addWidget(send_btn)
+        self._pill_anim = QPropertyAnimation(self._pill, b"geometry", self)
+        self._pill_anim.setDuration(220)
+        self._pill_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._style_pill(False)
+
+        self._chat_timer = QTimer(self)
+        self._chat_timer.timeout.connect(self._chat_autohide)
+        self._chat_timer.start(1000)
+
         self._chat_accent((63, 208, 189))
         self._started = time.monotonic()
         self._tools_run = 0
+        self._place_overlays()
 
         # ── Оверлей настройки (поверх всего) ───────────────────────
         self._overlay = None
@@ -1026,6 +1061,9 @@ class MainWindow(QMainWindow):
         # ── Горячие клавиши ─────────────────────────────────────────
         QShortcut(QKeySequence("Ctrl+M"), self).activated.connect(self._toggle_mute)
         QShortcut(QKeySequence("Ctrl+L"), self).activated.connect(self._clear_log)
+        QShortcut(QKeySequence("Ctrl+J"), self).activated.connect(
+            lambda: self._show_chat(not self._chat_open))
+        QShortcut(QKeySequence("Esc"), self).activated.connect(self._on_escape)
 
         # ── Таймеры ─────────────────────────────────────────────────
         self._metric_timer = QTimer(self)
@@ -1034,6 +1072,7 @@ class MainWindow(QMainWindow):
         self._update_metrics()
 
         self._log_sig.connect(self._log.append_log)
+        self._log_sig.connect(self._mark_unread)
         self._state_sig.connect(self._apply_state)
         self._level_sig.connect(self._hud.feed_level)
         self._tool_sig.connect(self._hud.lock_on)
@@ -1198,12 +1237,114 @@ class MainWindow(QMainWindow):
         ])
         self._clock.setText(time.strftime("%H:%M"))
 
+    # ── история и поле ввода ───────────────────────────────────────────────
+    _CHAT_W = 380
+
+    def eventFilter(self, obj, ev):
+        from PyQt6.QtCore import QEvent
+        if not hasattr(self, "_pill"):          # окно ещё собирается
+            return super().eventFilter(obj, ev)
+        if obj is self._hud and ev.type() == QEvent.Type.Resize:
+            self._place_overlays()
+        elif obj is self._input and ev.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
+            self._style_pill(ev.type() == QEvent.Type.FocusIn, animate=True)
+        return super().eventFilter(obj, ev)
+
+    def _chat_rect(self, open_: bool) -> QRectF:
+        W, H = self._hud.width(), self._hud.height()
+        w = min(self._CHAT_W, max(260, W - 40))
+        x = W - w - 12 if open_ else W + 8
+        return QRectF(x, 12, w, max(200, H - 24 - self._hud.bottom_reserve))
+
+    def _pill_rect(self, wide: bool) -> QRectF:
+        W, H = self._hud.width(), self._hud.height()
+        w = min(W - 40, 560 if wide else 360)
+        return QRectF((W - w) / 2, H - 56, w, 40)
+
+    def _place_overlays(self):
+        r = self._chat_rect(self._chat_open)
+        self._chat_anim.stop()
+        self._chat.setGeometry(r.toRect())
+        self._pill_anim.stop()
+        self._pill.setGeometry(self._pill_rect(self._input.hasFocus()).toRect())
+        self._chat.raise_()
+        self._pill.raise_()
+
+    def _show_chat(self, open_: bool):
+        if open_ == self._chat_open:
+            return
+        self._chat_open = open_
+        self._chat_touched = time.monotonic()
+        if open_:
+            self._unread = False
+            self._style_chat_btn()
+        self._chat_anim.stop()
+        self._chat_anim.setStartValue(self._chat.pos())
+        self._chat_anim.setEndValue(self._chat_rect(open_).topLeft().toPoint())
+        self._chat_anim.start()
+
+    def _chat_autohide(self):
+        if not self._chat_open:
+            return
+        now = time.monotonic()
+        if self._chat.underMouse() or self._input.hasFocus():
+            self._chat_touched = now
+        elif now - self._chat_touched > 12.0:
+            self._show_chat(False)
+
+    def _mark_unread(self, text: str):
+        if not self._chat_open and text[:4].lower() in ("вы: ", "джар"):
+            self._unread = True
+            self._style_chat_btn()
+
+    def _style_chat_btn(self):
+        dot = "  ●" if self._unread else ""
+        self._chat_btn.setText(f"≡  ДИАЛОГ{dot}")
+        col = C.WHITE if self._unread else C.TEXT_MED
+        self._chat_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {col};
+                border: 1px solid {C.BORDER_B}; border-radius: 12px; padding: 0px 12px;
+            }}
+            QPushButton:hover {{ color: {C.WHITE}; border: 1px solid {C.TEXT_DIM}; }}
+        """)
+
+    def _style_pill(self, focused: bool, animate: bool = False):
+        border = C.BORDER_B if focused else C.BORDER
+        self._pill.setStyleSheet(f"""
+            QFrame#pill {{
+                background: rgba(10, 16, 23, 235);
+                border: 1px solid {border}; border-radius: 20px;
+            }}
+        """)
+        if animate:
+            self._pill_anim.stop()
+            self._pill_anim.setStartValue(self._pill.geometry())
+            self._pill_anim.setEndValue(self._pill_rect(focused).toRect())
+            self._pill_anim.start()
+
+    def _on_escape(self):
+        if self._chat_open:
+            self._show_chat(False)
+        elif self._input.hasFocus():
+            self._input.clearFocus()
+
+    def keyPressEvent(self, e):
+        # Начал печатать где угодно — буква уходит в поле ввода.
+        txt = e.text()
+        if txt and txt.isprintable() and not self._input.hasFocus() and \
+                not (e.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)):
+            self._input.setFocus()
+            self._input.insert(txt)
+            return
+        super().keyPressEvent(e)
+
     def _chat_accent(self, rgb):
         """Рамка чата и точка в шапке — цвета состояния, приглушённо."""
         r, g, b = rgb
         self._chat.setStyleSheet(f"""
             QFrame#chat {{
-                background: {C.PANEL};
+                background: rgba(7, 12, 17, 240);
                 border: 1px solid rgba({r}, {g}, {b}, 70);
                 border-radius: 12px;
             }}
