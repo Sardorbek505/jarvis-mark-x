@@ -99,5 +99,7 @@ def send_to_telegram(
 def telegram_sender_action(params: dict) -> str:
     """Точка входа для инструментов."""
     text = params.get("text") or params.get("message") or ""
-    send_screen = params.get("send_screenshot", False) or "скриншот" in text.lower() or "экран" in text.lower()
+    # Снимок экрана — только по явной просьбе (send_screenshot). Раньше любое
+    # «экран» в тексте прикладывало скриншот со всем, что было открыто.
+    send_screen = bool(params.get("send_screenshot", False))
     return send_to_telegram(text=text, send_screenshot=send_screen)

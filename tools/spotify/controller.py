@@ -133,19 +133,19 @@ class SpotifyController:
             if method == 'GET':
                 response = requests.get(
                     f"{self.API_BASE}{endpoint}",
-                    headers=self.devices.headers
+                    headers=self.devices.headers, timeout=(3, 10)
                 )
             elif method == 'PUT':
                 response = requests.put(
                     f"{self.API_BASE}{endpoint}",
                     headers=self.devices.headers,
-                    json=data
+                    json=data, timeout=(3, 10)
                 )
             elif method == 'POST':
                 response = requests.post(
                     f"{self.API_BASE}{endpoint}",
                     headers=self.devices.headers,
-                    json=data
+                    json=data, timeout=(3, 10)
                 )
 
             response.raise_for_status()
@@ -275,8 +275,11 @@ class SpotifyController:
                 
                 for playlist in user_playlists:
                     name = playlist.get('name', '')
-                    score = fuzz.partial_ratio(query.lower(), name.lower())
-                    if score > best_score and score > 60:  # 60% threshold
+                    # Только близкое совпадение названия (падеж — можно): partial_ratio > 60
+                    # давал «любэ» ~ «Любимое» = 86, и «включи Любэ» открывало
+                    # чужой по смыслу плейлист вместо исполнителя.
+                    score = fuzz.token_set_ratio(query.lower(), name.lower())
+                    if score > best_score and score >= 80:
                         best_score = score
                         best_playlist = playlist
                 

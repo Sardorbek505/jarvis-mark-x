@@ -254,6 +254,29 @@ def _focus_spotify_window() -> bool:
     return False
 
 
+def _foreground_title() -> str:
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        length = user32.GetWindowTextLengthW(hwnd)
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        return buf.value or ""
+    except Exception:
+        return ""
+
+
+def _spotify_in_front() -> bool:
+    """Клавиши шлём, только если впереди именно Spotify.
+
+    Windows часто не даёт фоновому процессу вывести окно вперёд, и раньше
+    Ctrl+A, Ctrl+V (запрос) и Enter уходили в то, что было открыто:
+    заменяли текст в документе или отправляли запрос сообщением в Telegram.
+    """
+    return "spotify" in _foreground_title().lower()
+
+
 # ─── Spotify Web API (для надёжного запуска треков) ───────────────────────────
 def _get_spotify_credentials() -> Optional[tuple]:
     """Возвращает (client_id, client_secret) если они есть в api_keys.json."""
@@ -365,6 +388,9 @@ def _ui_automation_search(query: str, player=None) -> bool:
 
         _focus_spotify_window()
         time.sleep(0.3)
+        if not _spotify_in_front():
+            _logger.warning("Spotify не на переднем плане — клавиши не отправляю")
+            return False
 
         # Стратегия 2: Поиск через активное поле (Ctrl+K и Ctrl+L)
         pyautogui.hotkey("ctrl", "k")
@@ -385,8 +411,12 @@ def _ui_automation_search(query: str, player=None) -> bool:
             pyautogui.hotkey("ctrl", "v")
 
         time.sleep(0.4)
+        if not _spotify_in_front():
+            return False
         pyautogui.press("enter")
         time.sleep(1.2)
+        if not _spotify_in_front():
+            return False
 
         # Воспроизведение: нажать Enter / Space / Media Play
         pyautogui.press("enter")

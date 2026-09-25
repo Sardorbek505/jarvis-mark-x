@@ -27,6 +27,8 @@ _OS = platform.system()
 # нужно его произнести (секунды 3-5 плюс задержка ответа): при 15 с на
 # сам ответ человеку оставалось меньше десяти секунд.
 _CONFIRM_SEC = 30.0
+# Сколько Windows ждёт перед выключением (можно отменить «отмени таймер сна»).
+_SHUTDOWN_DELAY_SEC = 60
 
 # speak() кладёт текст в Live-сессию от лица ПОЛЬЗОВАТЕЛЯ. Отдай туда голый
 # вопрос «Могу ли я выключить компьютер?» — и модель ответит на него сама,
@@ -118,6 +120,12 @@ class SleepTimerManager:
 
     def cancel_timer(self, player=None) -> str:
         """Отменяет активный таймер сна."""
+        if getattr(self, "_shutdown_scheduled", False) and _OS == "Windows":
+            subprocess.run(["shutdown", "/a"], capture_output=True, timeout=10)
+            self._shutdown_scheduled = False
+            if player:
+                player.write_log("SYS: ✕ Выключение отменено")
+            return "Выключение отменено, сэр. Компьютер останется включённым."
         if not self.is_active() and not self._is_waiting_confirmation:
             return "Таймер сна не был установлен, сэр."
 
@@ -194,11 +202,17 @@ class SleepTimerManager:
         try:
             if _OS == "Windows":
                 # Завершение работы Windows
-                subprocess.run(["shutdown", "/s", "/t", "0"], capture_output=True)
+                # Минута с системным предупреждением: мгновенное /t 0 теряло
+                # несохранённую работу, если «молчание» было случайным
+                # (микрофон выключен, переподключение, вышел на минуту).
+                subprocess.run(["shutdown", "/s", "/t", str(_SHUTDOWN_DELAY_SEC),
+                                "/c", "Джарвис: таймер сна. Скажите «отмени таймер сна»."],
+                               capture_output=True, timeout=10)
+                self._shutdown_scheduled = True
             elif _OS == "Darwin":
-                subprocess.run(["osascript", "-e", 'tell app "System Events" to shut down'])
+                subprocess.run(["osascript", "-e", 'tell app "System Events" to shut down'], timeout=10)
             else:
-                subprocess.run(["systemctl", "poweroff"])
+                subprocess.run(["systemctl", "poweroff"], timeout=10)
         except Exception as e:
             logger.error("SleepTimer shutdown error: %s", e)
 

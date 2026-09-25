@@ -184,6 +184,17 @@ def spotify_player(parameters: Dict[str, Any], player=None) -> str:
     
     # Playback actions
     if action in ("play", "start", "включить", "запустить", "поставь"):
+        playlist_url = (parameters.get("playlist_url") or "").strip()
+        if playlist_url:
+            # Ссылка важнее запроса. Раньше она здесь игнорировалась, и
+            # «включи мой плейлист для работы» просто продолжало последний трек.
+            from actions.music_player import _https_to_spotify_uri
+            uri = _https_to_spotify_uri(playlist_url) or playlist_url
+            res = spotify_api.play_context(uri)
+            if res.startswith("Открываю"):
+                return res
+            from actions.music_player import music_player
+            return music_player(parameters=parameters, player=player)
         if query:
             res = spotify_api.play_query(query)
             if not res or any(k in res.lower() for k in ("запускается", "недоступен", "не нашёл", "не нашел", "ошибка", "failed")):

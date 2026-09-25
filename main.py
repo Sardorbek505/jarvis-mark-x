@@ -272,6 +272,8 @@ _SESSION_HEALTHY_SEC = 10.0
 _MIC_STALL_SEC = 2.0
 # Fish ждёт следующий кусок ответа не дольше этого (см. _fish_worker).
 _FISH_IDLE_SEC = 20.0
+# Сколько ждать ответа инструмента, прежде чем сказать «не успело».
+_TOOL_TIMEOUT_SEC = float(os.getenv("JARVIS_TOOL_TIMEOUT_SEC", "45"))
 # Сколько ждать расшифровку с именем, если вызов инструмента пришёл раньше.
 _TOOL_WAKE_WAIT_SEC = 1.5
 # Сколько реплик подряд без имени продолжают разговор (см. _continue_conversation).
@@ -2305,7 +2307,14 @@ class Jarvis:
                 logger.debug("Прицел не встал: %s", exc, exc_info=True)
             _tool_started = time.perf_counter()
             try:
-                fr = await self._execute_tool(fc)
+                # Инструмент без ответа (Spotify не отвечает, браузерный вход в
+                # Google) держал весь приём: ни звука, ни реакции — «завис».
+                fr = await asyncio.wait_for(self._execute_tool(fc), _TOOL_TIMEOUT_SEC)
+            except asyncio.TimeoutError:
+                logger.error("Инструмент %s не ответил за %.0f с", fc.name, _TOOL_TIMEOUT_SEC)
+                self.ui.write_log(f"ERR: {fc.name} — нет ответа {_TOOL_TIMEOUT_SEC:.0f} с")
+                fr = types.FunctionResponse(id=fc.id, name=fc.name, response={
+                    "result": f"Не успело выполниться за {_TOOL_TIMEOUT_SEC:.0f} секунд."})
             except Exception as exc:
                 # Сбой инструмента не должен рвать сессию: без ответа на
                 # вызов модель так и ждёт его после переподключения.

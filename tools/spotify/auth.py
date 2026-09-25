@@ -92,7 +92,7 @@ class SpotifyAuth:
         }
         
         try:
-            response = requests.post(self.TOKEN_URL, data=data)
+            response = requests.post(self.TOKEN_URL, data=data, timeout=(3, 10))
             response.raise_for_status()
             
             token_data = response.json()
@@ -134,7 +134,7 @@ class SpotifyAuth:
         }
         
         try:
-            response = requests.post(self.TOKEN_URL, data=data)
+            response = requests.post(self.TOKEN_URL, data=data, timeout=(3, 10))
             response.raise_for_status()
             
             token_data = response.json()

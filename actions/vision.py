@@ -7,6 +7,7 @@ import io
 import logging
 import os
 import sys
+import threading
 from typing import Optional
 
 from core.paths import load_api_keys
@@ -26,6 +27,10 @@ def capture_screen_jpeg(max_size: int = 1280, quality: int = 80) -> bytes | None
     """Делает снимок основного экрана, масштабирует и возвращает JPEG-байты."""
     # 1. Сначала пробуем нативный захват через PyQt6 (наиболее стабильно на Windows)
     try:
+        # Qt-снимок — только из GUI-потока. Инструменты идут в пуле потоков,
+        # а виджеты/экран Qt из чужого потока — это падение процесса.
+        if threading.current_thread() is not threading.main_thread():
+            raise RuntimeError("не GUI-поток — снимаем через PIL/mss")
         from PyQt6.QtCore import QBuffer, QIODevice, Qt
         from PyQt6.QtGui import QGuiApplication
         from PyQt6.QtWidgets import QApplication
@@ -88,7 +93,8 @@ def capture_active_window_jpeg(max_size: int = 1280, quality: int = 80) -> bytes
             try:
                 import pygetwindow as gw
                 win = gw.getActiveWindow()
-                if win and win.width > 50 and win.height > 50:
+                on_gui_thread = threading.current_thread() is threading.main_thread()
+                if on_gui_thread and win and win.width > 50 and win.height > 50:
                     from PyQt6.QtCore import QBuffer, QIODevice, Qt
                     from PyQt6.QtGui import QGuiApplication
                     from PyQt6.QtWidgets import QApplication
@@ -233,8 +239,14 @@ def vision_action(params: dict) -> str:
         )
 
     src_lower = str(source).strip().lower()
-    if "камер" in prompt.lower() or "camera" in prompt.lower():
-        source = "camera"
-    elif "окно" in prompt.lower() or src_lower in ("window", "active_window", "active"):
+    explicit = bool(params.get("source") or mode)
+    if src_lower in ("window", "active_window", "active"):
         source = "active_window"
+    elif not explicit:
+        # Угадываем по словам только если источник не задан: «что за окном?»
+        # с source=camera раньше превращалось в скриншот активного окна.
+        if "камер" in prompt.lower() or "camera" in prompt.lower():
+            source = "camera"
+        elif "окно" in prompt.lower():
+            source = "active_window"
     return analyze_vision(prompt=prompt, source=source)

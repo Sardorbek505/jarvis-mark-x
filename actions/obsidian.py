@@ -138,7 +138,7 @@ def _do_append_daily(content: str, cfg: dict, vault: Path) -> str:
 
     line = f"- {datetime.now().strftime('%H:%M')} {content.strip()}\n"
     if path.exists():
-        existing = path.read_text(encoding="utf-8")
+        existing = path.read_text(encoding="utf-8", errors="replace")
         _write_md(path, existing.rstrip() + "\n" + line)
     else:
         header = f"# {today}\n\n## Журнал\n\n"
@@ -155,7 +155,7 @@ def _do_search(query: str, vault: Path) -> str:
     hits: list[tuple[str, str]] = []
     for path in _iter_notes(vault):
         try:
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         haystack = (path.stem + "\n" + text).lower()
@@ -193,7 +193,7 @@ def _do_read(title: str, vault: Path) -> str:
         return f"Заметку «{title}» не нашёл в базе знаний."
 
     try:
-        text = _strip_frontmatter(best.read_text(encoding="utf-8")).strip()
+        text = _strip_frontmatter(best.read_text(encoding="utf-8", errors="replace")).strip()
     except OSError as e:
         _logger.warning("Obsidian: не удалось прочитать %s: %s", best.name, e)
         return f"Не удалось прочитать заметку «{best.stem}»."

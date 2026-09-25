@@ -53,31 +53,44 @@ def computer_settings(parameters: dict, response=None, player=None) -> str:
     return f"Действие не распознано: {action}"
 
 
+def _desktop_dir() -> str:
+    """Настоящий рабочий стол. При OneDrive это не ~/Desktop — там папки
+    может не быть вовсе, и скриншот «сохранялся» в никуда."""
+    if _OS == "Windows":
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(260)
+            if ctypes.windll.shell32.SHGetFolderPathW(None, 0x10, None, 0, buf) == 0 and buf.value:
+                return buf.value            # CSIDL_DESKTOPDIRECTORY
+        except Exception:
+            pass
+    desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+    return desktop if os.path.isdir(desktop) else os.path.expanduser("~")
+
+
 def _screenshot(player) -> str:
     ts = time.strftime("%Y%m%d_%H%M%S")
-    home = os.path.expanduser("~")
-    path = os.path.join(home, f"Desktop/screenshot_{ts}.png")
+    path = os.path.join(_desktop_dir(), f"screenshot_{ts}.png")
     try:
-        if _OS == "Windows":
-            # PowerShell screenshot
-            ps_cmd = (
-                f'Add-Type -AssemblyName System.Windows.Forms; '
-                f'[System.Windows.Forms.Screen]::PrimaryScreen | Out-Null; '
-                f'$bmp = New-Object System.Drawing.Bitmap([System.Windows.Forms.SystemInformation]::PrimaryMonitorSize.Width, [System.Windows.Forms.SystemInformation]::PrimaryMonitorSize.Height); '
-                f'$g = [System.Drawing.Graphics]::FromImage($bmp); '
-                f'$g.CopyFromScreen(0,0,0,0,$bmp.Size); '
-                f'$bmp.Save("{path}")'
-            )
-            subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, timeout=10)
-        elif _OS == "Darwin":
-            subprocess.run(["screencapture", path], timeout=5)
-        else:
-            # Linux: попробуем несколько инструментов
-            for tool in ["scrot", "gnome-screenshot", "import"]:
-                result = subprocess.run([tool, path], capture_output=True, timeout=5)
-                if result.returncode == 0:
-                    break
+        try:
+            # mss снимает все мониторы в реальных пикселях — без обрезки при
+            # масштабе экрана 125-150%, которой страдал снимок через PowerShell.
+            import mss
+            import mss.tools
+            with mss.mss() as sct:
+                shot = sct.grab(sct.monitors[0])
+                mss.tools.to_png(shot.rgb, shot.size, output=path)
+        except ImportError:
+            if _OS == "Darwin":
+                subprocess.run(["screencapture", path], timeout=5)
+            else:
+                for tool in ["scrot", "gnome-screenshot", "import"]:
+                    result = subprocess.run([tool, path], capture_output=True, timeout=5)
+                    if result.returncode == 0:
+                        break
 
+        if not os.path.isfile(path):
+            return "Скриншот не получился, сэр."
         if player:
             player.write_log(f"FILE: Скриншот → {path}")
         return f"Скриншот сохранён: {path}"
@@ -149,24 +162,37 @@ def _ps_volume(mode: str, val: int = 10):
         # Нет прямого API — устанавливаем через nircmd если есть, иначе через PowerShell audio
         cmd = f"$obj = new-object -com wscript.shell; for($i=0;$i -lt 50;$i++){{$obj.SendKeys([char]174)}}; for($i=0;$i -lt {val//2};$i++){{$obj.SendKeys([char]175)}}"
     elif mode == "up":
-        cmd = f"$obj = new-object -com wscript.shell; for($i=0;$i -lt {max(1,val//4)};$i++){{$obj.SendKeys([char]175)}}"
+        cmd = f"$obj = new-object -com wscript.shell; for($i=0;$i -lt {max(1,val//2)};$i++){{$obj.SendKeys([char]175)}}"
     else:
-        cmd = f"$obj = new-object -com wscript.shell; for($i=0;$i -lt {max(1,val//4)};$i++){{$obj.SendKeys([char]174)}}"
+        cmd = f"$obj = new-object -com wscript.shell; for($i=0;$i -lt {max(1,val//2)};$i++){{$obj.SendKeys([char]174)}}"
     subprocess.run(["powershell", "-Command", cmd], capture_output=True, timeout=5)
 
 
 def _brightness(mode: str, value: str, player) -> str:
     try:
         if _OS == "Windows":
-            current = 50  # default guess
+            # Текущую яркость читаем, а не угадываем: раньше бралось 50, и
+            # «ярче» на экране с 90% делало его темнее.
+            read = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness).CurrentBrightness"],
+                capture_output=True, timeout=5)
+            out = read.stdout.decode("ascii", "ignore").strip().splitlines()
+            if read.returncode != 0 or not out or not out[0].strip().isdigit():
+                # Внешний монитор по DDC/WMI яркость не отдаёт — честно говорим.
+                return "Этот монитор не даёт менять яркость программно, сэр."
+            current = int(out[0].strip())
+            step = int(value) if str(value).isdigit() else 10
             if mode == "up":
-                v = min(100, current + int(value or 10))
+                v = min(100, current + step)
             elif mode == "down":
-                v = max(0, current - int(value or 10))
+                v = max(0, current - step)
             else:
-                v = int(value or 50)
+                v = max(0, min(100, int(value) if str(value).isdigit() else 50))
             cmd = f"(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,{v})"
-            subprocess.run(["powershell", "-Command", cmd], capture_output=True, timeout=5)
+            res = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, timeout=5)
+            if res.returncode != 0:
+                return "Не получилось изменить яркость, сэр."
             msg = f"Яркость: {v}%."
 
         elif _OS == "Darwin":

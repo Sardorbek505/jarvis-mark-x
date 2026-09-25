@@ -91,25 +91,16 @@ def _get_weather(city: str) -> str:
 
 
 def _get_calendar() -> str:
-    """Получает события календаря на сегодня."""
+    """Получает события календаря на сегодня.
+
+    Раньше get_events импортировался из actions.calendar, где его нет, и
+    разбирался как список словарей, хотя возвращает строку: календарь в
+    брифинге не появлялся ни разу — всегда «временно недоступно».
+    """
     try:
-        from actions.calendar import get_events
-        events = get_events("today")
-        
-        if not events:
-            return "Расписание чисто."
-        
-        # Формируем список событий
-        event_list = []
-        for event in events[:5]:  # Максимум 5 событий
-            time_str = event.get("time", "")
-            title = event.get("title", "Без названия")
-            if time_str:
-                event_list.append(f"{time_str} — {title}")
-            else:
-                event_list.append(title)
-        
-        return ". ".join(event_list)
+        from core.calendar_manager import get_events
+        events = (get_events("today") or "").strip()
+        return events or "Расписание чисто."
     except Exception:
         return "Расписание временно недоступно."
 
@@ -125,11 +116,13 @@ def _get_news() -> str:
             return "Новостная лента недоступна."
         
         # Берём топ-3 по relevance
-        top_articles = sorted(articles, key=lambda x: x.get("relevance", 0), reverse=True)[:3]
-        
+        # NewsArticle — объект, а не dict: .get() тут падал, и новости в
+        # брифинге тоже не появлялись никогда.
+        top_articles = sorted(articles, key=lambda x: getattr(x, "relevance_score", 0), reverse=True)[:3]
+
         headlines = []
         for article in top_articles:
-            title = article.get("title", "")
+            title = getattr(article, "title", "")
             if title:
                 headlines.append(title)
         

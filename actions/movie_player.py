@@ -56,6 +56,26 @@ def _focus_movie_player() -> bool:
     return False
 
 
+_VIDEO_TITLE_HINTS = ("vk видео", "vk video", "youtube", "rutube", "кинопоиск", "ivi",
+                      "okko", "netflix", "смотреть", "фильм", "сериал")
+
+
+def _video_in_front() -> bool:
+    """Впереди действительно вкладка с видео? Ctrl+W закрывает то, что впереди:
+    раньше при промахе фокуса это была вкладка VS Code или нужная страница."""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        length = user32.GetWindowTextLengthW(hwnd)
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        title = (buf.value or "").lower()
+    except Exception:
+        return False
+    return any(h in title for h in _VIDEO_TITLE_HINTS)
+
+
 def _send_hotkey_ctrl_w() -> bool:
     """Закрыть текущую вкладку браузера (Ctrl+W)."""
     if _HAS_PYAUTOGUI:
@@ -158,6 +178,8 @@ def _exit_movie(player=None) -> str:
     _send_key("escape")
     time.sleep(0.15)
 
+    if not _video_in_front():
+        return "Не вижу окна с фильмом впереди — вкладку не закрываю, сэр."
     if _send_hotkey_ctrl_w():
         if player:
             player.write_log("SYS: ✕ Закрыт режим фильма")
