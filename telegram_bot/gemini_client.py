@@ -153,6 +153,19 @@ def _is_quota_error(exc: Exception) -> bool:
     return "429" in s or "RESOURCE_EXHAUSTED" in s or "quota" in s.lower()
 
 
+def _unavailable_message(err: Exception | None) -> str:
+    """Что сказать человеку, когда не ответила ни одна модель. Причина важна:
+    заблокированный ключ лечится новым ключом, квота — ожиданием."""
+    s = str(err or "").lower()
+    if any(t in s for t in ("leaked", "api key not valid", "api_key_invalid",
+                            "permission_denied", "api key expired", "403")):
+        return ("Ключ Gemini заблокирован или недействителен. Нужен новый ключ: "
+                "aistudio.google.com/apikey → секрет GEMINI_API_KEY.")
+    if err is not None and _is_quota_error(err):
+        return "Лимит Gemini на сегодня исчерпан. Попробуй позже или подключи запасную модель (GROQ_API_KEY)."
+    return "Извини, ИИ сейчас недоступен (проблема с моделью Gemini). Проверь API-ключ и квоту."
+
+
 class GeminiClient:
     # Значения по умолчанию на классе: без запасных моделей и без отдыха
     # (см. __init__) — клиент ведёт себя как раньше.
@@ -298,7 +311,7 @@ class GeminiClient:
             text = await self._fallback.complete(contents, system_instruction)
             if text:
                 return text
-        return "Извини, ИИ сейчас недоступен (проблема с моделью Gemini). Проверь API-ключ и квоту."
+        return _unavailable_message(last_err)
 
     _EMBED_MODEL = "gemini-embedding-001"
     EMBED_DIM = 768

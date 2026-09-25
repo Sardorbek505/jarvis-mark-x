@@ -124,3 +124,14 @@ async def test_без_запасных_поведение_прежнее(monkeyp
     monkeypatch.setattr(client._client.models, "generate_content", падает)
 
     assert "недоступен" in await client.chat(1, "привет")
+
+
+@pytest.mark.parametrize("err, hint", [
+    ("403 PERMISSION_DENIED. Your API key was reported as leaked.", "заблокирован"),
+    ("400 API key not valid. Please pass a valid API key.", "заблокирован"),
+    ("429 RESOURCE_EXHAUSTED", "Лимит"),
+    ("500 internal", "недоступен"),
+])
+def test_бот_говорит_причину_отказа(err, hint):
+    from telegram_bot.gemini_client import _unavailable_message
+    assert hint in _unavailable_message(RuntimeError(err))
