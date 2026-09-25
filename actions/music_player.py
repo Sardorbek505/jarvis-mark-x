@@ -580,11 +580,7 @@ def _stop_music(player=None) -> str:
 
 
 def _volume(direction: str, player=None) -> str:
-    action = "увеличить громкость" if direction == "up" else "уменьшить громкость"
-    return computer_settings(
-        {"action": action, "value": "10"},
-        player=player,
-    )
+    return computer_settings({"action": f"volume_{direction}", "value": "10"}, player=player)
 
 
 # ─── Публичная точка входа ────────────────────────────────────────────────────

@@ -628,23 +628,28 @@ TOOLS = [
     {
         "name": "computer_control",
         "description": (
-            "Управляет настройками компьютера: громкость, яркость, скриншот, "
-            "блокировка экрана, выключение, перезагрузка."
+            "Системные настройки ПК. Громкость: «громче», «тише», «громкость 50», «выключи/включи звук». "
+            "Яркость: «ярче», «темнее», «яркость 30». Также lock — заблокировать, shutdown/restart — "
+            "выключить/перезагрузить ПК (только по явной просьбе), screenshot — ТОЛЬКО сохранить снимок "
+            "в файл (чтобы посмотреть на экран — look_at_screen). «Громче/тише» — это системная громкость, "
+            "если не сказано «музыку громче»."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action": {
                     "type": "STRING",
-                    "description": (
-                        "Действие: volume_up | volume_down | mute | "
-                        "brightness_up | brightness_down | screenshot | lock | "
-                        "shutdown | restart"
-                    )
+                    "enum": ["volume_up", "volume_down", "volume_set", "mute", "unmute",
+                             "brightness_up", "brightness_down", "brightness_set",
+                             "screenshot", "lock", "shutdown", "restart"],
                 },
-                "value": {"type": "STRING", "description": "Значение (например: 50 для 50%)"}
+                "value": {
+                    "type": "STRING",
+                    "description": ("Для *_set — целевой уровень 0-100 («50», «максимум»). "
+                                    "Для *_up/*_down — шаг в процентах, по умолчанию 10."),
+                },
             },
-            "required": []
+            "required": ["action"]
         }
     },
     {
@@ -1659,22 +1664,10 @@ class Jarvis:
 
             # ── Инструмент: управление компьютером ───────────────────
             elif name == "computer_control":
-                # Маппинг action → параметры
-                action_en = args.get("action", "")
-                action_map = {
-                    "volume_up":       {"action": "увеличить громкость", "value": args.get("value", "10")},
-                    "volume_down":     {"action": "уменьшить громкость", "value": args.get("value", "10")},
-                    "mute":            {"action": "без звука"},
-                    "brightness_up":   {"action": "увеличить яркость",  "value": args.get("value", "10")},
-                    "brightness_down": {"action": "уменьшить яркость",  "value": args.get("value", "10")},
-                    "screenshot":      {"action": "скриншот"},
-                    "lock":            {"action": "заблокировать"},
-                    "shutdown":        {"action": "выключить"},
-                    "restart":         {"action": "перезагрузить"},
-                }
-                mapped = action_map.get(action_en, {"action": action_en, "value": args.get("value", "")})
+                # Действия схемы computer_settings понимает напрямую.
+                params = {"action": args.get("action", ""), "value": args.get("value", "")}
                 r = await loop.run_in_executor(
-                    None, lambda: computer_settings(parameters=mapped, player=self.ui)
+                    None, lambda: computer_settings(parameters=params, player=self.ui)
                 )
                 result = r or "Готово."
 

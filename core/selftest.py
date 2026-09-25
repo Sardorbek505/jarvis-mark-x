@@ -31,7 +31,20 @@ def _check_wake() -> str:
     return f"модель {model.name} загружена за {time.monotonic() - t0:.1f} с"
 
 
-CHECKS = [("wake", _check_wake)]
+def _check_volume() -> str:
+    from actions.computer_settings import get_volume
+    v = get_volume()
+    if v is None:
+        raise RuntimeError("не Windows")
+    return f"громкость читается: {v}%"
+
+
+def _check_brightness() -> str:
+    import screen_brightness_control as sbc
+    return f"мониторов с яркостью: {len(sbc.list_monitors())}"
+
+
+CHECKS = [("wake", _check_wake), ("volume", _check_volume), ("brightness", _check_brightness)]
 REQUIRED = {"wake"}
 
 

@@ -189,14 +189,9 @@ def _exit_movie(player=None) -> str:
 
 
 def _volume(direction: str, player=None) -> str:
-    """Громкость в плеере и системная громкость."""
-    _focus_movie_player()
-    _send_key("up" if direction == "up" else "down")
-    action = "увеличить громкость" if direction == "up" else "уменьшить громкость"
-    return computer_settings(
-        {"action": action, "value": "10"},
-        player=player,
-    )
+    """Системная громкость. Раньше ещё жалась стрелка в плеере — в браузере
+    она прокручивала страницу, а не меняла звук."""
+    return computer_settings({"action": f"volume_{direction}", "value": "10"}, player=player)
 
 
 # ─── Публичная точка входа ────────────────────────────────────────────────────
