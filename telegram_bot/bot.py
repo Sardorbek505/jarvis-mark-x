@@ -1557,7 +1557,13 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await memory.ensure_loaded(user_id)
             if not gemini.has_history(user_id):
                 gemini.seed_history(user_id, await memory.recent_messages(user_id, 40))
-            reply = await gemini.chat_with_audio(user_id, audio, recall_text=transcript or "")
+            # Расшифровка уже есть — отвечаем на неё обычным чатом: с историей,
+            # памятью и запасными моделями. Сам звук модели нужен, только если
+            # расшифровать не вышло.
+            if transcript:
+                reply = await gemini.chat(user_id, transcript)
+            else:
+                reply = await gemini.chat_with_audio(user_id, audio)
             reply, summary = await _apply_reminder_directives(user_id, reply)
             reply = await _apply_send_directives(update, user_id, reply)
             if summary:

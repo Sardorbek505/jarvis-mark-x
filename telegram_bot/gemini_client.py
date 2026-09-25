@@ -358,22 +358,27 @@ class GeminiClient:
 
     async def chat_with_audio(self, user_id: int, audio_bytes: bytes,
                               mime_type: str = "audio/ogg", recall_text: str = "") -> str:
-        """Transcribe audio and respond as JARVIS. Supports ogg (Telegram) and wav (Mini App).
-        `recall_text` (the already-known transcript) enables notes/facts recall."""
-        contents = [
+        """Ответ на голосовое по самому звуку — когда расшифровки нет.
+
+        Указание «ответь на голосовое» идёт в системную инструкцию, а не
+        рядом со звуком: раньше оно лежало в реплике пользователя, и модель
+        отвечала на него — «Вы просили: транскрибируй это голосовое…».
+        """
+        history = self._history_for(user_id)
+        contents = history + [
             types.Content(
                 role="user",
-                parts=[
-                    types.Part(inline_data=types.Blob(mime_type=mime_type, data=audio_bytes)),
-                    types.Part(text="Транскрибируй это голосовое сообщение и ответь как JARVIS."),
-                ],
+                parts=[types.Part(inline_data=types.Blob(mime_type=mime_type, data=audio_bytes))],
             )
         ]
         recall = await self._recall_for(user_id, recall_text)
-        reply = await self._generate(contents, user_id=user_id, extra_system=recall)
+        hint = ("Последнее сообщение пользователя — голосовое. Ответь на то, что он "
+                "сказал, как в обычном разговоре. Не пересказывай и не упоминай "
+                "расшифровку.")
+        extra = f"{hint}\n\n{recall}" if recall else hint
+        reply = await self._generate(contents, user_id=user_id, extra_system=extra)
 
-        history = self._history_for(user_id)
-        history.append({"role": "user", "parts": [{"text": "[голосовое сообщение]"}]})
+        history.append({"role": "user", "parts": [{"text": recall_text or "[голосовое сообщение]"}]})
         history.append({"role": "model", "parts": [{"text": reply}]})
         self._trim_history(user_id)
         return reply
