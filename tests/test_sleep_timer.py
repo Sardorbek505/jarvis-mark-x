@@ -1,8 +1,6 @@
 """Unit tests for actions/sleep_timer.py — Smart Sleep Timer with voice confirmation."""
 
-import time
-from unittest.mock import MagicMock, patch
-import pytest
+from unittest.mock import patch
 
 from actions.sleep_timer import SleepTimerManager, sleep_timer
 

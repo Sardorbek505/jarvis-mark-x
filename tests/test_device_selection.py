@@ -1,6 +1,5 @@
 """Tests for intelligent audio input device selection (headphones priority)."""
 
-import pytest
 import main as jarvis_main
 
 

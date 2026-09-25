@@ -143,10 +143,11 @@ _PLAYBACK_RETRY_SEC = 1.0
 _NOISE_CANCEL_HINTS = ("noise-cancelling", "noise cancelling", "noise-canceling",
                        "шумоподавлен")
 
-# Сколько тишины ждать, прежде чем считать фразу законченной.
-# 220 мс обеспечивает мгновенную реакцию и диалог без неловких пауз.
-_VAD_SILENCE_MS = int(os.getenv("VAD_SILENCE_MS", "220"))
-_VAD_PREFIX_MS = int(os.getenv("VAD_PREFIX_MS", "60"))
+# Сколько тишины ждать, прежде чем считать фразу законченной. По умолчанию
+# модель ждёт около секунды — это и есть та самая пауза перед ответом.
+# Ниже 300 мс модель режет человека на паузах внутри фразы (см. _build_config).
+_VAD_SILENCE_MS = int(os.getenv("VAD_SILENCE_MS", "400"))
+_VAD_PREFIX_MS = int(os.getenv("VAD_PREFIX_MS", "120"))
 
 # Сколько модели позволено думать перед тем, как открыть рот.
 #
@@ -183,7 +184,17 @@ def _read_config_voice() -> str:
         pass
     return ""
 
-_VOICE_PROVIDER = (os.getenv("JARVIS_VOICE") or _read_config_voice() or "fish").strip().lower()
+def _default_voice() -> str:
+    # Без ключа Fish «киношный» голос недостижим: звук Gemini выбрасывается,
+    # а ответ ждёт полного текста и озвучивается Edge-TTS. Тогда пусть говорит
+    # сам Gemini — сразу и без лишней секунды.
+    try:
+        from telegram_bot import tts_fish
+        return "fish" if tts_fish.is_configured() else "gemini"
+    except Exception:
+        return "gemini"
+
+_VOICE_PROVIDER = (os.getenv("JARVIS_VOICE") or _read_config_voice() or _default_voice()).strip().lower()
 
 def get_voice_provider() -> str:
     global _VOICE_PROVIDER
@@ -292,15 +303,16 @@ def _pick_input_device():
     return None
 CHUNK_SIZE        = 1024
 
-# Порог тишины для микрофона (RMS по int16).
-# 35.0 обеспечивает высокую чувствительность к обычной речи и шёпоту
-# без необходимости повышать голос или кричать в микрофон ноутбука.
-MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "35.0"))
+# Порог тишины для микрофона (RMS по int16). Ниже него кадры в облако не
+# уходят вовсе. Речь в метре от ноутбука даёт ~1000-5000, тишина — единицы
+# и десятки. 150 отсекает пространственный шум комнаты, шёпот и шорохи.
+# Тихий микрофон — подобрать своё значение: scripts/mic_check.py.
+MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "150"))
 # Хвост тишины после речи — не косметика, а условие того, что тебе вообще
 # ответят. Конец фразы определяет VAD на стороне Gemini, и определить его он
 # может только по ПОЛУЧЕННОЙ тишине: когда гейт обрывает поток сразу за
 # последним громким кадром, сервер остаётся ждать продолжения фразы.
-MIC_HANGOVER_MS = int(os.getenv("MIC_HANGOVER_MS", "450"))
+MIC_HANGOVER_MS = int(os.getenv("MIC_HANGOVER_MS", str(_VAD_SILENCE_MS + 800)))
 _FRAME_MS = CHUNK_SIZE / SEND_SAMPLE_RATE * 1000
 MIC_HANGOVER_FRAMES = int(os.getenv(
     "MIC_HANGOVER_FRAMES", str(max(1, round(MIC_HANGOVER_MS / _FRAME_MS)))
@@ -1140,10 +1152,20 @@ class Jarvis:
 
     def _start_telegram_bot(self):
         """Запускает Telegram-бота в отдельном фоновом процессе при наличии токена."""
+        # В собранном .exe sys.executable — сам Джарвис: вместо бота
+        # запустилась бы его копия, а та — следующая.
+        if getattr(sys, "frozen", False) or os.getenv("JARVIS_AUTOSTART_BOT", "1") == "0":
+            return None
         try:
             from telegram_bot.config import load as load_config
             cfg = load_config(require_bot=False)
             if not cfg.telegram_token:
+                return None
+            # Бот уже живёт в облаке (Render/HF, вебхук). Локальный polling
+            # снял бы этот вебхук и увёл обновления у облачного бота.
+            if cfg.pc_link_url:
+                logger.info("Telegram-бот работает в облаке (%s) — локально не запускаю",
+                            cfg.pc_link_url)
                 return None
             bot_script = BASE_DIR / "telegram_bot" / "bot.py"
             if not bot_script.exists():
@@ -1803,7 +1825,9 @@ class Jarvis:
 
             pcm_bytes = indata.tobytes()
 
-            # Если в динамиках играет звук — проверяем ключевое слово для немедленного ducking
+            # Громко играет музыка/кино из своих динамиков — в облако не шлём:
+            # по громкости её от голоса не отличить (см. _IGNORE_SPEAKERS).
+            # Слушаем только ключевое слово «Джарвис», чтобы приглушить звук.
             if self._speaker_meter is not None and self._speaker_meter.peak > _SPEAKER_GATE:
                 if self._wake_detector:
                     if self._wake_detector.process_pcm(pcm_bytes):
@@ -1812,6 +1836,12 @@ class Jarvis:
                             ducking_controller.duck()
                         except Exception:
                             pass
+                self._note_gate(
+                    f"звук в динамиках {self._speaker_meter.peak:.3f} > "
+                    f"порога {_SPEAKER_GATE}"
+                )
+                preroll.clear()
+                return
 
             was_silent = getattr(self, "_quiet_frames", MIC_HANGOVER_FRAMES + 1) > MIC_HANGOVER_FRAMES
             if not self._is_loud_enough(indata):
@@ -2175,7 +2205,7 @@ class Jarvis:
     async def run(self):
         client = genai.Client(
             api_key=_get_api_key(),
-            http_options={"api_version": "v1alpha"},
+            http_options={"api_version": "v1beta"},
         )
 
         retry_count = 0

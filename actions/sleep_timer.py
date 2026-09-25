@@ -14,12 +14,11 @@
 """
 
 import logging
-import os
 import platform
 import subprocess
 import threading
 import time
-from typing import Callable, Optional
+from typing import Optional
 
 logger = logging.getLogger("jarvis-sleeptimer")
 _OS = platform.system()
