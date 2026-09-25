@@ -56,3 +56,13 @@ def test_confirmation_window_is_bounded():
     """Окно должно быть коротким: подтверждение из прошлого разговора не в счёт."""
     g = _load()
     assert 30 <= g._CONFIRM_WINDOW_SEC <= 300
+
+
+def test_confirmation_needs_user_yes_in_a_later_turn():
+    import main as m
+    assert m._is_affirmative("да, выключай")
+    assert m._is_affirmative("ha")
+    assert not m._is_affirmative("нет, не надо")
+    assert not m._is_affirmative("выключи компьютер")   # просьба ≠ подтверждение
+    assert m._args_key("files", {"action": "delete", "path": "a"}) != \
+        m._args_key("files", {"action": "delete", "path": "desktop"})

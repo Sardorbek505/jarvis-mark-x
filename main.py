@@ -363,6 +363,23 @@ def _action_of(args: dict) -> str:
     return str(args.get("action", "")).strip().lower()
 
 
+def _args_key(name: str, args: dict) -> str:
+    """Подтверждение действует на ЭТОТ вызов целиком: «да» на удаление
+    a.txt не должно открывать удаление всего рабочего стола."""
+    import json as _json
+    return name + ":" + _json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+
+
+_YES_RE = re.compile(
+    r"\b(да|давай|подтверждаю|конечно|выключай|удаляй|перезагружай|ага|угу|"
+    r"yes|yeah|ok|окей|ha|ҳа|иә|иа)\b", re.IGNORECASE)
+_NO_RE = re.compile(r"\b(нет|не|отмена|стоп|no|yo'q|жоқ)\b", re.IGNORECASE)
+
+
+def _is_affirmative(text: str) -> bool:
+    return bool(text) and bool(_YES_RE.search(text)) and not _NO_RE.search(text)
+
+
 def _is_destructive(name: str, args: dict) -> bool:
     keys = _DESTRUCTIVE.get(name)
     if not keys:
@@ -1142,6 +1159,7 @@ class Jarvis:
         self.proactive_engine = ProactiveEngine(BASE_DIR)
         self.team_engine = TeamCollaborationEngine(BASE_DIR)
         self.last_user_text = ""
+        self._user_turn = 0      # номер последней реплики пользователя (для подтверждений)
 
         # Секундомер голосового хода. Пишет в лог задержку от конца речи до
         # первого звука ответа при JARVIS_DEBUG_UI=1.
@@ -1277,6 +1295,8 @@ class Jarvis:
         text = self._normalize_input_text(text)
         if text:
             self.wake()
+            self.last_user_text = text
+            self._user_turn += 1
             self._send_text_to_session(text)
 
     # ── Обращение по имени ────────────────────────────────────────────────────
@@ -1451,12 +1471,21 @@ class Jarvis:
         #
         # Блокировка экрана осталась без подтверждения: она безвредна и
         # обратима, а спрашивать о ней каждый раз — раздражать зря.
+        # Подтверждение засчитывается, только если пользователь ПОСЛЕ вопроса
+        # сам сказал «да» — новой репликой и именно на этот вызов. Раньше хватало
+        # повторного вызова того же инструмента в 90 секунд: модель могла
+        # «подтвердить» сама, вторым вызовом в той же пачке.
         if _is_destructive(name, args):
             pending = self._pending_destructive
-            same = pending and pending[0] == name and pending[1] == _action_of(args)
-            fresh = same and (time.time() - pending[2]) < _CONFIRM_WINDOW_SEC
+            key = _args_key(name, args)
+            fresh = bool(
+                pending and pending[0] == key
+                and (time.time() - pending[1]) < _CONFIRM_WINDOW_SEC
+                and self._user_turn > pending[2]
+                and _is_affirmative(self.last_user_text)
+            )
             if not fresh:
-                self._pending_destructive = (name, _action_of(args), time.time())
+                self._pending_destructive = (key, time.time(), self._user_turn)
                 logger.warning("Требую подтверждения: %s/%s", name, _action_of(args))
                 self.ui.write_log(f"SYS: жду подтверждения — {name}/{_action_of(args)}")
                 if not self.ui.muted:
@@ -2251,6 +2280,7 @@ class Jarvis:
                                 print(f"[ДЖАРВИС] 🎤 Полная фраза: '{full_in}'")
                                 self.ui.write_log(f"Вы: {full_in}")
                                 self.last_user_text = full_in
+                                self._user_turn += 1
                                 asyncio.get_running_loop().run_in_executor(
                                     None, self._learn_from_phrase, full_in
                                 )

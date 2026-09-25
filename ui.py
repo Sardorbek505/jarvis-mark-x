@@ -816,6 +816,8 @@ class MainWindow(QMainWindow):
     # Глобальные хоткеи приходят из потока Win32-сообщений — тоже чужого.
     _mute_sig  = pyqtSignal()
     _front_sig = pyqtSignal()
+    # wait_for_api_key зовётся из рабочего потока: оверлей — только сигналом.
+    _overlay_sig = pyqtSignal(str)
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1007,6 +1009,7 @@ class MainWindow(QMainWindow):
         self._tool_sig.connect(self._hud.lock_on)
         self._mute_sig.connect(self._toggle_mute)
         self._front_sig.connect(self._bring_to_front)
+        self._overlay_sig.connect(self._show_overlay)
 
     # ── Публичный API ──────────────────────────────────────────────────────────
     def write_log(self, text: str):
@@ -1029,8 +1032,9 @@ class MainWindow(QMainWindow):
         from core.paths import load_api_keys
 
         # Проверяем наличие ключа во всех конфигурациях (%APPDATA% и локально)
+        import os
         keys = load_api_keys()
-        api_key = keys.get("gemini_api_key", "").strip()
+        api_key = (os.getenv("GEMINI_API_KEY") or keys.get("gemini_api_key", "")).strip()
         if api_key:
             print("[UI] API ключ найден, пропускаем инициализацию...")
             return None
@@ -1039,7 +1043,9 @@ class MainWindow(QMainWindow):
         reason = "init"
         self._key_ready = threading.Event()
         self._setup_reason = reason
-        QTimer.singleShot(0, lambda: self._show_overlay(reason))
+        # QTimer.singleShot из этого потока не срабатывал: оверлей не
+        # появлялся, а поток навсегда засыпал на wait() — окно есть, Джарвиса нет.
+        self._overlay_sig.emit(reason)
         self._key_ready.wait()
         return reason
 

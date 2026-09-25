@@ -23,9 +23,50 @@ def _resolve(path: str) -> str:
     return _SHORTCUTS.get(path.lower().strip(), path)
 
 
+def _is_protected(p: Path) -> bool:
+    """Папки, которые голосом не удаляются никогда: дом, рабочий стол,
+    загрузки, документы, их родители и корни дисков."""
+    try:
+        target = p.expanduser().resolve()
+    except OSError:
+        return True
+    home = Path(os.path.expanduser("~")).resolve()
+    protected = {home, *(Path(v).resolve() for v in _SHORTCUTS.values())}
+    if target in protected or target == Path(target.anchor):
+        return True
+    return target in home.parents
+
+
+def _to_recycle_bin(p: Path) -> None:
+    """Windows: в Корзину (можно вернуть). Иначе — обычное удаление."""
+    import sys
+    if sys.platform != "win32":
+        if p.is_dir():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT),
+                    ("pFrom", wintypes.LPCWSTR), ("pTo", wintypes.LPCWSTR),
+                    ("fFlags", ctypes.c_ushort), ("fAnyOperationsAborted", wintypes.BOOL),
+                    ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", wintypes.LPCWSTR)]
+
+    FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_SILENT = 3, 0x40, 0x10, 0x4
+    op = SHFILEOPSTRUCTW(wFunc=FO_DELETE, pFrom=str(p.resolve()) + "\0\0",
+                         fFlags=FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT)
+    rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    if rc != 0 or op.fAnyOperationsAborted:
+        raise OSError(f"не удалось переместить в Корзину (код {rc})")
+
+
 def file_controller(parameters: dict, player=None) -> str:
     action = parameters.get("action", "list").lower()
-    path = _resolve(parameters.get("path", os.path.expanduser("~")))
+    raw_path = str(parameters.get("path") or "").strip()
+    path = _resolve(raw_path or os.path.expanduser("~"))
     dest = _resolve(parameters.get("destination", ""))
     name = parameters.get("name", "")
     content = parameters.get("content", "")
@@ -60,6 +101,8 @@ def file_controller(parameters: dict, player=None) -> str:
 
         elif action == "create_file":
             p = Path(path)
+            if p.exists():
+                return f"Файл уже существует, не перезаписываю: {p}."
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
             if player:
@@ -74,14 +117,19 @@ def file_controller(parameters: dict, player=None) -> str:
             return f"Папка создана: {p}."
 
         elif action == "delete":
+            # Раньше путь по умолчанию был домашней папкой, а «desktop» —
+            # всем рабочим столом: вызов без пути делал rmtree(~).
+            if not raw_path:
+                return "Не удаляю: не указано, что именно удалить."
             p = Path(path)
-            if p.is_dir():
-                shutil.rmtree(p)
-            else:
-                p.unlink()
+            if _is_protected(p):
+                return f"Не удаляю системную папку целиком: {p}."
+            if not p.exists():
+                return f"Не найдено: {path}"
+            _to_recycle_bin(p)
             if player:
-                player.write_log(f"FILE: Удалено {p.name}")
-            return f"Удалено: {p.name}."
+                player.write_log(f"FILE: В корзину {p.name}")
+            return f"Удалено (в Корзину): {p.name}."
 
         elif action == "move":
             shutil.move(path, dest)
