@@ -51,9 +51,18 @@ async def _synth(text: str, voice: str, out: Path):
     await edge_tts.Communicate(text, voice).save(str(out))
 
 
+def _ffmpeg() -> str:
+    import shutil
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    import imageio_ffmpeg                    # есть и в requirements Джарвиса
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
 def _pcm(mp3: Path) -> bytes:
     return subprocess.run(
-        ["ffmpeg", "-loglevel", "error", "-i", str(mp3), "-f", "s16le", "-ac", "1", "-ar", "16000", "-"],
+        [_ffmpeg(), "-loglevel", "error", "-i", str(mp3), "-f", "s16le", "-ac", "1", "-ar", "16000", "-"],
         check=True, capture_output=True).stdout
 
 

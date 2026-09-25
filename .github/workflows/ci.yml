@@ -58,7 +58,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install vosk and edge-tts
-        run: pip install vosk edge-tts
+        run: pip install vosk edge-tts imageio-ffmpeg
       - name: Download Vosk model
         run: |
           curl -sSL -o model.zip https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
