@@ -301,7 +301,9 @@ def _pick_input_device():
             continue
         name = d["name"].lower()
         if any(k in name for k in ("headset", "headphone", "bluetooth", "wireless", "buds", "airpods", "freebuds", "wh-1000", "airdots", "гарнитур", "наушник", "hands-free", "usb")) and not _device_is_silent(i):
-            if "virtual" not in name and "line" not in name and "output" not in name:
+            # Веб-камера тоже «USB», но её микрофон — через всю комнату.
+            is_camera = any(k in name for k in ("cam", "камер"))
+            if not is_camera and "virtual" not in name and "line" not in name and "output" not in name:
                 logger.info("Обнаружена подключенная гарнитура/наушники — выбран микрофон: «%s» (индекс %d)", d["name"], i)
                 return i
 
@@ -1281,9 +1283,11 @@ class Jarvis:
     def wake(self):
         """Открывает окно разговора: следующие _AWAKE_SEC Джарвис отвечает
         без имени. Зовут: имя в речи, F8, текстовая команда, сам Джарвис."""
-        if not self.is_awake():
-            logger.info("Джарвис слушает (окно %.0f с)", _AWAKE_SEC)
+        was_awake = self.is_awake()
         self._awake_until = time.monotonic() + _AWAKE_SEC
+        if not was_awake:
+            logger.info("Джарвис слушает (окно %.0f с)", _AWAKE_SEC)
+            self._show_listen_state()
 
     def is_awake(self) -> bool:
         return _WAKE_MODE == "always_on" or time.monotonic() < self._awake_until
@@ -1311,12 +1315,24 @@ class Jarvis:
             except Exception:
                 pass
         elif not self.ui.muted:
-            self.ui.set_state("LISTENING")
+            self._show_listen_state(force=True)
             try:
                 from core.ducking_controller import ducking_controller, DuckingState
                 ducking_controller.set_state(DuckingState.RESTORING)
             except Exception:
                 pass
+
+    def _show_listen_state(self, force: bool = False):
+        """«СЛУШАЕТ» — идёт разговор и имя не нужно; «ОЖИДАЕТ» — ждёт «Джарвис».
+        Без этого не видно, почему он молчит: спит или не расслышал."""
+        awake = self.is_awake()
+        if not force and awake == getattr(self, "_shown_awake", None):
+            return
+        self._shown_awake = awake
+        with self._speaking_lock:
+            speaking = self._is_speaking
+        if not speaking and not self.ui.muted:
+            self.ui.set_state("LISTENING" if awake else "IDLE")
 
     def speak(self, text: str):
         """Просит Джарвиса произнести текст.
@@ -1974,6 +1990,7 @@ class Jarvis:
                 print("[ДЖАРВИС] 🎤 Поток микрофона открыт")
                 while True:
                     await asyncio.sleep(0.1)
+                    self._show_listen_state()   # окно разговора истекло → «ОЖИДАЕТ»
         except Exception as e:
             logger.error(f"Microphone error: {e}")
             traceback.print_exc()
@@ -2075,6 +2092,19 @@ class Jarvis:
                 self._active_synth_tasks = max(0, self._active_synth_tasks - 1)
 
     # ── Получение ответа от Gemini ────────────────────────────────────────────
+    def _spawn(self, coro):
+        """Фоновая задача, которую сборщик мусора не снимет на полуслове.
+
+        asyncio держит на задачу только слабую ссылку: create_task() без
+        сохранения результата может исчезнуть посреди работы — для озвучки
+        Fish это обрыв ответа на середине фразы.
+        """
+        tasks = self.__dict__.setdefault("_bg_tasks", set())
+        task = asyncio.create_task(coro)
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return task
+
     def _learn_from_phrase(self, text: str):
         """Эмоции и предпочтения из фразы — в профиль. Идёт в пуле потоков:
         профиль пишется на диск, а цикл приёма ждать этого не должен.
@@ -2132,7 +2162,7 @@ class Jarvis:
             chunks, fish_text = _take_speakable(fish_text, fish_q is None, final)
             if chunks and fish_q is None:
                 fish_q = asyncio.Queue()
-                asyncio.create_task(self._fish_worker(fish_q))
+                self._spawn(self._fish_worker(fish_q))
             for chunk in chunks:
                 fish_q.put_nowait(chunk)
             if final and fish_q is not None:
