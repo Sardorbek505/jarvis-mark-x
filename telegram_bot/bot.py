@@ -797,13 +797,18 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await memory.complete_task(uid, int(data.split(":", 1)[1]))
             tasks = await memory.get_tasks(uid)
             await q.answer("Закрыто ✅")
-            await q.edit_message_text(agenda.render_list(tasks), parse_mode="Markdown",
+            await q.edit_message_text(agenda.render_list(tasks, now=_local(uid)), parse_mode="Markdown",
                                       reply_markup=_tasks_keyboard(tasks))
         else:
             await q.answer()
     except Exception as e:
         logger.error(f"on_callback '{data}': {e}")
         await q.answer("Не получилось 😕", show_alert=False)
+
+
+def _local(uid: int):
+    """Местное «сейчас» пользователя — сроки задач хранятся в его времени."""
+    return user_context.local_now(uid, cfg.timezone)
 
 
 def _today_str(uid: int) -> str:
@@ -907,11 +912,11 @@ async def cmd_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     uid = update.effective_user.id
-    due, title = agenda.parse(text)
+    due, title = agenda.parse(text, _local(uid))
     await memory.add_task(uid, title, due)
     if due:
         await update.effective_message.reply_text(
-            f"Записал 🗓 *{title}* — {agenda.fmt_due(due)}", parse_mode="Markdown"
+            f"Записал 🗓 *{title}* — {agenda.fmt_due(due, _local(uid))}", parse_mode="Markdown"
         )
     else:
         await update.effective_message.reply_text(
@@ -922,9 +927,10 @@ async def cmd_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    tasks = await memory.get_tasks(update.effective_user.id)
+    uid = update.effective_user.id
+    tasks = await memory.get_tasks(uid)
     await update.effective_message.reply_text(
-        agenda.render_list(tasks), parse_mode="Markdown",
+        agenda.render_list(tasks, now=_local(uid)), parse_mode="Markdown",
         reply_markup=_tasks_keyboard(tasks)
     )
 
@@ -936,7 +942,7 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     wd = user_context.local_now(uid, cfg.timezone).weekday()
     classes = await memory.schedule_for_day(uid, wd)
     tasks = [t for t in await memory.get_tasks(uid)
-             if t.get("due") and agenda.is_today(t["due"])]
+             if t.get("due") and agenda.is_today(t["due"], _local(uid))]
     cal = await asyncio.to_thread(gcal.list_events, 0, 0, cfg.timezone)
     lines = [f"🗓 *Сегодня ({_WD_NAMES[wd]})*"]
     if cal:

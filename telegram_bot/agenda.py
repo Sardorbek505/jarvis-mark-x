@@ -5,6 +5,11 @@ parse(text) -> (due_iso | None, title)
   Understands: «завтра в 9:00 ...», «сегодня в 18:30 ...», «послезавтра ...»,
   «в пятницу ...», «25.06 ...», «25.06 в 14:00 ...», «в 9:00 ...».
   Undated tasks (no date phrase) return due=None — a plain todo item.
+
+Сроки хранятся в местном времени пользователя без пояса, поэтому и «сейчас»
+передаётся местное (`now=user_context.local_now(...)`). Раньше бралось время
+сервера (UTC на HF): при UTC+5 «в 9:00» в 10 утра ставилось на сегодня,
+«завтра» ночью — на послезавтра, а «просрочено» появлялось на 5 часов позже.
 """
 import re
 from datetime import datetime, timedelta
@@ -16,6 +21,10 @@ _WEEKDAYS = {
 }
 
 
+def _now(now: datetime | None = None) -> datetime:
+    return (now or datetime.now()).replace(tzinfo=None)
+
+
 def _time_in(s: str):
     """Extract 'в HH:MM' from start of string → (hour, minute, rest) or None."""
     m = re.match(r"в\s+(\d{1,2})[:.](\d{2})\s*(.*)", s)
@@ -24,8 +33,8 @@ def _time_in(s: str):
     return None
 
 
-def parse(text: str):
-    now = datetime.now()
+def parse(text: str, now: datetime | None = None):
+    now = _now(now)
     original = text.strip()
     low = original.lower()
 
@@ -83,9 +92,9 @@ def parse(text: str):
     return None, original
 
 
-def fmt_due(due_iso: str) -> str:
+def fmt_due(due_iso: str, now: datetime | None = None) -> str:
     """Human label for a due datetime."""
-    now = datetime.now()
+    now = _now(now)
     d = datetime.fromisoformat(due_iso)
     has_time = d.hour or d.minute
     if d.date() == now.date():
@@ -97,29 +106,30 @@ def fmt_due(due_iso: str) -> str:
     return f"{day} в {d.strftime('%H:%M')}" if has_time else day
 
 
-def is_today(due_iso: str) -> bool:
+def is_today(due_iso: str, now: datetime | None = None) -> bool:
     try:
-        return datetime.fromisoformat(due_iso).date() == datetime.now().date()
+        return datetime.fromisoformat(due_iso).date() == _now(now).date()
     except Exception:
         return False
 
 
-def is_overdue(due_iso: str) -> bool:
+def is_overdue(due_iso: str, now: datetime | None = None) -> bool:
     try:
-        return datetime.fromisoformat(due_iso) < datetime.now()
+        return datetime.fromisoformat(due_iso) < _now(now)
     except Exception:
         return False
 
 
-def render_list(tasks: list, title: str = "📋 *Твои задачи*") -> str:
+def render_list(tasks: list, title: str = "📋 *Твои задачи*",
+                now: datetime | None = None) -> str:
     if not tasks:
         return "Задач нет. Чистое небо ✨\nДобавь: `/task завтра в 9:00 созвон`"
     lines = [title + "\n"]
     for i, t in enumerate(tasks, 1):
         due = t.get("due")
         if due:
-            mark = "⚠️" if is_overdue(due) else "🗓"
-            lines.append(f"{i}. {mark} *{t['title']}* — {fmt_due(due)}")
+            mark = "⚠️" if is_overdue(due, now) else "🗓"
+            lines.append(f"{i}. {mark} *{t['title']}* — {fmt_due(due, now)}")
         else:
             lines.append(f"{i}. ☐ {t['title']}")
     lines.append("\nЗакрыть: `/done <номер>`")

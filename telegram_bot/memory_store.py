@@ -218,10 +218,40 @@ class MemoryStore:
             # возврата на основную базу всплывали бы в поиске как настоящие.
             from telegram_bot import memory_rag
             memory_rag._VECS.clear()
+            moved = await self._carry_over_reminders()
             logger.warning(
                 "Memory: Postgres вернулся — снова на постоянной памяти ✅. "
-                "Данные, записанные во время сбоя, остались в %s.", _SQLITE_PATH.name,
+                "Напоминаний перенесено: %d; прочее, записанное во время сбоя, "
+                "осталось в %s.", moved, _SQLITE_PATH.name,
             )
+
+    async def _carry_over_reminders(self) -> int:
+        """Неотправленные напоминания из временной SQLite — в Postgres.
+
+        Раньше после возврата базы они оставались в SQLite, а доставка читает
+        уже Postgres: «напомни в 18:00», сказанное во время сбоя, просто не
+        срабатывало. В SQLite перенесённые помечаются отправленными, чтобы при
+        следующем сбое не перенестись второй раз.
+        """
+        if not self._sqlite or not self._pg:
+            return 0
+        moved = 0
+        try:
+            async with self._sqlite.execute(
+                "SELECT id, user_id, text, due, created_at FROM reminders WHERE sent=0"
+            ) as cur:
+                rows = await cur.fetchall()
+            for rid, uid, text, due, created in rows:
+                await self._exec(
+                    "INSERT INTO reminders(user_id, text, due, sent, created_at) "
+                    "VALUES(?,?,?,0,?)", (uid, text, due, created),
+                )
+                await self._sqlite.execute("UPDATE reminders SET sent=1 WHERE id=?", (rid,))
+                await self._sqlite.commit()
+                moved += 1
+        except Exception as e:
+            logger.error("Memory: перенос напоминаний из SQLite сорвался: %s", _first_line(e))
+        return moved
 
     async def close(self):
         if self._pool:

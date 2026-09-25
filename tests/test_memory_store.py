@@ -185,6 +185,26 @@ async def test_outbox_queue_and_consume(mem):
 
 
 @pytest.mark.asyncio
+async def test_reminders_carried_over_when_postgres_returns(mem):
+    await mem.add_reminder(UID, "позвонить", "2030-01-01T09:00:00+00:00")
+    await mem.add_reminder(UID, "уже было", "2020-01-01T09:00:00+00:00")
+    await mem._exec("UPDATE reminders SET sent=1 WHERE text=?", ("уже было",))
+
+    inserted = []
+
+    async def fake_pg_exec(sql, args=()):
+        inserted.append((sql, args))
+
+    mem._backend = "pg"            # Postgres «вернулся»; SQLite ещё открыта
+    mem._exec = fake_pg_exec
+    assert await mem._carry_over_reminders() == 1
+    assert inserted and inserted[0][1][:3] == (UID, "позвонить", "2030-01-01T09:00:00+00:00")
+    # повторный перенос не дублирует
+    assert await mem._carry_over_reminders() == 0
+    mem._backend = "sqlite"        # чтобы фикстура закрылась штатно
+
+
+@pytest.mark.asyncio
 async def test_richer_fact_replaces_shorter_one(mem):
     assert await mem.add_fact(UID, "Пользователя зовут Сардор")
     assert await mem.add_fact(UID, "Пользователя зовут Сардор, ему 21 год")

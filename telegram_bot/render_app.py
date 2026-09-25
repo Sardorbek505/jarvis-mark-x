@@ -7,6 +7,8 @@ FastAPI feeds them into the Application's update queue.
 """
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -46,11 +48,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 cfg = load_config()
 
-# Webhook secret (Telegram sends it back in the X-Telegram-Bot-Api-Secret-Token
-# header). Derived from the bot token but stripped to the allowed charset
-# [A-Za-z0-9_-] — the raw token contains ':' which is NOT allowed here and
-# also breaks when placed in a URL path. Static path + header = robust delivery.
-_WEBHOOK_SECRET = re.sub(r"[^A-Za-z0-9_-]", "", cfg.telegram_token)[:256]
+# Секрет вебхука: Telegram возвращает его в заголовке
+# X-Telegram-Bot-Api-Secret-Token. Раньше это был сам токен бота без ':' —
+# любой лог заголовков или прокси отдавал токен целиком. Теперь — хеш токена:
+# стабилен между перезапусками, но токен из него не восстановить.
+# WEBHOOK_SECRET в env задаёт свой ([A-Za-z0-9_-], до 256 символов).
+_WEBHOOK_SECRET = (re.sub(r"[^A-Za-z0-9_-]", "", os.getenv("WEBHOOK_SECRET", ""))[:256]
+                   or hashlib.sha256(b"jarvis-webhook:" + cfg.telegram_token.encode()).hexdigest())
 _WEBHOOK_PATH = "/telegram-webhook"
 
 # Shared instances
@@ -452,7 +456,8 @@ miniapp_server.app.router.lifespan_context = lifespan
 @miniapp_server.app.post(_WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
     """Telegram calls this endpoint for every update."""
-    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != _WEBHOOK_SECRET:
+    got = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not hmac.compare_digest(got.encode(), _WEBHOOK_SECRET.encode()):
         logger.warning("Webhook rejected — bad secret token")
         return JSONResponse({"ok": False}, status_code=403)
     if _tg_app is None:

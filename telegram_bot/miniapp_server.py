@@ -198,7 +198,8 @@ async def _build_view(user_id: int, view: str) -> dict:
     if not _memory:
         return {"error": "memory offline"}
     await _memory.ensure_loaded(user_id)
-    tz = user_context.local_now(user_id, _DEFAULT_TZ).tzinfo
+    now = user_context.local_now(user_id, _DEFAULT_TZ)
+    tz = now.tzinfo
 
     if view == "habits":
         return {"habits": await _memory.get_habits(user_id, _today_iso(user_id))}
@@ -209,8 +210,8 @@ async def _build_view(user_id: int, view: str) -> dict:
         return {
             "tasks": [
                 {"id": t["id"], "title": t["title"],
-                 "due": agenda.fmt_due(t["due"]) if t.get("due") else "",
-                 "overdue": bool(t.get("due") and agenda.is_overdue(t["due"]))}
+                 "due": agenda.fmt_due(t["due"], now) if t.get("due") else "",
+                 "overdue": bool(t.get("due") and agenda.is_overdue(t["due"], now))}
                 for t in tasks
             ],
             "reminders": [
@@ -221,7 +222,7 @@ async def _build_view(user_id: int, view: str) -> dict:
 
     if view == "dashboard":
         tasks = await _memory.get_tasks(user_id)
-        today = [t for t in tasks if t.get("due") and agenda.is_today(t["due"])]
+        today = [t for t in tasks if t.get("due") and agenda.is_today(t["due"], now)]
         habits = await _memory.get_habits(user_id, _today_iso(user_id))
         reminders = await _memory.list_reminders(user_id)
         profile = await _memory.get_profile(user_id)
@@ -286,7 +287,8 @@ async def _handle_action(ws: WebSocket, user_id: int, msg: dict):
         await _memory.delete_habit(user_id, int(msg["id"]))
         await _send_view(ws, user_id, "habits")
     elif mtype == "task_add" and msg.get("text"):
-        due, title = agenda.parse(msg["text"].strip())
+        due, title = agenda.parse(msg["text"].strip(),
+                                  user_context.local_now(user_id, _DEFAULT_TZ))
         await _memory.add_task(user_id, title, due)
         await _send_view(ws, user_id, "tasks")
     elif mtype == "task_done" and msg.get("id") is not None:

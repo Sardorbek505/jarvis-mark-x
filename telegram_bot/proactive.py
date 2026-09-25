@@ -31,8 +31,8 @@ _CURIOSITY = range(12, 21)  # 12:00–20:59 — one get-to-know-you question per
 _CHECK_EVERY = 60  # seconds
 
 
-def _today_tasks(tasks: list) -> list:
-    return [t for t in tasks if t.get("due") and agenda.is_today(t["due"])]
+def _today_tasks(tasks: list, now=None) -> list:
+    return [t for t in tasks if t.get("due") and agenda.is_today(t["due"], now)]
 
 
 def _tasks_text(tasks: list) -> str:
@@ -184,7 +184,7 @@ async def _send_briefing(bot, gemini, memory, uid: int, slot: str,
                          default_tz: str, default_city: str = ""):
     profile = await memory.get_profile(uid)
     tasks = await memory.get_tasks(uid)
-    today = _today_tasks(tasks)
+    today = _today_tasks(tasks, user_context.local_now(uid, default_tz))
     name = profile.get("name", "")
     if slot == "morning":
         city = user_context.get_city(uid, default_city)
