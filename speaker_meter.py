@@ -21,6 +21,7 @@ import threading
 logger = logging.getLogger("jarvis-speaker")
 
 _POLL_SEC = 0.05          # 50 мс — быстрее, чем длится один кадр микрофона
+_DEVICE_CHECK_SEC = 2.0   # как часто сверяться с устройством вывода по умолчанию
 
 
 class SpeakerMeter:
@@ -56,6 +57,17 @@ class SpeakerMeter:
 
     # ── внутреннее ───────────────────────────────────────────────────────────
     @staticmethod
+    def _default_id() -> str:
+        """Идентификатор текущего устройства вывода по умолчанию."""
+        from pycaw.pycaw import AudioUtilities
+        device = AudioUtilities.GetSpeakers()
+        raw = getattr(device, "_dev", None) or device
+        try:
+            return str(raw.GetId())
+        except Exception:
+            return ""
+
+    @staticmethod
     def _make_meter():
         from comtypes import CLSCTX_ALL, cast, POINTER
         from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
@@ -63,6 +75,12 @@ class SpeakerMeter:
         raw = getattr(device, "_dev", None) or device
         return cast(raw.Activate(IAudioMeterInformation._iid_, CLSCTX_ALL, None),
                     POINTER(IAudioMeterInformation))
+
+    def _default_id_safe(self) -> str:
+        try:
+            return self._default_id()
+        except Exception:
+            return ""
 
     def _run(self):
         import comtypes
@@ -77,7 +95,24 @@ class SpeakerMeter:
             self.available = False
             return
         misses = 0
+        current_id = self._default_id_safe()
+        checked_at = 0.0
+        import time as _time
         while not self._stop.is_set():
+            # Пользователь переключил вывод (наушники, HDMI), а старое
+            # устройство живо: раньше замер оставался на нём, показывал 0,
+            # и музыка из новых колонок снова уходила в Gemini как речь.
+            now = _time.monotonic()
+            if now - checked_at >= _DEVICE_CHECK_SEC:
+                checked_at = now
+                new_id = self._default_id_safe()
+                if new_id and new_id != current_id:
+                    try:
+                        meter = self._make_meter()
+                        current_id = new_id
+                        logger.info("Устройство вывода сменилось — измеритель переключён")
+                    except Exception as exc:
+                        logger.debug("Переключение измерителя: %s", exc)
             try:
                 self._peak = float(meter.GetPeakValue())
                 misses = 0

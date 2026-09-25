@@ -2578,10 +2578,27 @@ class Jarvis:
         голос».
         """
         print("[ДЖАРВИС] 🔊 Воспроизведение запущено")
+        def _close(s):
+            try:
+                s.stop()
+                s.close()
+            except Exception as exc:
+                logger.debug("Закрытие потока вывода: %s", exc)
+
         while True:
             stream = None
+            pending_write = None
+            opening = asyncio.ensure_future(asyncio.to_thread(self._open_output))
             try:
-                stream = await asyncio.to_thread(self._open_output)
+                # Отмена посреди открытия (переподключение) не должна бросать
+                # уже открытый поток: поток-исполнитель доделает открытие, и
+                # его надо закрыть — иначе на каждом реконнекте утечка устройства.
+                try:
+                    stream = await asyncio.shield(opening)
+                except asyncio.CancelledError:
+                    opening.add_done_callback(
+                        lambda t: _close(t.result()) if not t.cancelled() and not t.exception() else None)
+                    raise
                 while True:
                     try:
                         chunk = await asyncio.wait_for(self.audio_in_queue.get(), timeout=0.1)
@@ -2603,7 +2620,9 @@ class Jarvis:
                     self.set_speaking(True)
                     self._latency.mark_playback()
                     self._push_level(_chunk_level(chunk))
-                    await asyncio.to_thread(stream.write, chunk)
+                    pending_write = asyncio.ensure_future(asyncio.to_thread(stream.write, chunk))
+                    await asyncio.shield(pending_write)
+                    pending_write = None
 
             except asyncio.CancelledError:
                 raise
@@ -2625,11 +2644,12 @@ class Jarvis:
             finally:
                 self.set_speaking(False)
                 if stream is not None:
-                    try:
-                        stream.stop()
-                        stream.close()
-                    except Exception as exc:
-                        logger.debug("Закрытие потока вывода: %s", exc)
+                    if pending_write is not None and not pending_write.done():
+                        # Закрывать поток, пока другой поток внутри Pa_WriteStream,
+                        # — зависание или падение на MME. Закроем, когда запись выйдет.
+                        pending_write.add_done_callback(lambda _t, s=stream: _close(s))
+                    else:
+                        _close(stream)
 
     # ── Основной цикл ─────────────────────────────────────────────────────────
     async def run(self):
