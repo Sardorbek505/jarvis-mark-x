@@ -831,45 +831,26 @@ TOOLS = [
     {
         "name": "music_player",
         "description": (
-            "Управляет Spotify через официальный Web API: точный поиск треков, пауза, "
-            "переключение, громкость, перемешивание, повтор, информация о текущем треке, "
-            "mood mode (спокойное/мотивационное/ночной вайб). "
-            "Гарантирует воспроизведение запрошенного трека, не последнего проигранного. "
-            "Вызывай когда пользователь говорит: включи музыку, включи <исполнителя/трек>, "
-            "поставь песню, пауза, продолжи, следующий трек, предыдущий трек, "
-            "стоп музыку, громче, тише, громкость X, перемешай, повтор, что играет, "
-            "кто поет, включи спокойное/мотивационное/ночной вайб."
+            "Музыка в Spotify (и что играет в Windows). play + query — включить трек/исполнителя/"
+            "альбом («включи Believer», «поставь Любэ»); play без query — продолжить; mood + query — "
+            "плейлист под настроение («спокойное», «для работы»); pause, resume, next, previous; "
+            "now_playing — «что играет», «кто поёт»; volume_* — громкость самого Spotify, только если "
+            "сказано «музыку громче/тише» (иначе computer_control)."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action": {
                     "type": "STRING",
-                    "description": (
-                        "play (запуск с поиском) | pause | resume | "
-                        "next (следующий трек) | prev (предыдущий) | stop | "
-                        "volume_up | volume_down | volume | shuffle | repeat | "
-                        "now_playing | mood"
-                    )
+                    "enum": ["play", "mood", "pause", "resume", "next", "previous", "now_playing",
+                             "volume_up", "volume_down", "volume_set"],
                 },
                 "query": {
                     "type": "STRING",
-                    "description": (
-                        "Что играть (для action=play/mood): название трека, исполнителя, "
-                        "альбома, жанра или настроение. Например: 'Imagine Dragons', 'lofi hip hop', "
-                        "'Любэ', 'jazz', 'спокойное', 'мотивационное', 'ночной вайб'."
-                    )
+                    "description": "Для play/mood: трек, исполнитель, альбом или настроение — как сказал пользователь",
                 },
-                "value": {
-                    "type": "STRING",
-                    "description": (
-                        "Значение для action=volume (0-100) или action=repeat (track/context/off)"
-                    )
-                },
-                "playlist_url": {
-                    "type": "STRING",
-                    "description": "Прямой URL Spotify-плейлиста (опционально, имеет приоритет над query)"
-                }
+                "value": {"type": "STRING", "description": "Для volume_set — 0-100; для volume_up/down — шаг"},
+                "playlist_url": {"type": "STRING", "description": "Ссылка на плейлист, если пользователь её дал"},
             },
             "required": ["action"]
         }

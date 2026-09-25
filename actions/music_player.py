@@ -30,7 +30,6 @@ from typing import Optional
 
 from actions.computer_settings import computer_settings
 from actions.browser_control import browser_control
-from actions.keyboard import send_key as _send_key
 
 import logging
 
@@ -279,17 +278,15 @@ def _spotify_in_front() -> bool:
 
 # ─── Spotify Web API (для надёжного запуска треков) ───────────────────────────
 def _get_spotify_credentials() -> Optional[tuple]:
-    """Возвращает (client_id, client_secret) если они есть в api_keys.json."""
+    """(client_id, client_secret) из ключей Джарвиса, если есть."""
     try:
-        with open(_API_CONFIG, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        cid = cfg.get("spotify_client_id", "").strip()
-        secret = cfg.get("spotify_client_secret", "").strip()
-        if cid and secret:
-            return (cid, secret)
-    except Exception as exc:
-        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
-    return None
+        from core.paths import load_api_keys
+        keys = load_api_keys()
+    except Exception:
+        return None
+    cid = (keys.get("spotify_client_id") or "").strip()
+    sec = (keys.get("spotify_client_secret") or "").strip()
+    return (cid, sec) if cid and sec else None
 
 
 def _get_spotify_token() -> Optional[str]:
@@ -462,161 +459,170 @@ def _find_youtube_direct_url(query: str) -> Optional[str]:
 
 
 # ─── Действия плеера ──────────────────────────────────────────────────────────
-def _play(query: str = "", playlist_url: str = "", player=None) -> str:
-    """
-    Запускает музыку через Spotify, а при недоступности — через прямой YouTube плеер.
-    """
-    if player:
-        if query:
-            player.write_log(f"SYS: 🎵 Воспроизведение «{query}»")
-        elif playlist_url:
-            player.write_log("SYS: 🎵 Плейлист Spotify")
-        else:
-            player.write_log("SYS: 🎵 Запуск музыки")
+def _spotify_now():
+    from core import media_session
+    return media_session.now_playing("spotify")
 
-    # ── Шаг 1: Обработка плейлиста ────────────────────────────────────────
+
+def _started(before, timeout: float = 8.0):
+    """Дождаться, что в Spotify заиграло НОВОЕ (не то, что было до команды),
+    и дожать Play, если трек открылся на паузе. None — не заиграло."""
+    from core import media_session
+    end = time.monotonic() + timeout
+    pressed = False
+    while time.monotonic() < end:
+        np = media_session.now_playing("spotify")
+        if np and np.title and (before is None or np.title != before.title or not before.playing):
+            if np.playing:
+                return np
+            if not pressed:
+                media_session.command("play", "spotify")
+                pressed = True
+        time.sleep(0.4)
+    np = media_session.now_playing("spotify")
+    return np if np and np.playing else None
+
+
+def _say_track(np) -> str:
+    return f"«{np.title}»" + (f" — {np.artist}" if np.artist else "")
+
+
+def _play(query: str = "", playlist_url: str = "", player=None) -> str:
+    """Включить трек / плейлист / продолжить. Отвечает тем, что реально
+    заиграло: раньше было «Включаю…», даже когда ничего не началось."""
+    from core import media_session, web_find
+
+    if player:
+        player.write_log(f"SYS: 🎵 {'«' + query + '»' if query else 'музыка'}")
+    installed = _is_spotify_installed()
+
+    # ── Плейлист по ссылке ────────────────────────────────────────────────
     if playlist_url:
         uri = _https_to_spotify_uri(playlist_url)
-        # Ссылка может быть и не спотифаевской — тогда URI не построится
-        # и открывать плейлист будем сразу браузером.
-        spotify_opened = False
+        if uri and installed:
+            before = _spotify_now()
+            _open_spotify_uri(uri)
+            np = _started(before)
+            return f"Включил плейлист: {_say_track(np)}." if np else \
+                "Открыл плейлист в Spotify, но воспроизведение не началось — нажмите Play."
+        browser_control({"action": "go_to", "url": playlist_url}, player=player)
+        return "Открыл плейлист в браузере."
+
+    # ── Без запроса: продолжить ───────────────────────────────────────────
+    if not query:
+        if not _spotify_now() and installed:
+            _open_spotify_uri("spotify:")
+            media_session.wait_for("spotify", 10)
+        media_session.command("play", "spotify")
+        np = media_session.wait_for("spotify", 3, playing=True)
+        return f"Играет {_say_track(np)}." if np else "Не получилось запустить музыку, сэр."
+
+    # ── Конкретный трек / исполнитель / настроение ───────────────────────
+    if installed:
+        uri = _spotify_search_track_uri(query) or web_find.spotify_uri(query, "track") \
+            or web_find.spotify_uri(query)
         if uri:
-            if player:
-                player.write_log(f"SYS: → Открываю плейлист URI: {uri}")
-            spotify_opened = _open_spotify_uri(uri)
-        if not spotify_opened:
-            try:
-                browser_control({"action": "go_to", "url": playlist_url}, player=player)
-                spotify_opened = True
-            except Exception as exc:
-                _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+            before = _spotify_now()
+            _open_spotify_uri(uri)
+            np = _started(before)
+            if np:
+                return f"Включил {_say_track(np)}."
+            return (f"Открыл «{query}» в Spotify, но воспроизведение не началось — "
+                    "нажмите Play (или Spotify ещё загружается).")
+        # Точной ссылки нет — честно открываем поиск в самом Spotify.
+        _open_spotify_uri(f"spotify:search:{urllib.parse.quote(query)}")
+        return f"Точный трек не нашёл — открыл поиск «{query}» в Spotify, выберите нужный."
 
-        if not spotify_opened:
-            return "Не удалось открыть плейлист, сэр."
-
-        time.sleep(2.0)
-        _focus_spotify_window()
-        _send_media_key("playpause")
-        return "Плейлист открыт и воспроизводится, сэр."
-
-    # ── Шаг 2: Обработка запроса трека ─────────────────────────────────────
-    if query:
-        # Способ 1: Прямой запуск по Spotify Track URI (если API вернул URI трека)
-        track_uri = _spotify_search_track_uri(query)
-        if track_uri:
-            if _open_spotify_uri(track_uri):
-                time.sleep(1.5)
-                _focus_spotify_window()
-                _send_key("space")
-                _send_media_key("playpause")
-                return f"Включаю «{query}» в Spotify, сэр."
-
-        # Способ 2: UI поиск и воспроизведение в Spotify
-        if _is_spotify_installed() and _ui_automation_search(query, player):
-            return f"Включаю «{query}» в Spotify, сэр."
-
-        # Способ 3: Прямой запуск через YouTube с гарантированным звуком
-        yt_url = _find_youtube_direct_url(query) or f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
-        try:
-            browser_control({"action": "go_to", "url": yt_url}, player=player)
-        except Exception as exc:
-            _logger.debug("YouTube fallback не открылся: %s", exc, exc_info=True)
-            return "Не удалось воспроизвести трек, сэр."
-
-        # Вкладка уже открыта — дальше идёт только «дожать автоплей».
-        # Промах по клавише не повод врать, что ничего не вышло.
-        time.sleep(2.0)
-        _send_key("space")
-        _send_media_key("playpause")
-        return f"Включаю «{query}», сэр."
-
-    # ── Шаг 3: Пустой запрос (продолжить или запустить Spotify) ──────────────
-    if _is_spotify_installed():
-        _open_spotify_uri("spotify:")
-        time.sleep(1.5)
-        _focus_spotify_window()
-        _send_media_key("playpause")
-        return "Музыка включена, сэр."
-    else:
-        _send_media_key("playpause")
-        return "Воспроизведение, сэр."
+    # ── Spotify не установлен: YouTube ────────────────────────────────────
+    url = _find_youtube_direct_url(query)
+    try:
+        if url:
+            browser_control({"action": "go_to", "url": url}, player=player)
+            return f"Spotify не установлен — включил «{query}» на YouTube."
+        browser_control({"action": "go_to",
+                         "url": f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"},
+                        player=player)
+        return f"Spotify не установлен — открыл поиск «{query}» на YouTube."
+    except Exception as exc:
+        _logger.warning("YouTube не открылся: %s", exc)
+        return "Не удалось открыть музыку: Spotify не установлен, а браузер не запустился."
 
 
-def _pause_resume(player=None) -> str:
-    if _send_media_key("playpause"):
-        if player:
-            player.write_log("SYS: ⏯ Music: pause/resume")
-        return "Готово."
-    return "Не получилось переключить, сэр."
+def _control(cmd: str, player=None) -> str:
+    """Пауза / продолжить / дальше / назад — явной командой сессии Spotify
+    (или того, что играет сейчас). Раньше это была клавиша-переключатель:
+    «пауза» на уже стоящей музыке её запускала."""
+    from core import media_session
+    app = "spotify" if _spotify_now() else None
+    before = media_session.now_playing(app)
+    if not media_session.command(cmd, app):
+        return "Сейчас ничего не играет, сэр." if before is None else "Не получилось, сэр."
+    if player:
+        player.write_log(f"SYS: ⏯ {cmd}")
+    time.sleep(0.6)
+    np = media_session.now_playing(app)
+    if cmd == "pause":
+        return "Пауза." if not (np and np.playing) else "Не получилось поставить на паузу, сэр."
+    if cmd == "play":
+        return f"Продолжаю: {_say_track(np)}." if np and np.playing else "Продолжаю."
+    if np and np.title:
+        return ("Следующий: " if cmd == "next" else "Предыдущий: ") + _say_track(np) + "."
+    return "Следующий трек." if cmd == "next" else "Предыдущий трек."
 
 
-def _next_track(player=None) -> str:
-    if _send_media_key("next"):
-        if player:
-            player.write_log("SYS: ⏭ Следующий трек")
-        return "Следующий трек."
-    return "Не получилось переключить, сэр."
+def _now_playing_text() -> str:
+    from core import media_session
+    np = media_session.now_playing("spotify") or media_session.now_playing()
+    if not np or not np.title:
+        return "Сейчас ничего не играет, сэр."
+    return ("Играет " if np.playing else "На паузе: ") + _say_track(np) + "."
 
 
-def _prev_track(player=None) -> str:
-    if _send_media_key("prev"):
-        if player:
-            player.write_log("SYS: ⏮ Предыдущий трек")
-        return "Предыдущий трек."
-    return "Не получилось переключить, сэр."
-
-
-def _stop_music(player=None) -> str:
-    """Stop = pause (media stop часто не реагирует в Spotify)."""
-    # Сначала пытаемся stop
-    if _send_media_key("stop"):
-        if player:
-            player.write_log("SYS: ⏹ Stop")
-        return "Музыка остановлена."
-    # Fallback: pause через playpause
-    if _send_media_key("playpause"):
-        return "Музыка на паузе."
-    return "Не получилось остановить, сэр."
-
-
-def _volume(direction: str, player=None) -> str:
-    return computer_settings({"action": f"volume_{direction}", "value": "10"}, player=player)
+def _volume(direction: str, player=None, value=None) -> str:
+    """Громкость самого Spotify; нет его сессии — системная."""
+    from core import media_session
+    from actions.computer_settings import parse_level
+    step = parse_level(value, 10) or 10
+    target = parse_level(value) if direction == "set" else None
+    try:
+        v = media_session.app_volume("spotify.exe", direction, step, target)
+    except Exception as exc:
+        _logger.debug("Громкость Spotify: %s", exc)
+        v = None
+    if v is not None:
+        return f"Громкость Spotify {v}%."
+    return computer_settings({"action": f"volume_{direction}", "value": value or "10"}, player=player)
 
 
 # ─── Публичная точка входа ────────────────────────────────────────────────────
 def music_player(parameters: dict, player=None) -> str:
-    """
-    Главная точка входа для tool 'music_player'.
-
-    parameters:
-        action:       play | pause | resume | next | prev | stop |
-                      volume_up | volume_down
-        query:        что играть для action=play (название трека / исполнителя / жанра)
-        playlist_url: URL плейлиста для action=play (опционально)
-    """
+    """action: play | pause | resume | next | previous | stop | now_playing |
+    volume_up | volume_down | volume_set | mood; query, value, playlist_url."""
     action = (parameters.get("action") or "").strip().lower()
     query = (parameters.get("query") or "").strip()
     playlist_url = (parameters.get("playlist_url") or "").strip()
+    value = parameters.get("value")
 
     if action in ("play", "start", "включить", "запустить"):
         return _play(query, playlist_url, player)
-
-    elif action in ("pause", "resume", "toggle", "пауза", "продолжай"):
-        return _pause_resume(player)
-
-    elif action in ("next", "next_track", "skip", "следующий"):
-        return _next_track(player)
-
-    elif action in ("prev", "previous", "prev_track", "предыдущий"):
-        return _prev_track(player)
-
-    elif action in ("stop", "стоп", "остановить"):
-        return _stop_music(player)
-
-    elif action in ("volume_up", "louder", "громче"):
-        return _volume("up", player)
-
-    elif action in ("volume_down", "quieter", "тише"):
-        return _volume("down", player)
-
+    if action in ("mood",):
+        return _play(f"{query} плейлист" if query else "", "", player)
+    if action in ("pause", "stop", "пауза", "стоп", "остановить"):
+        return _control("pause", player)
+    if action in ("resume", "продолжай", "continue"):
+        return _control("play", player)
+    if action in ("toggle",):
+        return _control("toggle", player)
+    if action in ("next", "next_track", "skip", "следующий"):
+        return _control("next", player)
+    if action in ("prev", "previous", "prev_track", "предыдущий"):
+        return _control("previous", player)
+    if action in ("now_playing", "what", "что играет"):
+        return _now_playing_text()
+    if action in ("volume_up", "louder", "громче"):
+        return _volume("up", player, value)
+    if action in ("volume_down", "quieter", "тише"):
+        return _volume("down", player, value)
+    if action in ("volume", "volume_set"):
+        return _volume("set", player, value)
     return f"Не понял команду: «{action}»."

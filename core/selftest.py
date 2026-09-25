@@ -53,9 +53,22 @@ def _check_apps() -> str:
     return f"программ в индексе: {len(apps)}, проба: {probe.name if probe else 'не нашёл'}"
 
 
-CHECKS = [("wake", _check_wake), ("volume", _check_volume), ("brightness", _check_brightness),
+def _check_media() -> str:
+    from core import media_session
+    if not media_session.available():
+        raise RuntimeError("winrt Media.Control не импортируется")
+    np = media_session.now_playing()
+    return "медиа-сессии доступны" + (f", играет: {np.title}" if np else ", сейчас тишина")
+
+
+def _check_search() -> str:
+    import ddgs  # noqa: F401
+    return "ddgs импортируется"
+
+
+CHECKS = [("wake", _check_wake), ("media", _check_media), ("search", _check_search), ("volume", _check_volume), ("brightness", _check_brightness),
           ("apps", _check_apps)]
-REQUIRED = {"wake", "apps"}
+REQUIRED = {"wake", "apps", "media", "search"}
 
 
 def register(name: str, fn, required: bool = False):

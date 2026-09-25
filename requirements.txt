@@ -60,3 +60,12 @@ vosk>=0.3.45
 
 # Яркость: ноутбук (WMI) и внешние мониторы (DDC/CI)
 screen_brightness_control>=0.24; sys_platform == "win32"
+
+# Поиск без ключей: трек Spotify, страница фильма, факты (core/web_find.py)
+ddgs>=9.0
+
+# Медиа-сессии Windows: явные play/pause/next и «что играет» (core/media_session.py)
+winrt-runtime>=2.0; sys_platform == "win32"
+winrt-Windows.Foundation>=2.0; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=2.0; sys_platform == "win32"
+winrt-Windows.Media.Control>=2.0; sys_platform == "win32"

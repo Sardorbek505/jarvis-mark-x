@@ -21,6 +21,14 @@ _logger = logging.getLogger(__name__)
 _REFRESH_MARGIN_SEC = 30
 
 
+def _token_path(for_writing: bool = False) -> str:
+    """Токены Spotify — в %APPDATA%\\JARVIS, как и ключи. Раньше путь строился
+    от __file__: в .exe это папка _internal (в Program Files — только чтение),
+    и токен не сохранялся и не находился."""
+    from core.paths import get_config_path
+    return str(get_config_path("spotify_tokens.json", for_writing=for_writing))
+
+
 class SpotifyAuth:
     """
     Spotify OAuth 2.0 authentication with automatic token refresh.
@@ -42,10 +50,8 @@ class SpotifyAuth:
     
     def _load_tokens(self) -> None:
         """Load tokens from storage."""
-        # Get absolute path to token file
-        script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        token_file = os.path.join(script_dir, "config", "spotify_tokens.json")
-        
+        token_file = _token_path()
+
         if os.path.exists(token_file):
             try:
                 with open(token_file, 'r') as f:
@@ -58,10 +64,8 @@ class SpotifyAuth:
     
     def _save_tokens(self) -> None:
         """Save tokens to storage."""
-        # Get absolute path to token file
-        script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        token_file = os.path.join(script_dir, "config", "spotify_tokens.json")
-        
+        token_file = _token_path(for_writing=True)
+
         try:
             # Атомарно: обрыв на середине записи оставлял бы обрезанный JSON,
             # а это потеря refresh-токена и повторный вход в Spotify руками.
