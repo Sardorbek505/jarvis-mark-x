@@ -80,6 +80,14 @@ hidden_imports = [
     "actions.spotify_controller",
     "actions.movie_player",
     "actions.sleep_timer",
+    "actions.file_controller",
+    "actions.morning_briefing",
+    "actions.calendar",
+    "core.storage",
+    "core.onboarding",
+    "core.hotkey_manager",
+    "core.headless_ui",
+    "mss",
     "imageio_ffmpeg",
     "pycaw",
     "comtypes",
@@ -91,15 +99,20 @@ hidden_imports = [
 ]
 
 binaries = []
-try:
-    from PyInstaller.utils.hooks import collect_all
-    for pkg in ["imageio_ffmpeg", "openwakeword", "pycaw", "comtypes", "pyaudiowpatch"]:
+from PyInstaller.utils.hooks import collect_all
+
+# Каждый пакет — отдельно: раньше первый отсутствующий (openwakeword нет в
+# requirements) обрывал цикл, и pycaw/comtypes в сборку не попадали —
+# приглушение музыки и замер колонок в .exe молча не работали.
+for pkg in ["imageio_ffmpeg", "openwakeword", "pycaw", "comtypes", "pyaudiowpatch", "mss"]:
+    try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
-        datas += pkg_datas
-        binaries += pkg_binaries
-        hidden_imports += pkg_hidden
-except Exception as e:
-    print(f"Hook collection notice: {e}")
+    except Exception as e:
+        print(f"Hook collection notice ({pkg}): {e}")
+        continue
+    datas += pkg_datas
+    binaries += pkg_binaries
+    hidden_imports += pkg_hidden
 
 a = Analysis(
     ['main.py'],

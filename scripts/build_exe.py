@@ -3,6 +3,7 @@
 Использование:
     python scripts/build_exe.py
 """
+import os
 import shutil
 import subprocess
 import sys
@@ -69,7 +70,7 @@ def post_build():
 
 
 def build_installer():
-    print("[5/5] Создание инсталлятора Inno Setup (JARVIS_Setup_v1.0.exe)...")
+    print("[5/5] Создание инсталлятора Inno Setup (JARVIS_Setup_v*.exe)...")
     iss_file = _BASE_DIR / "scripts" / "installer.iss"
     if not iss_file.exists():
         print(f"  [WARN] Файл {iss_file} не найден. Пропуск создания установщика.")
@@ -88,9 +89,14 @@ def build_installer():
 
     try:
         print(f"  [OK] Запуск компилятора: {iscc_exe}")
-        subprocess.check_call([str(iscc_exe), str(iss_file)], cwd=str(_BASE_DIR / "scripts"))
-        setup_exe = _BASE_DIR / "dist" / "JARVIS_Setup_v1.0.exe"
-        if setup_exe.exists():
+        cmd = [str(iscc_exe), str(iss_file)]
+        version = os.getenv("JARVIS_VERSION", "").strip().lstrip("v")
+        if version:
+            cmd.insert(1, f"/DMyAppVersion={version}")   # из тега релиза
+        subprocess.check_call(cmd, cwd=str(_BASE_DIR / "scripts"))
+        found = sorted((_BASE_DIR / "dist").glob("JARVIS_Setup_v*.exe"))
+        setup_exe = found[-1] if found else None
+        if setup_exe:
             size_mb = setup_exe.stat().st_size / (1024 * 1024)
             print("\n=======================================================")
             print("  [OK] ИНСТАЛЛЯТОР УСПЕШНО СОЗДАН!")
@@ -98,6 +104,8 @@ def build_installer():
             print("=======================================================\n")
     except Exception as exc:
         print(f"  [ERROR] Ошибка при компиляции Inno Setup: {exc}")
+        if os.getenv("CI"):
+            raise
 
 
 if __name__ == "__main__":

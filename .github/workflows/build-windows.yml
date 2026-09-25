@@ -1,0 +1,66 @@
+name: Windows installer
+
+# Собирает JARVIS.exe (PyInstaller) и установщик JARVIS_Setup_v*.exe (Inno Setup)
+# на Windows-машине GitHub. Готовый установщик — в артефактах запуска,
+# а для тега vX.Y.Z — ещё и в Releases.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - jarvis.spec
+      - scripts/installer.iss
+      - scripts/build_exe.py
+      - requirements.txt
+      - .github/workflows/build-windows.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build exe and installer
+        env:
+          PYTHONIOENCODING: utf-8
+          JARVIS_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: python scripts/build_exe.py
+
+      - name: Check installer exists and holds no secrets
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist\JARVIS_Setup_v*.exe | Select-Object -First 1
+          if (-not $setup) { throw "Установщик не собран" }
+          $leaks = Get-ChildItem dist\JARVIS -Recurse -Include api_keys.json,*.session,jarvis_memory.db,token.json,spotify_tokens.json
+          if ($leaks) { $leaks | ForEach-Object { $_.FullName }; throw "В сборку попали секреты" }
+          "Собрано: $($setup.Name) ($([math]::Round($setup.Length / 1MB, 1)) MB)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-Setup
+          path: dist/JARVIS_Setup_v*.exe
+          retention-days: 30
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/JARVIS_Setup_v*.exe
