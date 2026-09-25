@@ -1,5 +1,6 @@
 """Gemini API wrapper for Telegram bot — text, voice and image responses."""
 import asyncio
+import time
 import logging
 
 from google import genai
@@ -142,6 +143,8 @@ _SYSTEM_PROMPT = """Ты — ДЖАРВИС из фильмов о Железн�
 Ты его Джарвис. Немногословен, точен и всегда на его стороне."""
 
 _MAX_HISTORY = 40  # messages per user
+# Сколько Gemini отдыхает после исчерпанной квоты, если есть запасная модель.
+_GEMINI_REST_SEC = 60.0
 
 
 def _is_quota_error(exc: Exception) -> bool:
@@ -151,6 +154,11 @@ def _is_quota_error(exc: Exception) -> bool:
 
 
 class GeminiClient:
+    # Значения по умолчанию на классе: без запасных моделей и без отдыха
+    # (см. __init__) — клиент ведёт себя как раньше.
+    _fallback = None
+    _gemini_resting_until = 0.0
+
     def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
         self._client = genai.Client(
             api_key=api_key,
@@ -160,6 +168,12 @@ class GeminiClient:
         self._history: dict = {}  # user_id -> list of Content dicts
         self._context_provider = None  # callable(user_id) -> str (live time/location)
         self._recall_provider = None   # async (user_id, text) -> str (notes/facts recall)
+        # Запасные модели других сервисов (fallback_llm.py) и отдых Gemini
+        # после исчерпанной квоты: пока он отдыхает, запрос сразу идёт к
+        # запасной модели, а не ждёт отказа всех трёх моделей Gemini с паузой.
+        from telegram_bot.fallback_llm import FallbackChain
+        self._fallback = FallbackChain()
+        self._gemini_resting_until = 0.0
 
     def set_context_provider(self, fn):
         """Register a callback that returns live context (date/time/location)
@@ -234,6 +248,12 @@ class GeminiClient:
         system_instruction = self._system_for(user_id)
         if extra_system:
             system_instruction = f"{system_instruction}\n\n{extra_system}"
+
+        if self._fallback and time.monotonic() < self._gemini_resting_until:
+            text = await self._fallback.complete(contents, system_instruction)
+            if text:
+                return text
+        quota_only = True
         # Two passes: free-tier RPM bursts and 503 spikes are transient, so a
         # short backoff + retry recovers most of them instead of surfacing
         # "ИИ недоступен". The configured model (gemini-2.5-flash) stays first.
@@ -261,13 +281,23 @@ class GeminiClient:
                     last_err = e
                     if self._is_retryable(e):
                         retryable_seen = True
+                    if not _is_quota_error(e):
+                        quota_only = False
                     logger.error(f"Gemini model '{model}' failed: {e}")
                     continue
-            if retryable_seen and attempt == 0:
+            # Квота кончилась — повтор через 2.5 с её не вернёт. Если есть
+            # запасная модель, идём к ней сразу.
+            if retryable_seen and attempt == 0 and not (quota_only and self._fallback):
                 await asyncio.sleep(2.5)   # let an RPM/503 spike pass, try once more
                 continue
             break
         logger.error(f"All Gemini models failed. Last error: {last_err}")
+        if self._fallback:
+            if last_err is not None and quota_only:
+                self._gemini_resting_until = time.monotonic() + _GEMINI_REST_SEC
+            text = await self._fallback.complete(contents, system_instruction)
+            if text:
+                return text
         return "Извини, ИИ сейчас недоступен (проблема с моделью Gemini). Проверь API-ключ и квоту."
 
     _EMBED_MODEL = "gemini-embedding-001"
@@ -502,29 +532,36 @@ class GeminiClient:
             "Если запоминать нечего — верни []."
             f"\n\nДиалог:\n{snippet}"
         )
+        def parse(raw: str) -> list:
+            raw = (raw or "").strip()
+            # Strip markdown fences if present
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            start, end = raw.find("["), raw.rfind("]")
+            if start == -1 or end == -1:
+                return []
+            import json as _json
+            facts = _json.loads(raw[start:end + 1])
+            return [str(f).strip() for f in facts if str(f).strip()][:8]
+
         loop = asyncio.get_event_loop()
-        for model in self._models_to_try():
+        if time.monotonic() >= self._gemini_resting_until:
+            for model in self._models_to_try():
+                try:
+                    resp = await loop.run_in_executor(
+                        None,
+                        lambda m=model: self._client.models.generate_content(
+                            model=m,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(temperature=0.0),
+                        ),
+                    )
+                    return parse(resp.text)
+                except Exception as e:
+                    logger.debug(f"extract_facts '{model}': {e}")
+                    continue
+        if self._fallback:
             try:
-                resp = await loop.run_in_executor(
-                    None,
-                    lambda m=model: self._client.models.generate_content(
-                        model=m,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(temperature=0.0),
-                    ),
-                )
-                raw = (resp.text or "").strip()
-                if not raw:
-                    return []
-                # Strip markdown fences if present
-                raw = raw.replace("```json", "").replace("```", "").strip()
-                start, end = raw.find("["), raw.rfind("]")
-                if start == -1 or end == -1:
-                    return []
-                import json as _json
-                facts = _json.loads(raw[start:end + 1])
-                return [str(f).strip() for f in facts if str(f).strip()][:8]
+                return parse(await self._fallback.complete(prompt, temperature=0.0))
             except Exception as e:
-                logger.debug(f"extract_facts '{model}': {e}")
-                continue
+                logger.debug(f"extract_facts fallback: {e}")
         return []
