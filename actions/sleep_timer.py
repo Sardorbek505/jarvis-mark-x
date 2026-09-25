@@ -6,11 +6,11 @@
   3. По истечении 30 минут:
      - Джарвис спрашивает голосом:
        «Сэр, вы планировали лечь спать в это время. Могу ли я выключить компьютер?»
-     - Запускается 15-секундное окно ожидания.
+     - Запускается окно ожидания (_CONFIRM_SEC).
   4. Реакция:
      - Если пользователь говорит «нет / отмени / я ещё работаю» -> выключение отменяется.
      - Если пользователь говорит «да / выключай / спокойной ночи» -> компьютер выключается сразу.
-     - Если пользователь молчит 15 секунд (уснул) -> компьютер автоматически выключается.
+     - Если пользователь молчит _CONFIRM_SEC (уснул) -> компьютер автоматически выключается.
 """
 
 import logging
@@ -22,6 +22,25 @@ from typing import Optional
 
 logger = logging.getLogger("jarvis-sleeptimer")
 _OS = platform.system()
+
+# Окно на ответ. Отсчёт идёт с момента отправки вопроса, а Джарвису ещё
+# нужно его произнести (секунды 3-5 плюс задержка ответа): при 15 с на
+# сам ответ человеку оставалось меньше десяти секунд.
+_CONFIRM_SEC = 30.0
+
+# speak() кладёт текст в Live-сессию от лица ПОЛЬЗОВАТЕЛЯ. Отдай туда голый
+# вопрос «Могу ли я выключить компьютер?» — и модель ответит на него сама,
+# вплоть до «да, выключайте». Поэтому в сессию идёт указание, что сказать.
+_ASK_PROMPT = (
+    "[СИСТЕМА: таймер сна истёк. Спроси пользователя одной фразой: "
+    "«Сэр, вы планировали лечь спать. Могу я выключить компьютер?» "
+    "Сам на вопрос не отвечай. Скажет «да» — вызови sleep_timer с "
+    "action=\"confirm\", скажет «нет» — с action=\"cancel\".]"
+)
+_GOODBYE_PROMPT = (
+    "[СИСТЕМА: компьютер выключается по таймеру сна. "
+    "Коротко попрощайся: «Спокойной ночи, сэр».]"
+)
 
 
 class SleepTimerManager:
@@ -35,6 +54,7 @@ class SleepTimerManager:
         self._is_waiting_confirmation = False
         self._confirm_deadline: float = 0.0
         self._bot_ref = None
+        self._confirm_event = threading.Event()
 
     def set_bot_reference(self, bot):
         """Сохраняет ссылку на экземпляр JarvisBot для отправки голосовых фраз."""
@@ -127,46 +147,49 @@ class SleepTimerManager:
         """Срабатывает по истечении основного времени."""
         logger.info("SleepTimer: Время сна наступило. Запрос подтверждения у пользователя.")
         self._is_waiting_confirmation = True
-        self._confirm_deadline = time.time() + 15.0
+        self._confirm_deadline = time.time() + _CONFIRM_SEC
+        self._confirm_event.clear()
 
-        ask_phrase = "Сэр, вы планировали лечь спать в это время. Могу ли я выключить компьютер?"
-        
         if player:
-            player.write_log("SYS: 🌙 Время сна наступило. Запрашиваю подтверждение выключения (15 сек)...")
+            player.write_log(f"SYS: 🌙 Время сна наступило. Жду подтверждения ({_CONFIRM_SEC:.0f} сек)...")
 
-        # Озвучиваем вопрос
-        if self._bot_ref and hasattr(self._bot_ref, "speak"):
-            self._bot_ref.speak(ask_phrase)
-        elif player and hasattr(player, "speak"):
-            player.speak(ask_phrase)
+        self._say(_ASK_PROMPT, player)
 
-        # Ожидаем 15 секунд ответа
-        # Если пользователь ответил "нет" / отменил -> cancel_event будет установлен
-        # Если пользователь молчит 15 секунд -> выключаем компьютер
-        cancelled = self._cancel_event.wait(15.0)
+        # «нет» -> cancel_event, «да» -> confirm_event, молчание -> выключение.
+        deadline = time.time() + _CONFIRM_SEC
+        while time.time() < deadline:
+            if self._cancel_event.wait(0.2):
+                self._is_waiting_confirmation = False
+                logger.info("SleepTimer: Выключение отменено пользователем.")
+                return
+            if self._confirm_event.is_set():
+                break
         self._is_waiting_confirmation = False
 
-        if cancelled:
-            logger.info("SleepTimer: Выключение отменено пользователем.")
-            return
-
-        # Пользователь промолчал (уснул) -> Выключаем компьютер
-        logger.info("SleepTimer: 15 секунд молчания истекли. Выполняю выключение ПК.")
+        logger.info("SleepTimer: подтверждено или молчание %.0f с — выключаю ПК.", _CONFIRM_SEC)
         self._execute_shutdown(player)
+
+    def confirm_shutdown(self) -> str:
+        """Пользователь ответил «да» на вопрос о выключении."""
+        if not self._is_waiting_confirmation:
+            return "Выключение сейчас не ожидает подтверждения, сэр."
+        self._confirm_event.set()
+        return "Выключаю компьютер. Спокойной ночи, сэр."
+
+    def _say(self, text: str, player=None):
+        if self._bot_ref and hasattr(self._bot_ref, "speak"):
+            self._bot_ref.speak(text)
+        elif player and hasattr(player, "speak"):
+            player.speak(text)
 
     def _execute_shutdown(self, player=None):
         """Выполняет реальное выключение компьютера."""
-        goodbye_msg = "Спокойной ночи, сэр. Завершаю работу всех систем."
-        
         if player:
             player.write_log("SYS: 🔌 Завершение работы компьютера (Таймер сна)")
 
-        if self._bot_ref and hasattr(self._bot_ref, "speak"):
-            self._bot_ref.speak(goodbye_msg)
-        elif player and hasattr(player, "speak"):
-            player.speak(goodbye_msg)
+        self._say(_GOODBYE_PROMPT, player)
 
-        time.sleep(2.0)  # Даём Джарвису договорить фразу прощания
+        time.sleep(4.0)  # Даём Джарвису договорить фразу прощания
 
         try:
             if _OS == "Windows":
@@ -190,6 +213,8 @@ def sleep_timer(parameters: dict, player=None, bot=None) -> str:
 
     parameters:
         action: 'set' | 'cancel' | 'status' | 'confirm'
+        (confirm — «да» на вопрос о выключении; раньше проваливался в set
+        и молча перезаводил таймер на 30 минут)
         duration_minutes: float (например, 30 или 0.5)
         text: исходный текст пользователя (для парсинга времени)
     """
@@ -203,6 +228,9 @@ def sleep_timer(parameters: dict, player=None, bot=None) -> str:
     # Если действие — статус
     if action in ("status", "статус", "сколько_осталось", "инфо"):
         return sleep_timer_manager.get_status()
+
+    if action in ("confirm", "yes", "да", "подтвердить"):
+        return sleep_timer_manager.confirm_shutdown()
 
     # Парсинг длительности
     minutes = 30.0  # Значение по умолчанию

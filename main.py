@@ -1034,7 +1034,7 @@ TOOLS = [
             "properties": {
                 "action": {
                     "type": "STRING",
-                    "description": "set (установить таймер) | cancel (отменить) | status (проверить оставшееся время)"
+                    "description": "set (установить таймер) | cancel (отменить) | status (проверить оставшееся время) | confirm (пользователь сказал «да» на вопрос о выключении)"
                 },
                 "duration_minutes": {
                     "type": "NUMBER",
@@ -1124,7 +1124,7 @@ class Jarvis:
             logger.debug("Hotkey init note: %s", _e)
             self._hotkey_mgr = None
 
-        # Автоматический запуск мобильного Telegram-бота (@Aimyjarvisbot) в фоне
+        # Локальный Telegram-бот — только по JARVIS_AUTOSTART_BOT=1 (см. метод)
         self._telegram_proc = self._start_telegram_bot()
         atexit.register(self.cleanup)
 
@@ -1133,13 +1133,8 @@ class Jarvis:
         logger.info("[Hotkey] Нажата горячая клавиша вызова Джарвиса (F8)")
         if self.ui.muted:
             self.ui.toggle_mute()
-            self.ui.write_log("SYS: ⚡ Микрофон активирован по горячей клавише F8.")
-        else:
-            self.ui.write_log("SYS: ⚡ Активация по горячей клавише F8.")
-        try:
-            self.ui.bring_to_front()
-        except Exception:
-            pass
+        self.ui.write_log("SYS: ⚡ Вызов по горячей клавише F8.")
+        self.ui.bring_to_front()
         try:
             from core.ducking_controller import ducking_controller
             ducking_controller.duck()
@@ -1152,9 +1147,13 @@ class Jarvis:
 
     def _start_telegram_bot(self):
         """Запускает Telegram-бота в отдельном фоновом процессе при наличии токена."""
+        # Только по явному JARVIS_AUTOSTART_BOT=1. Боевой бот живёт на Hugging
+        # Face по вебхуку; локальный polling-двойник снимал его вебхук,
+        # _webhook_keeper через 90 с ставил обратно — и два бота по очереди
+        # отбирали друг у друга сообщения. Со стороны: «бот не работает».
         # В собранном .exe sys.executable — сам Джарвис: вместо бота
         # запустилась бы его копия, а та — следующая.
-        if getattr(sys, "frozen", False) or os.getenv("JARVIS_AUTOSTART_BOT", "1") == "0":
+        if getattr(sys, "frozen", False) or os.getenv("JARVIS_AUTOSTART_BOT", "0") != "1":
             return None
         try:
             from telegram_bot.config import load as load_config

@@ -813,6 +813,9 @@ class MainWindow(QMainWindow):
     # из другого потока — это падение, а не подтормаживание.
     _level_sig = pyqtSignal(float)
     _tool_sig  = pyqtSignal(str)
+    # Глобальные хоткеи приходят из потока Win32-сообщений — тоже чужого.
+    _mute_sig  = pyqtSignal()
+    _front_sig = pyqtSignal()
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1002,6 +1005,8 @@ class MainWindow(QMainWindow):
         self._state_sig.connect(self._apply_state)
         self._level_sig.connect(self._hud.feed_level)
         self._tool_sig.connect(self._hud.lock_on)
+        self._mute_sig.connect(self._toggle_mute)
+        self._front_sig.connect(self._bring_to_front)
 
     # ── Публичный API ──────────────────────────────────────────────────────────
     def write_log(self, text: str):
@@ -1186,18 +1191,17 @@ class JarvisUI(MainWindow):
         return self._app
 
     def bring_to_front(self):
-        """Разворачивает окно и выводит на передний план."""
-        try:
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
-        except Exception:
-            pass
+        """Разворачивает окно и выводит на передний план. Потокобезопасно."""
+        self._front_sig.emit()
 
-    def toggle_mute(self) -> bool:
-        """Переключает режим микрофона и обновляет интерфейс."""
-        self._toggle_mute()
-        return self.muted
+    def _bring_to_front(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def toggle_mute(self):
+        """Переключает микрофон. Потокобезопасно: зовётся из потока хоткеев."""
+        self._mute_sig.emit()
 
     def mainloop(self):
         sys.exit(self._app.exec())
