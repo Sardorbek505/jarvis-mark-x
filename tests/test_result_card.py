@@ -1,4 +1,5 @@
 """Карточка результата рядом с шаром."""
+import json
 import sys
 
 from core.result_card import build_card, capture_foreground_png
@@ -36,3 +37,48 @@ def test_unknown_tool_still_gets_a_readable_card():
 def test_no_window_shot_outside_windows():
     if sys.platform != "win32":
         assert capture_foreground_png() is None
+
+
+def _data(tool, args, result):
+    return json.loads(build_card(tool, args, {"result": result})["extra"] or "null")
+
+
+def test_search_results_become_a_list():
+    d = _data("web_search", {"query": "q"}, "По запросу «q»: первый | второй | третий")
+    assert d == {"card": "list", "heading": "Найдено", "items": ["первый", "второй", "третий"]}
+
+
+def test_list_keeps_times_but_drops_bullets():
+    d = _data("calendar", {"action": "get_events"}, "• 10:00 — Созвон\n2) 13:30 — Обед")
+    assert d["items"] == ["10:00 — Созвон", "13:30 — Обед"]
+
+
+def test_music_card_has_track_and_status():
+    d = _data("music_player", {"action": "pause", "query": "Believer"}, "Пауза")
+    assert d["card"] == "media" and d["title"] == "Believer" and d["playing"] is False
+
+
+def test_volume_card_reads_level():
+    d = _data("computer_control", {"action": "volume_up", "value": "70"}, "ok")
+    assert d == {"card": "meter", "meter": "volume", "level": 70, "label": "Громкость"}
+    c = build_card("computer_control", {"action": "volume_up", "value": "70"}, "ok")
+    assert c["address"] == "громкость"
+
+
+def test_timer_card_counts_down_from_now():
+    import time
+    d = _data("sleep_timer", {"action": "set", "duration_minutes": 30}, "ok")
+    assert d["card"] == "timer" and d["total"] == 1800
+    assert abs(d["due"] - (time.time() + 1800)) < 5
+
+
+def test_translation_message_memory_app():
+    assert _data("translation", {"text": "привет", "target_language": "english"}, "hello")["dst"] == "hello"
+    assert _data("send_to_telegram", {"text": "буду"}, "Сэр, сообщение успешно отправлено")["text"] == "буду"
+    assert _data("save_to_memory", {"key": "др", "value": "12 марта"}, "ok")["value"] == "12 марта"
+    assert _data("browser", {"url": "https://www.youtube.com/x"}, "ok")["name"] == "youtube.com"
+
+
+def test_failure_becomes_error_card():
+    assert _data("files", {"path": "C:/Windows"}, "Ошибка: защищено")["card"] == "error"
+    assert _data("send_to_telegram", {}, "Сэр, произошла ошибка при отправке")["card"] == "error"

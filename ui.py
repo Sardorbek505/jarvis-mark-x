@@ -32,6 +32,7 @@ import logging
 
 import numpy as np
 
+import hud_cards
 from orb import DotOrb
 
 _logger = logging.getLogger(__name__)
@@ -204,6 +205,7 @@ class HudCanvas(QWidget):
         self._card: dict | None = None
         self._card_t = 0.0
         self._card_vis = 0.0                  # 0..1, проявление карточки
+        self._card_born = 0.0
 
         self._sub_text = ""
         self._sub_t = 0.0
@@ -228,15 +230,15 @@ class HudCanvas(QWidget):
 
     def show_card(self, title: str, address: str, body: str, png: bytes = b"",
                   extra: str = ""):
-        wx = None
+        data = None
         if extra:
             try:
                 import json
                 data = json.loads(extra)
-                if data.get("card") == "weather":
-                    wx = data
-            except (ValueError, AttributeError):
-                pass
+                if not isinstance(data, dict) or "card" not in data:
+                    data = None
+            except ValueError:
+                data = None
         img = None
         if png:
             from PyQt6.QtGui import QImage
@@ -246,7 +248,12 @@ class HudCanvas(QWidget):
         same = self._card and self._card["address"] == address and self._card["title"] == title
         if img is None and same:
             img = self._card.get("img")       # текст пришёл раньше снимка — снимок не теряем
-        self._card = {"title": title, "address": address, "body": body, "img": img, "wx": wx}
+        if not same:
+            # Время рождения карточки — для её анимаций. _card_t сдвигается,
+            # пока Джарвис говорит (продлевает показ), и анимации от него
+            # начинались бы заново.
+            self._card_born = time.monotonic()
+        self._card = {"title": title, "address": address, "body": body, "img": img, "data": data}
         self._card_t = time.monotonic()
 
     def set_subtitle(self, text: str):
@@ -351,11 +358,12 @@ class HudCanvas(QWidget):
         card = self._card
         img = card.get("img")
         head = 30.0
-        wx = card.get("wx")
+        data = card.get("data")
+        special = hud_cards.body_height(p, data, cw) if (data and img is None) else None
         if img is not None:
             ch = min(H - 90.0, cw * 0.62 + head)
-        elif wx:
-            ch = min(H - 90.0, head + 232.0)
+        elif special:
+            ch = min(H - 90.0, head + special)
         else:
             # Высота по тексту: две строки ответа — маленькая карточка, а не
             # пустая коробка.
@@ -395,15 +403,16 @@ class HudCanvas(QWidget):
         clip = QPainterPath()
         clip.addRoundedRect(body, 11, 11)
         p.setClipPath(clip)
-        if wx and img is None:
-            self._paint_weather(p, body, wx)
+        if special and hud_cards.paint_body(p, body, data, self._col,
+                                            time.monotonic() - self._card_born):
+            pass
         elif img is not None:
             # Снимок по ширине карточки; длинная страница медленно едет вниз,
             # как прокрутка на видео.
             scale = body.width() / img.width()
             full_h = img.height() * scale
             extra = max(0.0, full_h - body.height())
-            off = min(extra, max(0.0, (time.monotonic() - self._card_t - 1.5) * 14.0))
+            off = min(extra, max(0.0, (time.monotonic() - self._card_born - 1.5) * 14.0))
             p.drawImage(QRectF(body.left(), body.top() - off, body.width(), full_h), img)
         else:
             p.setPen(self._col(235, lift=0.2))
@@ -418,139 +427,6 @@ class HudCanvas(QWidget):
                        Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
                        card["body"] or "Готово.")
         p.restore()
-
-    @staticmethod
-    def _wx_icon(p: QPainter, kind: str, cx: float, cy: float, size: float):
-        """Значок погоды из простых фигур — без картинок и шрифтов-иконок."""
-        from PyQt6.QtGui import QPainterPath
-
-        s = size / 2
-        sun, cloud = QColor("#ffc94a"), QColor("#cfd8e0")
-        p.save()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        def draw_sun(x, y, r):
-            p.setPen(QPen(sun, max(1.5, r * 0.18), cap=Qt.PenCapStyle.RoundCap))
-            for i in range(8):
-                a = i * math.pi / 4
-                p.drawLine(QPointF(x + math.cos(a) * r * 1.35, y + math.sin(a) * r * 1.35),
-                           QPointF(x + math.cos(a) * r * 1.75, y + math.sin(a) * r * 1.75))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(sun)
-            p.drawEllipse(QPointF(x, y), r, r)
-
-        def draw_cloud(x, y, w, col):
-            path = QPainterPath()
-            path.addEllipse(QPointF(x - w * 0.28, y + w * 0.05), w * 0.26, w * 0.22)
-            path.addEllipse(QPointF(x + w * 0.02, y - w * 0.10), w * 0.32, w * 0.30)
-            path.addEllipse(QPointF(x + w * 0.30, y + w * 0.06), w * 0.24, w * 0.20)
-            path.addRoundedRect(QRectF(x - w * 0.52, y + w * 0.02, w * 1.04, w * 0.26), w * 0.13, w * 0.13)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(col)
-            p.drawPath(path.simplified())
-
-        if kind == "sun":
-            draw_sun(cx, cy, s * 0.48)
-        elif kind == "partly":
-            draw_sun(cx - s * 0.25, cy - s * 0.25, s * 0.34)
-            draw_cloud(cx + s * 0.12, cy + s * 0.18, s * 1.25, cloud)
-        elif kind == "fog":
-            p.setPen(QPen(cloud, max(1.5, s * 0.12), cap=Qt.PenCapStyle.RoundCap))
-            for i, w in enumerate((0.8, 0.6, 0.75)):
-                y = cy - s * 0.35 + i * s * 0.35
-                p.drawLine(QPointF(cx - s * w, y), QPointF(cx + s * w, y))
-        else:
-            dark = kind in ("rain", "storm", "snow")
-            draw_cloud(cx, cy - s * 0.18, s * 1.5, QColor("#9aa6b2") if dark else cloud)
-            if kind == "rain":
-                p.setPen(QPen(QColor("#6fb7ff"), max(1.5, s * 0.1), cap=Qt.PenCapStyle.RoundCap))
-                for i in range(3):
-                    x = cx - s * 0.4 + i * s * 0.4
-                    p.drawLine(QPointF(x, cy + s * 0.35), QPointF(x - s * 0.12, cy + s * 0.7))
-            elif kind == "snow":
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(QColor("#eef3f6"))
-                for i in range(3):
-                    p.drawEllipse(QPointF(cx - s * 0.4 + i * s * 0.4, cy + s * 0.55), s * 0.09, s * 0.09)
-            elif kind == "storm":
-                bolt = QPainterPath()
-                bolt.moveTo(cx + s * 0.05, cy + s * 0.2)
-                bolt.lineTo(cx - s * 0.18, cy + s * 0.58)
-                bolt.lineTo(cx + s * 0.02, cy + s * 0.55)
-                bolt.lineTo(cx - s * 0.1, cy + s * 0.9)
-                bolt.lineTo(cx + s * 0.25, cy + s * 0.42)
-                bolt.lineTo(cx + s * 0.04, cy + s * 0.45)
-                bolt.closeSubpath()
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(sun)
-                p.drawPath(bolt)
-        p.restore()
-
-    def _paint_weather(self, p: QPainter, body: QRectF, wx: dict):
-        """Карточка погоды: сейчас крупно, ниже три дня со значками."""
-        x0, y0, w = body.left() + 18, body.top() + 16, body.width() - 36
-
-        def temp(v) -> str:
-            try:
-                v = int(v)
-            except (TypeError, ValueError):
-                return f"{v}°"
-            return f"+{v}°" if v > 0 else f"{v}°"
-
-        self._wx_icon(p, wx.get("kind", "cloud"), x0 + 32, y0 + 34, 64)
-        p.setPen(qcol(C.WHITE))
-        p.setFont(QFont("Segoe UI", 28, QFont.Weight.DemiBold))
-        p.drawText(QRectF(x0 + 78, y0, 130, 64), Qt.AlignmentFlag.AlignVCenter, temp(wx.get("temp")))
-        p.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
-        p.setPen(self._col(235, lift=0.25))
-        p.drawText(QRectF(x0 + 190, y0 + 8, w - 190, 22), Qt.AlignmentFlag.AlignVCenter,
-                   p.fontMetrics().elidedText(str(wx.get("desc", "")), Qt.TextElideMode.ElideRight, int(w - 190)))
-        p.setFont(QFont("Segoe UI", 8))
-        p.setPen(qcol(C.TEXT_MED))
-        p.drawText(QRectF(x0 + 190, y0 + 32, w - 190, 36),
-                   Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
-                   f"ощущается {temp(wx.get('feels'))} · ветер {wx.get('wind', '?')} км/ч"
-                   f" · влажность {wx.get('humidity', '?')}%")
-
-        days = wx.get("days") or []
-        if not days:
-            return
-        top = y0 + 88
-        p.setPen(QPen(qcol(C.BORDER), 1))
-        p.drawLine(QPointF(x0, top - 8), QPointF(x0 + w, top - 8))
-        col_w = w / len(days)
-        for i, d in enumerate(days):
-            cx = x0 + col_w * (i + 0.5)
-            if i:
-                p.setPen(QPen(qcol(C.BORDER), 1))
-                p.drawLine(QPointF(x0 + col_w * i, top + 4), QPointF(x0 + col_w * i, top + 112))
-            f = QFont("Segoe UI", 7, QFont.Weight.Bold)
-            f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.2)
-            p.setFont(f)
-            p.setPen(self._col(230, lift=0.2) if i == 1 else qcol(C.TEXT_DIM))
-            p.drawText(QRectF(cx - col_w / 2, top, col_w, 16), Qt.AlignmentFlag.AlignCenter,
-                       str(d.get("name", "")).upper())
-            self._wx_icon(p, d.get("kind", "cloud"), cx, top + 42, 38)
-            # максимум — ярко, минимум — тусклее, как в прогнозе на телефоне
-            hi, lo = temp(d.get("max")), temp(d.get("min"))
-            f_hi = QFont("Segoe UI", 10, QFont.Weight.DemiBold)
-            f_lo = QFont("Segoe UI", 10)
-            p.setFont(f_hi)
-            w_hi = p.fontMetrics().horizontalAdvance(hi + "  ")
-            p.setFont(f_lo)
-            w_lo = p.fontMetrics().horizontalAdvance(lo)
-            left = cx - (w_hi + w_lo) / 2
-            p.setFont(f_hi)
-            p.setPen(qcol(C.WHITE))
-            p.drawText(QRectF(left, top + 66, w_hi, 20), Qt.AlignmentFlag.AlignVCenter, hi)
-            p.setFont(f_lo)
-            p.setPen(qcol(C.TEXT_DIM))
-            p.drawText(QRectF(left + w_hi, top + 66, w_lo + 2, 20), Qt.AlignmentFlag.AlignVCenter, lo)
-            rain = int(d.get("rain", 0) or 0)
-            p.setFont(QFont("Segoe UI", 8))
-            p.setPen(QColor("#6fb7ff") if rain >= 30 else qcol(C.TEXT_DIM))
-            p.drawText(QRectF(cx - col_w / 2, top + 88, col_w, 18), Qt.AlignmentFlag.AlignCenter,
-                       f"дождь {rain}%" if rain >= 10 else str(d.get("desc", ""))[:16].lower())
 
     def _glow(self, R: float) -> QPixmap:
         key = (int(R), *(int(c) // 6 for c in self._rgb))
