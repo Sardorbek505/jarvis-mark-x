@@ -6,7 +6,6 @@ UI: точная копия Mark-XXXIX с русскоязычными надп�
 
 from __future__ import annotations
 
-import html
 import math
 import platform
 import sys
@@ -61,29 +60,32 @@ _MIN_W, _MIN_H = 820, 580
 _OS = platform.system()
 
 
-# ─── Цветовая палитра (идентично оригиналу) ───────────────────────────────────
+# ─── Цветовая палитра ─────────────────────────────────────────────────────────
+# Нейтральная почти чёрная основа: цвет в окне даёт только состояние (шар,
+# точка в шапке, рамка чата), как на референсном видео. Имена прежние — ими
+# пользуются оверлей настройки и трей.
 class C:
-    BG       = "#00060a"
-    PANEL    = "#010d14"
-    PANEL2   = "#010f18"
-    BORDER   = "#0d3347"
-    BORDER_B = "#1a5c7a"
-    BORDER_A = "#0f4060"
-    PRI      = "#00d4ff"
-    PRI_DIM  = "#007a99"
-    PRI_GHO  = "#001f2e"
-    ACC      = "#ff6b00"
-    ACC2     = "#ffcc00"
-    GREEN    = "#00ff88"
-    GREEN_D  = "#00aa55"
-    RED      = "#ff3355"
-    MUTED_C  = "#ff3366"
-    TEXT     = "#8ffcff"
-    TEXT_DIM = "#3a8a9a"
-    TEXT_MED = "#5ab8cc"
-    WHITE    = "#d8f8ff"
-    DARK     = "#000d14"
-    BAR_BG   = "#011520"
+    BG       = "#030609"
+    PANEL    = "#070c11"
+    PANEL2   = "#0a1017"
+    BORDER   = "#151e27"
+    BORDER_B = "#243240"
+    BORDER_A = "#1b2631"
+    PRI      = "#3fd0bd"
+    PRI_DIM  = "#2a8a7e"
+    PRI_GHO  = "#0c1c1b"
+    ACC      = "#ff8a34"
+    ACC2     = "#d9e25a"
+    GREEN    = "#46e880"
+    GREEN_D  = "#2aa05a"
+    RED      = "#ff4660"
+    MUTED_C  = "#ff4660"
+    TEXT     = "#d6dee5"
+    TEXT_DIM = "#5c6873"
+    TEXT_MED = "#8a96a1"
+    WHITE    = "#eef3f6"
+    DARK     = "#05090d"
+    BAR_BG   = "#0f161d"
 
 
 def qcol(h: str, a: int = 255) -> QColor:
@@ -303,7 +305,7 @@ class HudCanvas(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         W, H = self.width(), self.height()
-        p.fillRect(self.rect(), QColor(2, 5, 8))
+        p.fillRect(self.rect(), qcol(C.BG))
 
         e = self._orb.energy
         fw = min(W, H)
@@ -399,57 +401,82 @@ class HudCanvas(QWidget):
                        | Qt.TextFlag.TextWordWrap, text)
 
 
-# ─── Виджет метрики ───────────────────────────────────────────────────────────
-class MetricBar(QWidget):
-    def __init__(self, label: str, color: str = C.PRI, parent=None):
-        super().__init__(parent)
-        self._label = label
-        self._color = color
-        self._value = 0.0
-        self._text  = "--"
-        self.setFixedHeight(38)
-        self.setMinimumWidth(80)
+# ─── Шапка: имя, цифры, часы ──────────────────────────────────────────────────
+class HeaderBar(QWidget):
+    """Тонкая строка сверху: слева имя с точкой цвета состояния, по центру
+    цифры системы мелким моноширинным, справа часы. Кнопка микрофона
+    добавляется в неё снаружи (layout)."""
 
-    def set_value(self, pct: float, text: str):
-        self._value = max(0.0, min(100.0, pct))
-        self._text = text
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(40)
+        self._rgb = (63, 208, 189)
+        self._stats: list[tuple[str, str]] = []
+        self._pulse = 0.0
+        self._tmr = QTimer(self)
+        self._tmr.timeout.connect(self._tick)
+        self._tmr.start(50)
+
+    def set_accent(self, rgb):
+        self._rgb = tuple(int(c) for c in rgb)
+        self.update()
+
+    def set_stats(self, stats: list[tuple[str, str]]):
+        self._stats = stats
+        self.update()
+
+    def _tick(self):
+        self._pulse = (self._pulse + 0.05 * 3.2) % (2 * math.pi)
         self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         W, H = self.width(), self.height()
-        p.setBrush(QBrush(qcol(C.PANEL2)))
-        p.setPen(QPen(qcol(C.BORDER_A), 1))
-        p.drawRoundedRect(QRectF(1, 1, W - 2, H - 2), 4, 4)
+        p.fillRect(self.rect(), qcol(C.BG))
+        p.setPen(QPen(qcol(C.BORDER), 1))
+        p.drawLine(0, H - 1, W, H - 1)
 
-        bar_h = 4
-        bar_y = H - bar_h - 5
-        bar_w = W - 12
-        bar_x = 6
-        fill_w = int(bar_w * self._value / 100)
-
-        p.setBrush(QBrush(qcol(C.BAR_BG)))
+        r, g, b = self._rgb
+        k = 0.55 + 0.45 * math.sin(self._pulse)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(QRectF(bar_x, bar_y, bar_w, bar_h), 2, 2)
+        p.setBrush(QColor(r, g, b, int(60 * k)))
+        p.drawEllipse(QPointF(18, H / 2), 7, 7)
+        p.setBrush(QColor(r, g, b))
+        p.drawEllipse(QPointF(18, H / 2), 3.5, 3.5)
 
-        bar_col = (qcol(C.RED) if self._value > 85
-                   else qcol(C.ACC) if self._value > 65
-                   else qcol(self._color))
-        if fill_w > 0:
-            p.setBrush(QBrush(bar_col))
-            p.drawRoundedRect(QRectF(bar_x, bar_y, fill_w, bar_h), 2, 2)
+        f = QFont("Segoe UI", 9, QFont.Weight.Bold)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2.5)
+        p.setFont(f)
+        p.setPen(qcol(C.WHITE))
+        p.drawText(QRectF(32, 0, 160, H), Qt.AlignmentFlag.AlignVCenter, "JARVIS")
+        p.setFont(QFont("Segoe UI", 7))
+        p.setPen(qcol(C.TEXT_DIM))
+        p.drawText(QRectF(103, 0, 60, H), Qt.AlignmentFlag.AlignVCenter, "MARK X")
 
-        p.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
-        p.setPen(QPen(qcol(C.TEXT_DIM), 1))
-        p.drawText(QRectF(8, 5, 50, 14),
-                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                   self._label)
-        p.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
-        p.setPen(QPen(bar_col if self._text != "--" else qcol(C.TEXT_DIM), 1))
-        p.drawText(QRectF(0, 4, W - 6, 16),
-                   Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                   self._text)
+        # Цифры — «ЦПУ 12%  ·  ОЗУ 48%  ·  …», подпись тусклая, значение светлое.
+        lab_f, val_f = QFont("Consolas", 7), QFont("Consolas", 8, QFont.Weight.Bold)
+        parts = []
+        for lab, val in self._stats:
+            p.setFont(lab_f)
+            lw = p.fontMetrics().horizontalAdvance(lab + " ")
+            p.setFont(val_f)
+            vw = p.fontMetrics().horizontalAdvance(val)
+            parts.append((lab, val, lw, vw))
+        gap = 22
+        total = sum(lw + vw for _, _, lw, vw in parts) + gap * max(0, len(parts) - 1)
+        x = (W - total) / 2
+        for i, (lab, val, lw, vw) in enumerate(parts):
+            p.setFont(lab_f)
+            p.setPen(qcol(C.TEXT_DIM))
+            p.drawText(QRectF(x, 0, lw, H), Qt.AlignmentFlag.AlignVCenter, lab)
+            p.setFont(val_f)
+            p.setPen(qcol(C.TEXT_MED))
+            p.drawText(QRectF(x + lw, 0, vw + 2, H), Qt.AlignmentFlag.AlignVCenter, val)
+            x += lw + vw + gap
+            if i < len(parts) - 1:
+                p.setPen(qcol(C.BORDER_B))
+                p.drawText(QRectF(x - gap, 0, gap, H), Qt.AlignmentFlag.AlignCenter, "·")
 
 
 # ─── Лог-виджет диалога (HUD Chat) ──────────────────────────────────────────
@@ -464,22 +491,21 @@ class LogWidget(QTextEdit):
         self.setFont(QFont("Segoe UI", 9))
         self.setStyleSheet(f"""
             QTextEdit {{
-                background-color: {C.PANEL};
+                background-color: transparent;
                 color: {C.TEXT};
-                border: 1px solid {C.BORDER};
-                border-radius: 4px;
-                padding: 6px;
-                selection-background-color: {C.PRI_GHO};
+                border: none;
+                padding: 2px 10px 6px 12px;
+                selection-background-color: {C.BORDER_B};
             }}
             QScrollBar:vertical {{
-                background: {C.BG};
-                width: 6px;
+                background: transparent;
+                width: 4px;
                 border: none;
                 margin: 0px;
             }}
             QScrollBar::handle:vertical {{
                 background: {C.BORDER_B};
-                border-radius: 3px;
+                border-radius: 2px;
                 min-height: 20px;
             }}
             QScrollBar::handle:vertical:hover {{
@@ -494,70 +520,49 @@ class LogWidget(QTextEdit):
     def append_log(self, text: str):
         self._sig.emit(text)
 
+    def _para(self, top: int, runs):
+        from PyQt6.QtGui import QTextBlockFormat, QTextCharFormat
+        cur = self.textCursor()
+        cur.movePosition(QTextCursor.MoveOperation.End)
+        bf = QTextBlockFormat()
+        bf.setTopMargin(top)
+        if self.document().isEmpty():
+            cur.setBlockFormat(bf)
+        else:
+            cur.insertBlock(bf)
+        for txt, col, size, bold, spacing in runs:
+            cf = QTextCharFormat()
+            cf.setForeground(qcol(col))
+            f = QFont("Segoe UI", size, QFont.Weight.DemiBold if bold else QFont.Weight.Normal)
+            if spacing:
+                f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, spacing)
+            cf.setFont(f)
+            cur.insertText(txt, cf)
+        self.setTextCursor(cur)
+
     def _handle_append(self, text: str):
         if not text:
             return
 
         tl = text.strip().lower()
         now_str = time.strftime("%H:%M")
+        body = text.split(":", 1)[1].strip() if ":" in text else text
 
+        # Каждая строка — свой абзац через курсор. insertHtml склеивал новый
+        # <p> с концом предыдущего: реплики шли одной строкой.
         if tl.startswith("вы:") or tl.startswith("you:"):
-            content = text.split(":", 1)[1].strip()
-            safe_content = html.escape(content)
-            card = (
-                f'<div style="margin: 4px 0px 6px 0px; padding: 6px 8px; background: rgba(0, 32, 48, 0.6); '
-                f'border-left: 3px solid #00d4ff; border-radius: 4px;">'
-                f'<table width="100%" style="margin-bottom: 2px;"><tr>'
-                f'<td style="font-family: \'Segoe UI\', sans-serif; font-size: 10px; font-weight: bold; color: #50c8e8; letter-spacing: 1px;">ВЫ</td>'
-                f'<td align="right" style="font-family: monospace; font-size: 9px; color: #3a7588;">{now_str}</td>'
-                f'</tr></table>'
-                f'<div style="font-family: \'Segoe UI\', sans-serif; font-size: 12px; color: #ffffff; line-height: 135%;">{safe_content}</div>'
-                f'</div>'
-            )
+            self._para(12, [("ВЫ", C.TEXT_MED, 8, True, 1.2), ("   " + now_str, C.TEXT_DIM, 8, False, 0)])
+            self._para(3, [(body, C.WHITE, 10, False, 0)])
         elif tl.startswith("джарвис:") or tl.startswith("jarvis:"):
-            content = text.split(":", 1)[1].strip()
-            safe_content = html.escape(content)
-            card = (
-                f'<div style="margin: 4px 0px 6px 0px; padding: 6px 8px; background: rgba(0, 48, 36, 0.6); '
-                f'border-left: 3px solid #00ffaa; border-radius: 4px;">'
-                f'<table width="100%" style="margin-bottom: 2px;"><tr>'
-                f'<td style="font-family: \'Segoe UI\', sans-serif; font-size: 10px; font-weight: bold; color: #00ffaa; letter-spacing: 1px;">◈ ДЖАРВИС</td>'
-                f'<td align="right" style="font-family: monospace; font-size: 9px; color: #2a7a5c;">{now_str}</td>'
-                f'</tr></table>'
-                f'<div style="font-family: \'Segoe UI\', sans-serif; font-size: 12px; color: #dcf8ff; line-height: 135%;">{safe_content}</div>'
-                f'</div>'
-            )
+            self._para(12, [("ДЖАРВИС", C.ACC, 8, True, 1.2), ("   " + now_str, C.TEXT_DIM, 8, False, 0)])
+            self._para(3, [(body, C.TEXT, 10, False, 0)])
         elif tl.startswith("err:") or "ошибка" in tl:
-            content = text.split(":", 1)[1].strip() if ":" in text else text
-            safe_content = html.escape(content)
-            card = (
-                f'<div style="margin: 3px 0px; padding: 4px 6px; background: rgba(60, 10, 20, 0.45); '
-                f'border-left: 2px solid #ff3b5c; border-radius: 3px;">'
-                f'<span style="font-family: monospace; font-size: 9px; font-weight: bold; color: #ff3b5c;">ERR:</span> '
-                f'<span style="font-family: \'Segoe UI\', sans-serif; font-size: 11px; color: #ff99aa;">{safe_content}</span>'
-                f'</div>'
-            )
+            self._para(6, [("✕  ", C.RED, 8, True, 0), (body, "#d98a96", 8, False, 0)])
         elif tl.startswith("sys:"):
-            content = text.split(":", 1)[1].strip()
-            safe_content = html.escape(content)
-            card = (
-                f'<div style="margin: 2px 0px; padding: 3px 6px; background: rgba(30, 25, 10, 0.35); '
-                f'border-left: 2px solid #d49b35; border-radius: 3px;">'
-                f'<span style="font-family: monospace; font-size: 9px; font-weight: bold; color: #d49b35;">SYS:</span> '
-                f'<span style="font-family: \'Segoe UI\', sans-serif; font-size: 10px; color: #8ab0b8;">{safe_content}</span>'
-                f'</div>'
-            )
+            self._para(6, [("·  " + body, C.TEXT_DIM, 8, False, 0)])
         else:
-            safe_content = html.escape(text)
-            card = (
-                f'<div style="margin: 2px 0px; font-family: \'Segoe UI\', sans-serif; font-size: 11px; color: {C.TEXT_DIM};">'
-                f'{safe_content}</div>'
-            )
+            self._para(6, [("·  " + text, C.TEXT_DIM, 8, False, 0)])
 
-        cur = self.textCursor()
-        cur.movePosition(QTextCursor.MoveOperation.End)
-        self.setTextCursor(cur)
-        self.insertHtml(card)
         self.ensureCursorVisible()
         sb = self.verticalScrollBar()
         if sb:
@@ -768,129 +773,117 @@ class MainWindow(QMainWindow):
             self.tray = None
 
         # ── Центральный виджет ──────────────────────────────────────
+        # Шапка во всю ширину, под ней шар и чат. Левой колонки с полосками
+        # больше нет: цифры уехали в шапку, статус — в плашку над шаром.
         central = QWidget()
         self.setCentralWidget(central)
-        root = QHBoxLayout(central)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(8)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        # ── Левая панель ────────────────────────────────────────────
-        left = QWidget()
-        left.setFixedWidth(148)
-        left_lay = QVBoxLayout(left)
-        left_lay.setContentsMargins(0, 0, 0, 0)
-        left_lay.setSpacing(6)
-
-        def _sec_label(txt: str) -> QLabel:
-            w = QLabel(txt)
-            w.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
-            w.setStyleSheet(f"color: {C.TEXT_DIM}; letter-spacing: 2px;")
-            return w
-
-        left_lay.addWidget(_sec_label("◈ СИСТЕМА"))
-
-        self._cpu_bar = MetricBar("ЦПУ",  C.PRI)
-        self._mem_bar = MetricBar("ОЗУ",  C.ACC2)
-        self._net_bar = MetricBar("СЕТЬ", C.GREEN)
-        for bar in (self._cpu_bar, self._mem_bar, self._net_bar):
-            left_lay.addWidget(bar)
-
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet(f"color: {C.BORDER};")
-        left_lay.addWidget(sep)
-        left_lay.addWidget(_sec_label("◈ СТАТУС"))
-
-        self._status_lbl = QLabel("ОЖИДАНИЕ")
-        self._status_lbl.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
-        self._status_lbl.setStyleSheet(f"color: {C.ACC2};")
-        self._status_lbl.setWordWrap(True)
-        left_lay.addWidget(self._status_lbl)
-
-        left_lay.addStretch()
-
-        # Кнопка: Тихий режим
-        self._mute_btn = QPushButton("🔇  ТИХИЙ")
-        self._mute_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
-        self._mute_btn.setFixedHeight(30)
+        head_row = QHBoxLayout()
+        head_row.setContentsMargins(0, 0, 12, 0)
+        head_row.setSpacing(8)
+        self._header = HeaderBar()
+        head_row.addWidget(self._header, stretch=1)
+        self._clock = QLabel()
+        self._clock.setFont(QFont("Consolas", 8))
+        self._clock.setStyleSheet(f"color: {C.TEXT_DIM}; background: {C.BG};")
+        head_row.addWidget(self._clock)
+        self._mute_btn = QPushButton()
+        self._mute_btn.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+        self._mute_btn.setFixedHeight(24)
         self._mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mute_btn.setToolTip("Микрофон (Ctrl+M)")
         self._mute_btn.clicked.connect(self._toggle_mute)
         self._style_mute_btn()
-        left_lay.addWidget(self._mute_btn)
+        head_row.addWidget(self._mute_btn)
+        head_wrap = QWidget()
+        head_wrap.setStyleSheet(f"background: {C.BG}; border-bottom: 1px solid {C.BORDER};")
+        head_wrap.setLayout(head_row)
+        outer.addWidget(head_wrap)
 
-        root.addWidget(left)
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 12, 12)
+        body.setSpacing(12)
+        outer.addLayout(body, stretch=1)
 
         # ── Центральный HUD ─────────────────────────────────────────
         self._hud = HudCanvas(face_path)
-        root.addWidget(self._hud, stretch=1)
+        body.addWidget(self._hud, stretch=1)
 
-        # ── Правая панель ───────────────────────────────────────────
-        right = QWidget()
-        right.setFixedWidth(340)
-        right_lay = QVBoxLayout(right)
-        right_lay.setContentsMargins(0, 0, 0, 0)
-        right_lay.setSpacing(6)
+        # ── Панель диалога ──────────────────────────────────────────
+        # Рамка панели подсвечивается цветом состояния — как окно на видео.
+        self._chat = QFrame()
+        self._chat.setObjectName("chat")
+        self._chat.setFixedWidth(360)
+        chat_lay = QVBoxLayout(self._chat)
+        chat_lay.setContentsMargins(0, 10, 0, 10)
+        chat_lay.setSpacing(8)
 
-        right_lay.addWidget(_sec_label("◈ ДИАЛОГ"))
+        title = QLabel("ДИАЛОГ")
+        tf = QFont("Segoe UI", 7, QFont.Weight.Bold)
+        tf.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2.5)
+        title.setFont(tf)
+        title.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; padding-left: 14px;")
+        chat_lay.addWidget(title)
 
         self._log = LogWidget()
-        right_lay.addWidget(self._log, stretch=1)
-
-        right_lay.addWidget(_sec_label("◈ ТЕКСТОВЫЙ ВВОД"))
+        chat_lay.addWidget(self._log, stretch=1)
 
         input_row = QHBoxLayout()
-        input_row.setSpacing(4)
-
+        input_row.setContentsMargins(10, 0, 10, 0)
+        input_row.setSpacing(6)
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Напишите команду... (Enter)")
+        self._input.setPlaceholderText("Напишите Джарвису…")
         self._input.setFont(QFont("Segoe UI", 9))
-        self._input.setFixedHeight(32)
+        self._input.setFixedHeight(34)
         self._input.setStyleSheet(f"""
             QLineEdit {{
-                background: #000d12; color: {C.TEXT};
-                border: 1px solid {C.BORDER}; border-radius: 4px; padding: 4px 8px;
+                background: {C.PANEL2}; color: {C.TEXT};
+                border: 1px solid {C.BORDER}; border-radius: 17px; padding: 0px 14px;
             }}
-            QLineEdit:focus {{ border: 1px solid {C.PRI}; background: #00141e; }}
+            QLineEdit:focus {{ border: 1px solid {C.BORDER_B}; }}
         """)
         self._input.returnPressed.connect(self._send_text)
         input_row.addWidget(self._input)
 
-        send_btn = QPushButton("▸")
+        send_btn = QPushButton("↑")
         send_btn.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        send_btn.setFixedSize(32, 32)
+        send_btn.setFixedSize(34, 34)
         send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        send_btn.setToolTip("Отправить (Enter)")
         send_btn.clicked.connect(self._send_text)
         send_btn.setStyleSheet(f"""
             QPushButton {{
-                background: {C.PRI_GHO}; color: {C.PRI};
-                border: 1px solid {C.PRI_DIM}; border-radius: 4px;
+                background: {C.WHITE}; color: {C.BG};
+                border: none; border-radius: 17px;
             }}
-            QPushButton:hover {{ background: {C.BORDER_A}; border: 1px solid {C.PRI}; }}
+            QPushButton:hover {{ background: #ffffff; }}
         """)
         input_row.addWidget(send_btn)
+        chat_lay.addLayout(input_row)
 
-        right_lay.addLayout(input_row)
-
-        # Кнопки внизу
         btn_row = QHBoxLayout()
-        btn_row.setSpacing(4)
-        for label, slot in [("ОЧИСТИТЬ", self._clear_log), ("ВЫХОД", self.close)]:
+        btn_row.setContentsMargins(14, 0, 14, 0)
+        btn_row.setSpacing(14)
+        for label, slot in [("Очистить", self._clear_log), ("Свернуть", self.close)]:
             b = QPushButton(label)
-            b.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
-            b.setFixedHeight(26)
+            b.setFont(QFont("Segoe UI", 7))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent; color: {C.TEXT_DIM};
-                    border: 1px solid {C.BORDER}; border-radius: 3px;
-                }}
-                QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
+                QPushButton {{ background: transparent; color: {C.TEXT_DIM}; border: none; padding: 0; }}
+                QPushButton:hover {{ color: {C.TEXT}; }}
             """)
             b.clicked.connect(slot)
             btn_row.addWidget(b)
-        right_lay.addLayout(btn_row)
+        btn_row.addStretch()
+        chat_lay.addLayout(btn_row)
 
-        root.addWidget(right)
+        body.addWidget(self._chat)
+        self._chat_accent((63, 208, 189))
+        self._started = time.monotonic()
+        self._tools_run = 0
 
         # ── Оверлей настройки (поверх всего) ───────────────────────
         self._overlay = None
@@ -904,11 +897,13 @@ class MainWindow(QMainWindow):
         self._metric_timer = QTimer(self)
         self._metric_timer.timeout.connect(self._update_metrics)
         self._metric_timer.start(2000)
+        self._update_metrics()
 
         self._log_sig.connect(self._log.append_log)
         self._state_sig.connect(self._apply_state)
         self._level_sig.connect(self._hud.feed_level)
         self._tool_sig.connect(self._hud.lock_on)
+        self._tool_sig.connect(self._count_tool)
         self._sub_sig.connect(self._hud.set_subtitle)
         self._mute_sig.connect(self._toggle_mute)
         self._front_sig.connect(self._bring_to_front)
@@ -933,7 +928,7 @@ class MainWindow(QMainWindow):
         self._level_sig.emit(float(value))
 
     def lock_on(self, tool: str):
-        """Навести прицел на инструмент, который сейчас выполняется."""
+        """Подписать над шаром инструмент, который сейчас выполняется."""
         self._tool_sig.emit(str(tool))
 
     def wait_for_api_key(self):
@@ -1002,17 +997,7 @@ class MainWindow(QMainWindow):
         ru = state_map.get(state.upper(), state)
         self._hud.state = ru
         self._hud.speaking = (state.upper() == "SPEAKING")
-        self._status_lbl.setText(ru)
-
-        color = {
-            "ОЖИДАЕТ":     C.TEXT_DIM,
-            "СЛУШАЕТ":      C.GREEN,
-            "ДУМАЕТ":       C.ACC2,
-            "ГОВОРИТ":      C.ACC,
-            "ОБРАБОТКА":    C.ACC2,
-            "ИНИЦИАЛИЗАЦИЯ": C.PRI,
-        }.get(ru, C.TEXT_DIM)
-        self._status_lbl.setStyleSheet(f"color: {color};")
+        self._chat_accent(_STATE_RGB.get("ОТКЛЮЧЁН" if self.muted else ru, _STATE_RGB["ОЖИДАЕТ"]))
 
     def _toggle_mute(self):
         self.muted = not self.muted
@@ -1024,26 +1009,25 @@ class MainWindow(QMainWindow):
         else:
             self.write_log("SYS: Микрофон включён.")
             self._hud.state = "СЛУШАЕТ"
+        self._chat_accent(_STATE_RGB[self._hud.state])
 
     def _style_mute_btn(self):
         if self.muted:
-            self._mute_btn.setText("🔊  ВКЛЮЧИТЬ")
-            self._mute_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {C.MUTED_C}; color: #000;
-                    border: none; border-radius: 3px; font-weight: bold;
-                }}
-                QPushButton:hover {{ background: #ff6688; }}
-            """)
+            self._mute_btn.setText("●  МИКРОФОН ВЫКЛ")
+            col, border = C.RED, "rgba(255, 70, 96, 110)"
         else:
-            self._mute_btn.setText("🔇  ТИХИЙ")
-            self._mute_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent; color: {C.TEXT_DIM};
-                    border: 1px solid {C.BORDER}; border-radius: 3px;
-                }}
-                QPushButton:hover {{ color: {C.MUTED_C}; border: 1px solid {C.MUTED_C}; }}
-            """)
+            self._mute_btn.setText("●  МИКРОФОН")
+            col, border = C.TEXT_MED, C.BORDER_B
+        self._mute_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {col};
+                border: 1px solid {border}; border-radius: 12px; padding: 0px 12px;
+            }}
+            QPushButton:hover {{ color: {C.WHITE}; border: 1px solid {C.TEXT_DIM}; }}
+        """)
+
+    def _count_tool(self, _name: str):
+        self._tools_run += 1
 
     def _send_text(self):
         text = self._input.text().strip()
@@ -1063,11 +1047,29 @@ class MainWindow(QMainWindow):
 
     def _update_metrics(self):
         snap = _metrics.snapshot()
-        self._cpu_bar.set_value(snap["cpu"], f"{snap['cpu']:.0f}%")
-        self._mem_bar.set_value(snap["mem"], f"{snap['mem']:.0f}%")
         net = snap["net"]
-        net_str = f"{net:.1f} МБ/с" if net >= 0.1 else f"{net*1024:.0f} КБ/с"
-        self._net_bar.set_value(min(100, net * 10), net_str)
+        net_str = f"{net:.1f}МБ/с" if net >= 0.1 else f"{net*1024:.0f}КБ/с"
+        up = int(time.monotonic() - self._started)
+        self._header.set_stats([
+            ("ЦПУ", f"{snap['cpu']:.0f}%"),
+            ("ОЗУ", f"{snap['mem']:.0f}%"),
+            ("СЕТЬ", net_str),
+            ("КОМАНД", str(self._tools_run)),
+            ("В СЕТИ", f"{up // 3600:02d}:{up % 3600 // 60:02d}"),
+        ])
+        self._clock.setText(time.strftime("%H:%M"))
+
+    def _chat_accent(self, rgb):
+        """Рамка чата и точка в шапке — цвета состояния, приглушённо."""
+        r, g, b = rgb
+        self._chat.setStyleSheet(f"""
+            QFrame#chat {{
+                background: {C.PANEL};
+                border: 1px solid rgba({r}, {g}, {b}, 70);
+                border-radius: 12px;
+            }}
+        """)
+        self._header.set_accent(rgb)
 
     def closeEvent(self, event):
         """Сворачивание в трей при закрытии окна (вместо уничтожения процесса)."""
