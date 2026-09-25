@@ -1,4 +1,9 @@
-"""Действие: запуск и закрытие приложений на Windows / Linux.
+"""Действие: открыть программу по имени («открой телеграм», «запусти стим»).
+
+Порядок: уже запущена — выводим её окно вперёд (как Siri: не плодим копии);
+встроенное в Windows — запускаем сразу; иначе ищем в индексе программ
+(меню «Пуск», Microsoft Store, ярлыки, известные пути — core/win_apps.py).
+Отвечаем тем, что реально произошло, а не «Открыл» наугад.
 """
 
 import logging
@@ -7,108 +12,80 @@ import shutil
 import subprocess
 import sys
 
+from core import win_apps
+
 _logger = logging.getLogger(__name__)
-
-_ALIASES = {
-    # Имена из режимов (config/modes.json): без них режимы не открывали ничего.
-    "microsoft teams": ["ms-teams", "teams"],
-    "visual studio code": ["code.cmd", "code.exe", "code"],
-    "figma": ["figma"],
-    # Браузеры
-    "chrome": ["chrome.exe", "google-chrome", "chrome"],
-    "хром": ["chrome.exe", "google-chrome", "chrome"],
-    "firefox": ["firefox.exe", "firefox"],
-    "фаерфокс": ["firefox.exe", "firefox"],
-    "edge": ["msedge.exe", "msedge"],
-    "браузер": ["msedge.exe", "chrome.exe", "firefox.exe", "explorer.exe"],
-    "яндекс": ["browser.exe", "yandex.exe"],
-
-    # Мессенджеры и связь
-    "telegram": ["Telegram.exe", "telegram-desktop"],
-    "телеграм": ["Telegram.exe", "telegram-desktop"],
-    "телега": ["Telegram.exe", "telegram-desktop"],
-    "discord": ["Discord.exe", "discord"],
-    "дискорд": ["Discord.exe", "discord"],
-
-    # Редакторы и IDE
-    "vscode": ["code.cmd", "code.exe", "code"],
-    "vs code": ["code.cmd", "code.exe", "code"],
-    "визуал студио": ["code.cmd", "code.exe", "code"],
-    "блокнот": ["notepad.exe", "notepad"],
-    "notepad": ["notepad.exe", "notepad"],
-    "sublime": ["subl.exe", "subl"],
-
-    # Терминал
-    "терминал": ["wt.exe", "cmd.exe", "powershell.exe", "gnome-terminal"],
-    "terminal": ["wt.exe", "cmd.exe", "powershell.exe", "gnome-terminal"],
-    "консоль": ["wt.exe", "cmd.exe", "powershell.exe"],
-    "cmd": ["cmd.exe"],
-    "powershell": ["powershell.exe"],
-
-    # Медиа
-    "spotify": ["Spotify.exe", "spotify"],
-    "спотифай": ["Spotify.exe", "spotify"],
-    "vlc": ["vlc.exe", "vlc"],
-
-    # Системные приложения
-    "калькулятор": ["calc.exe", "calc", "gnome-calculator"],
-    "calc": ["calc.exe", "calc"],
-    "paint": ["mspaint.exe", "mspaint"],
-    "паинт": ["mspaint.exe", "mspaint"],
-    "проводник": ["explorer.exe"],
-    "explorer": ["explorer.exe"],
-    "диспетчер задач": ["taskmgr.exe"],
-    "taskmgr": ["taskmgr.exe"],
-    "настройки": ["start ms-settings:", "gnome-control-center"],
-}
 
 
 def open_app(parameters: dict, response=None, player=None) -> str:
-    app_name = parameters.get("app_name", "").strip().lower()
-    if not app_name:
+    raw = (parameters.get("app_name") or "").strip()
+    if not raw:
         return "Не указано имя приложения."
-
-    if app_name not in _ALIASES and any(c in app_name for c in ("\\", "/", ":")):
+    if any(c in raw for c in ("\\", "/")) or (len(raw) > 2 and raw[1] == ":"):
         # Путь к файлу — не приложение. Раньше «открой c:\...\x.bat» или
         # \\сервер\share\x.exe (из Telegram или от модели) запускались как есть.
-        return f"Запускаю только приложения по имени, а не файлы по пути: «{app_name}»."
-    candidates = _ALIASES.get(app_name, [app_name])
+        return f"Запускаю только приложения по имени, а не файлы по пути: «{raw}»."
 
-    for cmd in candidates:
-        if cmd.startswith("start "):
-            # Команды URI протоколов (например start ms-settings:)
-            try:
-                os.system(cmd)
-                return f"Открыл {app_name}."
-            except Exception as e:
-                _logger.warning("Ошибка запуска URI %s: %s", cmd, e)
-                continue
+    key = win_apps.canonical(raw)
 
-        # Проверяем наличие исполняемого файла в PATH
+    if key in ("браузер", "browser"):
+        import webbrowser
+        webbrowser.open("https://www.google.com")
+        return "Открыл браузер."
+
+    if sys.platform != "win32":
+        return _open_posix(key, raw)
+
+    # 1. Уже запущена — просто показать.
+    running = win_apps.find_windows(key)
+    if running and key not in ("explorer",):
+        win = running[0]
+        if win_apps.focus(win):
+            return f"{_title(raw)} уже открыт — переключил на него."
+
+    # 2. Встроенное в Windows.
+    for cmd in win_apps.BUILTIN.get(key, []):
+        try:
+            os.startfile(cmd)  # type: ignore[attr-defined]
+            return f"Открыл {_title(raw)}."
+        except OSError:
+            continue
+
+    # 3. Индекс программ.
+    app = win_apps.find_app(key)
+    if app is None:
+        app = win_apps.find_app(key, win_apps.build_index(force=True))   # поставили только что
+    if app:
+        try:
+            win_apps.launch(app)
+            if player:
+                player.write_log(f"SYS: запускаю {app.name}")
+            return f"Открыл {app.name}."
+        except Exception as exc:
+            _logger.warning("Запуск %s: %s", app, exc)
+            return f"Нашёл {app.name}, но не смог запустить: {exc}"
+
+    # 4. Последний шанс: имя exe в PATH / App Paths.
+    for cmd in (f"{key}.exe", key):
         path = shutil.which(cmd)
         if path:
-            try:
-                if sys.platform == "win32":
-                    os.startfile(path)
-                else:
-                    subprocess.Popen(
-                        [path],
-                        stdin=subprocess.DEVNULL,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        start_new_session=True,
-                    )
-                return f"Открыл {app_name}."
-            except Exception as e:
-                _logger.warning("Ошибка запуска %s: %s", path, e)
-                continue
+            os.startfile(path)  # type: ignore[attr-defined]
+            return f"Открыл {_title(raw)}."
 
-        # Встроенные системные утилиты Windows (notepad.exe, calc.exe, explorer.exe)
-        if sys.platform == "win32" and cmd.endswith(".exe"):
-            try:
-                os.startfile(cmd)
-                return f"Открыл {app_name}."
-            except Exception:
-                pass
+    near = win_apps.suggestions(raw)
+    hint = f" Похожие: {', '.join(near)}." if near else ""
+    return f"Не нашёл программу «{raw}» на компьютере.{hint}"
 
-    return f"Не удалось найти приложение «{app_name}» в системе."
+
+def _title(raw: str) -> str:
+    return raw[:1].upper() + raw[1:]
+
+
+def _open_posix(key: str, raw: str) -> str:
+    for cmd in (key, raw.lower()):
+        path = shutil.which(cmd)
+        if path:
+            subprocess.Popen([path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            return f"Открыл {_title(raw)}."
+    return f"Не нашёл программу «{raw}»."

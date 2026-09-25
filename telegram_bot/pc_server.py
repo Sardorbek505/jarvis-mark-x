@@ -202,10 +202,14 @@ def _weather_city(tl: str) -> str | None:
 def _known_app(tl: str) -> str | None:
     """«открой/запусти X», где X — известное приложение. Проверяется до музыки:
     «запусти телеграм» уходило в Spotify-поиск «телеграм»."""
-    from actions.open_app import _ALIASES
+    from core import win_apps
     name = _extract_after(tl, ["открой приложение ", "запусти приложение ", "открой ", "запусти ", "open "])
     name = (name or "").strip(" ?!.,")
-    return name if name in _ALIASES else None
+    if not name:
+        return None
+    key = win_apps.canonical(name)
+    known = key in win_apps.PROCESS or key in win_apps.BUILTIN or name in win_apps.ALIASES
+    return name if known or win_apps.find_app(name) else None
 
 async def _execute(text: str) -> dict:
     tl = text.lower().strip()

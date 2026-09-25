@@ -585,16 +585,16 @@ TOOLS = [
     {
         "name": "open_app",
         "description": (
-            "Открывает любое приложение или программу на компьютере. "
-            "Вызывай всегда, когда пользователь просит открыть, запустить или включить что-либо. "
-            "Никогда не говори что открыл — всегда вызывай этот инструмент."
+            "Запускает установленную программу Windows по имени: Telegram, Chrome, Steam, Discord, "
+            "Spotify, Word, VS Code, калькулятор, проводник, настройки. Если уже запущена — выводит "
+            "её окно вперёд. НЕ для сайтов (browser), музыки (music_player), фильмов (movie_player)."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "app_name": {
                     "type": "STRING",
-                    "description": "Название приложения (например: Chrome, Telegram, Spotify)"
+                    "description": "Имя программы как сказал пользователь («телеграм», «хром», «стим»)"
                 }
             },
             "required": ["app_name"]
@@ -807,37 +807,22 @@ TOOLS = [
     {
         "name": "window_control",
         "description": (
-            "Управляет окнами и системой Windows: закрыть/свернуть/развернуть окно, "
-            "переключение окон, рабочий стол, проводник, диспетчер задач, параметры. "
-            "Вызывай когда пользователь говорит: закрой окно, сверни окно, разверни, "
-            "переключи окно, покажи рабочий стол, сверни все окна, открой проводник, "
-            "открой диспетчер задач, открой параметры, переключись на Chrome/Spotify/etc."
+            "Окна Windows: закрыть/свернуть/развернуть окно (target — программа: «хром», «телеграм»; "
+            "без target — окно впереди), переключиться на программу (activate), свернуть все, "
+            "рабочий стол, прижать влево/вправо, диспетчер задач, параметры Windows, «Выполнить»."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action": {
                     "type": "STRING",
-                    "description": (
-                        "close (Alt+F4 закрыть окно) | "
-                        "minimize (свернуть) | maximize (развернуть) | "
-                        "minimize_all (свернуть все окна Win+M) | "
-                        "snap_left (прижать влево Win+←) | snap_right (Win+→) | "
-                        "switch (переключиться Alt+Tab) | "
-                        "show_desktop (Win+D рабочий стол) | "
-                        "open_explorer (Win+E проводник) | "
-                        "task_manager (диспетчер задач) | "
-                        "settings (параметры Windows) | "
-                        "run (Win+R выполнить) | "
-                        "activate (переключиться на окно по имени, нужен target)"
-                    )
+                    "enum": ["close", "minimize", "maximize", "activate", "minimize_all",
+                             "show_desktop", "snap_left", "snap_right", "switch",
+                             "open_explorer", "task_manager", "settings", "run"],
                 },
                 "target": {
                     "type": "STRING",
-                    "description": (
-                        "Для action=activate — название приложения "
-                        "(например 'Chrome', 'Spotify', 'Telegram')"
-                    )
+                    "description": "Программа, чьё окно: «хром», «телеграм», «spotify». Для activate — обязательно."
                 }
             },
             "required": ["action"]
@@ -1238,6 +1223,14 @@ class Jarvis:
         # Чтобы включить его по-настоящему, микрофонному циклу нужен опорный
         # поток колонок (WASAPI loopback) — сейчас его нет: speaker_meter.py
         # отдаёт только скалярный уровень, не PCM. См. core/audio_capture.py.
+        # Список программ для «открой …» — собирается в фоне, пока грузится
+        # остальное (Get-StartApps занимает пару секунд).
+        try:
+            from core import win_apps
+            win_apps.warm_up()
+        except Exception as exc:
+            logger.debug("Индекс программ: %s", exc)
+
         # Локальное слово «Джарвис». Запускается в _listen_audio: модели
         # нужен событийный цикл, чтобы будить Джарвиса из своего потока.
         self._local_wake: LocalWake | None = None

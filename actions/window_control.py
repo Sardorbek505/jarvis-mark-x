@@ -7,7 +7,6 @@
 Поддержка: Windows (приоритет), macOS / Linux (best effort через pyautogui).
 """
 
-import ctypes
 import platform
 import subprocess
 import time
@@ -256,70 +255,55 @@ def _open_run(player=None) -> str:
     return "Не получилось, сэр."
 
 
+def _pick(target: str, player=None):
+    """Окно по имени программы («хром», «телега») или то, что впереди.
+    Своё окно Джарвиса сюда не попадает никогда (core/win_apps)."""
+    from core import win_apps
+    if target:
+        wins = win_apps.find_windows(target)
+        if not wins:
+            return None, f"Окно «{target}» не найдено, сэр."
+        return wins, ""
+    fg = win_apps.foreground()
+    if not fg:
+        return None, "Впереди нет открытого окна, сэр."
+    return [fg], ""
+
+
 def _activate_window_by_title(title_part: str, player=None) -> str:
-    """
-    Активировать окно по части заголовка (например "chrome", "spotify").
-    Использует pygetwindow.
-    """
     if not title_part.strip():
         return "Укажите название приложения, сэр."
-
-    try:
-        import pygetwindow as gw
-        title_lower = title_part.strip().lower()
-        for win in gw.getAllWindows():
-            if title_lower in (win.title or "").lower():
-                try:
-                    if win.isMinimized:
-                        win.restore()
-                    win.activate()
-                    if player:
-                        player.write_log(f"SYS: ◉ Активировано: {win.title}")
-                    return f"Открыл {title_part}, сэр."
-                except Exception:
-                    # Иногда нужен минимайз+ресторе для активации
-                    try:
-                        win.minimize()
-                        time.sleep(0.1)
-                        win.restore()
-                        return f"Открыл {title_part}, сэр."
-                    except Exception as exc:
-                        _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
-        return f"Окно «{title_part}» не найдено, сэр."
-    except ImportError:
-        return "Модуль pygetwindow не установлен, сэр."
-    except Exception as e:
-        return f"Ошибка: {str(e)[:80]}"
-
-
-def _foreground_title() -> str:
     if _OS != "Windows":
-        return "window"
-    try:
-        user32 = ctypes.windll.user32
-        hwnd = user32.GetForegroundWindow()
-        length = user32.GetWindowTextLengthW(hwnd)
-        buf = ctypes.create_unicode_buffer(length + 1)
-        user32.GetWindowTextW(hwnd, buf, length + 1)
-        return buf.value or ""
-    except Exception:
-        return ""
-
-
-def _minimize_by_title(title_part: str, player=None) -> str:
-    try:
-        import pygetwindow as gw
-        needle = title_part.strip().lower()
-        wins = [w for w in gw.getAllWindows() if needle in (w.title or "").lower()]
-        if not wins:
-            return f"Окно «{title_part}» не найдено, сэр."
-        for w in wins:
-            w.minimize()
+        return "Переключение окон есть только в Windows, сэр."
+    from core import win_apps
+    wins, err = _pick(title_part)
+    if not wins:
+        return err
+    if win_apps.focus(wins[0]):
         if player:
-            player.write_log(f"SYS: ⬇ Свёрнуто: {title_part}")
-        return f"Свернул {title_part}, сэр."
-    except Exception as e:
-        return f"Не получилось свернуть {title_part}: {str(e)[:60]}"
+            player.write_log(f"SYS: ◉ Активировано: {wins[0].title}")
+        return f"Переключил на {wins[0].title[:50]}, сэр."
+    return f"Windows не дал вывести «{wins[0].title[:50]}» вперёд, сэр."
+
+
+def _window_op(how: str, target: str, player=None) -> str:
+    """Свернуть / развернуть / закрыть — прямыми вызовами Win32.
+    Раньше Win+↓ лишь «восстанавливал» развёрнутое окно, а «закрой хром»
+    жал Alt+F4 тому, что впереди."""
+    from core import win_apps
+    wins, err = _pick(target)
+    if not wins:
+        return err
+    for w in wins:
+        if how == "close":
+            win_apps.close(w)
+        else:
+            win_apps.show(w, how)
+    name = target or wins[0].title[:50]
+    verb = {"close": "Закрыл", "minimize": "Свернул", "maximize": "Развернул"}[how]
+    if player:
+        player.write_log(f"SYS: {verb}: {name}")
+    return f"{verb} {name}, сэр." + (f" (окон: {len(wins)})" if len(wins) > 1 else "")
 
 
 # ─── Публичная точка входа ────────────────────────────────────────────────────
@@ -336,25 +320,15 @@ def window_control(parameters: dict, player=None) -> str:
     action = (parameters.get("action") or "").strip().lower()
     target = (parameters.get("target") or "").strip()
 
-    # ── Closing ───────────────────────────────────────────────────────────────
-    if action in ("close", "close_window", "закрыть"):
-        # Alt+F4 на рабочем столе открывает «Завершение работы Windows», а
-        # на ПК без присмотра закрывает что попало. Сначала смотрим, что впереди.
-        title = _foreground_title()
-        if not title or title in ("Program Manager", "Пуск", "Start"):
-            return "Впереди нет открытого окна — ничего не закрываю, сэр."
-        result = _close_window(player)
-        return f"{result} ({title[:60]})"
-
-    # ── Minimize / Maximize ───────────────────────────────────────────────────
-    elif action in ("minimize", "свернуть"):
-        if target:
-            # «сверни хром» раньше превращалось в activate — Chrome разворачивался.
-            return _minimize_by_title(target, player)
-        return _minimize_window(player)
-
-    elif action in ("maximize", "развернуть"):
-        return _maximize_window(player)
+    # ── Закрыть / свернуть / развернуть ───────────────────────────────────────
+    if action in ("close", "close_window", "закрыть", "minimize", "свернуть",
+                  "maximize", "развернуть"):
+        how = ("close" if action in ("close", "close_window", "закрыть")
+               else "minimize" if action in ("minimize", "свернуть") else "maximize")
+        if _OS == "Windows":
+            return _window_op(how, target, player)
+        return {"close": _close_window, "minimize": _minimize_window,
+                "maximize": _maximize_window}[how](player)
 
     elif action in ("minimize_all", "свернуть_все"):
         return _minimize_all(player)

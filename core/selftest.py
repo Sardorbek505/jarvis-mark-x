@@ -44,8 +44,18 @@ def _check_brightness() -> str:
     return f"мониторов с яркостью: {len(sbc.list_monitors())}"
 
 
-CHECKS = [("wake", _check_wake), ("volume", _check_volume), ("brightness", _check_brightness)]
-REQUIRED = {"wake"}
+def _check_apps() -> str:
+    from core import win_apps
+    apps = win_apps.build_index(force=True)
+    if not apps:
+        raise RuntimeError("индекс программ пуст")
+    probe = win_apps.find_app("блокнот") or win_apps.find_app("edge")
+    return f"программ в индексе: {len(apps)}, проба: {probe.name if probe else 'не нашёл'}"
+
+
+CHECKS = [("wake", _check_wake), ("volume", _check_volume), ("brightness", _check_brightness),
+          ("apps", _check_apps)]
+REQUIRED = {"wake", "apps"}
 
 
 def register(name: str, fn, required: bool = False):
