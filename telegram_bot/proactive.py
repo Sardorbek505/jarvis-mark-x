@@ -104,6 +104,18 @@ def _morning_prompt(name: str, today: list, all_open: list, weather_line: str = 
     )
 
 
+def _local_date(due_utc_iso, tz):
+    """Дата напоминания в местном времени пользователя (None, если не разобралась)."""
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat(str(due_utc_iso))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(tz).date() if tz else dt.date()
+
+
 def _tomorrow_classes_text(classes: list) -> str:
     if not classes:
         return ""
@@ -192,9 +204,12 @@ async def _send_briefing(bot, gemini, memory, uid: int, slot: str,
         tomorrow_classes = await memory.schedule_for_day(uid, tomorrow_wd)
         habits = await memory.get_habits(uid, now.date().isoformat())
         undone_habits = [h for h in habits if not h.get("done_today")]
-        tomorrow_str = (now.date() + timedelta(days=1)).isoformat()
+        tomorrow = now.date() + timedelta(days=1)
         reminders = await memory.list_reminders(uid)
-        tomorrow_reminders = [r for r in reminders if str(r.get("due", "")).startswith(tomorrow_str)]
+        # due хранится в UTC, а «завтра» — местное: сравниваем в местном
+        # времени. Раньше при UTC+5 напоминания на завтра до 05:00 терялись.
+        tomorrow_reminders = [r for r in reminders
+                              if _local_date(r.get("due"), now.tzinfo) == tomorrow]
         cal_tomorrow = gcal.events_text(await asyncio.to_thread(gcal.list_events, 1, 1, default_tz))
         prompt = _evening_prompt(name, today, tasks, tomorrow_classes,
                                  undone_habits, tomorrow_reminders, cal_tomorrow)
