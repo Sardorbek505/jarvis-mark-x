@@ -66,7 +66,7 @@ def _run(orb, seconds, level=0.3, dt=1 / 60):
 def test_morph_is_continuous_and_returns_to_sphere():
     orb = DotOrb(900)
     _run(orb, 0.5)
-    for shape in ("globe", "music", "film", "screen", "sphere"):
+    for shape in ("globe", "music", "film", "screen", "reactor", "sphere"):
         orb.set_shape(shape)
         # точки летят, но не телепортируются: за кадр < 12% радиуса
         assert _run(orb, 1.6) < 0.12, shape

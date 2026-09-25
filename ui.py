@@ -148,8 +148,8 @@ _STATE_RGB = {
     "ДУМАЕТ":           (182, 226, 64),    # жёлто-зелёный — думает / выполняет
     "ОБРАБОТКА":        (182, 226, 64),
     "ГОВОРИТ":          (255, 138, 52),    # оранжевый — говорит
-    "ИНИЦИАЛИЗАЦИЯ":    (255, 70, 96),     # красный — запуск / нет связи
-    "ПЕРЕПОДКЛЮЧЕНИЕ":  (255, 70, 96),
+    "ИНИЦИАЛИЗАЦИЯ":    (130, 214, 255),   # голубой реактор — запуск
+    "ПЕРЕПОДКЛЮЧЕНИЕ":  (255, 70, 96),     # красный — нет связи
     "ОТКЛЮЧЁН":         (105, 112, 124),   # серый — микрофон выключен
 }
 _SUB_HOLD_SEC = 6.0      # сколько субтитр висит после последнего слова
@@ -160,6 +160,8 @@ _TOOL_SHAPE = {
     "music_player": "music", "switch_voice": "music",
     "movie_player": "film",
     "look_at_screen": "screen", "look_at_camera": "screen",
+    "computer_control": "reactor", "window_control": "reactor", "files": "reactor",
+    "sleep_timer": "reactor", "set_mode": "reactor",
 }
 _SHAPE_HOLD_SEC = 7.0    # фигура держится после команды, пока Джарвис отвечает
 _CARD_HOLD_SEC = 14.0    # карточка результата висит после ответа
@@ -261,6 +263,10 @@ class HudCanvas(QWidget):
         self.level *= math.exp(-dt * (7.5 if self.speaking else 11.0))
         key = self._state_key()
         busy = key in ("ДУМАЕТ", "ОБРАБОТКА") or self._tool is not None
+        # Запуск и переподключение — реактор: Джарвис «заводится».
+        if key in ("ИНИЦИАЛИЗАЦИЯ", "ПЕРЕПОДКЛЮЧЕНИЕ"):
+            self._orb.set_shape("reactor")
+            self._shape_until = now + 1.2
         # Фигура держится, пока идёт работа и ответ, потом точки стекаются
         # обратно в шар.
         if self._orb.shape != "sphere":

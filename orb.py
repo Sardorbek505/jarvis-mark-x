@@ -28,7 +28,7 @@ _GOLDEN = math.pi * (3.0 - math.sqrt(5.0))
 _TILT = 0.32                     # лёгкий наклон — видно «макушку»
 _PERSP = 3.6                     # расстояние до камеры: мягкая перспектива
 
-SHAPES = ("sphere", "globe", "music", "film", "screen")
+SHAPES = ("sphere", "globe", "music", "film", "screen", "reactor")
 
 
 def fibonacci_sphere(n: int) -> np.ndarray:
@@ -100,6 +100,53 @@ def _film_base(n: int) -> np.ndarray:
     return np.concatenate(parts)
 
 
+def _reactor_base(n: int) -> np.ndarray:
+    """Дуговой реактор Старка в плоскости экрана: (радиус, угол, крутится ли,
+    яркость). Ядро, кольца, треугольник и десять катушек по кругу."""
+    parts = []
+
+    def ring(r, k, rot=0.0, z=0.0):
+        a = np.linspace(0, 2 * math.pi, k, endpoint=False)
+        parts.append(np.stack([np.full(k, r), a, np.full(k, rot), np.full(k, z)], 1))
+
+    k_core = int(n * 0.10)
+    i = np.arange(k_core)                                   # ядро — диск по спирали
+    parts.append(np.stack([0.16 * np.sqrt((i + 0.5) / k_core), i * _GOLDEN,
+                           np.zeros(k_core), np.full(k_core, 0.55)], 1))
+    ring(0.22, int(n * 0.05), z=0.35)
+    # треугольник, вписанный в r=0.40, вершиной вниз
+    k_tri = int(n * 0.10)
+    corners = [math.pi / 2 + j * 2 * math.pi / 3 + math.pi for j in range(3)]
+    pts = []
+    for j in range(3):
+        a0, a1 = corners[j], corners[(j + 1) % 3]
+        t = np.linspace(0, 1, k_tri // 3, endpoint=False)
+        x = 0.40 * ((1 - t) * math.cos(a0) + t * math.cos(a1))
+        y = 0.40 * ((1 - t) * math.sin(a0) + t * math.sin(a1))
+        pts.append(np.stack([np.hypot(x, y), np.arctan2(y, x)], 1))
+    tri = np.concatenate(pts)
+    parts.append(np.column_stack([tri, np.zeros(len(tri)), np.full(len(tri), 0.3)]))
+    ring(0.47, int(n * 0.06))
+    ring(0.58, int(n * 0.07))
+    # десять катушек: каждая — несколько дуг шириной 22° между r 0.63 и 0.86
+    used = sum(len(x) for x in parts)
+    k_out = int(n * 0.14)
+    k_coil = n - used - k_out
+    per_coil = k_coil // 10
+    rows = 5
+    for c in range(10):
+        base = c * 2 * math.pi / 10
+        for r_i in range(rows):
+            k = per_coil // rows + (1 if r_i < per_coil % rows else 0)
+            r = 0.63 + 0.23 * r_i / (rows - 1)
+            a = base + np.linspace(-math.radians(11), math.radians(11), k)
+            parts.append(np.stack([np.full(k, r), a, np.ones(k), np.full(k, 0.15)], 1))
+    used = sum(len(x) for x in parts)
+    ring(0.93, (n - used) // 2)
+    ring(1.0, n - used - (n - used) // 2)
+    return np.concatenate(parts)[:n]
+
+
 class DotOrb:
     # Волны: пространственная частота, скорость, вес. Направления задаются
     # случайно с фиксированным зерном — шар всегда выглядит одинаково.
@@ -132,6 +179,9 @@ class DotOrb:
         self._bar_speed = rng.uniform(4.0, 9.0, self._BARS)
         self._bar_phase = rng.uniform(0, 2 * math.pi, self._BARS)
         self._screen = self._screen_base(n)
+        rb = _reactor_base(n)
+        # сверху вниз, как остальные фигуры, — точки летят на свою высоту
+        self._reactor = rb[np.argsort(-(rb[:, 0] * np.sin(rb[:, 1])), kind="stable")]
         # Задержка старта: волна идёт сверху вниз + немного случайности.
         self._delay = 0.35 * (1.0 - self.points[:, 1]) / 2 + rng.uniform(0, 0.12, n)
         self._dur = rng.uniform(0.55, 0.95, n)
@@ -206,6 +256,13 @@ class DotOrb:
             y = np.sin(a) * r + np.cos(a) * tang
             z = 0.5 * self._bar_u * height        # верхушки ближе — ярче и крупнее
             return self._unrotate(np.stack([x, y, z], 1))
+        if shape == "reactor":
+            r, a, rot, z = self._reactor.T
+            a = a + rot * self._clock * 0.45           # катушки медленно вращаются
+            pulse = 1.0 + (0.05 + 0.10 * e) * (r < 0.25) * math.sin(self._clock * 4.0)
+            r = r * pulse                               # ядро пульсирует
+            pts = np.stack([np.cos(a) * r, np.sin(a) * r, z * (0.6 + 0.8 * e)], 1)
+            return self._unrotate(pts)
         if shape == "screen":
             pts = self._screen.copy()
             scan = 0.535 - (self._clock * 0.55) % 1.07
