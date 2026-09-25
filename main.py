@@ -2470,6 +2470,11 @@ class Jarvis:
                             fish_text += sc.output_transcription.text
                             if addressed is None:
                                 addressed = decide()
+                            if addressed:
+                                # Субтитр идёт вслед за речью, а не после неё.
+                                sub = getattr(self.ui, "set_subtitle", None)
+                                if sub:
+                                    sub(_clean_dialog_text("".join(out_buf)))
                             fish_flush()
 
                         if sc.turn_complete:

@@ -9,7 +9,6 @@ from __future__ import annotations
 import html
 import math
 import platform
-import random
 import sys
 import threading
 import time
@@ -21,8 +20,8 @@ from PyQt6.QtCore import (
     QTimer, pyqtSignal,
 )
 from PyQt6.QtGui import (
-    QBrush, QColor, QFont, QKeySequence, QPainter, QPen, QPixmap,
-    QShortcut, QTextCursor,
+    QBrush, QColor, QFont, QKeySequence, QPainter, QPen, QPixmap, QPolygonF,
+    QRadialGradient, QShortcut, QTextCursor,
 )
 from PyQt6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit,
@@ -31,6 +30,10 @@ from PyQt6.QtWidgets import (
 )
 
 import logging
+
+import numpy as np
+
+from orb import DotOrb
 
 _logger = logging.getLogger(__name__)
 
@@ -136,366 +139,264 @@ _metrics = _SysMetrics()
 
 
 # ─── Центральный анимированный HUD ────────────────────────────────────────────
+# Цвет шара по состоянию. Переход между ними плавный (см. HudCanvas._step).
+_STATE_RGB = {
+    "ОЖИДАЕТ":          (48, 208, 190),    # бирюзовый — ждёт имени
+    "СЛУШАЕТ":          (70, 232, 128),    # зелёный — слушает тебя
+    "ДУМАЕТ":           (182, 226, 64),    # жёлто-зелёный — думает / выполняет
+    "ОБРАБОТКА":        (182, 226, 64),
+    "ГОВОРИТ":          (255, 138, 52),    # оранжевый — говорит
+    "ИНИЦИАЛИЗАЦИЯ":    (255, 70, 96),     # красный — запуск / нет связи
+    "ПЕРЕПОДКЛЮЧЕНИЕ":  (255, 70, 96),
+    "ОТКЛЮЧЁН":         (105, 112, 124),   # серый — микрофон выключен
+}
+_SUB_HOLD_SEC = 6.0      # сколько субтитр висит после последнего слова
+
+
 class HudCanvas(QWidget):
-    def __init__(self, face_path: str, parent=None):
+    """Шар из точек, который дышит голосом, меняет цвет по состоянию и
+    подписывает снизу, что говорит Джарвис."""
+
+    def __init__(self, face_path: str = "", parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.setMinimumSize(300, 300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # Микрофон включён сразу: собственные динамики он больше не слушает
-        # (см. speaker_meter.py), а раньше приходилось стартовать молча —
-        # иначе Джарвис отвечал музыке. Выключить: Ctrl+M.
+        # (см. speaker_meter.py). Выключить: Ctrl+M.
         self.muted    = False
         self.speaking = False
         self.state    = "ИНИЦИАЛИЗАЦИЯ"
+        # Громкость 0..1: микрофон или собственный голос. Атака мгновенная,
+        # спад в _step — иначе шар дрожал бы на каждом кадре звука.
+        self.level    = 0.0
 
-        self._tick      = 0
-        self._scale     = 1.0
-        self._tgt_scale = 1.0
-        self._halo      = 55.0
-        self._tgt_halo  = 55.0
-        self._last_t    = time.time()
-        # Громкость 0..1: слева — микрофон, справа — собственный голос.
-        # До этого HUD «реагировал» на random.uniform, то есть дышал ровно так
-        # же в тишине и на крике. Живое число берётся быстро (атака), а спадает
-        # плавно (затухание) — так ведёт себя стрелочный индикатор уровня, и
-        # именно поэтому она выглядит связанной со звуком, а не сама по себе.
-        self.level      = 0.0
-        # Инструмент, на который сейчас «наведён» прицел, и когда он погаснет.
+        self._orb = DotOrb()
+        self._rgb = list(_STATE_RGB["ИНИЦИАЛИЗАЦИЯ"])
+        self._ring = 0.0                      # поворот внешнего кольца, градусы
+        self._clock = 0.0                     # время анимации, с
+        self._last = time.monotonic()
+
         self._tool: str | None = None
         self._tool_until = 0.0
-        self._tool_lock  = 0.0        # 0..1, насколько скобки сомкнулись
-        # Бегущая история громкости — та самая полоска-осциллограф внизу.
-        # 36 столбиков на 60 fps = окно около 0.6 секунды: достаточно, чтобы
-        # глаз увидел ритм фразы, и мало, чтобы она не превратилась в кашу.
-        self._wave: list[float] = [0.0] * 36
-        self._scan      = 0.0
-        self._scan2     = 180.0
-        self._rings     = [0.0, 120.0, 240.0]
-        self._pulses: list[float] = [0.0, 50.0, 100.0]
-        self._blink     = True
-        self._blink_tick = 0
-        self._particles: list[list[float]] = []
-        self._face_px: QPixmap | None = None
+        self._tool_lock = 0.0                 # 0..1, проявление подписи инструмента
 
-        self._load_face(face_path)
+        self._sub_text = ""
+        self._sub_t = 0.0
+        self._sub_alpha = 0.0
 
         self._tmr = QTimer(self)
+        self._tmr.setTimerType(Qt.TimerType.PreciseTimer)
         self._tmr.timeout.connect(self._step)
         self._tmr.start(16)  # ~60 fps
 
-    def _load_face(self, path: str):
-        try:
-            import io
-            from PIL import Image, ImageDraw
-            from core.paths import get_base_dir, get_app_dir
-
-            p = Path(path)
-            if not p.is_absolute() or not p.exists():
-                candidates = [
-                    get_base_dir() / path,
-                    get_app_dir() / path,
-                    Path(__file__).resolve().parent / path,
-                    get_base_dir() / "face.png",
-                    get_app_dir() / "face.png",
-                    Path(path),
-                ]
-                for c in candidates:
-                    if c.exists():
-                        p = c
-                        break
-
-            if not p.exists():
-                self._face_px = None
-                return
-
-            img = Image.open(str(p)).convert("RGBA")
-            sz = min(img.size)
-            img = img.resize((sz, sz), Image.LANCZOS)
-            mk = Image.new("L", (sz, sz), 0)
-            ImageDraw.Draw(mk).ellipse((2, 2, sz - 2, sz - 2), fill=255)
-            img.putalpha(mk)
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            px = QPixmap()
-            px.loadFromData(buf.getvalue())
-            self._face_px = px
-        except Exception as exc:
-            _logger.debug("Face image loading error: %s", exc)
-            self._face_px = None
-
+    # ── вход ─────────────────────────────────────────────────────────────────
     def feed_level(self, value: float):
-        """Живая громкость 0..1. Атака мгновенная, спад — в _step."""
         self.level = max(self.level, max(0.0, min(1.0, value)))
 
     def lock_on(self, tool: str, seconds: float = 2.6):
-        """Прицел на инструмент: скобки смыкаются и подписываются именем."""
         self._tool = tool
-        self._tool_until = time.time() + seconds
-        self._tool_lock = 0.0
+        self._tool_until = time.monotonic() + seconds
+
+    def set_subtitle(self, text: str):
+        text = " ".join((text or "").split())
+        if not text:
+            return
+        self._sub_text = text
+        self._sub_t = time.monotonic()
+
+    # ── анимация ─────────────────────────────────────────────────────────────
+    def _state_key(self) -> str:
+        if self.muted:
+            return "ОТКЛЮЧЁН"
+        if self.speaking:
+            return "ГОВОРИТ"
+        return self.state if self.state in _STATE_RGB else "ОЖИДАЕТ"
 
     def _step(self):
-        self._tick += 1
-        now = time.time()
+        now = time.monotonic()
+        dt = min(0.1, now - self._last)
+        self._last = now
+        self._clock += dt
 
-        # Спад громкости. Быстрее, когда говорит Джарвис: его речь рвётся
-        # паузами между словами, и медленный спад смазал бы их в одно гудение.
-        self.level *= 0.88 if self.speaking else 0.82
+        # Своя речь рвётся паузами между словами — спад быстрее, чтобы шар
+        # проговаривал слова, а не гудел одним пузырём.
+        self.level *= math.exp(-dt * (7.5 if self.speaking else 11.0))
+        key = self._state_key()
+        busy = key in ("ДУМАЕТ", "ОБРАБОТКА") or self._tool is not None
+        self._orb.step(dt, 0.0 if self.muted else self.level, active=busy)
 
-        # Цели считаются из громкости каждый кадр, а не выдумываются раз в
-        # полсекунды. Дыхание в тишине оставлено намеренно: мёртвый HUD
-        # выглядит выключенным, а не спокойным.
-        breath = 0.004 * math.sin(self._tick * 0.03)
-        if self.muted:
-            self._tgt_scale = 1.0 + breath * 0.3
-            self._tgt_halo  = 18.0
-        elif self.speaking:
-            self._tgt_scale = 1.0 + breath + self.level * 0.16
-            self._tgt_halo  = 110.0 + self.level * 95.0
-        else:
-            self._tgt_scale = 1.0 + breath + self.level * 0.05
-            self._tgt_halo  = 46.0 + self.level * 70.0
-        self._last_t = now
+        # Цвет перетекает за ~0.3 с, а не щёлкает.
+        k = 1.0 - math.exp(-dt * 7.0)
+        tgt = _STATE_RGB[key]
+        for i in range(3):
+            self._rgb[i] += (tgt[i] - self._rgb[i]) * k
 
-        sp = 0.38 if self.speaking else 0.15
-        self._scale += (self._tgt_scale - self._scale) * sp
-        self._halo  += (self._tgt_halo  - self._halo)  * sp
+        self._ring = (self._ring + dt * (6.0 + 30.0 * self._orb.energy)) % 360
 
         if self._tool and now > self._tool_until:
             self._tool = None
-        if self._tool:
-            # Ease-out: скобки быстро идут к цели и мягко встают на место.
-            self._tool_lock += (1.0 - self._tool_lock) * 0.22
-        else:
-            self._tool_lock *= 0.85
+        target = 1.0 if self._tool else 0.0
+        self._tool_lock += (target - self._tool_lock) * (1.0 - math.exp(-dt * 9.0))
 
-        speeds = [1.3, -0.9, 2.0] if self.speaking else [0.55, -0.35, 0.9]
-        for i, spd in enumerate(speeds):
-            self._rings[i] = (self._rings[i] + spd) % 360
-        self._scan  = (self._scan  + (3.0 if self.speaking else 1.3)) % 360
-        self._scan2 = (self._scan2 + (-2.0 if self.speaking else -0.75)) % 360
-
-        fw = min(self.width(), self.height())
-        lim = fw * 0.74
-        spd = 4.2 if self.speaking else 2.0
-        self._pulses = [r + spd for r in self._pulses if r + spd < lim]
-        if len(self._pulses) < 3 and random.random() < (0.07 if self.speaking else 0.025):
-            self._pulses.append(0.0)
-
-        # Искры летят тем гуще, чем громче голос — на тихой фразе их почти нет.
-        if self.speaking and random.random() < 0.06 + self.level * 0.45:
-            cx, cy = self.width() / 2, self.height() / 2
-            ang = random.uniform(0, 2 * math.pi)
-            r_s = fw * 0.28
-            self._particles.append([
-                cx + math.cos(ang) * r_s, cy + math.sin(ang) * r_s,
-                math.cos(ang) * random.uniform(0.9, 2.4),
-                math.sin(ang) * random.uniform(0.9, 2.4) - 0.4, 1.0,
-            ])
-        self._particles = [
-            [p[0]+p[2], p[1]+p[3], p[2]*0.97, p[3]*0.97, p[4]-0.028]
-            for p in self._particles if p[4] > 0
-        ]
-
-        self._wave.pop(0)
-        self._wave.append(0.0 if self.muted else self.level)
-
-        self._blink_tick += 1
-        if self._blink_tick >= 38:
-            self._blink = not self._blink
-            self._blink_tick = 0
+        visible = bool(self._sub_text) and (self.speaking or now - self._sub_t < _SUB_HOLD_SEC)
+        rate = 6.0 if visible else 2.5
+        self._sub_alpha += ((1.0 if visible else 0.0) - self._sub_alpha) * (1.0 - math.exp(-dt * rate))
 
         self.update()
+
+    # ── рисование ────────────────────────────────────────────────────────────
+    _LAYERS = 7
+
+    def _layers(self, n: int):
+        """Слои глубины: постоянные QPolygonF, в память которых пишет numpy.
+
+        Собирать 2400 QPointF из Python каждый кадр — полторы миллисекунды;
+        запись координат прямо в буфер полигона — сотые доли. Если буфер
+        недоступен (другая сборка PyQt), view=None и полигон строится по-старому.
+        """
+        cached = getattr(self, "_layer_cache", None)
+        if cached and cached[0] == n:
+            return cached[1]
+        out = []
+        for li in range(self._LAYERS):
+            lo, hi = n * li // self._LAYERS, n * (li + 1) // self._LAYERS
+            poly, view = QPolygonF([QPointF()] * (hi - lo)), None
+            try:
+                ptr = poly.data()
+                ptr.setsize((hi - lo) * 16)
+                view = np.frombuffer(ptr, dtype=np.float64).reshape(hi - lo, 2)
+            except Exception as exc:
+                _logger.debug("QPolygonF без буфера: %s", exc)
+            out.append((lo, hi, poly, view))
+        self._layer_cache = (n, out)
+        return out
+
+    def _glow(self, R: float) -> QPixmap:
+        key = (int(R), *(int(c) // 6 for c in self._rgb))
+        cached = getattr(self, "_glow_cache", None)
+        if cached and cached[0] == key:
+            return cached[1]
+        size = int(R * 3.8) + 2
+        px = QPixmap(size, size)
+        px.fill(Qt.GlobalColor.transparent)
+        gp = QPainter(px)
+        gp.setRenderHint(QPainter.RenderHint.Antialiasing)
+        grad = QRadialGradient(QPointF(size / 2, size / 2), R * 1.9)
+        grad.setColorAt(0.0, self._col(116))
+        grad.setColorAt(0.45, self._col(42))
+        grad.setColorAt(1.0, self._col(0))
+        gp.setPen(Qt.PenStyle.NoPen)
+        gp.setBrush(QBrush(grad))
+        gp.drawEllipse(QPointF(size / 2, size / 2), R * 1.9, R * 1.9)
+        gp.end()
+        self._glow_cache = (key, px)
+        return px
+
+    def _col(self, alpha: float, lift: float = 0.0) -> QColor:
+        """Цвет состояния; lift 0..1 подмешивает белый (ближние точки)."""
+        r, g, b = (c + (255 - c) * lift for c in self._rgb)
+        return QColor(int(r), int(g), int(b), max(0, min(255, int(alpha))))
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.fillRect(self.rect(), qcol(C.BG))
-
         W, H = self.width(), self.height()
-        cx, cy = W / 2, H / 2
+        p.fillRect(self.rect(), QColor(2, 5, 8))
+
+        e = self._orb.energy
         fw = min(W, H)
+        R = fw * 0.25 * (1.0 + 0.05 * e)
+        cx, cy = W / 2, H / 2 - fw * 0.03
 
-        # Точечная сетка
-        p.setPen(QPen(qcol(C.PRI_GHO), 1))
-        for x in range(0, W, 48):
-            for y in range(0, H, 48):
-                p.drawPoint(x, y)
+        # Свечение за шаром — сильнее, когда он говорит. Градиент во весь шар
+        # дорог (2+ мс), поэтому он рисуется в картинку один раз на размер и
+        # цвет, а громкость меняет только его прозрачность.
+        glow = self._glow(R)
+        p.setOpacity(min(1.0, (46 + 70 * e) / 116))
+        p.drawPixmap(QPointF(cx - glow.width() / 2, cy - glow.height() / 2), glow)
+        p.setOpacity(1.0)
 
-        r_face = fw * 0.31
-        pri_col = C.MUTED_C if self.muted else C.PRI
-
-        # Ореол (halo glow)
-        for i in range(10):
-            r = r_face * (1.8 - i * 0.08)
-            frc = 1.0 - i / 10
-            a = max(0, min(255, int(self._halo * 0.085 * frc)))
-            p.setPen(QPen(qcol(pri_col, a), 1.5))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawEllipse(QRectF(cx - r, cy - r, r * 2, r * 2))
-
-        # Пульсирующие кольца
-        for pr in self._pulses:
-            a = max(0, int(230 * (1.0 - pr / (fw * 0.74))))
-            p.setPen(QPen(qcol(pri_col, a), 1.5))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawEllipse(QRectF(cx - pr, cy - pr, pr * 2, pr * 2))
-
-        # Вращающиеся дуги
-        for idx, (r_frac, w_r, arc_l, gap) in enumerate(
-            [(0.48, 3, 115, 78), (0.40, 2, 78, 55), (0.32, 1, 56, 40)]
-        ):
-            ring_r = fw * r_frac
-            base = self._rings[idx]
-            a_val = max(0, min(255, int(self._halo * (1.0 - idx * 0.18))))
-            p.setPen(QPen(qcol(pri_col, a_val), w_r))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            angle = base
-            rect = QRectF(cx - ring_r, cy - ring_r, ring_r * 2, ring_r * 2)
-            while angle < base + 360:
-                p.drawArc(rect, int(angle * 16), int(arc_l * 16))
-                angle += arc_l + gap
-
-        # Сканеры
-        sr = fw * 0.50
-        sa = min(255, int(self._halo * 1.5))
-        ex = 75 if self.speaking else 44
-        p.setPen(QPen(qcol(pri_col, sa), 2.5))
+        # Тонкое кольцо с делениями и двумя бегущими дугами.
+        ring_r = R * 1.34
         p.setBrush(Qt.BrushStyle.NoBrush)
-        srect = QRectF(cx - sr, cy - sr, sr * 2, sr * 2)
-        p.drawArc(srect, int(self._scan * 16), int(ex * 16))
-        p.setPen(QPen(qcol(C.ACC, sa // 2), 1.5))
-        p.drawArc(srect, int(self._scan2 * 16), int(ex * 16))
+        p.setPen(QPen(self._col(40), 1))
+        p.drawEllipse(QPointF(cx, cy), ring_r, ring_r)
+        tick_pen = QPen(self._col(55), 1)
+        p.setPen(tick_pen)
+        for deg in range(0, 360, 6):
+            rad = math.radians(deg + self._ring * 0.25)
+            ln = 5 if deg % 30 == 0 else 2.5
+            c, s = math.cos(rad), math.sin(rad)
+            p.drawLine(QPointF(cx + c * ring_r, cy + s * ring_r),
+                       QPointF(cx + c * (ring_r - ln), cy + s * (ring_r - ln)))
+        arc_pen = QPen(self._col(150 + 90 * e), 1.6)
+        arc_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(arc_pen)
+        rect = QRectF(cx - ring_r, cy - ring_r, ring_r * 2, ring_r * 2)
+        for base in (self._ring, self._ring + 180):
+            p.drawArc(rect, int(-base * 16), int((26 + 30 * e) * 16))
 
-        # Деления
-        t_out, t_in = fw * 0.497, fw * 0.474
-        p.setPen(QPen(qcol(C.PRI, 140), 1))
-        for deg in range(0, 360, 10):
-            rad = math.radians(deg)
-            inn = t_in if deg % 30 == 0 else t_in + 6
-            p.drawLine(
-                QPointF(cx + t_out * math.cos(rad), cy - t_out * math.sin(rad)),
-                QPointF(cx + inn  * math.cos(rad), cy - inn  * math.sin(rad)),
-            )
-
-        # Прицельная сетка
-        ch_r, gap_h = fw * 0.51, fw * 0.16
-        p.setPen(QPen(qcol(C.PRI, int(self._halo * 0.5)), 1))
-        p.drawLine(QPointF(cx - ch_r, cy), QPointF(cx - gap_h, cy))
-        p.drawLine(QPointF(cx + gap_h, cy), QPointF(cx + ch_r, cy))
-        p.drawLine(QPointF(cx, cy - ch_r), QPointF(cx, cy - gap_h))
-        p.drawLine(QPointF(cx, cy + gap_h), QPointF(cx, cy + ch_r))
-
-        # Угловые скобки
-        bl = 24
-        bc = qcol(C.PRI, 210)
-        hl = cx - fw // 2
-        hr = cx + fw // 2
-        ht = cy - fw // 2
-        hb = cy + fw // 2
-        p.setPen(QPen(bc, 2))
-        for bx, by, dx, dy in [(hl,ht,1,1),(hr,ht,-1,1),(hl,hb,1,-1),(hr,hb,-1,-1)]:
-            p.drawLine(QPointF(bx, by), QPointF(bx + dx * bl, by))
-            p.drawLine(QPointF(bx, by), QPointF(bx, by + dy * bl))
-
-        # Лицо / орбита
-        if self._face_px:
-            fsz = int(fw * 0.62 * self._scale)
-            scaled = self._face_px.scaled(
-                fsz, fsz,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            p.drawPixmap(int(cx - fsz / 2), int(cy - fsz / 2), scaled)
-        else:
-            orb_r = int(fw * 0.27 * self._scale)
-            oc = (200, 0, 50) if self.muted else (0, 60, 110)
-            for i in range(8, 0, -1):
-                r2 = int(orb_r * i / 8)
-                frc = i / 8
-                a = max(0, min(255, int(self._halo * 1.1 * frc)))
-                p.setBrush(QBrush(QColor(int(oc[0]*frc), int(oc[1]*frc), int(oc[2]*frc), a)))
-                p.setPen(Qt.PenStyle.NoPen)
-                p.drawEllipse(QRectF(cx - r2, cy - r2, r2 * 2, r2 * 2))
-            p.setPen(QPen(qcol(C.PRI, min(255, int(self._halo * 2))), 1))
-            p.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
-            p.drawText(QRectF(cx - 80, cy - 14, 160, 28),
-                       Qt.AlignmentFlag.AlignCenter, "Д.Ж.А.Р.В.И.С")
-
-        # Частицы
-        for pt in self._particles:
-            a = max(0, min(255, int(pt[4] * 255)))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QBrush(qcol(C.PRI, a)))
-            p.drawEllipse(QPointF(pt[0], pt[1]), 2.5, 2.5)
-
-        # Прицел на инструмент. Джарвис у Старка никогда не работает молча:
-        # он всегда показывает, на что именно наведён. Скобки приходят
-        # снаружи внутрь (ease-out) и подписываются именем модуля.
-        if self._tool_lock > 0.01:
-            k = self._tool_lock
-            half = fw * (0.42 - 0.10 * k)          # смыкаются к центру
-            arm  = fw * 0.055
-            a    = int(230 * min(1.0, k * 1.4))
-            p.setPen(QPen(qcol(C.ACC2, a), 2))
-            for sx in (-1, 1):
-                for sy_ in (-1, 1):
-                    x = cx + sx * half
-                    y = cy + sy_ * half * 0.62
-                    p.drawLine(QPointF(x, y), QPointF(x - sx * arm, y))
-                    p.drawLine(QPointF(x, y), QPointF(x, y - sy_ * arm))
-            if self._tool:
-                p.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
-                p.setPen(QPen(qcol(C.ACC2, a), 1))
-                p.drawText(
-                    QRectF(0, cy - half * 0.62 - 26, W, 20),
-                    Qt.AlignmentFlag.AlignCenter,
-                    f"▏ {self._tool.upper().replace('_', ' ')} ▕",
-                )
-
-        # Статус
-        sy = cy + fw * 0.40
-        if self.muted:
-            txt, col = "⊘ ОТКЛЮЧЁН", qcol(C.MUTED_C)
-        elif self.speaking:
-            txt, col = "● ГОВОРИТ", qcol(C.ACC)
-        elif self.state == "ДУМАЕТ":
-            sym = "◈" if self._blink else "◇"
-            txt, col = f"{sym} ДУМАЕТ", qcol(C.ACC2)
-        elif self.state == "ОБРАБОТКА":
-            sym = "▷" if self._blink else "▶"
-            txt, col = f"{sym} ОБРАБОТКА", qcol(C.ACC2)
-        elif self.state == "СЛУШАЕТ":
-            sym = "●" if self._blink else "○"
-            txt, col = f"{sym} СЛУШАЕТ", qcol(C.GREEN)
-        else:
-            sym = "●" if self._blink else "○"
-            txt, col = f"{sym} {self.state}", qcol(C.PRI)
-
-        p.setPen(QPen(col, 1))
-        p.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
-        p.drawText(QRectF(0, sy, W, 26), Qt.AlignmentFlag.AlignCenter, txt)
-
-        # Волновая форма
-        wy = sy + 30
-        N, bw = 36, 8
-        wx0 = (W - N * bw) / 2
-        for i in range(N):
-            # Столбики — это записанная громкость, а не случайные числа:
-            # полоска бежит в такт голосу и замирает, когда никто не говорит.
-            lvl = self._wave[i] if i < len(self._wave) else 0.0
-            if self.muted:
-                hgt, cl = 2, qcol(C.MUTED_C)
-            elif lvl > 0.02:
-                hgt = int(3 + lvl * 22)
-                cl = qcol(C.PRI) if hgt > 12 else qcol(C.PRI_DIM)
+        # Сам шар: дальние точки мельче и темнее, ближние крупнее и светлее.
+        # Рисуем пачками по глубине — один вызов на слой, а не на точку.
+        xs, ys, zs = self._orb.project(cx, cy, R)
+        order = zs.argsort()
+        xy = np.column_stack((xs[order], ys[order]))
+        layers = self._layers(len(xy))
+        for li, (lo, hi, poly, view) in enumerate(layers):
+            t = (li + 0.5) / len(layers)               # 0 — дальняя сторона
+            pen = QPen(self._col(34 + 221 * t ** 1.3, lift=0.5 * t ** 3),
+                       (1.3 + 2.3 * t) * max(0.8, fw / 700))
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            # Дальние тусклые слои без сглаживания: разницы не видно, а это
+            # почти половина времени кадра.
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, li >= 3)
+            if view is not None:
+                view[:] = xy[lo:hi]
             else:
-                # Тишина — ровная линия с едва заметной рябью, чтобы полоска
-                # читалась как живая, а не как погасшая.
-                hgt = int(3 + 1.5 * math.sin(self._tick * 0.09 + i * 0.6))
-                cl = qcol(C.BORDER_B)
-            p.fillRect(QRectF(wx0 + i * bw, wy + 20 - hgt, bw - 1, hgt), cl)
+                poly = QPolygonF([QPointF(x, y) for x, y in xy[lo:hi].tolist()])
+            p.drawPoints(poly)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Плашка статуса сверху.
+        key = self._state_key()
+        label = {"ОЖИДАЕТ": "ЖДЁТ «ДЖАРВИС»"}.get(key, key)
+        f = QFont("Segoe UI", 8, QFont.Weight.Bold)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
+        p.setFont(f)
+        tw = p.fontMetrics().horizontalAdvance(label) + 34
+        pill = QRectF(cx - tw / 2, 14, tw, 24)
+        p.setPen(QPen(self._col(90), 1))
+        p.setBrush(QBrush(self._col(22)))
+        p.drawRoundedRect(pill, 12, 12)
+        pulse = 0.55 + 0.45 * math.sin(self._clock * 3.2)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(self._col(120 + 135 * pulse)))
+        p.drawEllipse(QPointF(pill.left() + 14, pill.center().y()), 3.2, 3.2)
+        p.setPen(QPen(self._col(235, lift=0.25), 1))
+        p.drawText(pill.adjusted(22, 0, -8, 0), Qt.AlignmentFlag.AlignCenter, label)
+
+        # Подпись инструмента, который сейчас выполняется.
+        if self._tool_lock > 0.02 and self._tool:
+            p.setFont(QFont("Consolas", 9))
+            p.setPen(QPen(self._col(220 * self._tool_lock, lift=0.2), 1))
+            p.drawText(QRectF(0, pill.bottom() + 6, W, 18), Qt.AlignmentFlag.AlignCenter,
+                       "▸ " + self._tool.replace("_", " ").upper())
+
+        # Субтитры: то, что Джарвис говорит сейчас. Длинный ответ — хвост.
+        if self._sub_alpha > 0.02 and self._sub_text:
+            text = self._sub_text
+            if len(text) > 150:
+                text = "…" + text[-150:].split(" ", 1)[-1]
+            p.setFont(QFont("Segoe UI", max(10, int(fw / 52))))
+            bw = min(W * 0.84, 640)
+            top = cy + ring_r + fw * 0.05
+            p.setPen(QPen(QColor(236, 242, 246, int(235 * self._sub_alpha)), 1))
+            p.drawText(QRectF(cx - bw / 2, top, bw, H - top - 8),
+                       Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+                       | Qt.TextFlag.TextWordWrap, text)
 
 
 # ─── Виджет метрики ───────────────────────────────────────────────────────────
@@ -813,6 +714,7 @@ class MainWindow(QMainWindow):
     # из другого потока — это падение, а не подтормаживание.
     _level_sig = pyqtSignal(float)
     _tool_sig  = pyqtSignal(str)
+    _sub_sig   = pyqtSignal(str)
     # Глобальные хоткеи приходят из потока Win32-сообщений — тоже чужого.
     _mute_sig  = pyqtSignal()
     _front_sig = pyqtSignal()
@@ -1007,6 +909,7 @@ class MainWindow(QMainWindow):
         self._state_sig.connect(self._apply_state)
         self._level_sig.connect(self._hud.feed_level)
         self._tool_sig.connect(self._hud.lock_on)
+        self._sub_sig.connect(self._hud.set_subtitle)
         self._mute_sig.connect(self._toggle_mute)
         self._front_sig.connect(self._bring_to_front)
         self._overlay_sig.connect(self._show_overlay)
@@ -1014,6 +917,13 @@ class MainWindow(QMainWindow):
     # ── Публичный API ──────────────────────────────────────────────────────────
     def write_log(self, text: str):
         self._log_sig.emit(text)
+        # Готовый ответ (в том числе на текстовую команду) — ещё и субтитром.
+        if text[:8].lower() == "джарвис:":
+            self._sub_sig.emit(text.split(":", 1)[1])
+
+    def set_subtitle(self, text: str):
+        """Субтитр под шаром — то, что Джарвис произносит. Из любого потока."""
+        self._sub_sig.emit(str(text))
 
     def set_state(self, state: str):
         self._state_sig.emit(state)
@@ -1087,6 +997,7 @@ class MainWindow(QMainWindow):
             "SPEAKING":   "ГОВОРИТ",
             "PROCESSING": "ОБРАБОТКА",
             "INITIALISING": "ИНИЦИАЛИЗАЦИЯ",
+            "RECONNECTING": "ПЕРЕПОДКЛЮЧЕНИЕ",
         }
         ru = state_map.get(state.upper(), state)
         self._hud.state = ru

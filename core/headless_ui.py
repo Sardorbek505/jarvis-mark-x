@@ -75,6 +75,9 @@ class HeadlessUI:
         """Прицел на инструмент — в headless это просто строчка в логе."""
         _logger.debug("инструмент: %s", tool)
 
+    def set_subtitle(self, text: str) -> None:
+        """Субтитр под шаром — без окна показывать некому."""
+
     def toggle_mute(self) -> None:
         """Переключает состояние микрофона."""
         self.muted = not self.muted
