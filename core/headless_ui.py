@@ -78,7 +78,8 @@ class HeadlessUI:
     def set_subtitle(self, text: str) -> None:
         """Субтитр под шаром — без окна показывать некому."""
 
-    def show_card(self, title: str, address: str, body: str, png: bytes = b"") -> None:
+    def show_card(self, title: str, address: str, body: str, png: bytes = b"",
+                  extra: str = "") -> None:
         """Карточка результата — без окна показывать некому."""
 
     def toggle_mute(self) -> None:

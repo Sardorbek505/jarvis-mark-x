@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import sys
@@ -56,11 +57,23 @@ def build_card(name: str, args: dict | None, result) -> dict | None:
         address = f"погода: {address}"
     address = address or f"jarvis://{name}"
 
+    extra = ""
+    if name == "weather":
+        # Прогноз целиком — HUD рисует из него карточку погоды со значками.
+        try:
+            from actions.weather import last_forecast
+            fc = last_forecast.get(str(args.get("city", "")).strip().lower())
+            if fc:
+                extra = json.dumps({"card": "weather", **fc}, ensure_ascii=False)
+        except Exception as exc:
+            logger.debug("Прогноз для карточки: %s", exc)
+
     return {
         "title": _TITLES.get(name, name.replace("_", " ").capitalize()),
         "address": address[:90],
         "body": body,
         "want_shot": name in _SHOT_TOOLS and sys.platform == "win32",
+        "extra": extra,
     }
 
 

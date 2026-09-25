@@ -603,7 +603,7 @@ TOOLS = [
     },
     {
         "name": "weather",
-        "description": "Сообщает текущую погоду в указанном городе.",
+        "description": "Погода в городе: сейчас и прогноз на сегодня, завтра и послезавтра. Вызывай и на «погода на завтра» — прогноз уже в ответе.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -2377,13 +2377,13 @@ class Jarvis:
             return
         if not card:
             return
-        show(card["title"], card["address"], card["body"], b"")
+        show(card["title"], card["address"], card["body"], b"", card["extra"])
         if card["want_shot"]:
             def _shot():
                 time.sleep(1.8)
                 png = capture_foreground_png()
                 if png:
-                    show(card["title"], card["address"], card["body"], png)
+                    show(card["title"], card["address"], card["body"], png, card["extra"])
             threading.Thread(target=_shot, daemon=True, name="card-shot").start()
 
     async def _deferred_tool_calls(self, function_calls, named: asyncio.Event):
