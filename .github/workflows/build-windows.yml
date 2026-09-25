@@ -14,6 +14,12 @@ on:
       - scripts/build_exe.py
       - requirements.txt
       - .github/workflows/build-windows.yml
+      - main.py
+      - ui.py
+      - orb.py
+      - hud_cards.py
+      - "core/**"
+      - "actions/**"
 
 permissions:
   contents: write
@@ -75,6 +81,16 @@ jobs:
           if ($text -match "Необработанная ошибка") { throw "В логе необработанная ошибка" }
           if ($text -notmatch "Подключение к Gemini|Сессия Gemini") { throw "Джарвис не дошёл до подключения к Gemini" }
           "OK: установлен, запущен, дошёл до Gemini без падений"
+
+      - name: Self-test - wake word model inside the installed exe
+        # Модель и DLL Vosk должны доехать до установленной программы:
+        # JARVIS.exe --selftest грузит словарь и пишет итог в лог.
+        shell: pwsh
+        run: |
+          $p = Start-Process C:\jarvis-smoke\JARVIS.exe -ArgumentList '--selftest' -PassThru -Wait
+          $log = Join-Path $env:APPDATA "JARVIS\jarvis.log"
+          Get-Content $log | Select-String "SELFTEST"
+          if ($p.ExitCode -ne 0) { throw "Самопроверка не прошла (код $($p.ExitCode))" }
 
       - uses: actions/upload-artifact@v4
         with:

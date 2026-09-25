@@ -269,21 +269,17 @@ _GATE_REPORT_SEC = float(os.getenv("MIC_GATE_REPORT_SEC", "5"))
 _IGNORE_SPEAKERS = os.getenv("MIC_IGNORE_SPEAKERS", "1") != "0"
 
 # ── Обращение по имени ───────────────────────────────────────────────────────
-# Микрофон стримит в Gemini всё подряд, и модель отвечала на любую речь в
-# комнате: телевизор, разговор по телефону, гостей. Локальный детектор
-# ключевого слова тут не спасает: модель hey_jarvis на русском «Джарвис» даёт
-# 0.004 при пороге 0.5 (замер в scripts/wake_check.py), а openwakeword даже
-# не стоит в requirements. Имя поэтому ищем в расшифровке, которую Gemini и
-# так присылает, и ответ звучит, только если к Джарвису обратились — или идёт
-# разговор (_AWAKE_SEC после последней реплики). JARVIS_WAKE_MODE=always_on
-# возвращает прежнее поведение.
+# Пока Джарвис «спит», имя слушает офлайн-детектор на ПК (core/wake_vosk.py),
+# и в Gemini не уходит ничего. Услышал «Джарвис» — открывается окно разговора
+# (_AWAKE_SEC после последней реплики), звук идёт в Gemini. Модели Vosk нет —
+# запасной путь: звук идёт в Gemini, а имя ищется в его расшифровке (старый
+# детектор hey_jarvis русское «Джарвис» не слышал: 0.004 при пороге 0.5).
+# JARVIS_WAKE_MODE=always_on — отвечать на всё без имени.
 _WAKE_MODE = os.getenv("JARVIS_WAKE_MODE", "wake_word").strip().lower()
 _AWAKE_SEC = float(os.getenv("JARVIS_AWAKE_SEC", "30"))
-# Расшифровка пишет имя по-разному: Джарвис, Жарвис, Джервис, Джарвиз,
-# Jarvis — плюс узбекская/казахская латиница и падежи («Джарвису»).
-_WAKE_RE = re.compile(
-    r"(?<![а-яёa-z])(?:дж|ж|дз|ҷ)[аеэя]р?[вф][иеэыіа]|(?<![a-z])(?:dj|j|ch)[ae]r?v[iey]",
-    re.IGNORECASE)
+# Как пишется имя (Джарвис, Жарвис, Джервис, Jarvis, падежи) — в одном месте,
+# им пользуются и расшифровка Gemini, и локальный детектор.
+from core.wake_vosk import WAKE_RE as _WAKE_RE, LocalWake  # noqa: E402
 
 
 def _has_wake_word(text: str) -> bool:
@@ -310,6 +306,9 @@ _TOOL_TIMEOUT_SEC = float(os.getenv("JARVIS_TOOL_TIMEOUT_SEC", "45"))
 _TOOL_WAKE_WAIT_SEC = 1.5
 # Сколько реплик подряд без имени продолжают разговор (см. _continue_conversation).
 _FOLLOWUPS = int(os.getenv("JARVIS_FOLLOWUPS", "4"))
+# Сколько звука до пробуждения отдать в Gemini: имя и начало команды —
+# «Джарвис, открой ютуб» говорят на одном дыхании. 32 кадра по 64 мс ≈ 2 с.
+_WAKE_PREROLL_FRAMES = 32
 
 
 def _device_is_silent(index: int, seconds: float = 0.05, need_signal: bool = True) -> bool:
@@ -1234,13 +1233,10 @@ class Jarvis:
         # Чтобы включить его по-настоящему, микрофонному циклу нужен опорный
         # поток колонок (WASAPI loopback) — сейчас его нет: speaker_meter.py
         # отдаёт только скалярный уровень, не PCM. См. core/audio_capture.py.
-        try:
-            from core.wake_detector import WakeWordDetector2Stage
-            self._wake_detector = WakeWordDetector2Stage()
-            logger.info("WakeWord: 2-Stage KWS подключён к JarvisBot")
-        except Exception as _e:
-            logger.debug("WakeWord init note: %s", _e)
-            self._wake_detector = None
+        # Локальное слово «Джарвис». Запускается в _listen_audio: модели
+        # нужен событийный цикл, чтобы будить Джарвиса из своего потока.
+        self._local_wake: LocalWake | None = None
+        self._wake_ring = collections.deque(maxlen=_WAKE_PREROLL_FRAMES)
 
         self.ui.on_text_command = self._on_text_command
 
@@ -1384,6 +1380,21 @@ class Jarvis:
         if not was_awake:
             logger.info("Джарвис слушает (окно %.0f с)", _AWAKE_SEC)
             self._show_listen_state()
+
+    def _on_local_wake(self, put):
+        """Локальный детектор услышал имя (зовётся в событийном цикле).
+        Будим, приглушаем музыку и отдаём в Gemini звук с самого имени —
+        иначе «Джарвис, открой ютуб» дошло бы как «…ютуб»."""
+        if self.ui.muted:
+            return
+        self.wake()
+        try:
+            from core.ducking_controller import ducking_controller
+            ducking_controller.duck()
+        except Exception:
+            pass
+        while self._wake_ring:
+            put({"data": self._wake_ring.popleft(), "mime_type": "audio/pcm"})
 
     def _arm(self):
         self._awake_until = time.monotonic() + _AWAKE_SEC
@@ -2047,6 +2058,17 @@ class Jarvis:
             except asyncio.QueueFull:
                 pass  # Drop audio frame silently to avoid flooding event loop
 
+        if self._local_wake is None and _WAKE_MODE == "wake_word":
+            def _heard(text: str):
+                loop.call_soon_threadsafe(self._on_local_wake, _put_nowait_safe)
+            wake = LocalWake(_heard)
+            if await asyncio.to_thread(wake.start):
+                self._local_wake = wake
+                self.ui.write_log("SYS: слово «Джарвис» слушается на компьютере — до него звук никуда не уходит")
+            else:
+                self._local_wake = False     # не пробовать при каждом переподключении
+                self.ui.write_log("SYS: нет модели слова «Джарвис» — слушаю через Gemini")
+
         preroll = collections.deque(maxlen=10)
 
         def callback(indata, frames, time_info, status):
@@ -2064,17 +2086,19 @@ class Jarvis:
 
             pcm_bytes = indata.tobytes()
 
+            # Спит — звук только в локальный детектор имени, в облако ничего.
+            if self._local_wake and not self.is_awake():
+                self._wake_ring.append(pcm_bytes)
+                self._local_wake.feed(pcm_bytes)
+                self._is_loud_enough(indata)          # только чтобы HUD дышал
+                self._note_gate("жду слово «Джарвис»")
+                preroll.clear()
+                return
+
             # Громко играет музыка/кино из своих динамиков — в облако не шлём:
             # по громкости её от голоса не отличить (см. _IGNORE_SPEAKERS).
             # Слушаем только ключевое слово «Джарвис», чтобы приглушить звук.
             if self._speaker_meter is not None and self._speaker_meter.peak > _SPEAKER_GATE:
-                if self._wake_detector:
-                    if self._wake_detector.process_pcm(pcm_bytes):
-                        try:
-                            from core.ducking_controller import ducking_controller
-                            ducking_controller.duck()
-                        except Exception:
-                            pass
                 self._note_gate(
                     f"звук в динамиках {self._speaker_meter.peak:.3f} > "
                     f"порога {_SPEAKER_GATE}"
@@ -2807,6 +2831,11 @@ def _root_error_text(exc: BaseException) -> str:
 
 # ─── Точка входа ──────────────────────────────────────────────────────────────
 def main():
+    # Самопроверка сборки (CI на Windows): без окна и без Gemini.
+    if "--selftest" in sys.argv:
+        from core import selftest
+        sys.exit(selftest.run())
+
     # Без графики: JARVIS_HEADLESS=1 или --headless. Голосовой круг тот же,
     # разница только в том, кто показывает состояние и кто ждёт ключ.
     headless = headless_requested()

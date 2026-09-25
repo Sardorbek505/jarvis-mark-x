@@ -39,6 +39,37 @@ def clean_previous_builds():
             print(f"  [OK] Очищена папка: {folder}/")
 
 
+_VOSK_URL = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
+
+
+def ensure_vosk_model():
+    """Словарь слова «Джарвис» (~45 МБ) в models/vosk-small-ru.
+
+    В репозитории его нет — он большой и не наш. Без него сборка всё равно
+    работает (имя слушается через Gemini), но в CI это ошибка: пользователь
+    получил бы установщик без главного."""
+    print("[2b] Модель слова «Джарвис» (Vosk)...")
+    dst = _BASE_DIR / "models" / "vosk-small-ru"
+    if (dst / "am").exists():
+        print("  [OK] уже на месте")
+        return
+    import io
+    import urllib.request
+    import zipfile
+    try:
+        with urllib.request.urlopen(_VOSK_URL, timeout=120) as resp:
+            data = resp.read()
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            root = z.namelist()[0].split("/")[0]
+            z.extractall(dst.parent)
+        (dst.parent / root).rename(dst)
+        print(f"  [OK] скачана ({len(data) / 1e6:.0f} МБ)")
+    except Exception as exc:
+        print(f"  [WARN] модель не скачалась: {exc}")
+        if os.getenv("CI"):
+            raise
+
+
 def build_executable():
     print("[3/4] Запуск компиляции JARVIS.exe (это может занять 1-2 минуты)...")
     spec_path = _BASE_DIR / "jarvis.spec"
@@ -112,6 +143,7 @@ if __name__ == "__main__":
     try:
         check_dependencies()
         clean_previous_builds()
+        ensure_vosk_model()
         build_executable()
         post_build()
         build_installer()

@@ -71,3 +71,5 @@ logs/benchmark/
 # Архивы сборок/исходников. jarvis_source_bundle.zip уехал в публичный репо
 # вместе с config/ — живыми ключами, токенами и сессией userbot'а.
 *.zip
+# Модель Vosk качает сборка (scripts/build_exe.py)
+models/
