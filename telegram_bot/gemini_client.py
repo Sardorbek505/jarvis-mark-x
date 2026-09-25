@@ -172,6 +172,10 @@ class GeminiClient:
     # (см. __init__) — клиент ведёт себя как раньше.
     _fallback = None
     _gemini_resting_until = 0.0
+    # Последний _generate вернул не ответ, а сообщение о сбое. По нему
+    # вызывающие не сохраняют «ответ» в заметки и историю: раньше «Лимит
+    # Gemini исчерпан…» становился заметкой и подмешивался в каждый промпт.
+    last_generate_failed = False
 
     def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
         self._client = genai.Client(
@@ -263,6 +267,7 @@ class GeminiClient:
         if extra_system:
             system_instruction = f"{system_instruction}\n\n{extra_system}"
 
+        self.last_generate_failed = False
         if self._fallback and time.monotonic() < self._gemini_resting_until:
             text = await self._fallback.complete(contents, system_instruction)
             if text:
@@ -312,6 +317,7 @@ class GeminiClient:
             text = await self._fallback.complete(contents, system_instruction)
             if text:
                 return text
+        self.last_generate_failed = True
         return _unavailable_message(last_err)
 
     _EMBED_MODEL = "gemini-embedding-001"
@@ -350,6 +356,8 @@ class GeminiClient:
 
         recall = await self._recall_for(user_id, text)
         reply = await self._generate(contents, user_id=user_id, extra_system=recall)
+        if self.last_generate_failed:
+            return reply           # сбой — не ответ, в историю не пишем
 
         history.append({"role": "user", "parts": [{"text": text}]})
         history.append({"role": "model", "parts": [{"text": reply}]})
@@ -418,8 +426,8 @@ class GeminiClient:
                 )
                 text = (response.text or "").strip()
                 if text:
-                    if model != self._model:
-                        self._model = model
+                    # Основную модель не подменяем: один временный сбой раньше
+                    # навсегда (до перезапуска) переключал ВСЕ чаты на запасную.
                     return text
             except Exception as e:
                 logger.error(f"Transcribe model '{model}' failed: {e}")

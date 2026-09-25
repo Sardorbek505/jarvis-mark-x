@@ -35,3 +35,15 @@ def test_half_hour_without_digit():
 
 def test_unparseable_returns_none():
     assert parse_reminder("просто поболтаем о жизни", NOW) is None
+
+
+def test_parser_hands_dates_to_gemini_and_reads_decimals():
+    from datetime import datetime, timedelta
+    from telegram_bot.reminders import parse_reminder
+    now = datetime(2026, 9, 25, 12, 0)
+    when, what = parse_reminder("напомни через 1.5 часа выключить духовку", now)
+    assert when == now + timedelta(minutes=90) and what == "выключить духовку"
+    # Даты и дни недели быстрый разбор не понимает — раньше ставил «завтра».
+    assert parse_reminder("напомни 25 декабря в 10:00 подарок", now) is None
+    assert parse_reminder("напомни в понедельник в 9:00 созвон", now) is None
+    assert parse_reminder("напомни в 25:00 спать", now) is None

@@ -30,6 +30,52 @@ _DEFAULT_CITY = os.getenv("DEFAULT_CITY", "Шымкент")
 # Shared secret — the home PC must present this to link. Set via env on Render.
 PC_LINK_TOKEN = os.getenv("PC_LINK_TOKEN", "")
 
+
+_CFG = None
+
+
+def _cfg():
+    global _CFG
+    if _CFG is None:
+        from telegram_bot.config import load
+        _CFG = load(require_bot=False)
+    return _CFG
+
+
+def _pc_link_token() -> str:
+    return (PC_LINK_TOKEN or getattr(_cfg(), "pc_link_token", "") or "").strip()
+
+
+def verify_init_data(init_data: str, bot_token: str, max_age_sec: int = 7 * 86400) -> int | None:
+    """id пользователя из initData Telegram, если подпись верна; иначе None.
+
+    Раньше user_id брался из строки запроса как есть: любой, кто знал адрес
+    Space, открывал /ws?user_id=<id владельца> и читал его факты, задачи и
+    напоминания, писал от его имени и командовал его ПК.
+    Проверка — по документации Telegram Mini Apps: HMAC-SHA256 с ключом
+    HMAC_SHA256("WebAppData", bot_token).
+    """
+    import hashlib
+    import hmac
+    import json as _json
+    import time as _time
+    from urllib.parse import parse_qsl
+    if not init_data or not bot_token:
+        return None
+    pairs = dict(parse_qsl(init_data, keep_blank_values=True))
+    received = pairs.pop("hash", "")
+    check = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
+    secret = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+    expected = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+    if not received or not hmac.compare_digest(expected, received):
+        return None
+    try:
+        if _time.time() - int(pairs.get("auth_date", "0")) > max_age_sec:
+            return None
+        return int(_json.loads(pairs.get("user", "{}")).get("id"))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
 _PC_KEYWORDS = [
     "play", "stop", "pause", "next", "prev", "volume",
     "включи", "выключи", "стоп", "пауза", "следующий", "предыдущий", "трек", "песн", "музык",
@@ -141,10 +187,14 @@ async def broadcast_pc_status(online: bool):
 
 @app.websocket("/pc-link")
 async def pc_link(ws: WebSocket):
+    import hmac
     token = ws.query_params.get("token", "")
-    if PC_LINK_TOKEN and token != PC_LINK_TOKEN:
+    expected = _pc_link_token()
+    # Без настроенного токена — не пускаем никого. Раньше пустой токен значил
+    # «без проверки»: чужой «ПК» получал все команды и исходящие сообщения.
+    if not expected or not hmac.compare_digest(token, expected):
         await ws.close(code=1008)
-        logger.warning("PC link rejected — bad token")
+        logger.warning("PC link rejected — %s", "no PC_LINK_TOKEN configured" if not expected else "bad token")
         return
     await ws.accept()
     cid = await _bridge.register(ws) if _bridge else None
@@ -290,12 +340,15 @@ async def _handle_action(ws: WebSocket, user_id: int, msg: dict):
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
+    cfg = _cfg()
+    user_id = verify_init_data(ws.query_params.get("init_data", ""), cfg.telegram_token)
+    allowed = cfg.allowed_user_ids
+    if user_id is None or not allowed or user_id not in allowed:
+        await ws.close(code=1008)
+        logger.warning("Mini App: отказ в доступе (uid=%s)", user_id)
+        return
     await ws.accept()
     _miniapp_clients.add(ws)
-    try:
-        user_id = int(ws.query_params.get("user_id", 0) or 0)
-    except ValueError:
-        user_id = 0
 
     _audio_buffers[user_id] = b""
 
@@ -495,6 +548,10 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
         if _memory:
             await _memory.ensure_loaded(user_id)
         reply = await _gemini.chat(user_id, text)
+        # SEND/FETCH Mini App не выполняет — и показывать/зачитывать их
+        # сырыми блоками не должен (раньше «[[SEND]] брат | …» звучало вслух).
+        import re as _re
+        reply = _re.sub(r"\[\[(SEND|FETCH)\]\].*?\[\[/\1\]\]", "", reply, flags=_re.S | _re.I).strip()
         # Execute any hidden reminder/habit/task directives → durable store
         if _memory:
             tz = user_context.local_now(user_id, _DEFAULT_TZ).tzinfo

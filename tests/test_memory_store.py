@@ -182,3 +182,11 @@ async def test_outbox_queue_and_consume(mem):
     assert len(pending) == 1
     await mem.delete_outbound(pending[0]["id"])
     assert await mem.pending_outbound(UID) == []
+
+
+@pytest.mark.asyncio
+async def test_richer_fact_replaces_shorter_one(mem):
+    assert await mem.add_fact(UID, "Пользователя зовут Сардор")
+    assert await mem.add_fact(UID, "Пользователя зовут Сардор, ему 21 год")
+    assert not await mem.add_fact(UID, "зовут Сардор")          # уже известно
+    assert await mem.get_facts(UID) == ["Пользователя зовут Сардор, ему 21 год"]

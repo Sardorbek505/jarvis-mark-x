@@ -427,12 +427,21 @@ class MemoryStore:
             return False
         await self.ensure_loaded(uid)
         existing = self._cache[uid]["facts"]
-        # Skip near-duplicates (case-insensitive substring either way)
+        # Уже известное (целиком содержится в сохранённом) — пропускаем.
+        # Более полное («…Сардор, ему 21 год» при «…Сардор») раньше тоже
+        # отбрасывалось как «дубль» — теперь оно заменяет короткую версию.
         low = fact.lower()
-        for f in existing:
+        for i, f in enumerate(existing):
             fl = f.lower()
-            if low == fl or low in fl or fl in low:
+            if low == fl or low in fl:
                 return False
+            if fl in low:
+                await self._exec(
+                    "UPDATE facts SET fact=?, ts=? WHERE user_id=? AND fact=?",
+                    (fact, datetime.now().isoformat(), uid, f),
+                )
+                existing[i] = fact
+                return True
         await self._exec(
             "INSERT INTO facts(user_id, fact, ts) VALUES(?,?,?)",
             (uid, fact, datetime.now().isoformat()),

@@ -86,16 +86,29 @@ async def _notify_users(text: str):
             logger.debug(f"notify {uid}: {e}")
 
 
+_outbox_lock = asyncio.Lock()
+
+
 async def _flush_outbox():
-    """PC just came online — deliver any messages queued while it was off."""
-    if _tg_app is None:
+    """PC just came online — deliver any messages queued while it was off.
+
+    Под замком: запуск на каждом подключении ПК без него давал две
+    одновременные раздачи, и одно письмо могло уйти дважды."""
+    if _tg_app is None or _outbox_lock.locked():
         return
+    async with _outbox_lock:
+        await _flush_outbox_locked()
+
+
+async def _flush_outbox_locked():
     try:
         pending = await memory.pending_outbound()
     except Exception as e:
         logger.debug(f"outbox read: {e}")
         return
     for item in pending:
+        if not bridge.connected:
+            break   # PC dropped again — leave the rest queued for next time
         res = await bridge.send_userbot(item["target"], item["message"], item["as_voice"], item["user_id"])
         if bridge.delivered(res):
             await memory.delete_outbound(item["id"])
@@ -106,8 +119,8 @@ async def _flush_outbox():
             except Exception as exc:
                 logger.debug("Подавлено исключение: %s", exc, exc_info=True)
             await asyncio.sleep(1)   # gentle pacing, avoid spammy bursts
-        else:
-            break   # PC dropped again — leave the rest queued for next time
+        # Не доставлено при живом ПК (адресат не найден и т.п.) — идём дальше:
+        # раньше здесь был break, и одно «плохое» письмо стопорило всю очередь.
 
 
 async def _on_pc_status(online: bool):
@@ -163,6 +176,10 @@ async def _build_tg_app():
         .read_timeout(30.0)
         .write_timeout(30.0)
         .pool_timeout(30.0)
+        # По умолчанию PTB обрабатывает по одному обновлению: долгий ответ
+        # (голос, Gemini с запасными моделями) держал очередь, и нажатие
+        # «✖ Отменить» ждало, пока 5-секундная отправка уже уйдёт.
+        .concurrent_updates(4)
     )
 
     # HF Spaces block outbound to api.telegram.org. Route the bot's API + file
@@ -268,7 +285,9 @@ async def _set_webhook(bot, webhook_url: str, drop_pending: bool = False):
         url=webhook_url,
         secret_token=_WEBHOOK_SECRET,
         drop_pending_updates=drop_pending,
-        allowed_updates=["message", "edited_message", "callback_query"],
+        # Без edited_message: исправление опечатки прогоняло сообщение заново —
+        # второй ответ, дубли напоминаний и задач, повторная отправка контакту.
+        allowed_updates=["message", "callback_query"],
     )
 
 
@@ -354,7 +373,8 @@ async def _telegram_boot():
 
             if cfg.miniapp_url:
                 webhook_url = f"{cfg.miniapp_url.rstrip('/')}{_WEBHOOK_PATH}"
-                await _set_webhook(_tg_app.bot, webhook_url, drop_pending=True)
+                # Сообщения, пришедшие, пока Space перезапускался, не выбрасываем.
+                await _set_webhook(_tg_app.bot, webhook_url, drop_pending=False)
                 logger.info(f"Webhook registered: {webhook_url}")
                 _tasks.append(asyncio.create_task(_webhook_keeper(_tg_app.bot, webhook_url)))
             else:

@@ -31,7 +31,10 @@ function haptic(kind = 'light') {
 
 const USER_ID = tg?.initDataUnsafe?.user?.id ?? 0;
 const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-const WS_URL  = `${wsProto}//${location.host}/ws?user_id=${USER_ID}`;
+// Подписанные Telegram данные: сервер проверяет подпись и по ней узнаёт,
+// кто открыл Mini App (голый user_id в адресе подделывался).
+const INIT_DATA = encodeURIComponent(tg?.initData ?? '');
+const WS_URL  = `${wsProto}//${location.host}/ws?init_data=${INIT_DATA}`;
 
 // DOM refs
 const orb       = document.getElementById('orb');

@@ -107,7 +107,15 @@ def parse_reminder(text: str, now: Optional[datetime] = None) -> Optional[tuple]
             low = low[idx + len(trg):].strip().lstrip(",").strip()
             break
 
-    found = _find_time(low, now)
+    # Дата, месяц или день недели — этот быстрый разбор их не понимает и
+    # раньше молча ставил «завтра»: «25 декабря в 10:00» срабатывало завтра.
+    # Такие фразы отдаём Gemini (блок [[REMINDERS]] с полной датой).
+    if _HAS_DATE.search(low):
+        return None
+    try:
+        found = _find_time(low, now)
+    except ValueError:
+        return None          # «в 25:00» — не время; пусть разберётся Gemini
     if not found:
         return None
     when, (start, end) = found
@@ -116,6 +124,12 @@ def parse_reminder(text: str, now: Optional[datetime] = None) -> Optional[tuple]
     what = re.sub(r"\s+", " ", (low[:start] + " " + low[end:])).strip(" ,.")
     what = re.sub(r"^(мне|меня|что|чтобы|чтоб|о том,?\s*чтобы)\s+", "", what).strip()
     return when, (what or "напоминание")
+
+
+_HAS_DATE = re.compile(
+    r"послезавтра|январ|феврал|\bмарт|апрел|\bма[йя]\b|июн|июл|август|сентябр|"
+    r"октябр|ноябр|декабр|понедельник|вторник|\bсред[уыа]\b|четверг|пятниц|"
+    r"суббот|воскресень|\b\d{1,2}\.\d{1,2}\.\d{2,4}\b")
 
 
 def _find_time(low: str, now: datetime):
@@ -138,9 +152,10 @@ def _find_time(low: str, now: datetime):
         return when, m.span()
 
     # через N единиц  /  N единиц (после «таймер на»)
-    m = re.search(r"(?:через\s+)?(\d+)\s*(секунд\w*|сек|минут\w*|мин|часов|часа|час\w*)", low)
+    # «через 1.5 часа» раньше читалось как «через 5 часов»: дробь не ловилась.
+    m = re.search(r"(?:через\s+)?(\d+(?:[.,]\d+)?)\s*(секунд\w*|сек|минут\w*|мин|часов|часа|час\w*)", low)
     if m:
-        n, unit = int(m.group(1)), m.group(2)
+        n, unit = float(m.group(1).replace(",", ".")), m.group(2)
         if unit.startswith("сек"):
             delta = timedelta(seconds=n)
         elif unit.startswith("мин"):
