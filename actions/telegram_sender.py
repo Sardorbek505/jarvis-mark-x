@@ -101,5 +101,6 @@ def telegram_sender_action(params: dict) -> str:
     text = params.get("text") or params.get("message") or ""
     # Снимок экрана — только по явной просьбе (send_screenshot). Раньше любое
     # «экран» в тексте прикладывало скриншот со всем, что было открыто.
-    send_screen = bool(params.get("send_screenshot", False))
+    # bool("false") == True: строковое «false» от модели отправляло скриншот.
+    send_screen = str(params.get("send_screenshot", "")).strip().lower() in ("true", "1", "yes", "да")
     return send_to_telegram(text=text, send_screenshot=send_screen)

@@ -32,7 +32,13 @@ _logger = logging.getLogger(__name__)
 # ─── Пути ─────────────────────────────────────────────────────────────────────
 _BASE        = Path(__file__).resolve().parent.parent
 _CONFIG_PATH = _BASE / "config" / "modes.json"
-_STATE_PATH  = _BASE / "memory" / "current_mode.json"
+# Состояние — в папке данных (%APPDATA%\\JARVIS в .exe): в Program Files запись
+# молча не удавалась, и режим «забывался».
+try:
+    from core.paths import get_data_root as _data_root
+    _STATE_PATH = _data_root() / "memory" / "current_mode.json"
+except Exception:
+    _STATE_PATH = _BASE / "memory" / "current_mode.json"
 
 
 # ─── Конфиг и состояние ───────────────────────────────────────────────────────

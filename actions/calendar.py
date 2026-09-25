@@ -47,8 +47,11 @@ try:
     import pickle
     
     _SCOPES = ['https://www.googleapis.com/auth/calendar']
-    _TOKEN_FILE = _BASE / "config" / "calendar_token.pickle"
-    _CREDENTIALS_FILE = _BASE / "config" / "calendar_credentials.json"
+    # Токен и credentials — там же, где остальные ключи (%APPDATA%\\JARVIS);
+    # рядом с .exe в Program Files их не записать.
+    from core.paths import get_config_path as _cfg
+    _TOKEN_FILE = _cfg("calendar_token.pickle", for_writing=True)
+    _CREDENTIALS_FILE = _cfg("calendar_credentials.json")
     
     _GOOGLE_CALENDAR_ENABLED = True
 except ImportError:

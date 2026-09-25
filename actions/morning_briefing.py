@@ -66,18 +66,28 @@ def _detect_city() -> Optional[str]:
 
 
 def _load_memory() -> Dict[str, Any]:
-    """Загружает данные пользователя из памяти."""
-    memory_file = _BASE / "memory" / "data.json"
-    
+    """Имя и город из памяти Джарвиса. Раньше файл искался рядом с программой
+    (в .exe память лежит в %APPDATA%\\JARVIS), а ключи читались «плоско», хотя
+    память вложенная (identity → name → value), — имя не находилось никогда."""
     try:
-        if memory_file.exists():
-            with open(memory_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+        from memory.memory_manager import load_memory
+        mem = load_memory()
     except Exception as exc:
-        _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
-    
+        _logger.warning("Память для брифинга: %s", exc)
+        mem = {}
+
+    def pick(*keys):
+        for cat in ("identity", "preferences"):
+            for k in keys:
+                v = (mem.get(cat) or {}).get(k)
+                if isinstance(v, dict):
+                    v = v.get("value")
+                if v:
+                    return str(v)
+        return ""
+
     # Без города — чтобы сработало автоопределение по IP, а не Москва
-    return {"name": "сэр"}
+    return {"name": pick("name", "имя") or "сэр", "city": pick("city", "город")}
 
 
 def _get_weather(city: str) -> str:
