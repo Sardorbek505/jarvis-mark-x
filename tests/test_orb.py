@@ -49,3 +49,43 @@ def test_long_freeze_does_not_teleport():
     orb.step(5.0, 0.0)                    # окно висело 5 секунд
     x1, _, _ = orb.project(0, 0, 1)
     assert np.abs(x1 - x0).max() < 0.05
+
+
+def _run(orb, seconds, level=0.3, dt=1 / 60):
+    prev, worst = None, 0.0
+    for _ in range(int(seconds / dt)):
+        orb.step(dt, level)
+        x, y, _ = orb.project(0.0, 0.0, 1.0)
+        cur = np.column_stack((x, y))
+        if prev is not None:
+            worst = max(worst, float(np.abs(cur - prev).max()))
+        prev = cur
+    return worst
+
+
+def test_morph_is_continuous_and_returns_to_sphere():
+    orb = DotOrb(900)
+    _run(orb, 0.5)
+    for shape in ("globe", "music", "film", "screen", "sphere"):
+        orb.set_shape(shape)
+        # точки летят, но не телепортируются: за кадр < 12% радиуса
+        assert _run(orb, 1.6) < 0.12, shape
+    radii = np.linalg.norm(orb.pos, axis=1)
+    assert 0.8 < radii.min() and radii.max() < 1.3       # снова шар
+
+
+def test_flat_shapes_face_the_viewer_whatever_the_spin():
+    # Экран обязан стоять прямоугольником лицом к зрителю при любом повороте.
+    orb = DotOrb(900)
+    orb.set_shape("screen")
+    for _ in range(3):
+        _run(orb, 1.5)
+        x, y, _ = orb.project(0.0, 0.0, 1.0)
+        assert abs(x.max() - 0.95) < 0.03 and abs(x.min() + 0.95) < 0.03
+        assert abs(y.max() - 0.535) < 0.03 and abs(y.min() + 0.535) < 0.03
+
+
+def test_unknown_shape_is_ignored():
+    orb = DotOrb(300)
+    orb.set_shape("dragon")
+    assert orb.shape == "sphere"

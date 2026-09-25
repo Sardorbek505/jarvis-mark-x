@@ -153,6 +153,15 @@ _STATE_RGB = {
     "ОТКЛЮЧЁН":         (105, 112, 124),   # серый — микрофон выключен
 }
 _SUB_HOLD_SEC = 6.0      # сколько субтитр висит после последнего слова
+# Во что превращается шар, пока идёт команда.
+_TOOL_SHAPE = {
+    "web_search": "globe", "browser": "globe", "weather": "globe",
+    "translation": "globe", "morning_briefing": "globe",
+    "music_player": "music", "switch_voice": "music",
+    "movie_player": "film",
+    "look_at_screen": "screen", "look_at_camera": "screen",
+}
+_SHAPE_HOLD_SEC = 7.0    # фигура держится после команды, пока Джарвис отвечает
 
 
 class HudCanvas(QWidget):
@@ -184,6 +193,8 @@ class HudCanvas(QWidget):
         self._tool_until = 0.0
         self._tool_lock = 0.0                 # 0..1, проявление подписи инструмента
 
+        self._shape_until = 0.0
+
         self._sub_text = ""
         self._sub_t = 0.0
         self._sub_alpha = 0.0
@@ -200,6 +211,10 @@ class HudCanvas(QWidget):
     def lock_on(self, tool: str, seconds: float = 2.6):
         self._tool = tool
         self._tool_until = time.monotonic() + seconds
+        shape = _TOOL_SHAPE.get(tool)
+        if shape:
+            self._orb.set_shape(shape)
+            self._shape_until = time.monotonic() + _SHAPE_HOLD_SEC
 
     def set_subtitle(self, text: str):
         text = " ".join((text or "").split())
@@ -227,6 +242,13 @@ class HudCanvas(QWidget):
         self.level *= math.exp(-dt * (7.5 if self.speaking else 11.0))
         key = self._state_key()
         busy = key in ("ДУМАЕТ", "ОБРАБОТКА") or self._tool is not None
+        # Фигура держится, пока идёт работа и ответ, потом точки стекаются
+        # обратно в шар.
+        if self._orb.shape != "sphere":
+            if busy or self.speaking:
+                self._shape_until = max(self._shape_until, now + 2.5)
+            if now > self._shape_until:
+                self._orb.set_shape("sphere")
         self._orb.step(dt, 0.0 if self.muted else self.level, active=busy)
 
         # Цвет перетекает за ~0.3 с, а не щёлкает.
