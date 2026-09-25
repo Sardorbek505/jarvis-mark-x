@@ -10,6 +10,10 @@ import sys
 _logger = logging.getLogger(__name__)
 
 _ALIASES = {
+    # Имена из режимов (config/modes.json): без них режимы не открывали ничего.
+    "microsoft teams": ["ms-teams", "teams"],
+    "visual studio code": ["code.cmd", "code.exe", "code"],
+    "figma": ["figma"],
     # Браузеры
     "chrome": ["chrome.exe", "google-chrome", "chrome"],
     "хром": ["chrome.exe", "google-chrome", "chrome"],
@@ -64,6 +68,10 @@ def open_app(parameters: dict, response=None, player=None) -> str:
     if not app_name:
         return "Не указано имя приложения."
 
+    if app_name not in _ALIASES and any(c in app_name for c in ("\\", "/", ":")):
+        # Путь к файлу — не приложение. Раньше «открой c:\...\x.bat» или
+        # \\сервер\share\x.exe (из Telegram или от модели) запускались как есть.
+        return f"Запускаю только приложения по имени, а не файлы по пути: «{app_name}»."
     candidates = _ALIASES.get(app_name, [app_name])
 
     for cmd in candidates:

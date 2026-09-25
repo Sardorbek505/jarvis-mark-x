@@ -7,6 +7,7 @@
 Поддержка: Windows (приоритет), macOS / Linux (best effort через pyautogui).
 """
 
+import ctypes
 import platform
 import subprocess
 import time
@@ -291,6 +292,36 @@ def _activate_window_by_title(title_part: str, player=None) -> str:
         return f"Ошибка: {str(e)[:80]}"
 
 
+def _foreground_title() -> str:
+    if _OS != "Windows":
+        return "window"
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        length = user32.GetWindowTextLengthW(hwnd)
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        return buf.value or ""
+    except Exception:
+        return ""
+
+
+def _minimize_by_title(title_part: str, player=None) -> str:
+    try:
+        import pygetwindow as gw
+        needle = title_part.strip().lower()
+        wins = [w for w in gw.getAllWindows() if needle in (w.title or "").lower()]
+        if not wins:
+            return f"Окно «{title_part}» не найдено, сэр."
+        for w in wins:
+            w.minimize()
+        if player:
+            player.write_log(f"SYS: ⬇ Свёрнуто: {title_part}")
+        return f"Свернул {title_part}, сэр."
+    except Exception as e:
+        return f"Не получилось свернуть {title_part}: {str(e)[:60]}"
+
+
 # ─── Публичная точка входа ────────────────────────────────────────────────────
 def window_control(parameters: dict, player=None) -> str:
     """
@@ -307,10 +338,19 @@ def window_control(parameters: dict, player=None) -> str:
 
     # ── Closing ───────────────────────────────────────────────────────────────
     if action in ("close", "close_window", "закрыть"):
-        return _close_window(player)
+        # Alt+F4 на рабочем столе открывает «Завершение работы Windows», а
+        # на ПК без присмотра закрывает что попало. Сначала смотрим, что впереди.
+        title = _foreground_title()
+        if not title or title in ("Program Manager", "Пуск", "Start"):
+            return "Впереди нет открытого окна — ничего не закрываю, сэр."
+        result = _close_window(player)
+        return f"{result} ({title[:60]})"
 
     # ── Minimize / Maximize ───────────────────────────────────────────────────
     elif action in ("minimize", "свернуть"):
+        if target:
+            # «сверни хром» раньше превращалось в activate — Chrome разворачивался.
+            return _minimize_by_title(target, player)
         return _minimize_window(player)
 
     elif action in ("maximize", "развернуть"):

@@ -59,11 +59,20 @@ def get_current_mode() -> dict:
     """Возвращает {'mode': 'work', 'preference': 'design'} или {'mode': 'normal'}."""
     try:
         if _STATE_PATH.exists():
+            # Режим старше нескольких часов (перезагрузка, приложения давно
+            # закрыты) — уже не «идёт». Раньше файл не сбрасывался никогда, и
+            # «режим учёбы» отвечал «уже идёт», ничего не открывая.
+            import time as _time
+            if _time.time() - _STATE_PATH.stat().st_mtime > _MODE_STALE_SEC:
+                return {"mode": "normal", "preference": ""}
             with open(_STATE_PATH, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception as exc:
         _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
     return {"mode": "normal", "preference": ""}
+
+
+_MODE_STALE_SEC = 3 * 3600
 
 
 # ─── Дефолтная конфигурация (если файл потерян) ───────────────────────────────

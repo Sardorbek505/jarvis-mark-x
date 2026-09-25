@@ -74,7 +74,7 @@ _LOG_BACKUPS = 3
 _KW = {
     "camera": [
         "камер", "веб-камер", "вебкам", "webcam", "camera",
-        "что рядом", "что вокруг", "что там происходит", "посмотри вокруг",
+        "посмотри вокруг",
         "сфоткай", "снимок с камеры", "фото с камеры",
     ],
     "system": [
@@ -148,14 +148,73 @@ def _default_city() -> str:
 
 # ── Command execution ──────────────────────────────────────────────────────────
 
+# Разблокировка — только точной командой. Раньше хватало подстроки «разблокир»:
+# «не могу разблокировать экран телефона» печатал пароль ПК в активное окно
+# (например, в открытый чат).
+_UNLOCK_COMMANDS = {
+    "разблокируй", "разблокируй пк", "разблокируй компьютер", "разблокируй экран",
+    "разблокировать", "разблокировать пк", "unlock", "unlock pc",
+    "сними блокировку", "открой блокировку",
+}
+
+# Выключение и перезагрузка с телефона — в два шага, как на ПК голосом.
+_POWER_CONFIRM_SEC = 60
+_pending_power: dict = {}      # action -> time.monotonic() запроса
+
+
+def _power_command(tl: str) -> str | None:
+    if any(k in tl for k in ("выключи компьютер", "выключи пк", "shutdown пк", "shutdown компьютер")):
+        return "shutdown"
+    if any(k in tl for k in ("перезагрузи компьютер", "перезагрузи пк", "restart пк")):
+        return "restart"
+    return None
+
+
+async def _power(tl: str, action: str) -> dict:
+    label = "выключи пк" if action == "shutdown" else "перезагрузи пк"
+    if "через" in tl:
+        # Раньше «выключи пк через час» выключал сразу — время игнорировалось.
+        return _r("Отложенное выключение с телефона не делаю. На ПК скажите "
+                  "Джарвису: «таймер сна на N минут».")
+    asked = _pending_power.get(action)
+    if not tl.startswith("точно") or asked is None or time.monotonic() - asked > _POWER_CONFIRM_SEC:
+        _pending_power[action] = time.monotonic()
+        verb = "Выключить" if action == "shutdown" else "Перезагрузить"
+        return _r(f"{verb} компьютер? Напишите «точно {label}» в течение минуты.")
+    _pending_power.pop(action, None)
+    from actions.computer_settings import computer_settings
+    return _r(await asyncio.to_thread(
+        computer_settings, {"action": "shutdown" if action == "shutdown" else "перезагруз"}))
+
+
+_CITY_STOPWORDS = {"сейчас", "сегодня", "завтра", "на завтра", "на сегодня", "там", "тут", "здесь"}
+
+
+def _weather_city(tl: str) -> str | None:
+    """Город из «погода в …». «погода сейчас» — это не город."""
+    city = _extract_after(tl, ["погоду в ", "погода в ", "в ", "in ", "погода "])
+    if not city:
+        return None
+    city = city.strip(" ?!.,")
+    return None if city in _CITY_STOPWORDS else city
+
+
+def _known_app(tl: str) -> str | None:
+    """«открой/запусти X», где X — известное приложение. Проверяется до музыки:
+    «запусти телеграм» уходило в Spotify-поиск «телеграм»."""
+    from actions.open_app import _ALIASES
+    name = _extract_after(tl, ["открой приложение ", "запусти приложение ", "открой ", "запусти ", "open "])
+    name = (name or "").strip(" ?!.,")
+    return name if name in _ALIASES else None
+
 async def _execute(text: str) -> dict:
     tl = text.lower().strip()
 
     try:
         # Keyboard buttons (checked early so "разблокируй" isn't caught by the
         # lock/"заблокируй" block). Enter / unlock-sequence.
-        if any(k in tl for k in ("разблокир", "unlock", "открой блокировку", "сними блокировку")):
-            return _do_unlock()
+        if tl.strip(" !.") in _UNLOCK_COMMANDS:
+            return await asyncio.to_thread(_do_unlock)
         if tl in ("enter", "ввод", "интер") or any(
                 k in tl for k in ("нажми enter", "нажать enter", "нажми интер", "клавиша enter")):
             return _do_press_enter()
@@ -187,19 +246,21 @@ async def _execute(text: str) -> dict:
             if any(k in tl for k in ["заблокируй", "заблокировать", "lock screen", "lock pc"]):
                 from actions.computer_settings import computer_settings
                 return _r(await asyncio.to_thread(computer_settings, {"action": "lock"}))
-            if any(k in tl for k in ["выключи компьютер", "выключи пк", "shutdown пк", "shutdown компьютер"]):
-                from actions.computer_settings import computer_settings
-                return _r(await asyncio.to_thread(computer_settings, {"action": "shutdown"}))
-            if any(k in tl for k in ["перезагрузи", "restart пк"]):
-                from actions.computer_settings import computer_settings
-                return _r(await asyncio.to_thread(computer_settings, {"action": "перезагруз"}))
+            power = _power_command(tl)
+            if power:
+                return await _power(tl, power)
             if "системная громкость" in tl:
                 m = re.search(r'\d+', tl)
                 val = max(0, min(100, int(m.group()) if m else 50))
                 from actions.computer_settings import computer_settings
                 return _r(await asyncio.to_thread(computer_settings, {"action": "volume", "value": str(val)}))
             if any(k in tl for k in ["системная информация", "sysinfo", "батарея", "battery", "заряд"]):
-                return _r(_get_sysinfo())
+                return _r(await asyncio.to_thread(_get_sysinfo))
+
+        app = _known_app(tl)
+        if app:
+            from actions.open_app import open_app
+            return _r(await asyncio.to_thread(open_app, {"app_name": app}) or "Выполнено")
 
         if keywords.matches(tl, _KW["music"]):
             params = _parse_music(tl)
@@ -214,12 +275,12 @@ async def _execute(text: str) -> dict:
 
         if keywords.matches(tl, _KW["weather"]):
             from actions.weather import weather_action
-            city = _extract_after(tl, ["в ", "in ", "погода ", "погоду в "]) or _default_city()
+            city = _weather_city(tl) or await asyncio.to_thread(_default_city)
             return _r(await asyncio.to_thread(weather_action, {"city": city}) or "Погода получена")
 
         if keywords.matches(tl, _KW["app"]):
             from actions.open_app import open_app
-            app_name = _extract_after(tl, ["открой ", "запусти ", "open ", "закрой ", "close "])
+            app_name = _extract_after(tl, ["открой приложение ", "запусти приложение ", "открой ", "запусти ", "open "])
             return _r(await asyncio.to_thread(open_app, {"app_name": app_name or text}) or "Выполнено")
 
         if keywords.matches(tl, _KW["search"]):
@@ -241,7 +302,8 @@ async def _execute(text: str) -> dict:
         if any(k in tl for k in _KW["briefing"]):
             try:
                 from actions.morning_briefing import morning_briefing
-                return _r(await asyncio.to_thread(morning_briefing, {"city": _default_city()}) or "Брифинг недоступен")
+                city = await asyncio.to_thread(_default_city)
+                return _r(await asyncio.to_thread(morning_briefing, {"city": city}) or "Брифинг недоступен")
             except Exception as e:
                 return _r(f"Брифинг недоступен: {e}")
 
@@ -538,7 +600,8 @@ def _parse_window(tl: str) -> dict:
     if any(k in tl for k in ["сверни", "свернуть", "minimize"]):
         target = _extract_after(tl, ["сверни ", "свернуть "])
         if target and target not in ("окно", "window"):
-            return {"action": "activate", "target": target}
+            # Было {"action": "activate"} — «сверни хром» разворачивал Chrome.
+            return {"action": "minimize", "target": target}
         return {"action": "minimize"}
     if any(k in tl for k in ["разверни", "maximize"]):
         return {"action": "maximize"}
@@ -610,20 +673,38 @@ async def _handle_userbot(msg: dict) -> dict:
 
 
 async def _handle(ws, msg: dict):
-    if msg.get("action") == "send_telegram":
-        result = await _handle_userbot(msg)
-    else:
-        result = await _execute(msg.get("text", ""))
+    # Ошибка внутри (нет данных Telethon, сбой подключения, импорт) раньше
+    # вылетала без ответа: сервер ждал 30 с, а письмо из очереди уходило
+    # заново при каждом переподключении ПК.
+    try:
+        if msg.get("action") == "send_telegram":
+            result = await _handle_userbot(msg)
+        else:
+            result = await _execute(msg.get("text", ""))
+    except Exception as e:
+        logger.exception("Команда упала")
+        result = {"ok": False, "text": f"❌ Ошибка на ПК: {e}"}
     try:
         await ws.send(json.dumps({
             "type": "response",
             "req_id": msg.get("req_id"),
             "text": result.get("text", ""),
             "image_b64": result.get("image_b64"),
+            **({"ok": result["ok"]} if "ok" in result else {}),
             "user_id": msg.get("user_id"),
         }))
     except Exception as e:
         logger.error(f"Send response: {e}")
+
+
+_HANDLE_TASKS: set = set()
+
+
+def _spawn_handle(ws, msg: dict):
+    """Команда — отдельной задачей со ссылкой: asyncio держит задачи слабо."""
+    task = asyncio.create_task(_handle(ws, msg))
+    _HANDLE_TASKS.add(task)
+    task.add_done_callback(_HANDLE_TASKS.discard)
 
 
 def _claim_singleton(port: int = _SINGLETON_PORT) -> socket.socket | None:
@@ -696,8 +777,10 @@ async def run_client(url: str, token: str):
         try:
             async with websockets.connect(
                 uri,
-                ping_interval=20,
-                ping_timeout=20,
+                # 10/10 вместо 20/20: тихо оборванная связь замечается за ~20 с,
+                # а не за ~40 — мост на сервере ждёт переподключения только 20.
+                ping_interval=10,
+                ping_timeout=10,
                 open_timeout=_OPEN_TIMEOUT_SEC,
                 max_size=8 * 1024 * 1024,
             ) as ws:
@@ -724,7 +807,14 @@ async def run_client(url: str, token: str):
                     except json.JSONDecodeError:
                         continue
                     if msg.get("type") == "command":
-                        asyncio.create_task(_handle(ws, msg))
+                        _spawn_handle(ws, msg)
+                # Сервер закрыл соединение штатно (перезапуск Space). Раньше
+                # цикл молча переподключался без паузы — эти разрывы не было
+                # видно в логе, а при «принял и закрыл» получался горячий цикл.
+                code = getattr(ws, "close_code", None)
+                reason = getattr(ws, "close_reason", "") or ""
+                logger.info(f"Сервер закрыл соединение ({code} {reason}) — переподключаюсь")
+                await asyncio.sleep(_RECONNECT_MIN_SEC)
         except asyncio.CancelledError:
             raise
         except Exception as e:

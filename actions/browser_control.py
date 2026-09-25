@@ -50,7 +50,10 @@ def _open_url(url: str, browser: str | None = None):
         return
 
     if browser:
-        candidates = _BROWSERS.get(browser.lower(), [browser])
+        # Только известные браузеры. Раньше неизвестное имя запускалось как
+        # есть: browser="powershell", url="https://x;Start-Process calc" —
+        # и выполнялась произвольная команда.
+        candidates = _BROWSERS.get(browser.lower(), [])
         for cmd in candidates:
             if shutil.which(cmd):
                 subprocess.Popen([cmd, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -64,16 +67,11 @@ def _open_url(url: str, browser: str | None = None):
             return
         except Exception as exc:
             _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
-        # Метод 2: cmd.exe через список аргументов (shell=False) —
-        # безопасно, поскольку URL передаётся как отдельный аргумент,
-        # а не интерполируется в shell-строку.
+        # Метод 2: webbrowser. Не `cmd /c start`: cmd сам разбирает строку,
+        # и `&` в URL выполнял бы команду (и обрезал обычные ссылки с ?a=1&b=2).
+        import webbrowser
         try:
-            subprocess.Popen(
-                ["cmd.exe", "/c", "start", "", url],
-                shell=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            webbrowser.open(url)
             return
         except Exception as exc:
             _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
