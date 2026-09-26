@@ -91,35 +91,45 @@ def test_shows_only_when_wanted_and_not_over_fullscreen(island):
     assert not w.isVisible() and not w._tmr.isActive()
 
 
-def test_enters_and_leaves_like_macbook_notch(island):
-    """Появляется из полоски у края с лёгким перелётом, уходит обратно в неё."""
+def test_appears_as_liquid_drop_then_spreads(island):
+    """Сначала круг-капля, потом она растекается в капсулу с перелётом, как
+    желе; уходит в обратном порядке — стягивается в каплю и тает."""
     w, app, _ = island
     assert w.pos().y() - app.primaryScreen().geometry().y() == ui.Island.TOP   # ниже края
     w.set_wanted(True)
-    start = w.capsule_rect()
-    assert start.width() <= ui.Island.SEED_W + 1 and start.height() <= ui.Island.SEED_H + 1
-    peak = 0.0
-    end = time.monotonic() + 1.2
+    assert w.capsule_rect().width() < 1                         # из ничего
+    cw, ch = ui.SIZES["compact"]
+    circles, peak_s, thin = [], 0.0, ch
+    end = time.monotonic() + 1.6
     while time.monotonic() < end:
         w._step()
         app.processEvents()
-        peak = max(peak, w._p)
+        c = w.capsule_rect()
+        if w._s <= 0 and c.width() > 4:
+            circles.append(c)
+        if w._s > 0.2:
+            thin = min(thin, c.height())
+        peak_s = max(peak_s, w._s)
         time.sleep(0.01)
-    cw, ch = ui.SIZES["compact"]
-    assert 1.0 < peak < 1.15                                    # чуть пружинит, не болтается
+    assert len(circles) > 3                                     # была фаза круга
+    assert all(abs(c.width() - c.height()) < 1 for c in circles)
+    assert max(c.width() for c in circles) > ch * 0.6           # круг вырос почти до высоты капсулы
+    assert w._radius(circles[-1]) == circles[-1].width() / 2    # и это именно круг
+    assert 1.05 < peak_s < 1.3                                  # растеклась с перелётом, как желе
+    assert thin < ch - 1                                        # растекаясь, стала тоньше — жидкость
     assert abs(w.capsule_rect().width() - cw) < 1 and abs(w.capsule_rect().height() - ch) < 1
 
     w.set_wanted(False)
     sizes = []
-    while w.isVisible() and len(sizes) < 200:
+    while w.isVisible() and len(sizes) < 300:
         w._step()
         app.processEvents()
         sizes.append(w.capsule_rect().width())
         time.sleep(0.01)
     assert not w.isVisible() and len(sizes) > 5                 # не исчезла рывком
     assert all(a >= b - 0.5 for a, b in zip(sizes, sizes[1:]))  # сжимается без перелёта
-    w.set_wanted(True)                                          # снова свернули — снова с полоски
-    assert w.capsule_rect().width() <= ui.Island.SEED_W + 1
+    w.set_wanted(True)                                          # снова свернули — снова с капли
+    assert w.capsule_rect().width() < 1
 
 
 def test_capsule_springs_to_size_and_mask_lets_clicks_through(island):

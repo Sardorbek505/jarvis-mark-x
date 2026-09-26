@@ -1183,6 +1183,19 @@ class MainWindow(QMainWindow):
             self._island = Island(on_open=self._restore_from_island)
         except Exception as exc:
             _logger.warning("Капсула недоступна: %s", exc)
+            return
+        # Капсула нужна не только когда окно свёрнуто: переключились в другую
+        # программу, и она закрыла Джарвиса, — капсула тоже выходит. Раньше она
+        # ждала именно «свернуть», и владелец её почти не видел.
+        if sys.platform == "win32":
+            self._island_tmr = QTimer(self)
+            self._island_tmr.timeout.connect(lambda: self._island_wanted(self._out_of_sight()))
+            self._island_tmr.start(700)
+
+    def _out_of_sight(self) -> bool:
+        if not self.isVisible() or self.isMinimized():
+            return True
+        return _covered_by_other_app(self)
 
     def _restore_from_island(self):
         self.showNormal()
@@ -1190,8 +1203,9 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def _island_wanted(self, on: bool):
-        if getattr(self, "_island", None) is not None:
-            self._island.set_wanted(on)
+        isl = getattr(self, "_island", None)
+        if isl is not None and isl.wanted != on:
+            isl.set_wanted(on)
 
     def changeEvent(self, ev):
         from PyQt6.QtCore import QEvent
@@ -1514,6 +1528,32 @@ class MainWindow(QMainWindow):
 
 
 # ─── Публичный класс JarvisUI (совместимость с main.py) ──────────────────────
+def _covered_by_other_app(win) -> bool:
+    """Окно Джарвиса закрыто окнами других программ (Windows): в двух из
+    трёх точек окна сверху лежит чужое окно. Свои окна (карточки, браузер
+    Джарвиса) не в счёт."""
+    try:
+        import ctypes
+        import os
+        from ctypes import wintypes
+        u = ctypes.windll.user32
+        g = win.frameGeometry()
+        ratio = win.devicePixelRatioF() or 1.0
+        pid = os.getpid()
+        covered = 0
+        for fx, fy in ((0.5, 0.5), (0.25, 0.3), (0.75, 0.7)):
+            pt = wintypes.POINT(int((g.x() + g.width() * fx) * ratio), int((g.y() + g.height() * fy) * ratio))
+            h = u.WindowFromPoint(pt)
+            if not h:
+                continue
+            owner = wintypes.DWORD()
+            u.GetWindowThreadProcessId(u.GetAncestor(h, 2), ctypes.byref(owner))
+            covered += owner.value != pid
+        return covered >= 2
+    except Exception:
+        return False
+
+
 class JarvisUI(MainWindow):
     """Обёртка для совместимости с main.py."""
 
