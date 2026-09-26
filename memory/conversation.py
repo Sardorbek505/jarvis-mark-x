@@ -41,7 +41,11 @@ EPISODES_IN_PROMPT = 10
 EPISODES_CHARS = 1800
 IDLE_SEC = 180
 BATCH = 10
-MODEL = os.getenv("JARVIS_MEMORY_MODEL", "gemini-2.5-flash")
+# Разбор разговора — простая структурная задача, и lite с ней справляется
+# (проверено: те же факты из тестовой реплики). Зато у неё отдельный лимит:
+# на бесплатном тарифе flash выбирался голосовым циклом, и память сутками
+# падала с 429, не сохранив ни факта.
+MODEL = os.getenv("JARVIS_MEMORY_MODEL", "gemini-2.5-flash-lite")
 
 _lock = threading.Lock()
 
