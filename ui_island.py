@@ -226,6 +226,8 @@ class Island(QWidget):
     _media_sig = pyqtSignal(object, str, float)
 
     W, H = 460, 212                 # окно с запасом под самый большой вид
+    TOP = 16                        # отступ от верхнего края экрана
+    SEED_W, SEED_H = 38.0, 8.0      # из такой полоски капсула вырастает
 
     def __init__(self, on_open=None, poll: bool = True):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
@@ -240,6 +242,9 @@ class Island(QWidget):
         self.wanted = False                        # окно Джарвиса свёрнуто
         self._w, self._h = SIZES["compact"]
         self._vw, self._vh = 0.0, 0.0             # скорость пружины
+        # Появление и уход, как у MacBook: 0 — полоска у края, 1 — капсула.
+        self._p, self._vp = 0.0, 0.0
+        self._leaving = False
         self._last = time.monotonic()
         self._clock = 0.0
         self._rgb = list(STATE_RGB["idle"])
@@ -283,7 +288,7 @@ class Island(QWidget):
         scr = QApplication.primaryScreen()
         g = scr.geometry() if scr else None
         if g:
-            self.move(g.x() + (g.width() - self.W) // 2, g.y() + 6)
+            self.move(g.x() + (g.width() - self.W) // 2, g.y() + self.TOP)
 
     def set_wanted(self, on: bool):
         """Окно Джарвиса свёрнуто (on=True) или развёрнуто."""
@@ -292,14 +297,25 @@ class Island(QWidget):
 
     def _apply_visibility(self, fullscreen: bool = False):
         show = self.wanted and not fullscreen
-        if show and not self.isVisible():
-            self._place()
-            self.show()
-            self._last = time.monotonic()
-            self._tmr.start(16)
-        elif not show and self.isVisible():
-            self.hide()
-            self._tmr.stop()
+        if show:
+            self._leaving = False
+            if not self.isVisible():
+                self._p, self._vp = 0.0, 0.0
+                self._place()
+                self.show()
+                self._last = time.monotonic()
+                self._tmr.start(16)
+        elif self.isVisible():
+            if fullscreen:                 # игра на весь экран — сразу, без анимации
+                self._hide_now()
+            else:                          # Джарвис развернулся — капсула втягивается
+                self._leaving = True
+
+    def _hide_now(self):
+        self._leaving = False
+        self._p, self._vp = 0.0, 0.0
+        self.hide()
+        self._tmr.stop()
 
     def _check_fullscreen(self):
         if self.wanted:
@@ -327,7 +343,10 @@ class Island(QWidget):
 
     # ── анимация ────────────────────────────────────────────────────────────
     def capsule_rect(self) -> QRectF:
-        return QRectF((self.W - self._w) / 2, 0, self._w, self._h)
+        p = max(0.0, self._p)
+        w = self.SEED_W + (self._w - self.SEED_W) * p
+        h = max(self.SEED_H * 0.5, self.SEED_H + (self._h - self.SEED_H) * p)
+        return QRectF((self.W - w) / 2, 0, w, h)
 
     def _step(self):
         now = time.monotonic()
@@ -343,6 +362,17 @@ class Island(QWidget):
         self._vh += (k * (th - self._h) - c * self._vh) * dt
         self._w += self._vw * dt
         self._h += self._vh * dt
+        # Выход — быстрее и без перелёта (критическое затухание), вход —
+        # с лёгким перелётом: капсула «выпрыгивает» и чуть пружинит.
+        if self._leaving:
+            k, c, target = 320.0, 2 * math.sqrt(320.0), 0.0
+        else:
+            k, c, target = 170.0, 19.0, 1.0
+        self._vp += (k * (target - self._p) - c * self._vp) * dt
+        self._p += self._vp * dt
+        if self._leaving and self._p < 0.03:
+            self._hide_now()
+            return
         tgt = STATE_RGB.get(m.state, STATE_RGB["idle"])
         for i in range(3):
             self._rgb[i] += (tgt[i] - self._rgb[i]) * (1 - math.exp(-dt * 6))
@@ -416,9 +446,11 @@ class Island(QWidget):
         path = QPainterPath()
         path.addRoundedRect(cap, radius, radius)
         p.fillPath(path, QColor(0, 0, 0, 250))
-        p.setPen(QPen(self._col(70), 1))
+        p.setPen(QPen(self._col(70 * min(1.0, max(0.0, self._p))), 1))
         p.drawPath(path)
         p.setClipPath(path)
+        # Содержимое проявляется, когда капсула почти выросла, и гаснет первым.
+        p.setOpacity(min(1.0, max(0.0, (self._p - 0.55) / 0.4)))
         self._buttons = {}
         m = self.model
         mode = m.mode(self.hovered)

@@ -278,11 +278,53 @@ def video_js(body: str, t: Tab | None = None, await_promise: bool = False):
     return t.eval(js, await_promise=True)
 
 
-def fullscreen(on: bool = True, t: Tab | None = None) -> bool:
-    """Полный экран плеера (с его кнопками), а не голого <video>."""
+def show_window(t: Tab | None = None) -> None:
+    """Окно браузера — на экран и развёрнутым.
+
+    Закрытая панель сворачивает окно, открытая — уносит за край экрана.
+    Полный экран, запрошенный в таком окне, фильм на экран не выводил:
+    видео играло, а видно его не было."""
+    t = t or tab(create=False)
+    if not t:
+        return
+    try:
+        wid = t.call("Browser.getWindowForTarget").get("windowId")
+        b = t.call("Browser.getWindowBounds", windowId=wid).get("bounds", {})
+        state = b.get("windowState", "normal")
+        if state == "maximized" and b.get("left", 0) > -10000:
+            return
+        if state != "normal":
+            t.call("Browser.setWindowBounds", windowId=wid, bounds={"windowState": "normal"})
+        t.call("Browser.setWindowBounds", windowId=wid,
+               bounds={"left": 60, "top": 40, "width": 1280, "height": 800})
+        t.call("Browser.setWindowBounds", windowId=wid, bounds={"windowState": "maximized"})
+    except Exception as exc:
+        logger.debug("Показать окно: %s", exc)
+
+
+def fullscreen(on: bool = True, t: Tab | None = None, settle_sec: float = 5.0) -> bool:
+    """Полный экран плеера (с его кнопками), а не голого <video>.
+
+    Окно, которое только что развернули, асинхронно меняет размер и этим
+    сбрасывает полный экран элемента уже после удачной попытки. Поэтому
+    включаем, пока он не удержится два замера подряд."""
     t = t or tab(create=False)
     if not t:
         return False
+    if on:
+        show_window(t)
+        stable, end = 0, time.monotonic() + settle_sec
+        while stable < 2:
+            ok = _fullscreen_once(t, True)
+            stable = stable + 1 if ok else 0
+            if stable >= 2 or time.monotonic() >= end:
+                return ok
+            time.sleep(0.25)
+        return True
+    return _fullscreen_once(t, False)
+
+
+def _fullscreen_once(t: Tab, on: bool) -> bool:
     if on:
         js = ("(async () => { const v = " + _VIDEO + "; if (!v) return false;"
               " if (document.fullscreenElement) return true;"

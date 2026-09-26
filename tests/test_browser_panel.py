@@ -24,7 +24,9 @@ PAGE = """<!doctype html><meta charset="utf-8"><title>Проверка пане�
 <input id="i" style="position:absolute;left:40px;top:140px;width:300px;height:40px">
 <a id="next" href="second.html" style="position:absolute;left:40px;top:220px">дальше</a>
 <button id="fs" style="position:absolute;left:40px;top:300px;width:200px;height:50px"
-        onclick="document.documentElement.requestFullscreen()">⛶ на весь экран</button>"""
+        onclick="document.documentElement.requestFullscreen()">⛶ на весь экран</button>
+<div class="player" style="position:absolute;left:40px;top:400px;width:320px;height:180px">
+<video style="width:320px;height:180px;background:#000"></video></div>"""
 
 
 def test_address_bar_understands_sites_and_queries():
@@ -135,6 +137,25 @@ def test_panel_streams_page_and_forwards_input(chrome):
     n = p.frames
     time.sleep(0.4)
     assert p.frames - n <= 1                                                # трансляция стоит
+
+
+def test_film_after_closed_panel_goes_fullscreen_on_screen(chrome):
+    """Живой случай: панель закрыли (окно свернулось), потом «поставь фильм» —
+    фильм играл, но не на весь экран: полный экран просили у свёрнутого окна."""
+    p = bp.panel()
+    assert p.open(chrome + "/index.html", 500, 400, 1.0)
+    t = cdp.tab()
+    assert _until(lambda: t.eval("document.title") == "Проверка панели")
+    p.close()
+    wid = p._window()
+    state = lambda: p.call("Browser.getWindowBounds", windowId=wid)["bounds"]["windowState"]  # noqa: E731
+    assert _until(lambda: state() == "minimized")
+
+    bp.release_for_video()                              # так начинается любой фильм
+    assert _until(lambda: state() == "maximized")
+    assert cdp.fullscreen(True, t)
+    assert _until(lambda: t.eval("!!document.fullscreenElement"))
+    assert _until(lambda: state() == "fullscreen")
 
 
 # ── виджет ───────────────────────────────────────────────────────────────────
