@@ -89,10 +89,49 @@ async def _asked(memory, uid: int) -> set:
         return set()
 
 
+# Как ответ на вопрос выглядит в досье, если его записал не этот модуль, а
+# сбор фактов из разговора или память ПК. Иначе бот спрашивал «Сколько тебе
+# лет?», сам ответив минутой раньше «помню, вам 20 лет».
+_KNOWN = {
+    "age":       r"возраст|\b\d{1,2}\s*(год|года|лет)\b(?!.*(назад|работ|опыт|стаж))",
+    "from":      r"родом|родил|вырос",
+    "live_now":  r"жив[её]т|проживает",
+    "languages": r"язык",
+    "family":    r"семь|жена|муж\b|дет(и|ей)",
+    "parents":   r"родител|\bмам|\bпап|\bотец|\bотца|\bмать\b",
+    "siblings":  r"\bбрат|\bсестр",
+    "work":      r"работает|учится|студент|профес|должност",
+    "food":      r"любим\w* ед|любит есть",
+    "drink":     r"напит|\bкофе|\bча[йя]\b",
+    "music":     r"музык|слушает",
+    "movies":    r"фильм|сериал|кино",
+    "games":     r"играет|\bигр|спорт",
+    "hobby":     r"хобби|увлека",
+    "partner":   r"девушк|парень|\bжена|\bмуж\b|личн",
+    "pet":       r"питом|\bкот\b|\bкошк|собак",
+    "health":    r"здоров|аллерг|болезн|болеет",
+}
+
+
+def _known(q: dict, facts: list) -> bool:
+    import re
+    prefix = q["fact"].lower()
+    pattern = _KNOWN.get(q["id"])
+    for f in facts:
+        fl = str(f).lower()
+        if fl.startswith(prefix) or (pattern and re.search(pattern, fl)):
+            return True
+    return False
+
+
 async def next_question(memory, uid: int):
     asked = await _asked(memory, uid)
+    try:
+        facts = await memory.get_facts(uid)
+    except Exception:
+        facts = []
     for q in BANK:
-        if q["id"] not in asked:
+        if q["id"] not in asked and not _known(q, facts):
             return q
     return None
 

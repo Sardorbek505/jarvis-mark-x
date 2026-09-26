@@ -117,3 +117,69 @@ async def test_цикл_снимается_по_отмене():
     task.cancel()
     await asyncio.sleep(0.02)
     assert task.done()
+
+
+async def _pass_with_call(bot, mem, call):
+    task = asyncio.create_task(rem.delivery_loop(bot, mem, LOG, every=0.01, call=call))
+    deadline = asyncio.get_event_loop().time() + 5
+    while not bot.attempts and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_напоминание_звонком_звонит_через_пк():
+    calls = []
+
+    async def call(uid, topic):
+        calls.append((uid, topic))
+        return True, ""
+
+    bot = _Bot()
+    mem = _Mem([{"id": 1, "user_id": 7, "text": "📞 позвонить маме"}])
+    await _pass_with_call(bot, mem, call)
+    assert calls == [(7, "позвонить маме")]
+    assert bot.sent[0] == (7, "📞 Звоню: позвонить маме")
+    assert mem.marked == [1]
+
+
+@pytest.mark.asyncio
+async def test_звонок_не_вышел_приходит_обычное_напоминание():
+    async def call(uid, topic):
+        return False, "ПК офлайн"
+
+    bot = _Bot()
+    mem = _Mem([{"id": 1, "user_id": 7, "text": "📞 позвонить маме"}])
+    await _pass_with_call(bot, mem, call)
+    assert "Напоминание: позвонить маме" in bot.sent[0][1] and "ПК офлайн" in bot.sent[0][1]
+
+
+@pytest.mark.asyncio
+async def test_после_звонка_упавшее_сообщение_не_звонит_снова():
+    """Повтор через полминуты позвонил бы человеку второй раз."""
+    calls = []
+
+    async def call(uid, topic):
+        calls.append(topic)
+        return True, ""
+
+    bot = _Bot(fail_times=99)
+    mem = _Mem([{"id": 1, "user_id": 7, "text": "📞 разбудить"}])
+    await _pass_with_call(bot, mem, call)
+    assert calls == ["разбудить"] and mem.marked == [1]
+
+
+@pytest.mark.asyncio
+async def test_обычное_напоминание_не_звонит():
+    async def call(uid, topic):
+        raise AssertionError("не должен звонить")
+
+    bot = _Bot()
+    mem = _Mem([{"id": 1, "user_id": 7, "text": "купить хлеб"}])
+    await _pass_with_call(bot, mem, call)
+    assert bot.sent[0][1] == "🔔 Напоминание: купить хлеб"

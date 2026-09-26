@@ -223,6 +223,11 @@ async def _execute(text: str) -> dict:
                 k in tl for k in ("нажми enter", "нажать enter", "нажми интер", "клавиша enter")):
             return _do_press_enter()
 
+        # Звонок владельцу в Telegram со второго аккаунта (core/tg_call).
+        # Бот шлёт «позвони мне: …», когда срабатывает напоминание со звонком.
+        if tl.startswith("позвони мне"):
+            return await asyncio.to_thread(_call_owner, text.strip()[len("позвони мне"):].strip(" :—-"))
+
         # System volume via media keys (reliable, independent of the music player).
         if tl in ("громче", "погромче", "сделай громче", "сделай погромче",
                   "прибавь громкость", "volume up"):
@@ -366,6 +371,15 @@ async def _execute(text: str) -> dict:
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _call_owner(topic: str) -> dict:
+    from core import tg_call
+    problem = tg_call.ready()
+    if problem:
+        return {**_r(f"📞 Не позвонил: {problem}"), "ok": False}
+    tg_call.call_in_background(topic or "вы попросили позвонить", tg_call._context_for(topic))
+    return {**_r("📞 Звоню в Telegram."), "ok": True}
+
 
 def _r(text: str, image_b64: str = None, unknown: bool = False) -> dict:
     out = {"text": text, "image_b64": image_b64}

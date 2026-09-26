@@ -39,3 +39,23 @@ def test_known_app_beats_music_and_weather_city():
 
 def test_window_minimize_with_target_is_not_activate():
     assert pc_server._parse_window("сверни хром") == {"action": "minimize", "target": "хром"}
+
+
+@pytest.mark.asyncio
+async def test_call_me_starts_telegram_call(monkeypatch):
+    """Бот шлёт «позвони мне: …», когда срабатывает напоминание со звонком."""
+    from core import tg_call
+    started = []
+    monkeypatch.setattr(tg_call, "ready", lambda: "")
+    monkeypatch.setattr(tg_call, "call_in_background", lambda topic, ctx=None, done=None: started.append(topic))
+    res = await pc_server._execute("позвони мне: запись к терапевту")
+    assert res["ok"] is True and started == ["запись к терапевту"]
+
+
+@pytest.mark.asyncio
+async def test_call_me_reports_why_not(monkeypatch):
+    from core import tg_call
+    monkeypatch.setattr(tg_call, "ready", lambda: "Аккаунт Джарвиса для звонков не подключён.")
+    monkeypatch.setattr(tg_call, "call_in_background", lambda *a, **k: pytest.fail("не должен звонить"))
+    res = await pc_server._execute("позвони мне")
+    assert res["ok"] is False and "не подключён" in res["text"]

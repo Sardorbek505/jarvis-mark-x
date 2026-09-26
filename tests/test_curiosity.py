@@ -95,3 +95,20 @@ async def test_доставленный_вопрос_помечается_дат
     assert await mem.get_meta(UID, "curio_pending_at")     # дата проставлена
     await curiosity.save_answer(mem, UID, "21")
     assert not await mem.get_meta(UID, "curio_pending_at")  # и снята после ответа
+
+
+@pytest.mark.asyncio
+async def test_known_facts_are_not_asked_again(mem):
+    """Живой случай: бот ответил «помню, вам 20 лет» и следом спросил «Сколько тебе лет?»."""
+    await mem.add_fact(UID, "Сардорбеку 20 лет")
+    await mem.add_fact(UID, "Родом из Ташкента")
+    q = await curiosity.next_question(mem, UID)
+    assert q["id"] not in ("age", "from")
+    assert q["id"] == "live_now"
+
+
+@pytest.mark.asyncio
+async def test_years_of_experience_is_not_age(mem):
+    await mem.add_fact(UID, "5 лет работает программистом")
+    q = await curiosity.next_question(mem, UID)
+    assert q["id"] == "age"

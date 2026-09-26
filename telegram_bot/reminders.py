@@ -19,7 +19,28 @@ def now_utc_iso() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 
-async def delivery_loop(bot, memory, logger, every: float = 30.0):
+CALL_MARK = "📞"
+
+
+async def _delivery_text(r: dict, call) -> str:
+    """Напоминание со звонком («📞 …») сначала пробует позвонить через ПК.
+    Сообщение в чат приходит в любом случае — звонок могли не взять."""
+    text = r["text"]
+    if not text.startswith(CALL_MARK):
+        return f"🔔 Напоминание: {text}"
+    topic = text[len(CALL_MARK):].strip()
+    ok, why = False, "ПК офлайн"
+    if call is not None:
+        try:
+            ok, why = await call(r["user_id"], topic)
+        except Exception as e:
+            why = str(e)
+    if ok:
+        return f"📞 Звоню: {topic}"
+    return f"🔔 Напоминание: {topic}\n(позвонить не вышло — {why})"
+
+
+async def delivery_loop(bot, memory, logger, every: float = 30.0, call=None):
     """Одна доставка напоминаний на оба входа — бот и вебхук-сервер.
 
     Копий было две: в bot.py и в render_app.py. Сейчас они совпадали строка
@@ -29,18 +50,23 @@ async def delivery_loop(bot, memory, logger, every: float = 30.0):
     Порядок важен: сначала отправка, отметка «доставлено» — после. Упавшая
     отправка (сегодня на хостинге моргал DNS) оставит напоминание в очереди
     и повторит через полминуты, а не потеряет молча.
+
+    call(uid, topic) -> (ok, почему_нет) — звонок через ПК для «📞 …».
     """
     import asyncio
     while True:
         try:
             await asyncio.sleep(every)
             for r in await memory.get_due_reminders(now_utc_iso()):
+                text = await _delivery_text(r, call)
                 try:
-                    await bot.send_message(chat_id=r["user_id"],
-                                           text=f"🔔 Напоминание: {r['text']}")
+                    await bot.send_message(chat_id=r["user_id"], text=text)
                 except Exception as e:
                     logger.error(f"Reminder send: {e}")
-                    continue
+                    # Звонок уже состоялся — повтор через полминуты позвонил
+                    # бы снова. Такое напоминание считаем доставленным.
+                    if not text.startswith(CALL_MARK):
+                        continue
                 try:
                     await memory.mark_reminder_sent(r["id"])
                 except Exception as e:
