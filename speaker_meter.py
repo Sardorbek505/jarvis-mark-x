@@ -82,9 +82,13 @@ class SpeakerMeter:
             return ""
 
     def _run(self):
-        import comtypes
         try:
-            comtypes.CoInitialize()
+            import comtypes
+        except ImportError:                 # не Windows: COM поднимать не нужно
+            comtypes = None
+        try:
+            if comtypes is not None:
+                comtypes.CoInitialize()
         except Exception as exc:
             logger.debug("CoInitialize: %s", exc)
         try:
@@ -133,6 +137,7 @@ class SpeakerMeter:
                         self._peak = 0.0
             self._stop.wait(self._poll)
         try:
-            comtypes.CoUninitialize()
+            if comtypes is not None:
+                comtypes.CoUninitialize()
         except Exception:
             pass
