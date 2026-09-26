@@ -138,21 +138,26 @@ class Tab:
         self.target_id = target_id
         self._ws = connect(ws_url, max_size=None, open_timeout=5)
         self._id = 0
+        # Вкладкой пользуются сразу несколько потоков: команды голосом,
+        # капсула (что играет), панель. Соединение одно, и чужой recv
+        # посреди своего запроса — ConcurrencyError. Команды — по очереди.
+        self._lock = threading.RLock()
 
     def call(self, method: str, timeout: float = 10.0, **params):
-        self._id += 1
-        my = self._id
-        self._ws.send(json.dumps({"id": my, "method": method, "params": params}))
-        end = time.monotonic() + timeout
-        while True:
-            left = end - time.monotonic()
-            if left <= 0:
-                raise TimeoutError(f"CDP {method}: нет ответа")
-            msg = json.loads(self._ws.recv(timeout=left))
-            if msg.get("id") == my:
-                if "error" in msg:
-                    raise RuntimeError(f"CDP {method}: {msg['error'].get('message')}")
-                return msg.get("result", {})
+        with self._lock:
+            self._id += 1
+            my = self._id
+            self._ws.send(json.dumps({"id": my, "method": method, "params": params}))
+            end = time.monotonic() + timeout
+            while True:
+                left = end - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError(f"CDP {method}: нет ответа")
+                msg = json.loads(self._ws.recv(timeout=left))
+                if msg.get("id") == my:
+                    if "error" in msg:
+                        raise RuntimeError(f"CDP {method}: {msg['error'].get('message')}")
+                    return msg.get("result", {})
 
     def eval(self, js: str, await_promise: bool = False, timeout: float = 10.0):
         """Выполнить JS как будто по клику пользователя (userGesture): иначе

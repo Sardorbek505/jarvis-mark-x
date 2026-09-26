@@ -332,5 +332,28 @@ def test_main_window_starts_and_opens_panel(monkeypatch):
         app.processEvents()
         assert not win._browser.isVisible() and win._hud.side_px == 0
     finally:
+        if win._island is not None:
+            win._island.close()                     # фоновый опрос капсулы не должен пережить тест
         win.hide()
         win.deleteLater()
+
+
+def test_tab_is_safe_from_many_threads(chrome):
+    """Голос, капсула и панель зовут одну вкладку из разных потоков. Раньше
+    это падало ConcurrencyError: два recv на одном соединении."""
+    t = cdp.tab()
+    errors, results = [], []
+
+    def worker(k):
+        try:
+            for i in range(15):
+                results.append(t.eval(f"{k} * 100 + {i}") == k * 100 + i)
+        except Exception as exc:
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=worker, args=(k,)) for k in range(8)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(30)
+    assert errors == [] and len(results) == 120 and all(results)
