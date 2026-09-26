@@ -298,6 +298,16 @@ def session_path() -> str:
     return os.path.join(str(get_data_root()), "jarvis_caller")
 
 
+def _drop_session() -> None:
+    """Убрать файлы сессии, в которую так и не вошли."""
+    base = session_path()
+    for suffix in (".session", ".session-journal", ".login.json"):
+        try:
+            os.remove(base + suffix)
+        except OSError:
+            pass
+
+
 def ready() -> str:
     """'' — можно звонить, иначе — что мешает, человеческими словами."""
     try:
@@ -445,7 +455,57 @@ def call_in_background(topic: str, context_fn: Callable[[], str] | None = None,
 
 # ── вход ──────────────────────────────────────────────────────────────────────
 
-async def _login_async(ask: Callable[[str, bool], str]) -> str:
+def qr_matrix(url: str) -> list[list[bool]]:
+    """Клетки QR-кода (True — чёрная), с белой рамкой в 2 клетки."""
+    import qrcode
+    q = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
+    q.add_data(url)
+    q.make(fit=True)
+    return q.get_matrix()
+
+
+_QR_REFRESH_SEC = 25.0
+
+
+async def _qr_sign_in(client, view, ask: Callable[[str, bool], str], total_sec: float = 300) -> bool:
+    """Вход без кода: QR сканируется в Telegram аккаунта Джарвиса
+    (Настройки → Устройства → Подключить устройство).
+
+    Код по номеру у нового аккаунта может не приходить вовсе — у владельца
+    26.09 не пришёл ни один из четырёх, а после нескольких запросов Telegram
+    ещё и перестаёт их слать на часы. QR не зависит ни от того, ни от другого.
+    QR живёт ~30 с — по истечении показываем новый."""
+    from telethon.errors import SessionPasswordNeededError
+    qr = await client.qr_login()
+    end = time.monotonic() + total_sec
+    try:
+        while time.monotonic() < end:
+            view.show(qr.url)
+            # Не ждём до qr.expires: его Telethon сравнивает с часами ПК, и при
+            # сбитых часах на экране висел просроченный код («Неверный QR-код»).
+            # Telegram даёт ~30 с — меняем код каждые 25 с сами.
+            task = asyncio.ensure_future(qr.wait(timeout=_QR_REFRESH_SEC))
+            while not task.done():
+                if view.cancelled():
+                    task.cancel()
+                    return False
+                view.pump()
+                await asyncio.sleep(0.05)
+            try:
+                task.result()
+                return True
+            except asyncio.TimeoutError:
+                await qr.recreate()
+            except SessionPasswordNeededError:
+                view.close()
+                await client.sign_in(password=ask("Пароль двухэтапной проверки аккаунта Джарвиса:", True))
+                return True
+        return False
+    finally:
+        view.close()
+
+
+async def _login_async(ask: Callable[[str, bool], str], qr_view=None) -> str:
     from telethon import TelegramClient
     from telethon.errors import SessionPasswordNeededError
 
@@ -453,18 +513,29 @@ async def _login_async(ask: Callable[[str, bool], str]) -> str:
     api_id, api_hash = _credentials()
     client = TelegramClient(session_path(), api_id, api_hash)
     await client.connect()
+    logged_in = False
     try:
         if not await client.is_user_authorized():
-            phone = ask("Номер телефона АККАУНТА ДЖАРВИСА (второй номер, в формате +998…):", False)
-            if not phone:
-                return "Вход отменён."
-            await client.send_code_request(phone)
-            code = ask("Код из Telegram (пришёл на аккаунт Джарвиса):", False)
-            try:
-                await client.sign_in(phone, code)
-            except SessionPasswordNeededError:
-                await client.sign_in(password=ask("Пароль двухэтапной проверки аккаунта Джарвиса:", True))
+            by_code = qr_view is None or ask(
+                "Как войти в аккаунт Джарвиса?\n\n"
+                "Enter — по QR-коду, без кода (рекомендую): его Telegram → Настройки → Устройства → "
+                "Подключить устройство → навести камеру на экран.\n\n"
+                "Напишите 2 — по номеру телефона и коду из Telegram.", False) == "2"
+            if not by_code:
+                if not await _qr_sign_in(client, qr_view, ask):
+                    return "Вход отменён: QR-код не отсканировали."
+            else:
+                phone = ask("Номер телефона АККАУНТА ДЖАРВИСА (в международном формате, с +):", False)
+                if not phone:
+                    return "Вход отменён."
+                await client.send_code_request(phone)
+                code = ask("Код из Telegram (приходит в чат «Telegram» аккаунта Джарвиса, не SMS):", False)
+                try:
+                    await client.sign_in(phone, code)
+                except SessionPasswordNeededError:
+                    await client.sign_in(password=ask("Пароль двухэтапной проверки аккаунта Джарвиса:", True))
         me = await client.get_me()
+        logged_in = True
         target = ask("Кому звонить — ВАШ @username или номер телефона:", False)
         if target:
             await resolve_peer(client, target)             # проверяем сразу, а не в 6 утра
@@ -475,13 +546,96 @@ async def _login_async(ask: Callable[[str, bool], str]) -> str:
                 "Добавьте этот аккаунт в свои контакты, иначе настройки приватности могут не пропустить звонок.")
     finally:
         await client.disconnect()
+        if not logged_in:
+            # Telethon создаёт файл сессии уже при connect, до всякого входа.
+            # Оставить его — значит соврать: ready() считает аккаунт
+            # подключённым по одному наличию файла.
+            _drop_session()
 
 
-def login(ask: Callable[[str, bool], str]) -> str:
+def login(ask: Callable[[str, bool], str], qr_view=None) -> str:
     try:
-        return asyncio.run(_login_async(ask))
+        return asyncio.run(_login_async(ask, qr_view))
     except Exception as exc:
         return f"Вход не удался: {type(exc).__name__}: {exc}"
+
+
+class _QrDialog:
+    """Окно с QR-кодом для входа (Qt). Не модальное: пока оно открыто,
+    вход ждёт скан в том же потоке, прокачивая события Qt (pump)."""
+
+    def __init__(self):
+        self._dlg = None
+        self._label = None
+        self._closed_by_user = False
+
+    def _ensure(self):
+        if self._dlg is not None:
+            return
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QDialog, QLabel, QPushButton, QVBoxLayout
+        dlg = QDialog()
+        dlg.setWindowTitle("ДЖАРВИС — вход по QR-коду")
+        lay = QVBoxLayout(dlg)
+        hint = QLabel("Откройте Telegram аккаунта Джарвиса:\n"
+                      "Настройки → Устройства → Подключить устройство\n"
+                      "и наведите камеру на этот код. Код обновляется сам.")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label = QLabel()
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cancel = QPushButton("Отмена")
+        cancel.clicked.connect(dlg.reject)
+        dlg.rejected.connect(lambda: setattr(self, "_closed_by_user", True))
+        lay.addWidget(hint)
+        lay.addWidget(self._label)
+        lay.addWidget(cancel)
+        self._dlg = dlg
+
+    def show(self, url: str):
+        from PyQt6.QtGui import QColor, QPainter, QPixmap
+        self._ensure()
+        m = qr_matrix(url)
+        cell = 8
+        pm = QPixmap(len(m) * cell, len(m) * cell)
+        pm.fill(QColor("white"))
+        p = QPainter(pm)
+        for y, row in enumerate(m):
+            for x, dark in enumerate(row):
+                if dark:
+                    p.fillRect(x * cell, y * cell, cell, cell, QColor("black"))
+        p.end()
+        self._label.setPixmap(pm)
+        self._dlg.show()
+        self._dlg.raise_()
+
+    def pump(self):
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+
+    def cancelled(self) -> bool:
+        return self._closed_by_user
+
+    def close(self):
+        if self._dlg is not None:
+            self._dlg.hide()
+
+
+class _ConsoleQr:
+    """QR-код символами в консоли (python -m core.tg_call login)."""
+
+    def show(self, url: str):
+        for row in qr_matrix(url):
+            print("".join("██" if dark else "  " for dark in row))
+        print("Telegram аккаунта Джарвиса → Настройки → Устройства → Подключить устройство")
+
+    def pump(self):
+        pass
+
+    def cancelled(self) -> bool:
+        return False
+
+    def close(self):
+        pass
 
 
 def login_gui() -> int:
@@ -494,7 +648,7 @@ def login_gui() -> int:
                                        QLineEdit.EchoMode.Password if secret else QLineEdit.EchoMode.Normal)
         return val.strip() if ok else ""
 
-    msg = login(ask)
+    msg = login(ask, _QrDialog())
     QMessageBox.information(None, "ДЖАРВИС — звонки", msg)
     del app
     return 0 if msg.startswith("Готово") else 1
@@ -658,6 +812,7 @@ if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "login":
         import getpass
-        print(login(lambda text, secret: (getpass.getpass if secret else input)(text + " ").strip()))
+        print(login(lambda text, secret: (getpass.getpass if secret else input)(text + " ").strip(),
+                    _ConsoleQr()))
     else:
         print(call(" ".join(sys.argv[1:]) or "проверка связи"))

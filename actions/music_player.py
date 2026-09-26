@@ -17,6 +17,7 @@
 """
 
 import base64
+import glob
 import json
 import os
 import platform
@@ -140,6 +141,19 @@ def _is_spotify_installed() -> bool:
                 expanded = os.path.expandvars(path)
                 if os.path.exists(expanded):
                     return True
+            # Версия из Microsoft Store: ни ключа HKCU\Software\Spotify, ни
+            # папки в Program Files. Значение имеет одно — зарегистрирован ли
+            # протокол spotify:, потому что трек мы открываем именно им.
+            try:
+                key = winreg.OpenKey(winreg.HKEY_CLASSES_ROOT,
+                                     r"spotify\shell\open\command")
+                winreg.CloseKey(key)
+                return True
+            except Exception as exc:
+                _logger.debug("Протокол spotify: не зарегистрирован: %s", exc)
+            if glob.glob(os.path.expandvars(
+                    r"%LOCALAPPDATA%\Packages\SpotifyAB.SpotifyMusic*")):
+                return True
         elif _OS == "Darwin":
             return os.path.exists("/Applications/Spotify.app")
         else:
@@ -627,6 +641,15 @@ def music_player(parameters: dict, player=None) -> str:
                 return video_player.control(action, value)
         except Exception as exc:
             _logger.debug("Видео для паузы: %s", exc)
+
+    if action in ("play", "mood"):
+        # Музыку просят вместо фильма — фильм на паузу, а не звучать поверх.
+        try:
+            from actions import video_player
+            if video_player.video_playing():
+                video_player.control("pause")
+        except Exception as exc:
+            _logger.debug("Пауза фильма перед музыкой: %s", exc)
 
     if action in ("play", "mood") and not parameters.get("playlist_url"):
         q = f"{query} плейлист" if action == "mood" and query else query

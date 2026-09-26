@@ -278,11 +278,125 @@ def video_js(body: str, t: Tab | None = None, await_promise: bool = False):
     return t.eval(js, await_promise=True)
 
 
-def fullscreen(on: bool = True, t: Tab | None = None) -> bool:
-    """Полный экран плеера (с его кнопками), а не голого <video>."""
+def show_window(t: Tab | None = None) -> None:
+    """Окно браузера — на экран и развёрнутым.
+
+    Закрытая панель сворачивает окно, открытая — уносит за край экрана.
+    Полный экран, запрошенный в таком окне, фильм на экран не выводил:
+    видео играло, а видно его не было."""
+    t = t or tab(create=False)
+    if not t:
+        return
+    try:
+        wid = t.call("Browser.getWindowForTarget").get("windowId")
+        b = t.call("Browser.getWindowBounds", windowId=wid).get("bounds", {})
+        state = b.get("windowState", "normal")
+        if state == "maximized" and b.get("left", 0) > -10000:
+            return
+        if state != "normal":
+            t.call("Browser.setWindowBounds", windowId=wid, bounds={"windowState": "normal"})
+        t.call("Browser.setWindowBounds", windowId=wid,
+               bounds={"left": 60, "top": 40, "width": 1280, "height": 800})
+        t.call("Browser.setWindowBounds", windowId=wid, bounds={"windowState": "maximized"})
+    except Exception as exc:
+        logger.debug("Показать окно: %s", exc)
+
+
+def fullscreen(on: bool = True, t: Tab | None = None, settle_sec: float = 5.0) -> bool:
+    """Полный экран плеера (с его кнопками), а не голого <video>.
+
+    Окно, которое только что развернули, асинхронно меняет размер и этим
+    сбрасывает полный экран элемента уже после удачной попытки. Поэтому
+    включаем, пока он не удержится два замера подряд."""
     t = t or tab(create=False)
     if not t:
         return False
+    if on:
+        show_window(t)
+        if _request_and_hold(t, settle_sec / 2):
+            return True
+        # Плееры вроде VK Видео сами сбрасывают полный экран, включённый не их
+        # кнопкой: фильм играл в окне. Жмём их собственную кнопку — как человек.
+        if not _is_fullscreen(t) and _click_fullscreen_button(t):
+            return _holds(lambda: _is_fullscreen(t), settle_sec / 2)
+        return _is_fullscreen(t)
+    return _fullscreen_once(t, False)
+
+
+def _request_and_hold(t: Tab, sec: float) -> bool:
+    """Попросить полный экран и убедиться, что он ДЕРЖИТСЯ: проверка — без
+    нового запроса, иначе каждый замер сам включал его на миг."""
+    end = time.monotonic() + sec
+    while time.monotonic() < end:
+        if not _is_fullscreen(t):
+            _fullscreen_once(t, True)
+        time.sleep(0.3)
+        if _is_fullscreen(t):
+            time.sleep(0.3)
+            if _is_fullscreen(t):
+                return True
+    return False
+
+
+def _holds(check, sec: float) -> bool:
+    """Держится ли условие два замера подряд (за sec секунд)."""
+    stable, end = 0, time.monotonic() + sec
+    while True:
+        stable = stable + 1 if check() else 0
+        if stable >= 2:
+            return True
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.25)
+
+
+def _is_fullscreen(t: Tab) -> bool:
+    try:
+        return bool(t.eval("!!document.fullscreenElement"))
+    except Exception:
+        return False
+
+
+_FS_BUTTON = ("(() => { const re = /полноэкран|полный экран|весь экран|fullscreen|full screen/i;"
+              " for (const el of document.querySelectorAll('button, [role=\"button\"], [aria-label], [title]')) {"
+              "   const s = [el.getAttribute('aria-label'), el.getAttribute('title'),"
+              "              el.getAttribute('data-testid'), typeof el.className === 'string' ? el.className : '']"
+              "             .join(' ');"
+              "   if (!re.test(s) || /выйти|выход|exit/i.test(s)) continue;"
+              "   const r = el.getBoundingClientRect();"
+              "   if (r.width < 4 || r.height < 4) continue;"
+              "   return {x: r.left + r.width / 2, y: r.top + r.height / 2}; }"
+              " return null; })()")
+
+
+def _click_fullscreen_button(t: Tab) -> bool:
+    """Навести мышь на плеер (кнопки показываются при движении) и нажать
+    его кнопку полного экрана настоящим кликом."""
+    try:
+        v = t.eval("(v => { if (!v) return null; const r = v.getBoundingClientRect();"
+                   " return {x: r.left + r.width / 2, y: r.top + r.height / 2}; })(" + _VIDEO + ")")
+        if v:
+            t.call("Input.dispatchMouseEvent", type="mouseMoved", x=v["x"], y=v["y"])
+            time.sleep(0.3)
+        b = t.eval(_FS_BUTTON)
+        if not b:
+            return False
+        before = video_state(t)
+        t.call("Input.dispatchMouseEvent", type="mouseMoved", x=b["x"], y=b["y"])
+        for kind in ("mousePressed", "mouseReleased"):
+            t.call("Input.dispatchMouseEvent", type=kind, x=b["x"], y=b["y"], button="left", clickCount=1)
+        # Кнопка была скрыта — клик пришёлся в само видео и поставил паузу.
+        time.sleep(0.3)
+        after = video_state(t)
+        if before and after and not before["paused"] and after["paused"]:
+            video_js("try { await v.play() } catch (e) {}", t)
+        return True
+    except Exception as exc:
+        logger.debug("Кнопка полного экрана: %s", exc)
+        return False
+
+
+def _fullscreen_once(t: Tab, on: bool) -> bool:
     if on:
         js = ("(async () => { const v = " + _VIDEO + "; if (!v) return false;"
               " if (document.fullscreenElement) return true;"

@@ -369,3 +369,16 @@ header {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ─── Иконки (как SF Symbols) ───────────────────────────── */
+.ico { display: inline-block; width: 1em; height: 1em; flex-shrink: 0; vertical-align: -0.14em; }
+.hero-hi .ico { width: 22px; height: 22px; margin-right: 8px; vertical-align: -3px; color: var(--acc); }
+.hero-city .ico, .sub .ico, .voice-line .ico { width: 13px; height: 13px; margin-right: 5px; vertical-align: -2px; }
+.stat-ico .ico { width: 20px; height: 20px; color: var(--pri); }
+.dash-grid .stat:first-child .stat-ico .ico { color: var(--acc); }
+.x .ico { width: 14px; height: 14px; }
+.check .ico { width: 14px; height: 14px; stroke-width: 3; color: var(--bg, #030609); }
+.check.bell .ico { color: var(--acc); stroke-width: 2; }
+.row .streak { display: inline-flex; align-items: center; gap: 3px; }
+.streak .ico { width: 13px; height: 13px; }
+.empty .empty-ico { width: 34px; height: 34px; color: var(--text-dim); opacity: .6; margin-bottom: 4px; }

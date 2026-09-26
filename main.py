@@ -280,10 +280,40 @@ _AWAKE_SEC = float(os.getenv("JARVIS_AWAKE_SEC", "30"))
 # Как пишется имя (Джарвис, Жарвис, Джервис, Jarvis, падежи) — в одном месте,
 # им пользуются и расшифровка Gemini, и локальный детектор.
 from core.wake_vosk import WAKE_RE as _WAKE_RE, LocalWake  # noqa: E402
+# Офлайн-детектор имени — только по явному JARVIS_LOCAL_WAKE=1. Маленькая
+# русская модель Vosk слова «Джарвис» не знает (пишет «из») и ловила его лишь
+# по случайным промежуточным догадкам: на живом голосе владельца с модели не
+# сработала за час ни разу, и Джарвис «глох». Расшифровка Gemini имя слышит.
+_LOCAL_WAKE = os.getenv("JARVIS_LOCAL_WAKE", "0").strip() == "1"
+
+
+# Имя сказали, а расшифровка его потеряла: осталась запятая после обращения.
+# Журнал владельца 26.09: «Джарвис, привет» пришло как «, привет.» — и Джарвис
+# решил, что это не ему, и промолчал.
+_LOST_NAME_RE = re.compile(r"^\s*[,，]\s*\w")
 
 
 def _has_wake_word(text: str) -> bool:
-    return bool(text) and bool(_WAKE_RE.search(text))
+    return bool(text) and bool(_WAKE_RE.search(text) or _LOST_NAME_RE.match(text))
+
+
+# Микрофоны, которые звук своих динамиков не слышат: с шумоподавлением в
+# драйвере (ASUS AI Noise-cancelling вычитает звук динамиков) и гарнитуры.
+_SPEAKER_DEAF_MICS = ("noise-cancelling", "noise cancelling", "noise-canceling", "шумоподавлен",
+                      "ai noise", "headset", "headphone", "гарнитур", "наушник", "buds", "airpods",
+                      "hands-free")
+
+
+def _mic_hears_speakers(device) -> bool:
+    """Слышит ли выбранный микрофон собственные динамики. Для тех, что не
+    слышат, глушить микрофон по громкости динамиков незачем — а глушение
+    делало Джарвиса глухим на всё время музыки, фильма и игры."""
+    try:
+        info = sd.query_devices(device) if device is not None else sd.query_devices(kind="input")
+        name = str(info.get("name", "")).lower()
+    except Exception:
+        return True
+    return not any(k in name for k in _SPEAKER_DEAF_MICS)
 
 
 # Сколько после собственной речи ещё не слушать микрофон: звук досыпается из
@@ -1313,6 +1343,16 @@ class Jarvis:
         except Exception as exc:
             logger.warning("Перерывы/звонки не запустились: %s", exc)
 
+        # Громкость программам, которую не вернули в прошлый раз (Джарвис
+        # закрыли, пока музыка была приглушена), — сразу при запуске, а не
+        # при первом приглушении: контроллер создаётся лениво.
+        if sys.platform == "win32":
+            try:
+                from core.ducking_controller import get_ducking_controller
+                get_ducking_controller()
+            except Exception as exc:
+                logger.debug("Дакинг: %s", exc)
+
         # Локальное слово «Джарвис». Запускается в _listen_audio: модели
         # нужен событийный цикл, чтобы будить Джарвиса из своего потока.
         self._local_wake: LocalWake | None = None
@@ -2082,7 +2122,10 @@ class Jarvis:
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-        print(f"[ДЖАРВИС] 📤 {name} → {str(result)[:80]}")
+        # В журнал, а не только в консоль: у собранного .exe консоли нет, и
+        # «музыку не поставил» по журналу было не разобрать — вызов виден,
+        # а что инструмент ответил, нет.
+        logger.info("📤 %s → %s", name, str(result).replace("\n", " ")[:200])
         return types.FunctionResponse(id=fc.id, name=name, response={"result": result})
 
     def _remember_tool_use(self, name: str, args: dict):
@@ -2200,7 +2243,9 @@ class Jarvis:
         if self._speaker_meter is None and _IGNORE_SPEAKERS:
             from speaker_meter import SpeakerMeter
             meter = SpeakerMeter()
-            if meter.start():
+            # start() ждёт рабочий поток до 5 с — не в событийном цикле:
+            # иначе на это время вставали бы голос и связь с Gemini.
+            if await asyncio.to_thread(meter.start):
                 self._speaker_meter = meter
                 logger.info("Speaker meter started successfully (loopback active)")
             else:
@@ -2212,6 +2257,8 @@ class Jarvis:
             except asyncio.QueueFull:
                 pass  # Drop audio frame silently to avoid flooding event loop
 
+        if self._local_wake is None and _WAKE_MODE == "wake_word" and not _LOCAL_WAKE:
+            self._local_wake = False         # имя ищется в расшифровке Gemini
         if self._local_wake is None and _WAKE_MODE == "wake_word":
             def _heard(text: str):
                 loop.call_soon_threadsafe(self._on_local_wake, _put_nowait_safe)
@@ -2252,7 +2299,8 @@ class Jarvis:
             # Громко играет музыка/кино из своих динамиков — в облако не шлём:
             # по громкости её от голоса не отличить (см. _IGNORE_SPEAKERS).
             # Слушаем только ключевое слово «Джарвис», чтобы приглушить звук.
-            if self._speaker_meter is not None and self._speaker_meter.peak > _SPEAKER_GATE:
+            if (self._speaker_meter is not None and getattr(self, "_mic_hears_speakers", True)
+                    and self._speaker_meter.peak > _SPEAKER_GATE):
                 self._note_gate(
                     f"звук в динамиках {self._speaker_meter.peak:.3f} > "
                     f"порога {_SPEAKER_GATE}"
@@ -2300,6 +2348,9 @@ class Jarvis:
                 # Перебор устройств пишет пробы звука — не в событийном цикле.
                 device = await asyncio.to_thread(_pick_input_device)
                 self._input_device = device
+                self._mic_hears_speakers = await asyncio.to_thread(_mic_hears_speakers, device)
+                if not self._mic_hears_speakers:
+                    logger.info("Микрофон не слышит динамики — при музыке и фильмах он не глушится")
             try:
                 with sd.InputStream(
                     samplerate=SEND_SAMPLE_RATE,

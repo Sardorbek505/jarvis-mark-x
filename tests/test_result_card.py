@@ -58,6 +58,17 @@ def test_music_card_has_track_and_status():
     assert d["card"] == "media" and d["title"] == "Believer" and d["playing"] is False
 
 
+def test_music_card_says_playing_only_when_it_plays():
+    """Живой случай: «люби меня — Играет» с эквалайзером, а Spotify молчит."""
+    ok = _data("music_player", {"action": "play", "query": "люби меня"}, "Включил «Люби меня» — Artik.")
+    assert ok["playing"] is True and ok["status"] == "Играет"
+    for said in ("Отправил «Люби меня» в Spotify, но не вижу, что заиграло — проверьте Spotify на компьютере.",
+                 "Открыл «люби меня» в Spotify, но воспроизведение не началось — нажмите Play.",
+                 "Spotify не запустился на компьютере."):
+        d = _data("music_player", {"action": "play", "query": "люби меня"}, said)
+        assert d["playing"] is False and d["status"] != "Играет", said
+
+
 def test_volume_card_reads_level():
     d = _data("computer_control", {"action": "volume_up", "value": "70"}, "ok")
     assert d == {"card": "meter", "meter": "volume", "level": 70, "label": "Громкость"}

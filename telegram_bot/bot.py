@@ -1695,9 +1695,19 @@ async def _on_notification(text: str, user_id: int = None, bot=None):
 
 # ── Reminder loop ──────────────────────────────────────────────────────────────
 
+async def call_via_pc(user_id: int, topic: str) -> tuple[bool, str]:
+    """Напоминание «📞 …»: позвонить владельцу через ПК (core/tg_call)."""
+    if not bridge.connected:
+        return False, "ПК офлайн"
+    res = await bridge.send_command_full(f"позвони мне: {topic}", user_id, timeout=20)
+    if res and res.get("ok"):
+        return True, ""
+    return False, ((res or {}).get("text") or "ПК не ответил").removeprefix("📞 Не позвонил: ")
+
+
 async def _reminder_loop(bot):
     # Сама доставка живёт в reminders.delivery_loop — общая с render_app.
-    await rem.delivery_loop(bot, memory, logger)
+    await rem.delivery_loop(bot, memory, logger, call=call_via_pc)
 
 
 # ── Startup ────────────────────────────────────────────────────────────────────

@@ -75,3 +75,5 @@ winrt-Windows.Media.Control>=2.0; sys_platform == "win32"
 # userbot в сборке не мог работать вовсе.
 telethon>=1.36
 py-tgcalls==3.0.0
+# QR-код для входа в аккаунт Джарвиса без кода (core/tg_call.py).
+qrcode>=7.4

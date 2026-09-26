@@ -212,8 +212,12 @@ def fullscreen_app_active() -> bool:
 # ── окно ─────────────────────────────────────────────────────────────────────
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal  # noqa: E402
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QRegion  # noqa: E402
+from PyQt6.QtGui import (QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath,  # noqa: E402
+                         QPen, QRegion)
 from PyQt6.QtWidgets import QApplication, QWidget  # noqa: E402
+
+
+from ui_icons import draw_icon  # noqa: E402  (иконки — общие с окном)
 
 
 class Island(QWidget):
@@ -226,6 +230,8 @@ class Island(QWidget):
     _media_sig = pyqtSignal(object, str, float)
 
     W, H = 460, 212                 # окно с запасом под самый большой вид
+    TOP = 16                        # отступ от верхнего края экрана
+    SEED_W, SEED_H = 38.0, 8.0      # из такой полоски капсула вырастает
 
     def __init__(self, on_open=None, poll: bool = True):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
@@ -240,6 +246,9 @@ class Island(QWidget):
         self.wanted = False                        # окно Джарвиса свёрнуто
         self._w, self._h = SIZES["compact"]
         self._vw, self._vh = 0.0, 0.0             # скорость пружины
+        # Появление и уход, как у MacBook: 0 — полоска у края, 1 — капсула.
+        self._p, self._vp = 0.0, 0.0
+        self._leaving = False
         self._last = time.monotonic()
         self._clock = 0.0
         self._rgb = list(STATE_RGB["idle"])
@@ -283,7 +292,7 @@ class Island(QWidget):
         scr = QApplication.primaryScreen()
         g = scr.geometry() if scr else None
         if g:
-            self.move(g.x() + (g.width() - self.W) // 2, g.y() + 6)
+            self.move(g.x() + (g.width() - self.W) // 2, g.y() + self.TOP)
 
     def set_wanted(self, on: bool):
         """Окно Джарвиса свёрнуто (on=True) или развёрнуто."""
@@ -292,14 +301,25 @@ class Island(QWidget):
 
     def _apply_visibility(self, fullscreen: bool = False):
         show = self.wanted and not fullscreen
-        if show and not self.isVisible():
-            self._place()
-            self.show()
-            self._last = time.monotonic()
-            self._tmr.start(16)
-        elif not show and self.isVisible():
-            self.hide()
-            self._tmr.stop()
+        if show:
+            self._leaving = False
+            if not self.isVisible():
+                self._p, self._vp = 0.0, 0.0
+                self._place()
+                self.show()
+                self._last = time.monotonic()
+                self._tmr.start(16)
+        elif self.isVisible():
+            if fullscreen:                 # игра на весь экран — сразу, без анимации
+                self._hide_now()
+            else:                          # Джарвис развернулся — капсула втягивается
+                self._leaving = True
+
+    def _hide_now(self):
+        self._leaving = False
+        self._p, self._vp = 0.0, 0.0
+        self.hide()
+        self._tmr.stop()
 
     def _check_fullscreen(self):
         if self.wanted:
@@ -327,7 +347,10 @@ class Island(QWidget):
 
     # ── анимация ────────────────────────────────────────────────────────────
     def capsule_rect(self) -> QRectF:
-        return QRectF((self.W - self._w) / 2, 0, self._w, self._h)
+        p = max(0.0, self._p)
+        w = self.SEED_W + (self._w - self.SEED_W) * p
+        h = max(self.SEED_H * 0.5, self.SEED_H + (self._h - self.SEED_H) * p)
+        return QRectF((self.W - w) / 2, 0, w, h)
 
     def _step(self):
         now = time.monotonic()
@@ -343,6 +366,17 @@ class Island(QWidget):
         self._vh += (k * (th - self._h) - c * self._vh) * dt
         self._w += self._vw * dt
         self._h += self._vh * dt
+        # Выход — быстрее и без перелёта (критическое затухание), вход —
+        # с лёгким перелётом: капсула «выпрыгивает» и чуть пружинит.
+        if self._leaving:
+            k, c, target = 320.0, 2 * math.sqrt(320.0), 0.0
+        else:
+            k, c, target = 170.0, 19.0, 1.0
+        self._vp += (k * (target - self._p) - c * self._vp) * dt
+        self._p += self._vp * dt
+        if self._leaving and self._p < 0.03:
+            self._hide_now()
+            return
         tgt = STATE_RGB.get(m.state, STATE_RGB["idle"])
         for i in range(3):
             self._rgb[i] += (tgt[i] - self._rgb[i]) * (1 - math.exp(-dt * 6))
@@ -416,9 +450,11 @@ class Island(QWidget):
         path = QPainterPath()
         path.addRoundedRect(cap, radius, radius)
         p.fillPath(path, QColor(0, 0, 0, 250))
-        p.setPen(QPen(self._col(70), 1))
+        p.setPen(QPen(self._col(70 * min(1.0, max(0.0, self._p))), 1))
         p.drawPath(path)
         p.setClipPath(path)
+        # Содержимое проявляется, когда капсула почти выросла, и гаснет первым.
+        p.setOpacity(min(1.0, max(0.0, (self._p - 0.55) / 0.4)))
         self._buttons = {}
         m = self.model
         mode = m.mode(self.hovered)
@@ -451,38 +487,44 @@ class Island(QWidget):
         self._mini_orb(p, x0 + 12, y0 + 12, 11)
         self._text(p, QRectF(x0 + 32, y0, w - 140, 24), STATE_LABEL.get(m.state, ""), 7.5,
                    self._col(235, 0.25), bold=True, spacing=1.6)
-        open_r = QRectF(x0 + w - 104, y0 + 1, 104, 22)
-        p.setPen(QPen(self._col(110), 1))
-        p.drawRoundedRect(open_r, 11, 11)
-        self._text(p, open_r, "ОТКРЫТЬ", 7, self._col(235, 0.2), bold=True, spacing=1.4,
-                   align=Qt.AlignmentFlag.AlignCenter)
+        # «Открыть» — круглая кнопка с «развернуть», как на iPhone.
+        open_r = QRectF(x0 + w - 26, y0 - 1, 26, 26)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 34))
+        p.drawEllipse(open_r)
+        draw_icon(p, "expand", open_r.center(), 12, white)
         self._buttons["open"] = open_r
-        y = y0 + 36
+        y = y0 + 38
         media = m.media
         if media:
-            self._text(p, QRectF(x0, y, w, 18), ("ВИДЕО" if media.source == "video" else "ИГРАЕТ"), 7, dim,
-                       bold=True, spacing=1.4)
-            self._text(p, QRectF(x0, y + 16, w - 150, 20), media.title, 10.5, white, bold=True)
-            if media.artist:
-                self._text(p, QRectF(x0, y + 35, w - 150, 16), media.artist, 8.5, dim)
-            bx = x0 + w - 140
-            for i, (name, glyph) in enumerate((("previous", "⏮"), ("toggle", "⏸" if media.playing else "▶"),
-                                               ("next", "⏭"))):
-                r = QRectF(bx + i * 46, y + 12, 40, 40)
-                if name == "toggle":
-                    p.setBrush(self._col(40))
-                    p.setPen(QPen(self._col(120), 1))
-                    p.drawEllipse(r)
-                    p.setBrush(Qt.BrushStyle.NoBrush)
-                self._text(p, r, glyph, 13, white, align=Qt.AlignmentFlag.AlignCenter)
+            # «Обложка»: скруглённый квадрат цвета состояния с нотой / экраном.
+            art = QRectF(x0, y, 48, 48)
+            g = QLinearGradient(art.topLeft(), art.bottomRight())
+            g.setColorAt(0, self._col(255, 0.15))
+            g.setColorAt(1, self._col(255, -0.0).darker(260))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(g))
+            p.drawRoundedRect(art, 11, 11)
+            draw_icon(p, "film" if media.source == "video" else "note", art.center(), 24, QColor(255, 255, 255, 235))
+            tx = x0 + 60
+            self._text(p, QRectF(tx, y + 4, w - 60 - 150, 20), media.title, 10.5, white, bold=True)
+            self._text(p, QRectF(tx, y + 25, w - 60 - 150, 16),
+                       media.artist or ("Видео" if media.source == "video" else "Музыка"), 8.5, dim)
+            bx = x0 + w - 136
+            for i, name in enumerate(("previous", "toggle", "next")):
+                r = QRectF(bx + i * 46, y + 4, 40, 40)
+                icon = {"previous": "backward", "next": "forward"}.get(name) or \
+                    ("pause" if media.playing else "play")
+                draw_icon(p, icon, r.center(), 26 if name == "toggle" else 20, white)
                 self._buttons[name] = r
-            y += 62
+            y += 60
         else:
             self._text(p, QRectF(x0, y, w, 20), "Ничего не играет", 9, dim)
             y += 30
         timer = m.timer_text()
         if timer:
-            self._text(p, QRectF(x0, y, w, 20), "⏱  " + timer, 9.5, self._col(235, 0.3))
+            draw_icon(p, "timer", QPointF(x0 + 8, y + 10), 15, self._col(235, 0.3))
+            self._text(p, QRectF(x0 + 22, y, w - 22, 20), timer, 9.5, self._col(235, 0.3))
             y += 24
         if m.last_reply and y < cap.bottom() - 24:
             self._text(p, QRectF(x0, y, w, cap.bottom() - y - 10), "«" + m.last_reply + "»", 9, dim, wrap=True,

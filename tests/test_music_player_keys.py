@@ -39,6 +39,18 @@ class _Spotify:
         return True
 
 
+@pytest.fixture(autouse=True)
+def _no_premium_api(monkeypatch):
+    """Путь Premium Web API — выключен: здесь проверяется медиа-сессия.
+
+    Без этого тесты шли в живой Spotify на машине разработчика (ready() там
+    правдив) и, например, «next» честно переключал человеку трек, а ответ
+    приходил из API — мимо всего, что проверяется ниже.
+    """
+    from actions import spotify_premium
+    monkeypatch.setattr(spotify_premium, "ready", lambda: False)
+
+
 @pytest.fixture
 def spotify(monkeypatch):
     def make(**kw):
@@ -83,6 +95,45 @@ def test_pause_is_explicit_not_toggle(spotify):
     assert fake.cmds == ["pause"] and fake.np.playing is False   # не запустилась
 
 
+def _fake_winreg(monkeypatch, open_key):
+    """winreg есть только на Windows, а CI — Linux: подменяем модулем-фейком."""
+    import sys
+    import types
+    fake = types.SimpleNamespace(HKEY_CURRENT_USER="HKCU", HKEY_CLASSES_ROOT="HKCR",
+                                 OpenKey=open_key, CloseKey=lambda k: None)
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    return fake
+
+
+def test_store_version_counts_as_installed(monkeypatch):
+    """Spotify из Microsoft Store: ни ключа HKCU\\Software\\Spotify, ни
+    Program Files\\Spotify. Детектор отвечал «не установлен», Джарвис уходил
+    на YouTube — хотя spotify:track: открывается и играет.
+
+    Значение имеет одно: зарегистрирован ли протокол spotify: — им и
+    открывается трек."""
+    monkeypatch.setattr(mp, "_OS", "Windows")
+
+    def only_protocol(root, path, *a, **k):
+        if root == "HKCR" and path.lower().startswith("spotify"):
+            return object()
+        raise FileNotFoundError(path)
+
+    _fake_winreg(monkeypatch, only_protocol)
+    monkeypatch.setattr(mp.os.path, "exists", lambda p: False)
+
+    assert mp._is_spotify_installed() is True
+
+
+def test_no_spotify_at_all_is_still_false(monkeypatch):
+    monkeypatch.setattr(mp, "_OS", "Windows")
+    _fake_winreg(monkeypatch, lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
+    monkeypatch.setattr(mp.os.path, "exists", lambda p: False)
+    monkeypatch.setattr(mp.glob, "glob", lambda p: [])
+
+    assert mp._is_spotify_installed() is False
+
+
 def test_next_names_the_new_track(spotify):
     spotify(title="Believer", playing=True)
     assert mp.music_player({"action": "next"}) == "Следующий: «Thunder» — Imagine Dragons."
@@ -104,3 +155,14 @@ def test_youtube_when_spotify_missing(monkeypatch):
         raise RuntimeError("browser is gone")
     monkeypatch.setattr(mp, "browser_control", boom)
     assert mp._play(query="x").startswith("Не удалось")
+
+
+def test_music_pauses_the_film(spotify, monkeypatch):
+    """Живой случай: попросил музыку — фильм играл дальше поверх неё."""
+    from actions import video_player
+    sent = []
+    monkeypatch.setattr(video_player, "video_playing", lambda: True)
+    monkeypatch.setattr(video_player, "control", lambda action, value=None: sent.append(action) or "Пауза.")
+    spotify()
+    mp.music_player({"action": "play", "query": "Believer"})
+    assert sent == ["pause"]

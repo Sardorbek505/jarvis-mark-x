@@ -225,7 +225,7 @@ function connect() {
         addImage(msg.data, msg.caption);
         setState('idle');
         notifyHaptic('success');
-        if (activeTab !== 'chat') showToast('📸 Снимок получен', 'success', { label: 'Открыть', onClick: () => switchTab('chat') });
+        if (activeTab !== 'chat') showToast('Снимок получен', 'success', { label: 'Открыть', onClick: () => switchTab('chat') });
         break;
       case 'transcript_user':
         if (msg.text) { addMsg('user', msg.text, { rich: false }); shapeFor(msg.text); }
@@ -358,7 +358,7 @@ document.querySelectorAll('#view-pc [data-cmd], #view-pc [data-say]').forEach(bt
     haptic('medium');
     btn.classList.add('sent');
     setTimeout(() => btn.classList.remove('sent'), 700);
-    showToast('🖥 ' + btn.textContent.trim());
+    showToast(btn.textContent.trim());
     addMsg('user', cmd, { rich: false });
     if (!shapeFor(cmd)) { clearTimeout(shapeTimer); orbView.setShape('reactor'); }
     send({ type: 'text', text: cmd, tts: voiceEnabled && !!btn.dataset.say });
@@ -606,10 +606,36 @@ function switchTab(name) {
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 window.switchTab = switchTab;
 
+// ── Иконки ────────────────────────────────────────────────────────────────────
+// Векторные, в одном стиле с нижней панелью (линия 2, скруглённые концы), как
+// SF Symbols на iPhone. Раньше здесь были эмодзи 🔥 ✅ 📍 🎯 🔔 ✕ — каждый
+// телефон рисует их по-своему, и рядом с тонкими линиями они смотрелись чужими.
+const ICON_PATHS = {
+  flame: '<path d="M12 22c4 0 7-2.8 7-7 0-3.6-2.4-6.2-4-8-.5 2-1.6 3.4-3 4 0-3.3-1.5-6.4-4-9 .3 3.6-3 6.2-3 11 0 5 3 9 7 9z"/><path d="M12 22c-1.7 0-3-1.3-3-3.2 0-1.8 1.4-3 3-4.8 1.6 1.8 3 3 3 4.8 0 1.9-1.3 3.2-3 3.2z"/>',
+  check: '<polyline points="20 6 9 17 4 12"/>',
+  checkCircle: '<circle cx="12" cy="12" r="9.5"/><polyline points="16.5 9 10.5 15 7.5 12"/>',
+  pin: '<path d="M12 21.5s-7-6.1-7-11.5a7 7 0 0 1 14 0c0 5.4-7 11.5-7 11.5z"/><circle cx="12" cy="10" r="2.5"/>',
+  target: '<circle cx="12" cy="12" r="9.5"/><circle cx="12" cy="12" r="5.5"/><circle cx="12" cy="12" r="1.5"/>',
+  archive: '<rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9"/><line x1="10" y1="13" x2="14" y2="13"/>',
+  bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 21h4"/>',
+  x: '<line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  sunrise: '<path d="M17 18a5 5 0 0 0-10 0"/><path d="M12 2v7M4.2 10.2l1.4 1.4M1 18h2M21 18h2M18.4 11.6l1.4-1.4M23 22H1M8 6l4-4 4 4"/>',
+  sunset: '<path d="M17 18a5 5 0 0 0-10 0"/><path d="M12 9V2M4.2 10.2l1.4 1.4M1 18h2M21 18h2M18.4 11.6l1.4-1.4M23 22H1M16 5l-4 4-4-4"/>',
+  moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
+  leaf: '<path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.5 19 2c1 2 2 4.2 2 8 0 5.5-4.8 10-10 10z"/><path d="M2 21c0-3 1.9-5.4 5.1-6C9.5 14.5 12 13 13 12"/>',
+  phone: '<path d="M21.5 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 1.6 4.2 2 2 0 0 1 3.6 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L7.6 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.8 2z"/>',
+  tray: '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1z"/>',
+};
+function icon(name, cls = '') {
+  return `<svg class="ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" `
+       + `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ''}</svg>`;
+}
+
 // ── Данные вкладок ────────────────────────────────────────────────────────────
 function greeting() {
   const h = new Date().getHours();
-  return h < 5 ? ['Доброй ночи', '🌙'] : h < 12 ? ['Доброе утро', '🌅'] : h < 18 ? ['Добрый день', '☀️'] : ['Добрый вечер', '🌆'];
+  return h < 5 ? ['Доброй ночи', 'moon'] : h < 12 ? ['Доброе утро', 'sunrise'] : h < 18 ? ['Добрый день', 'sun'] : ['Добрый вечер', 'sunset'];
 }
 
 function renderView(name, p) {
@@ -625,18 +651,18 @@ function renderDashboard(p) {
   const today = p.today_tasks || [];
   $('dash-body').innerHTML = `
     <div class="hero">
-      <div class="hero-hi">${gi} ${hello}</div>
+      <div class="hero-hi">${icon(gi, 'hero-ico')}${hello}</div>
       ${p.weather ? `<div class="hero-wx">${esc(p.weather)}</div>` : ''}
-      <div class="hero-city">📍 ${esc(p.city || 'Город не задан')}</div>
+      <div class="hero-city">${icon('pin')}${esc(p.city || 'Город не задан')}</div>
     </div>
     <div class="dash-grid">
       <button class="stat" onclick="switchTab('habits')">
-        <div class="stat-ico">🔥</div>
+        <div class="stat-ico">${icon('flame')}</div>
         <div><div class="stat-num">${p.habits_done ?? 0}<span>/${p.habits_total ?? 0}</span></div>
         <div class="stat-lbl">привычки · серия ${p.best_streak ?? 0}</div></div>
       </button>
       <button class="stat" onclick="switchTab('tasks')">
-        <div class="stat-ico">✅</div>
+        <div class="stat-ico">${icon('checkCircle')}</div>
         <div><div class="stat-num">${p.open_tasks ?? 0}</div><div class="stat-lbl">задач открыто</div></div>
       </button>
     </div>
@@ -657,10 +683,10 @@ function renderMemory(p) {
   const shown = showAllFacts ? facts : facts.slice(0, 8);
   let html = `<div class="card"><h3>Что я о тебе знаю <span class="count">${facts.length}</span></h3>`;
   if (a.about) html += `<div class="sub" style="color:var(--text);margin-bottom:6px">${esc(a.about)}</div>`;
-  if (a.goals) html += `<div class="sub" style="margin-bottom:6px">🎯 ${esc(a.goals)}</div>`;
+  if (a.goals) html += `<div class="sub" style="margin-bottom:6px">${icon('target')}${esc(a.goals)}</div>`;
   if (facts.length) {
     html += `<div class="facts">${shown.map(f =>
-      `<div class="fact"><span>${esc(f)}</span><button class="x" data-fact="${esc(f)}" aria-label="Забыть">✕</button></div>`).join('')}</div>`;
+      `<div class="fact"><span>${esc(f)}</span><button class="x" data-fact="${esc(f)}" aria-label="Забыть">${icon('x')}</button></div>`).join('')}</div>`;
     if (facts.length > shown.length) html += `<button class="more" onclick="toggleFacts()">Показать все (${facts.length})</button>`;
   } else {
     html += `<div class="sub">Пока пусто — расскажи о себе, я запомню. Память общая с Джарвисом на ПК.</div>`;
@@ -668,7 +694,7 @@ function renderMemory(p) {
   html += `</div>`;
   if (eps.length || voice.length) {
     html += `<div class="card"><h3>Недавно голосом на ПК</h3>`;
-    html += eps.map(e => `<div class="voice-line">🗂 ${esc(e)}</div>`).join('');
+    html += eps.map(e => `<div class="voice-line">${icon('archive')}${esc(e)}</div>`).join('');
     html += voice.map(v => `<div class="voice-line"><b>${esc(v.who)}:</b> ${esc(v.text)}</div>`).join('');
     html += `</div>`;
   }
@@ -690,13 +716,13 @@ function renderHabits(p) {
   const habits = p.habits || [];
   $('habits-body').innerHTML = habits.length ? habits.map(h => `
     <div class="row ${h.done_today ? 'done-today' : ''}">
-      <button class="check ${h.done_today ? 'on' : ''}" onclick="habitToggle(${Number(h.id)})" aria-label="Отметить">${h.done_today ? '✓' : ''}</button>
+      <button class="check ${h.done_today ? 'on' : ''}" onclick="habitToggle(${Number(h.id)})" aria-label="Отметить">${h.done_today ? icon('check') : ''}</button>
       <div class="body"><div class="title">${esc(h.title)}</div>
         <div class="meta">${h.done_today ? 'Сегодня отмечено' : 'Сегодня ещё нет'}</div></div>
-      ${h.streak ? `<div class="streak">🔥 ${Number(h.streak)}</div>` : ''}
-      <button class="x" onclick="habitDelete(${Number(h.id)})" aria-label="Удалить">✕</button>
+      ${h.streak ? `<div class="streak">${icon('flame')}${Number(h.streak)}</div>` : ''}
+      <button class="x" onclick="habitDelete(${Number(h.id)})" aria-label="Удалить">${icon('x')}</button>
     </div>`).join('')
-    : `<div class="empty">Привычек пока нет 🌱<br>Добавь сверху и отмечай каждый день — серия будет расти.</div>`;
+    : `<div class="empty">${icon('leaf', 'empty-ico')}<br>Привычек пока нет<br>Добавь сверху и отмечай каждый день — серия будет расти.</div>`;
 }
 
 function renderTasks(p) {
@@ -708,18 +734,23 @@ function renderTasks(p) {
         <button class="check" onclick="taskDone(${Number(t.id)}, this)" aria-label="Выполнено"></button>
         <div class="body"><div class="title">${esc(t.title)}</div>
           ${t.due ? `<div class="meta ${t.overdue ? 'overdue' : ''}">${t.overdue ? 'Просрочено · ' : ''}${esc(t.due)}</div>` : ''}</div>
-        <button class="x" onclick="taskDelete(${Number(t.id)})" aria-label="Удалить">✕</button>
+        <button class="x" onclick="taskDelete(${Number(t.id)})" aria-label="Удалить">${icon('x')}</button>
       </div>`).join('');
   }
   if (reminders.length) {
-    html += `<div class="section-label">Напоминания · ${reminders.length}</div>` + reminders.map(r => `
+    // «📞 …» — напоминание звонком: вместо эмодзи в тексте — иконка телефона.
+    html += `<div class="section-label">Напоминания · ${reminders.length}</div>` + reminders.map(r => {
+      const call = String(r.text || '').startsWith('📞');
+      const text = call ? r.text.replace(/^📞\s*/, '') : r.text;
+      return `
       <div class="row">
-        <button class="check bell" onclick="reminderDone(${Number(r.id)})" aria-label="Завершить">🔔</button>
-        <div class="body"><div class="title">${esc(r.text)}</div><div class="meta">${esc(r.when)}</div></div>
-        <button class="x" onclick="reminderDelete(${Number(r.id)})" aria-label="Удалить">✕</button>
-      </div>`).join('');
+        <button class="check bell" onclick="reminderDone(${Number(r.id)})" aria-label="Завершить">${icon(call ? 'phone' : 'bell')}</button>
+        <div class="body"><div class="title">${esc(text)}</div><div class="meta">${call ? 'Позвоню · ' : ''}${esc(r.when)}</div></div>
+        <button class="x" onclick="reminderDelete(${Number(r.id)})" aria-label="Удалить">${icon('x')}</button>
+      </div>`;
+    }).join('');
   }
-  $('tasks-body').innerHTML = html || `<div class="empty">Пусто ✨<br>Добавь задачу или напиши «напомни в 15:00 позвонить маме»</div>`;
+  $('tasks-body').innerHTML = html || `<div class="empty">${icon('tray', 'empty-ico')}<br>Пусто<br>Добавь задачу или напиши «напомни в 15:00 позвонить маме»</div>`;
 }
 
 function habitToggle(id) { haptic('medium'); send({ type: 'habit_toggle', id }); }

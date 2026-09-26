@@ -86,7 +86,40 @@ def test_shows_only_when_wanted_and_not_over_fullscreen(island):
     w._apply_visibility(fullscreen=False)
     assert w.isVisible()
     w.set_wanted(False)
-    assert not w.isVisible()
+    assert w.isVisible()                                        # сначала втягивается
+    _settle(w, app, 0.8)
+    assert not w.isVisible() and not w._tmr.isActive()
+
+
+def test_enters_and_leaves_like_macbook_notch(island):
+    """Появляется из полоски у края с лёгким перелётом, уходит обратно в неё."""
+    w, app, _ = island
+    assert w.pos().y() - app.primaryScreen().geometry().y() == ui.Island.TOP   # ниже края
+    w.set_wanted(True)
+    start = w.capsule_rect()
+    assert start.width() <= ui.Island.SEED_W + 1 and start.height() <= ui.Island.SEED_H + 1
+    peak = 0.0
+    end = time.monotonic() + 1.2
+    while time.monotonic() < end:
+        w._step()
+        app.processEvents()
+        peak = max(peak, w._p)
+        time.sleep(0.01)
+    cw, ch = ui.SIZES["compact"]
+    assert 1.0 < peak < 1.15                                    # чуть пружинит, не болтается
+    assert abs(w.capsule_rect().width() - cw) < 1 and abs(w.capsule_rect().height() - ch) < 1
+
+    w.set_wanted(False)
+    sizes = []
+    while w.isVisible() and len(sizes) < 200:
+        w._step()
+        app.processEvents()
+        sizes.append(w.capsule_rect().width())
+        time.sleep(0.01)
+    assert not w.isVisible() and len(sizes) > 5                 # не исчезла рывком
+    assert all(a >= b - 0.5 for a, b in zip(sizes, sizes[1:]))  # сжимается без перелёта
+    w.set_wanted(True)                                          # снова свернули — снова с полоски
+    assert w.capsule_rect().width() <= ui.Island.SEED_W + 1
 
 
 def test_capsule_springs_to_size_and_mask_lets_clicks_through(island):
@@ -169,3 +202,14 @@ def test_main_window_minimize_shows_island(monkeypatch):
         win._island.close()
         win.hide()
         win.deleteLater()
+
+
+def test_every_icon_draws_something():
+    """Иконки векторные (ui_icons), без символов шрифта: каждая что-то рисует."""
+    from PyQt6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    import ui_icons
+    for name in ui_icons.NAMES:
+        img = ui_icons.qicon(name, 16, "#ffffff").pixmap(48, 48).toImage()
+        lit = sum(1 for x in range(img.width()) for y in range(img.height()) if img.pixelColor(x, y).alpha() > 80)
+        assert lit > 20, name

@@ -149,9 +149,17 @@ def _card_data(name: str, args: dict, result: str) -> dict | None:
         if not title:
             m = re.search(r"«(.+?)»", text)
             title = m.group(1) if m else ("Музыка" if name == "music_player" else "Фильм")
+        # «Играет» — только если инструмент сказал, что заиграло. Раньше статус
+        # брался из команды: на «Открыл в Spotify, но воспроизведение не
+        # началось» карточка рисовала «Играет» с бегущим эквалайзером.
+        playing = action not in ("pause", "stop")
+        if action in ("play", "resume", "mood") and not re.match(
+                r"(включил|включаю|играет|продолжаю)\b", text, re.I):
+            playing = False
+        status = _MEDIA_STATUS.get(action, text[:60]) if playing or action in ("pause", "stop") \
+            else (text if len(text) <= 60 else text[:59] + "…")
         return {"card": "media", "media": "music" if name == "music_player" else "film",
-                "title": title, "status": _MEDIA_STATUS.get(action, text[:60]),
-                "playing": action not in ("pause", "stop")}
+                "title": title, "status": status, "playing": playing}
 
     if name == "computer_control":
         action = str(args.get("action", "")).lower()

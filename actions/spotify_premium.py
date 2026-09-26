@@ -48,6 +48,7 @@ def auth():
         _auth = SpotifyAuth(cid, sec, (k.get("spotify_redirect_uri") or
                                        "http://127.0.0.1:8888/callback").strip())
         seed = (k.get("spotify_refresh_token") or "").strip()
+        _auth.seed_refresh_token = seed
         if seed and not _auth.refresh_token:
             _auth.set_refresh_token(seed)
     return _auth
@@ -183,16 +184,33 @@ def find(query: str) -> tuple[str, str] | None:
 
 # ── устройство и воспроизведение ──────────────────────────────────────────────
 
+def _this_pc() -> str:
+    import socket
+    return (os.getenv("COMPUTERNAME") or socket.gethostname() or "").strip().lower()
+
+
+def _pick_device(devs: list[dict]) -> dict | None:
+    """Устройство ЭТОГО компьютера — приложение Spotify на нём.
+
+    Раньше бралось активное: им часто оказывался телефон (или веб-плеер во
+    вкладке браузера), музыка уходила туда, Spotify отвечал «играет», а на
+    компьютере стояла тишина. Чужой телефон — никогда: лучше честно сказать,
+    что Spotify на ПК не запустился."""
+    pcs = [d for d in devs if d.get("type") == "Computer"
+           and not str(d.get("name", "")).lower().startswith("web player")]
+    me = _this_pc()
+    mine = [d for d in pcs if me and str(d.get("name", "")).strip().lower() == me]
+    return (mine or [d for d in pcs if d.get("is_active")] or pcs or [None])[0]
+
+
 def _device() -> str | None:
-    devs = _req("GET", "/me/player/devices").json().get("devices", [])
-    active = [d for d in devs if d.get("is_active")]
-    pc = [d for d in devs if d.get("type") == "Computer"]
-    pick = (active or pc or devs or [None])[0]
+    pick = _pick_device(_req("GET", "/me/player/devices").json().get("devices", []))
     return pick["id"] if pick else None
 
 
-def _wake_device(timeout: float = 10.0) -> str | None:
-    """Устройства нет — запускаем Spotify на ПК и ждём, пока он зарегистрируется."""
+def _wake_device(timeout: float = 15.0) -> str | None:
+    """Приложения Spotify на ПК в списке нет — запускаем его и ждём, пока
+    оно зарегистрируется."""
     dev = _device()
     if dev:
         return dev
@@ -246,7 +264,9 @@ def play(query: str) -> str | None:
     try:
         if not query:
             dev = _wake_device()
-            r = _req("PUT", f"/me/player/play?device_id={dev}" if dev else "/me/player/play")
+            if not dev:
+                return "Spotify не запустился на компьютере."
+            r = _req("PUT", f"/me/player/play?device_id={dev}")
             np = now_playing() if r.status_code < 300 else None
             return f"Играет {_say(np)}." if np and np["playing"] else "Продолжаю музыку."
         found = find(query)
@@ -261,7 +281,12 @@ def play(query: str) -> str | None:
             np = now_playing()
             if np and np["playing"]:
                 return f"Включил {_say(np) if ':track:' in uri else desc}."
-        return f"Запустил {desc} в Spotify."
+        # Команду приняли (204), а музыки нет: клиент Spotify из Microsoft
+        # Store команды Connect подтверждает, но не исполняет. Молчать про это
+        # нельзя, но и закрывать вопрос отпиской тоже — запасной путь открывает
+        # spotify:track: прямо в приложении, и оно играет.
+        logger.warning("Spotify принял команду, но воспроизведение не началось — отдаю запасному пути")
+        return None
     except PermissionError:
         return None
     except Exception as exc:

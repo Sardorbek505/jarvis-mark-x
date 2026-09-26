@@ -118,3 +118,55 @@ def test_extract_prompt_lists_known_facts():
     p = conv.build_extract_prompt([("identity", "имя", "Сардор")], [{"role": "user", "text": "привет", "ts": 1}])
     assert "identity/имя: Сардор" in p and "Вы: привет" in p and "health" in p
     json.loads('{"facts": []}')
+
+def test_quota_error_pauses_instead_of_hammering_gemini():
+    """В живом логе 111 одинаковых предупреждений подряд: разбор падал с 429,
+    done_ts не двигался, и сборщик каждые 20 с снова бил в исчерпанную квоту.
+    Gemini сам сообщает, через сколько повторять, — ждём столько."""
+    now = [time.time()]
+    calls = []
+
+    def quota(prompt):
+        calls.append(1)
+        raise RuntimeError("429 RESOURCE_EXHAUSTED ... Please retry in 24.57893355s.")
+
+    conv.log_turn("user", "Я люблю плов", ts=now[0] - 1000)
+    c = conv.Collector(llm=quota, clock=lambda: now[0],
+                       state_file=conv.DIALOG_FILE.parent / "st.json")
+
+    assert c.run_once().startswith("ошибка")
+    assert len(calls) == 1
+
+    assert c.run_once() == "ждём квоту"          # второй раз Gemini не трогаем
+    assert len(calls) == 1
+
+    now[0] += 30                                  # пауза, которую назвал Gemini, прошла
+    c.llm = lambda p: _facts(facts=[{"category": "preferences", "key": "еда", "value": "плов"}])
+    assert c.run_once() == "+1 −0"                # реплики не потеряны
+
+
+def test_ordinary_error_is_retried_at_once():
+    """Пауза — только на исчерпанную квоту: обычный сбой надо пробовать снова."""
+    now = time.time()
+    conv.log_turn("user", "Я люблю плов", ts=now - 1000)
+    c = conv.Collector(llm=lambda p: (_ for _ in ()).throw(RuntimeError("сеть моргнула")),
+                       clock=time.time, state_file=conv.DIALOG_FILE.parent / "st.json")
+
+    assert c.run_once().startswith("ошибка")
+    c.llm = lambda p: _facts(facts=[{"category": "preferences", "key": "еда", "value": "плов"}])
+    assert c.run_once() == "+1 −0"
+
+
+def test_number_429_in_an_unrelated_error_is_not_a_quota():
+    """«429» само по себе ничего не значит: оно бывает в id, счётчиках и
+    времени. Принять такое за квоту — тихо остановить память на минуту."""
+    assert conv._quota_pause(RuntimeError("не разобрал 429 реплик")) == 0.0
+    assert conv._quota_pause(RuntimeError("spotify:track:429abc не найден")) == 0.0
+    assert conv._quota_pause(RuntimeError("таймаут через 4290 мс")) == 0.0
+
+
+def test_real_quota_refusals_are_recognised():
+    assert conv._quota_pause(RuntimeError("429 RESOURCE_EXHAUSTED. quota")) > 0
+    assert conv._quota_pause(RuntimeError("RESOURCE_EXHAUSTED")) > 0
+    assert conv._quota_pause(RuntimeError("429 Too Many Requests")) > 0
+    assert conv._quota_pause(RuntimeError("429: You exceeded your current quota")) > 0

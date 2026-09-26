@@ -392,7 +392,9 @@ def active() -> bool:
 
 
 def release_for_video():
-    """Фильм или ролик забирает окно: панель закрывается, окно — на экран."""
+    """Фильм или ролик забирает окно: панель закрывается, окно — на экран
+    (и когда панель уже закрыта: тогда окно свёрнуто — см. Panel.close)."""
     if _panel is not None and _panel.active:
         _panel.release(maximize=True)
         time.sleep(0.1)
+    cdp.show_window()

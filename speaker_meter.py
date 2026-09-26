@@ -31,22 +31,21 @@ class SpeakerMeter:
         self._peak = 0.0
         self._poll = poll_sec
         self._stop = threading.Event()
+        self._ready = threading.Event()
         self._thread = None
         self.available = False
 
     # ── жизненный цикл ───────────────────────────────────────────────────────
-    def start(self) -> bool:
-        try:
-            self._make_meter()
-        except Exception as exc:
-            # Не смертельно: без измерителя просто нет этой защиты.
-            logger.warning("Уровень динамиков недоступен (%s) — фильтр выключен", exc)
-            return False
-        self.available = True
+    def start(self, timeout: float = 5.0) -> bool:
+        """Измеритель создаёт только рабочий поток — тот, где поднят COM.
+
+        Проба на вызывающем потоке оставляла после себя COM-указатель, который
+        сборщик мусора освобождал где попало: «access violation» в __del__."""
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="speaker-meter")
         self._thread.start()
-        return True
+        self._ready.wait(timeout)
+        return self.available
 
     def stop(self):
         self._stop.set()
@@ -83,17 +82,25 @@ class SpeakerMeter:
             return ""
 
     def _run(self):
-        import comtypes
         try:
-            comtypes.CoInitialize()
+            import comtypes
+        except ImportError:                 # не Windows: COM поднимать не нужно
+            comtypes = None
+        try:
+            if comtypes is not None:
+                comtypes.CoInitialize()
         except Exception as exc:
             logger.debug("CoInitialize: %s", exc)
         try:
             meter = self._make_meter()
+            self.available = True
         except Exception as exc:
-            logger.warning("Измеритель динамиков не создался: %s", exc)
+            # Не смертельно: без измерителя просто нет этой защиты.
+            logger.warning("Уровень динамиков недоступен (%s) — фильтр выключен", exc)
             self.available = False
             return
+        finally:
+            self._ready.set()
         misses = 0
         current_id = self._default_id_safe()
         checked_at = 0.0
@@ -130,6 +137,7 @@ class SpeakerMeter:
                         self._peak = 0.0
             self._stop.wait(self._poll)
         try:
-            comtypes.CoUninitialize()
+            if comtypes is not None:
+                comtypes.CoUninitialize()
         except Exception:
             pass

@@ -74,6 +74,74 @@ def test_no_refresh_token_means_no_token(auth):
     assert auth.get_access_token() is None
 
 
+# ─── 1b. Мёртвый refresh-токен в хранилище ────────────────────────────────────
+@pytest.fixture
+def auth_net(tmp_path, monkeypatch):
+    """SpotifyAuth с настоящим refresh_access_token, но с подменённой сетью.
+
+    Живой отказ: Spotify инвалидировал refresh-токен из spotify_tokens.json,
+    в api_keys.json при этом лежал рабочий. Джарвис молчал про Spotify сутки.
+    """
+    monkeypatch.setattr(SpotifyAuth, "_load_tokens", lambda self: None)
+    monkeypatch.setattr(SpotifyAuth, "_save_tokens", lambda self: None)
+    a = SpotifyAuth("cid", "secret", "http://localhost/callback")
+    a.refresh_token = "мёртвый"
+    a.token_expiry = None
+    return a
+
+
+def _fake_post(good_token):
+    """Spotify: 400 invalid_grant на любой токен, кроме good_token."""
+    import requests
+
+    class Resp:
+        def __init__(self, ok):
+            self.ok = ok
+            self.status_code = 200 if ok else 400
+
+        def raise_for_status(self):
+            if not self.ok:
+                raise requests.HTTPError("400 Client Error: Bad Request")
+
+        def json(self):
+            return {"access_token": "свежий", "expires_in": 3600}
+
+    def post(url, data=None, timeout=None):
+        return Resp(data.get("refresh_token") == good_token)
+
+    return post
+
+
+def test_dead_stored_token_falls_back_to_key_from_config(auth_net, monkeypatch):
+    monkeypatch.setattr("tools.spotify.auth.requests.post", _fake_post("живой"))
+    auth_net.seed_refresh_token = "живой"
+
+    assert auth_net.get_access_token() == "свежий"
+    assert auth_net.refresh_token == "живой", "рабочий токен должен вытеснить мёртвый"
+
+
+def test_no_seed_means_dead_token_stays_dead(auth_net, monkeypatch):
+    monkeypatch.setattr("tools.spotify.auth.requests.post", _fake_post("живой"))
+
+    assert auth_net.get_access_token() is None
+
+
+def test_seed_equal_to_stored_token_is_not_retried(auth_net, monkeypatch):
+    """Один и тот же мёртвый токен не должен дёргать Spotify дважды."""
+    calls = []
+    post = _fake_post("живой")
+
+    def counting_post(url, data=None, timeout=None):
+        calls.append(data.get("refresh_token"))
+        return post(url, data=data, timeout=timeout)
+
+    monkeypatch.setattr("tools.spotify.auth.requests.post", counting_post)
+    auth_net.seed_refresh_token = "мёртвый"
+
+    assert auth_net.get_access_token() is None
+    assert calls == ["мёртвый"], calls
+
+
 # ─── 2. Ранжирование треков ───────────────────────────────────────────────────
 def _track(name, artist):
     """Трек ровно в той форме, в какой его отдаёт /search.
@@ -212,3 +280,50 @@ def test_artist_is_not_hijacked_by_similar_playlist(controller):
     controller.play_query("любэ")
 
     assert controller.played == [("track", "spotify:track:нужный")]
+
+
+# ─── Устройство: только этот компьютер ───────────────────────────────────────
+def test_music_goes_to_this_pc_not_the_active_phone(monkeypatch):
+    """Живой случай: Джарвис «включил», а на ПК тишина — играло на телефоне."""
+    from actions import spotify_premium as sp
+    monkeypatch.setenv("COMPUTERNAME", "ASUS-TUF")
+    devs = [
+        {"id": "phone", "type": "Smartphone", "name": "iPhone", "is_active": True},
+        {"id": "web", "type": "Computer", "name": "Web Player (Chrome)", "is_active": False},
+        {"id": "other", "type": "Computer", "name": "OFFICE-PC", "is_active": False},
+        {"id": "me", "type": "Computer", "name": "ASUS-TUF", "is_active": False},
+    ]
+    assert sp._pick_device(devs)["id"] == "me"
+    assert sp._pick_device(devs[:2]) is None               # только телефон и веб — не играть туда
+    assert sp._pick_device(devs[:3])["id"] == "other"      # имя другое, но это приложение на ПК
+
+
+# ─── Не заиграло — уступаем запасному пути ───────────────────────────────────
+def test_unconfirmed_playback_yields_to_fallback(monkeypatch):
+    """Живой случай на ПК владельца: Web API отвечает 204 на каждую команду,
+    а клиент Spotify из Microsoft Store её не исполняет — тишина. Ответ
+    «отправил, но не вижу, что заиграло» закрывал вопрос, и запасной путь
+    (открыть spotify:track: прямо в приложении — он играет) не пробовали.
+
+    None означает «Premium-путь не сработал, пусть работает запасной»."""
+    from actions import spotify_premium as sp
+    monkeypatch.setattr(sp, "ready", lambda: True)
+    monkeypatch.setattr(sp, "is_premium", lambda: True)
+    monkeypatch.setattr(sp, "find", lambda q: ("spotify:track:x", "«Трек» — Кто-то"))
+    monkeypatch.setattr(sp, "play_uri", lambda uri: (True, ""))
+    monkeypatch.setattr(sp, "now_playing", lambda: {"title": "", "artist": "", "playing": False})
+    monkeypatch.setattr(sp.time, "sleep", lambda s: None)
+
+    assert sp.play("трек") is None
+
+
+def test_confirmed_playback_still_answers(monkeypatch):
+    from actions import spotify_premium as sp
+    monkeypatch.setattr(sp, "ready", lambda: True)
+    monkeypatch.setattr(sp, "is_premium", lambda: True)
+    monkeypatch.setattr(sp, "find", lambda q: ("spotify:track:x", "«Трек» — Кто-то"))
+    monkeypatch.setattr(sp, "play_uri", lambda uri: (True, ""))
+    monkeypatch.setattr(sp, "now_playing", lambda: {"title": "Трек", "artist": "Кто-то", "playing": True})
+    monkeypatch.setattr(sp.time, "sleep", lambda s: None)
+
+    assert sp.play("трек") == "Включил «Трек» — Кто-то."

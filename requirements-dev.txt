@@ -25,3 +25,7 @@ imageio-ffmpeg>=0.4.8
 # Сервер бота: проверка /api/memory/sync (tests/test_shared_memory.py)
 fastapi>=0.110.0
 httpx>=0.27
+
+# Вход в аккаунт Джарвиса по QR (tests/test_break_and_call.py)
+qrcode>=7.4
+telethon>=1.36

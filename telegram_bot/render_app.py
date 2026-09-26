@@ -281,7 +281,8 @@ _tasks: list[asyncio.Task] = []
 async def _reminder_loop(bot):
     # Одна доставка на оба входа — см. reminders.delivery_loop.
     from telegram_bot import reminders as rem
-    await rem.delivery_loop(bot, memory, logger)
+    import telegram_bot.bot as botmod
+    await rem.delivery_loop(bot, memory, logger, call=botmod.call_via_pc)
 
 
 async def _set_webhook(bot, webhook_url: str, drop_pending: bool = False):

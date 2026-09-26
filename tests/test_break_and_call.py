@@ -318,3 +318,140 @@ def test_tgcall_wraps_real_pytgcalls(tmp_path):
         t = tc.TgCall(telethon.TelegramClient(str(tmp_path / "s"), 1, "x"))
         assert hasattr(t.app, "send_frame") and hasattr(t.app, "record")
     asyncio.run(build())
+
+
+# ── вход в аккаунт Джарвиса по QR-коду ────────────────────────────────────────
+
+class _View:
+    def __init__(self, cancel_after=None):
+        self.shown, self.closed, self._pumps, self._cancel_after = [], False, 0, cancel_after
+
+    def show(self, url):
+        self.shown.append(url)
+
+    def pump(self):
+        self._pumps += 1
+
+    def cancelled(self):
+        return self._cancel_after is not None and self._pumps >= self._cancel_after
+
+    def close(self):
+        self.closed = True
+
+
+class _QR:
+    def __init__(self, outcomes):
+        self.outcomes, self.n = list(outcomes), 0
+        self.url = "tg://login?token=t0"
+
+    async def wait(self, timeout=None):
+        self.timeouts = getattr(self, "timeouts", []) + [timeout]
+        await asyncio.sleep(0.01)
+        out = self.outcomes.pop(0)
+        if isinstance(out, BaseException):
+            raise out
+        return out
+
+    async def recreate(self):
+        self.n += 1
+        self.url = f"tg://login?token=t{self.n}"
+
+
+class _Client:
+    def __init__(self, qr):
+        self.qr, self.password = qr, None
+
+    async def qr_login(self):
+        return self.qr
+
+    async def sign_in(self, password=None):
+        self.password = password
+
+
+def test_qr_login_refreshes_expired_code_then_signs_in():
+    """Живой случай: код по номеру не пришёл ни разу из четырёх. QR не
+    зависит от доставки кода; просроченный QR показываем заново."""
+    qr = _QR([asyncio.TimeoutError(), "user"])
+    view = _View()
+    assert asyncio.run(tc._qr_sign_in(_Client(qr), view, lambda t, s: "")) is True
+    assert view.shown == ["tg://login?token=t0", "tg://login?token=t1"] and view.closed
+    assert qr.timeouts == [tc._QR_REFRESH_SEC] * 2        # срок — свой, не по часам ПК
+
+
+def test_qr_login_asks_two_step_password():
+    from telethon.errors import SessionPasswordNeededError
+    client = _Client(_QR([SessionPasswordNeededError(request=None)]))
+    assert asyncio.run(tc._qr_sign_in(client, _View(), lambda t, s: "секрет" if s else "")) is True
+    assert client.password == "секрет"
+
+
+def test_qr_login_cancel():
+    class _Slow(_QR):
+        async def wait(self, timeout=None):
+            await asyncio.sleep(10)
+
+    view = _View(cancel_after=3)
+    assert asyncio.run(tc._qr_sign_in(_Client(_Slow([])), view, lambda t, s: "")) is False
+    assert view.closed
+
+
+def test_qr_matrix_is_square_with_dark_cells():
+    m = tc.qr_matrix("tg://login?token=AQIDBAUGBwgJCgsMDQ4PEA")
+    assert len(m) == len(m[0]) >= 25 and any(any(r) for r in m)
+
+
+# ─── Огрызок сессии после неудачного входа ───────────────────────────────────
+class _StubClient:
+    """Телеграм-клиент, в который так и не вошли."""
+
+    def __init__(self, *a, **kw):
+        self.disconnected = False
+
+    async def connect(self):
+        return None
+
+    async def is_user_authorized(self):
+        return False
+
+    async def disconnect(self):
+        self.disconnected = True
+
+
+def _prepare_login(monkeypatch, tmp_path):
+    import telethon
+    monkeypatch.setattr(tc, "_credentials", lambda: (1, "hash"))
+    monkeypatch.setattr(tc, "session_path", lambda: str(tmp_path / "jarvis_caller"))
+    monkeypatch.setattr(telethon, "TelegramClient", _StubClient)
+    stub = tmp_path / "jarvis_caller.session"
+    stub.write_bytes(b"SQLite format 3\x00")          # как его оставляет telethon
+    return stub
+
+
+def test_aborted_login_does_not_leave_a_session_stub(monkeypatch, tmp_path):
+    """Живой случай: вход прервали, файл сессии остался — и ready() доложил,
+    что аккаунт подключён, хотя авторизации не было."""
+    stub = _prepare_login(monkeypatch, tmp_path)
+
+    answer = tc.login(lambda text, secret: "")        # отказ на первом же вопросе
+
+    assert "отмен" in answer.lower(), answer
+    assert not stub.exists(), "огрызок сессии остался и врёт про подключённый аккаунт"
+
+
+def test_successful_login_keeps_the_session(monkeypatch, tmp_path):
+    stub = _prepare_login(monkeypatch, tmp_path)
+
+    class _Ok(_StubClient):
+        async def is_user_authorized(self):
+            return True
+
+        async def get_me(self):
+            return type("Me", (), {"first_name": "Джарвис", "phone": "77014815055"})()
+
+    import telethon
+    monkeypatch.setattr(telethon, "TelegramClient", _Ok)
+
+    answer = tc.login(lambda text, secret: "")        # цель не указали — и не надо
+
+    assert answer.startswith("Готово"), answer
+    assert stub.exists(), "рабочую сессию удалять нельзя"
