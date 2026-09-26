@@ -39,6 +39,7 @@ def update_memory(patch: dict):
     не больше _PER_CATEGORY самых свежих. Под замком: голос и Telegram-бот
     писали одновременно и затирали друг друга."""
     now = datetime.now().isoformat(timespec="seconds")
+    changed = []
     with _LOCK:
         mem = load_memory()
         for category, items in patch.items():
@@ -46,20 +47,36 @@ def update_memory(patch: dict):
             for key, val in items.items():
                 if val in (None, ""):
                     continue
-                cat[key] = {"value": val.get("value", val) if isinstance(val, dict) else val,
-                            "updated": now}
+                value = val.get("value", val) if isinstance(val, dict) else val
+                old = cat.get(key)
+                if (old.get("value") if isinstance(old, dict) else old) != value:
+                    changed.append((key, value))
+                cat[key] = {"value": value, "updated": now}
             if len(cat) > _PER_CATEGORY:
                 keep = sorted(cat, key=lambda k: _stamp(cat[k]), reverse=True)[:_PER_CATEGORY]
                 mem[category] = {k: cat[k] for k in cat if k in keep}
         atomic_write_json(_MEMORY_FILE, mem)
+    _share(lambda sh: [sh.queue_fact(k, v) for k, v in changed])
+
+
+def _share(fn):
+    """Изменение — в очередь общей памяти с ботом (memory/shared.py)."""
+    try:
+        from memory import shared
+        fn(shared)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).debug("Общая память: %s", exc)
 
 
 def forget(category: str, key: str) -> bool:
     with _LOCK:
         mem = load_memory()
         if key in mem.get(category, {}):
-            del mem[category][key]
+            val = mem[category].pop(key)
             atomic_write_json(_MEMORY_FILE, mem)
+            value = val.get("value", val) if isinstance(val, dict) else val
+            _share(lambda sh: sh.queue_fact_removed(key, str(value)))
             return True
     return False
 
@@ -113,6 +130,7 @@ def forget_matching(query: str) -> list[tuple[str, str, str]]:
                     del items[key]
         if gone:
             atomic_write_json(_MEMORY_FILE, mem)
+    _share(lambda sh: sh.queue_forget(q))      # и у бота: там могли быть свои факты об этом
     return gone
 
 

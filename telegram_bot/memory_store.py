@@ -305,7 +305,7 @@ class MemoryStore:
         # Семь независимых запросов — параллельно, а не в очередь. Последовательно
         # это семь round-trip до Neon подряд, и всё это на ПЕРВОМ сообщении после
         # каждого рестарта: заметная пауза там, где человек ждёт ответа.
-        profile, facts, tasks, contacts, schedule, projects, notes = await asyncio.gather(
+        profile, facts, tasks, contacts, schedule, projects, notes, voice = await asyncio.gather(
             self._load_profile(uid),
             self._load_facts(uid),
             self._load_tasks(uid),
@@ -313,6 +313,7 @@ class MemoryStore:
             self.list_schedule(uid),
             self.list_projects(uid),
             self.list_notes(uid, limit=12),
+            self._load_voice(uid),
         )
         self._cache[uid] = {
             "profile": profile, "facts": facts, "tasks": tasks,
@@ -320,6 +321,7 @@ class MemoryStore:
             "schedule": schedule,
             "projects": projects,
             "notes": notes,
+            "voice": voice,
         }
 
     def cached_notes(self, uid: int) -> list:
@@ -895,10 +897,75 @@ class MemoryStore:
         restart. Returns [{'role','text'}]."""
         rows = await self._fetchall(
             "SELECT role, text FROM (SELECT id, role, text FROM messages "
-            "WHERE user_id=? ORDER BY id DESC LIMIT ?) sub ORDER BY id ASC",
+            "WHERE user_id=? AND role IN ('user', 'model') ORDER BY id DESC LIMIT ?) sub "
+            "ORDER BY id ASC",
             (uid, limit),
         )
         return [{"role": r[0], "text": r[1]} for r in rows]
+
+    # ── общая память с голосовым Джарвисом на ПК ────────────────────────────────
+    # Голосовые реплики и итоги разговоров на ПК лежат в той же таблице
+    # messages, но с ролями pc_*: recent_messages их не берёт (Gemini знает
+    # только user/model), а в контекст бота они идут отдельным блоком.
+    PC_ROLES = ("pc_user", "pc_jarvis", "pc_episode")
+
+    async def _load_voice(self, uid: int, limit: int = 30) -> list:
+        rows = await self._fetchall(
+            "SELECT role, text, created_at FROM (SELECT id, role, text, created_at FROM messages "
+            "WHERE user_id=? AND role IN ('pc_user', 'pc_jarvis', 'pc_episode') "
+            "ORDER BY id DESC LIMIT ?) sub ORDER BY id ASC",
+            (uid, limit),
+        )
+        return [{"role": r[0], "text": r[1], "created_at": r[2]} for r in rows]
+
+    def cached_voice(self, uid: int) -> list:
+        d = self._cache.get(uid)
+        return d.get("voice", []) if d else []
+
+    async def add_pc_message(self, uid: int, role: str, text: str, created_at: str = ""):
+        """Реплика голосом на ПК (pc_user/pc_jarvis) или итог разговора (pc_episode)."""
+        text = (text or "").strip()
+        if role not in self.PC_ROLES or not text:
+            return
+        await self.ensure_loaded(uid)
+        ts = created_at or datetime.now().isoformat()
+        await self._exec(
+            "INSERT INTO messages(user_id, role, text, created_at) VALUES(?,?,?,?)",
+            (uid, role, text[:2000], ts),
+        )
+        voice = self._cache[uid].setdefault("voice", [])
+        voice.append({"role": role, "text": text[:2000], "created_at": ts})
+        del voice[:-30]
+
+    async def messages_after(self, uid: int, after_id: int, limit: int = 30) -> list:
+        """Переписка в Telegram после сообщения after_id (для ПК)."""
+        rows = await self._fetchall(
+            "SELECT id, role, text, created_at FROM messages WHERE user_id=? AND id>? "
+            "AND role IN ('user', 'model') ORDER BY id DESC LIMIT ?",
+            (uid, int(after_id or 0), limit),
+        )
+        return [{"id": r[0], "role": r[1], "text": r[2], "created_at": r[3]} for r in reversed(rows)]
+
+    async def del_fact_text(self, uid: int, fact: str) -> bool:
+        """Удалить факт по точному тексту (без учёта регистра)."""
+        facts = await self.get_facts(uid)
+        low = (fact or "").strip().lower()
+        for i, f in enumerate(facts, 1):
+            if f.lower() == low:
+                return bool(await self.del_fact(uid, i))
+        return False
+
+    async def forget_like(self, uid: int, query: str) -> list:
+        """«Забудь про X»: удалить все факты, где встречается X."""
+        q = (query or "").strip().lower()
+        if len(q) < 3:
+            return []
+        gone = []
+        for f in await self.get_facts(uid):
+            if q in f.lower():
+                if await self.del_fact_text(uid, f):
+                    gone.append(f)
+        return gone
 
     async def message_count(self, uid: int) -> int:
         row = await self._fetchone("SELECT COUNT(*) FROM messages WHERE user_id=?", (uid,))

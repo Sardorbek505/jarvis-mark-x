@@ -83,7 +83,9 @@ def log_turn(role: str, text: str, ts: float | None = None):
     text = (text or "").strip()
     if not text or text.startswith("["):
         return
-    _append_jsonl(DIALOG_FILE, {"ts": ts or time.time(), "role": role, "text": text[:2000]}, KEEP_LINES)
+    ts = ts or time.time()
+    _append_jsonl(DIALOG_FILE, {"ts": ts, "role": role, "text": text[:2000]}, KEEP_LINES)
+    _share(lambda sh: sh.queue_turn(role, text[:2000], ts))
 
 
 def turns_since(ts: float) -> list[dict]:
@@ -136,7 +138,17 @@ def search_dialog(query: str, limit: int = 8) -> list[str]:
 def add_episode(summary: str, ts: float | None = None):
     summary = (summary or "").strip()
     if summary:
-        _append_jsonl(EPISODES_FILE, {"ts": ts or time.time(), "summary": summary[:600]}, 2000)
+        ts = ts or time.time()
+        _append_jsonl(EPISODES_FILE, {"ts": ts, "summary": summary[:600]}, 2000)
+        _share(lambda sh: sh.queue_episode(summary[:600], ts))
+
+
+def _share(fn):
+    try:
+        from memory import shared
+        fn(shared)
+    except Exception as exc:
+        logger.debug("Общая память: %s", exc)
 
 
 def format_episodes(now: float | None = None) -> str:
@@ -311,6 +323,12 @@ def collector() -> Collector:
 def prompt_context(resuming: bool) -> str:
     """Итоги прошлых разговоров, а в новую сессию — ещё и хвост разговора."""
     parts = [format_episodes()]
+    try:
+        from memory import shared
+        from memory.memory_manager import all_facts
+        parts.append(shared.prompt_block(all_facts()))
+    except Exception as exc:
+        logger.debug("Общая память: %s", exc)
     if not resuming:
         parts.append(format_recent())
     return "\n".join(p for p in parts if p)
@@ -331,6 +349,13 @@ def recall(query: str = "") -> str:
         lines = search_dialog(q)
         if lines:
             out.append("Реплики: " + " | ".join(lines))
+    try:
+        from memory import shared
+        more = shared.search(q)
+        if more:
+            out.append("Общая память с Telegram: " + " | ".join(more))
+    except Exception as exc:
+        logger.debug("Общая память: %s", exc)
     return "\n".join(out) or (f"В памяти ничего про «{q}»." if q else "Память пока пуста.")
 
 

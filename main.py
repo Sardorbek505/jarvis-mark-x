@@ -1299,6 +1299,8 @@ class Jarvis:
         try:
             from memory.conversation import collector
             collector().start()
+            from memory import shared
+            shared.start()          # одна память с Telegram-ботом
         except Exception as exc:
             logger.warning("Сбор памяти не запустился: %s", exc)
 

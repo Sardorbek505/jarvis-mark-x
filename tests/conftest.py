@@ -54,4 +54,8 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     monkeypatch.setattr(conv, "EPISODES_FILE", d / "episodes.jsonl")
     monkeypatch.setattr(conv, "STATE_FILE", d / "collector.json")
     monkeypatch.setattr(conv, "_collector", None)
+    import memory.shared as shared
+    monkeypatch.setattr(shared, "OUTBOX_FILE", d / "sync_outbox.json")
+    monkeypatch.setattr(shared, "SHARED_FILE", d / "shared.json")
+    monkeypatch.setattr(shared, "_config", lambda: ("", ""))   # без сервера, пока тест не задаст
     yield

@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Set
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -163,7 +163,7 @@ async def pc_link(ws: WebSocket):
     expected = _pc_link_token()
     # Без настроенного токена — не пускаем никого. Раньше пустой токен значил
     # «без проверки»: чужой «ПК» получал все команды и исходящие сообщения.
-    if not expected or not hmac.compare_digest(token, expected):
+    if not expected or not hmac.compare_digest(token.encode(), expected.encode()):
         await ws.close(code=1008)
         logger.warning("PC link rejected — %s", "no PC_LINK_TOKEN configured" if not expected else "bad token")
         return
@@ -185,6 +185,32 @@ async def pc_link(ws: WebSocket):
     finally:
         if _bridge and cid is not None:
             await _bridge.unregister(cid)
+
+
+# ── Общая память с голосовым Джарвисом на ПК ──────────────────────────────────
+
+@app.post("/api/memory/sync")
+async def memory_sync(request: Request):
+    """ПК отдаёт новое из своей памяти и забирает общую (telegram_bot/shared_memory.py).
+    Доступ — тем же секретом, что и /pc-link."""
+    import hmac
+
+    from fastapi.responses import JSONResponse
+
+    from telegram_bot import shared_memory
+    expected = _pc_link_token()
+    got = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    # Байты, а не str: compare_digest падает на не-ASCII символах (500 вместо 403).
+    if not expected or not hmac.compare_digest(got.encode(), expected.encode()):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    allowed = _cfg().allowed_user_ids
+    if not allowed or _memory is None:
+        return JSONResponse({"error": "no owner or memory"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    return await shared_memory.apply_sync(_memory, allowed[0], body)
 
 
 # ── Mini App data tabs (habits / tasks / reminders / dashboard) ───────────────
