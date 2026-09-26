@@ -95,3 +95,13 @@ def test_other_scripts_do_not_wake_on_anything():
     assert not has_wake_word("看到了。")
     assert not has_wake_word("ტელევიზორი ჩართე")     # грузинский без имени
     assert not has_wake_word("Türkçenin galosu mu sana?")
+
+
+def test_name_heard_with_l_instead_of_v():
+    """Живой тест с владельцем: он сказал «Джарвис», расшифровка дала
+    «Ты меня слышишь, Чарлис?» — «л» вместо «в», и Джарвис промолчал."""
+    assert has_wake_word("Ты меня слышишь, Чарлис?")
+    assert has_wake_word("чарлис")
+    assert has_wake_word("джарлис")
+    assert not has_wake_word("Карлос уехал")
+    assert not has_wake_word("парус")
