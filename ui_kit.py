@@ -94,7 +94,7 @@ def _label(text: str, name: str = "", wrap: bool = True) -> QLabel:
 
 def _cap(text: str) -> QLabel:
     """Подпись раздела капсом, с разрядкой — как в HUD."""
-    w = _label(text.upper(), "cap")
+    w = _label(text.upper(), "cap", wrap=False)
     f = w.font()
     f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.6)
     w.setFont(f)

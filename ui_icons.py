@@ -14,7 +14,7 @@ from PyQt6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QP
 NAMES = ("play", "pause", "backward", "forward", "expand", "timer", "note", "film",
          "close", "send", "back", "next", "reload", "check", "checks", "eye",
          "app", "globe", "keyboard", "text", "cursor", "volume", "speak", "bolt", "spark", "plus",
-         "trash", "up", "down", "grid", "mic", "key", "lock", "phone", "link", "copy", "plane")
+         "trash", "up", "down", "grid", "mic", "key", "lock", "phone", "link", "copy", "plane", "person", "moon")
 
 
 def _tri(pts) -> QPolygonF:
@@ -271,6 +271,19 @@ def draw_icon(p: QPainter, name: str, c: QPointF, s: float, color: QColor):
         p.drawPolygon(_tri([(x - s * 0.42, y - s * 0.02), (x + s * 0.42, y - s * 0.34), (x + s * 0.18, y + s * 0.38),
                             (x - s * 0.02, y + s * 0.10)]))
         p.drawLine(QPointF(x - s * 0.02, y + s * 0.10), QPointF(x + s * 0.42, y - s * 0.34))
+    elif name == "person":
+        p.setPen(line)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(x, y - s * 0.16), s * 0.17, s * 0.17)
+        p.drawArc(QRectF(x - s * 0.34, y + s * 0.06, s * 0.68, s * 0.64), 0, 180 * 16)
+    elif name == "moon":
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        path = QPainterPath()
+        path.addEllipse(QPointF(x, y), s * 0.36, s * 0.36)
+        cut = QPainterPath()
+        cut.addEllipse(QPointF(x + s * 0.18, y - s * 0.14), s * 0.30, s * 0.30)
+        p.drawPath(path.subtracted(cut))
     p.restore()
 
 

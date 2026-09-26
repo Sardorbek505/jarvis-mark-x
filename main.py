@@ -469,9 +469,26 @@ def _action_of(args: dict) -> str:
 
 def _args_key(name: str, args: dict) -> str:
     """Подтверждение действует на ЭТОТ вызов целиком: «да» на удаление
-    a.txt не должно открывать удаление всего рабочего стола."""
+    a.txt не должно открывать удаление всего рабочего стола.
+
+    Сообщение и звонок контакту — по «кому и что сделать»: модель на втором
+    вызове может пересказать текст иначе, а уйдёт всё равно ровно тот текст,
+    который пользователь услышал и подтвердил (см. _execute_tool)."""
     import json as _json
+    if name == "contacts":
+        return f"contacts:{_action_of(args)}:{str(args.get('name', '')).strip().lower()}"
     return name + ":" + _json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _confirm_question(name: str, args: dict) -> str:
+    """Что именно переспросить — дословно (для сообщений и звонков людям)."""
+    if name != "contacts":
+        return ""
+    try:
+        from core.contacts import contacts
+        return contacts().confirm_text(_action_of(args), str(args.get("name", "")), str(args.get("text", "")))
+    except Exception:
+        return ""
 
 
 _YES_RE = re.compile(
@@ -485,6 +502,17 @@ def _is_affirmative(text: str) -> bool:
 
 
 def _is_destructive(name: str, args: dict) -> bool:
+    if name == "contacts" and _action_of(args) in ("message", "call"):
+        # Человеку от вашего имени — только после «да». Но если такого
+        # контакта нет или писать ему нельзя, спрашивать нечего: инструмент
+        # сам скажет, что не так.
+        try:
+            from core.contacts import contacts
+            c, _problem = contacts().precheck(_action_of(args), str(args.get("name", "")),
+                                              str(args.get("text", "")) or "…", urgent=True)
+            return c is not None
+        except Exception:
+            return True
     if name == "macro" and _action_of(args) == "run":
         try:
             from core.macros import macros
@@ -1319,14 +1347,41 @@ TOOLS = [
         }
     },
     {
-        "name": "app_window",
+        "name": "contacts",
         "description": (
-            "Открыть окно Джарвиса: keys — «открой ключи», «где ввести ключ», «проверь ключи», "
-            "«подключи Spotify/звонки» (там же вход кнопкой); commands — «открой редактор команд»."
+            "ЛЮДИ из записной книжки пользователя. message — «напиши маме, что задержусь на 20 минут» "
+            "(от ЕГО Telegram; text — само сообщение от первого лица, как написал бы он: «Задержусь на "
+            "20 минут»; as_voice — голосовым); call — «позвони брату и скажи, что ужин готов» (звонит "
+            "аккаунт Джарвиса, text — что передать; urgent — если сказал «срочно»); read — «что мне "
+            "написали?», «что написала мама?»; add — «добавь контакт Азиз — @aziz» (aliases — как ещё "
+            "его называет); delete; find; list. Перед отправкой и звонком система попросит "
+            "подтверждение — переспроси ДОСЛОВНО и вызови снова только после «да». Себе в Telegram — "
+            "send_to_telegram, позвонить самому пользователю — phone_call."
         ),
         "parameters": {
             "type": "OBJECT",
-            "properties": {"window": {"type": "STRING", "enum": ["keys", "commands"]}},
+            "properties": {
+                "action": {"type": "STRING", "enum": ["message", "call", "read", "add", "delete", "find", "list"]},
+                "name": {"type": "STRING", "description": "Кому — как назвал пользователь: «мама», «брат», «Азиз»"},
+                "text": {"type": "STRING", "description": "message: текст сообщения; call: что передать"},
+                "as_voice": {"type": "BOOLEAN"},
+                "urgent": {"type": "BOOLEAN", "description": "call: сказал «срочно» — можно и ночью"},
+                "telegram": {"type": "STRING", "description": "add: @username или номер"},
+                "aliases": {"type": "STRING", "description": "add: как ещё называет, через запятую"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "app_window",
+        "description": (
+            "Открыть окно Джарвиса: keys — «открой ключи», «где ввести ключ», «проверь ключи», "
+            "«подключи Spotify/звонки» (там же вход кнопкой); commands — «открой редактор команд»; "
+            "contacts — «открой контакты», «подключи мой телеграм»."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {"window": {"type": "STRING", "enum": ["keys", "commands", "contacts"]}},
             "required": ["window"]
         }
     },
@@ -1460,6 +1515,11 @@ class Jarvis:
         self.team_engine = TeamCollaborationEngine(DATA_DIR)
         self.last_user_text = ""
         self._user_turn = 0      # номер последней реплики пользователя (для подтверждений)
+        # Ждёт «да»: (ключ, когда спросили, номер реплики) и сами аргументы.
+        # Без этого первое же «выключи компьютер» падало AttributeError
+        # вместо вопроса «точно?» — проверялось только правило, не сам вопрос.
+        self._pending_destructive: tuple | None = None
+        self._pending_args: dict | None = None
 
         # Секундомер голосового хода. Пишет в лог задержку от конца речи до
         # первого звука ответа при JARVIS_DEBUG_UI=1.
@@ -1533,6 +1593,17 @@ class Jarvis:
                 logger.debug("Проверка ключей: %s", exc)
         if os.getenv("JARVIS_KEYS_CHECK", "1") != "0":
             threading.Thread(target=_check_keys, daemon=True, name="keys-check").start()
+
+        # Контакты (core/contacts.py): новые сообщения близких — в капсулу.
+        try:
+            from core.contacts import contacts
+            ct = contacts()
+            ct.log = self.ui.write_log
+            ct.say = self.speak
+            if os.getenv("JARVIS_CONTACTS_LISTEN", "1") != "0":
+                ct.me.start_listening()
+        except Exception as exc:
+            logger.warning("Контакты не подключились: %s", exc)
 
         # Свои команды (core/macros.py): шагам нужны голос, журнал и инструменты.
         try:
@@ -1998,18 +2069,22 @@ class Jarvis:
             )
             if not fresh:
                 self._pending_destructive = (key, time.time(), self._user_turn)
+                self._pending_args = dict(args)
+                question = _confirm_question(name, args)
                 logger.warning("Требую подтверждения: %s/%s", name, _action_of(args))
-                self.ui.write_log(f"SYS: жду подтверждения — {name}/{_action_of(args)}")
+                self.ui.write_log(f"SYS: жду подтверждения — {question or name + '/' + _action_of(args)}")
                 if not self.ui.muted:
                     self.ui.set_state("LISTENING")
                 return types.FunctionResponse(
                     id=fc.id, name=name,
                     response={"result": (
-                        "НЕ ВЫПОЛНЕНО — нужно подтверждение. Переспроси пользователя вслух, "
-                        "точно ли он хочет это сделать, и вызови инструмент повторно "
-                        "ТОЛЬКО если он ответит утвердительно."
+                        "НЕ ВЫПОЛНЕНО — нужно подтверждение. Переспроси пользователя вслух"
+                        + (f" дословно: «{question}»" if question else ", точно ли он хочет это сделать")
+                        + ", и вызови инструмент повторно ТОЛЬКО если он ответит утвердительно."
                     )},
                 )
+            if name == "contacts":
+                args = dict(getattr(self, "_pending_args", None) or args)   # ровно то, что подтвердили
             self._pending_destructive = None
             logger.warning("Подтверждено, выполняю: %s/%s", name, _action_of(args))
 
@@ -2315,13 +2390,21 @@ class Jarvis:
 
             elif name == "app_window":
                 which = str(args.get("window", "")).lower()
-                opener = getattr(self.ui, "open_keys" if which == "keys" else "open_macros", None)
+                titles = {"keys": ("open_keys", "Ключи и подключения"), "commands": ("open_macros", "Свои команды"),
+                          "contacts": ("open_contacts", "Контакты")}
+                method, title = titles.get(which, titles["commands"])
+                opener = getattr(self.ui, method, None)
                 if opener:
                     opener()
-                    result = ("Открыл окно «Ключи и подключения»." if which == "keys"
-                              else "Открыл окно «Свои команды».")
+                    result = f"Открыл окно «{title}»."
                 else:
                     result = "Окна тут нет — запущен без интерфейса."
+
+            elif name == "contacts":
+                from core.contacts import contacts_tool
+                who = str(args.get("name", ""))
+                result = await asyncio.to_thread(contacts_tool, args, lambda r, w=who: self.speak(
+                    f"[СИСТЕМА: звонок ({w}) закончился: {r} Коротко перескажи пользователю, что ответили.]"))
 
             elif name == "macro":
                 if str(args.get("action", "")).lower() == "editor":

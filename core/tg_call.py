@@ -142,6 +142,23 @@ def instruction(topic: str, context: str = "", name: str = "сэр") -> str:
     )
 
 
+def instruction_contact(owner: str, contact: str, message: str) -> str:
+    """Звонок НЕ хозяину, а его контакту — по его просьбе."""
+    now = datetime.now().strftime("%A, %d %B %Y, %H:%M")
+    return (
+        f"Ты — ДЖАРВИС, голосовой ИИ-ассистент {owner}. Вежливый, спокойный, тёплый.\n"
+        f"Сейчас {now}. Ты САМ позвонил человеку по имени {contact} по Telegram по просьбе {owner}, "
+        "и он только что взял трубку.\n"
+        f"Что {owner} просил передать: «{message or 'просто узнать, как дела'}».\n"
+        "Говори по-русски, коротко и живо. Начни сам: поздоровайся, представься («Это Джарвис, "
+        f"ассистент {owner}») и передай сообщение своими словами, ничего не добавляя от себя.\n"
+        f"Ответь на вопросы, если знаешь ответ из сообщения; чего не знаешь — не выдумывай и не "
+        f"обещай ничего за {owner}: скажи, что передашь. Если попросят что-то передать — запомни дословно.\n"
+        "Не клади трубку сразу после сообщения: дай ответить. end_call — когда собеседник "
+        "попрощался или всё сказано и вы попрощались."
+    )
+
+
 class CallSession:
     """Один звонок: дозвон → разговор с Gemini → отбой.
 
@@ -450,7 +467,8 @@ def _gemini_live(prompt: str):
     return client.aio.live.connect(model=model, config=config)
 
 
-async def _call_async(topic: str, context: str, log) -> str:
+async def _call_async(topic: str, context: str, log, target: str = "", prompt: str = "",
+                      transcript: list | None = None) -> str:
     from telethon import TelegramClient
     api_id, api_hash = _credentials()
     client = TelegramClient(session_path(), api_id, api_hash)
@@ -458,12 +476,16 @@ async def _call_async(topic: str, context: str, log) -> str:
     try:
         if not await client.is_user_authorized():
             return "Аккаунт Джарвиса для звонков вышел из сессии: запустите JARVIS.exe --caller-login."
-        peer = await resolve_peer(client, str(_keys().get("call_to", "")))
+        peer = await resolve_peer(client, target or str(_keys().get("call_to", "")))
         tg = TgCall(client)
         await tg.start()
         name = (_keys().get("user_name") or "сэр")
-        sess = CallSession(tg, _gemini_live, peer, instruction(topic, context, name), log=log)
-        return await sess.run()
+        sess = CallSession(tg, _gemini_live, peer, prompt or instruction(topic, context, name), log=log)
+        try:
+            return await sess.run()
+        finally:
+            if transcript is not None:
+                transcript.extend(sess.transcript)
     finally:
         await client.disconnect()
 
@@ -482,6 +504,35 @@ def call(topic: str = "просто позвонить", context: str = "", log=
         return f"Звонок не удался: {type(exc).__name__}: {exc}"
     finally:
         _call_lock.release()
+
+
+def _what_they_said(transcript: list[str], limit: int = 400) -> str:
+    """Реплики собеседника (в расшифровке — «Вы:») — одной строкой."""
+    said = " ".join(t.split(":", 1)[1].strip() for t in transcript if t.startswith("Вы:"))
+    said = re.sub(r"\s+", " ", said).strip()
+    return said if len(said) <= limit else said[:limit - 1] + "…"
+
+
+def call_contact(target: str, contact: str, message: str, log=None) -> str:
+    """Позвонить контакту хозяина, передать сообщение, вернуть пересказ ответа."""
+    problem = ready()
+    if problem and "Не знаю, кому звонить" not in problem:
+        return problem
+    if not _call_lock.acquire(blocking=False):
+        return "Я уже на звонке — позвоню после."
+    heard: list[str] = []
+    try:
+        owner = (_keys().get("user_name") or "моего владельца")
+        result = asyncio.run(_call_async(message, "", log or (lambda s: logger.info("Звонок %s: %s", contact, s)),
+                                         target=target, prompt=instruction_contact(owner, contact, message),
+                                         transcript=heard))
+    except Exception as exc:
+        logger.exception("Звонок контакту")
+        return f"Звонок не удался: {type(exc).__name__}: {exc}"
+    finally:
+        _call_lock.release()
+    said = _what_they_said(heard)
+    return result + (f" {contact} ответил: «{said}»." if said else " Ответа не расслышал.")
 
 
 def call_in_background(topic: str, context_fn: Callable[[], str] | None = None,
