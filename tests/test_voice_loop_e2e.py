@@ -282,6 +282,35 @@ async def test_расшифровка_и_ответ_попадают_в_окно
     assert "Здравствуйте, сэр." in logs, "ответ Джарвиса не показан"
 
 
+@pytest.mark.asyncio
+async def test_после_разрыва_разговор_продолжается_с_места(стенд):
+    """Сказанное голосом попадает в журнал, и новая сессия (возобновить не
+    удалось) получает хвост разговора. Раньше Джарвис начинал с нуля."""
+    import time as _time
+
+    import memory.conversation as conv
+    script = [
+        _resp(heard="у меня завтра экзамен по физике"),
+        _resp(data=b"\x07\x08" * 50),
+        _resp(said="Удачи, сэр. Повторим формулы?", turn_complete=True),
+    ]
+    await _прогнать(стенд, [_loud()], script)
+    for _ in range(100):                                    # журнал пишется в потоке
+        if len(conv._read_jsonl(conv.DIALOG_FILE)) >= 2:
+            break
+        _time.sleep(0.02)
+
+    j = стенд.jarvis
+    j._resume_handle = None
+    fresh = j._build_config().system_instruction
+    fresh = fresh if isinstance(fresh, str) else str(fresh)
+    assert "НЕДАВНИЙ РАЗГОВОР — это было до переподключения" in fresh
+    assert "Вы: у меня завтра экзамен по физике" in fresh and "Джарвис: Удачи, сэр. Повторим формулы?" in fresh
+    j._resume_handle = "handle"
+    resumed = str(j._build_config().system_instruction)
+    assert "экзамен по физике" not in resumed                # сервер помнит сам
+
+
 @pytest.fixture
 def поддельный_fish(monkeypatch):
     """Fish без сети: запоминает, что ему дали, и отдаёт метку вместо звука."""

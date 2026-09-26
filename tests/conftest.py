@@ -39,3 +39,19 @@ def _isolate_rag_cache():
     memory_rag._VECS.clear()
     yield
     memory_rag._VECS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_voice_memory(tmp_path, monkeypatch):
+    """Журнал разговора, итоги и факты голосового Джарвиса — во временную
+    папку. Иначе сквозные тесты голосового цикла писали реплики в настоящий
+    memory/dialog.jsonl (в режиме разработки папка данных — сам репозиторий)."""
+    import memory.conversation as conv
+    import memory.memory_manager as mm
+    d = tmp_path / "voice_memory"
+    monkeypatch.setattr(mm, "_MEMORY_FILE", d / "data.json")
+    monkeypatch.setattr(conv, "DIALOG_FILE", d / "dialog.jsonl")
+    monkeypatch.setattr(conv, "EPISODES_FILE", d / "episodes.jsonl")
+    monkeypatch.setattr(conv, "STATE_FILE", d / "collector.json")
+    monkeypatch.setattr(conv, "_collector", None)
+    yield

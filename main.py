@@ -710,13 +710,28 @@ TOOLS = [
             "properties": {
                 "category": {
                     "type": "STRING",
-                    "enum": ["identity", "preferences", "projects", "relationships", "wishes", "notes"],
+                    "enum": ["identity", "relationships", "work", "health", "habits", "dates",
+                             "preferences", "projects", "wishes", "notes"],
                 },
                 "key":   {"type": "STRING", "description": "Короткий ключ: name, city, любимая_музыка"},
                 "value": {"type": "STRING", "description": "Значение на языке пользователя, как он сказал"},
             },
             "required": ["category", "key", "value"]
         }
+    },
+    {
+        "name": "recall_memory",
+        "description": (
+            "Вспомнить, что ты знаешь о пользователе и о чём вы говорили. Вызывай на «что ты обо мне знаешь», "
+            "«помнишь, я говорил про…», «о чём мы вчера говорили», «как зовут моего брата», и когда сам "
+            "не уверен в факте о пользователе — прежде чем переспрашивать. query — тема; пусто — всё."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING"}}}
+    },
+    {
+        "name": "forget_memory",
+        "description": "Забыть факт о пользователе: «забудь, что я…», «удали из памяти…». query — о чём.",
+        "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING"}}, "required": ["query"]}
     },
     {
         "name": "obsidian",
@@ -1280,6 +1295,13 @@ class Jarvis:
         except Exception as exc:
             logger.debug("Индекс программ: %s", exc)
 
+        # Память: после разговора факты и итог — в долгосрочную память.
+        try:
+            from memory.conversation import collector
+            collector().start()
+        except Exception as exc:
+            logger.warning("Сбор памяти не запустился: %s", exc)
+
         # «Вы смотрите уже два часа…» — забота о перерывах (core/break_reminder.py)
         # и звонки по расписанию в Telegram (core/tg_call.py).
         try:
@@ -1424,6 +1446,7 @@ class Jarvis:
             self.wake()
             self.last_user_text = text
             self._user_turn += 1
+            self._remember_turn(text, "")
             self._send_text_to_session(text)
 
     # ── Обращение по имени ────────────────────────────────────────────────────
@@ -1531,6 +1554,18 @@ class Jarvis:
         self.wake()
         self._send_text_to_session(text)
 
+    def _remember_turn(self, user: str, jarvis: str):
+        """Реплики — в журнал разговора (memory/conversation.py). В потоке:
+        этот цикл гонит звук, а журнал изредка подрезается на диске."""
+        def write():
+            from memory.conversation import log_turn
+            try:
+                log_turn("user", user)
+                log_turn("jarvis", jarvis)
+            except Exception as exc:
+                logger.warning("Журнал разговора: %s", exc)
+        threading.Thread(target=write, daemon=True).start()
+
     def _call_finished(self, result: str):
         """Итог звонка — в журнал, не голосом: звонок мог быть в 6 утра."""
         self.ui.write_log(f"SYS: 📞 {result}")
@@ -1576,6 +1611,16 @@ class Jarvis:
             parts.append(profile_str)
         if mem_str:
             parts.append(mem_str)
+        # Итоги прошлых разговоров, а если сессию не удалось возобновить
+        # (или это первый запуск) — ещё и хвост разговора: без него Джарвис
+        # после разрыва начинал с чистого листа.
+        try:
+            from memory.conversation import prompt_context
+            conv = prompt_context(resuming=bool(self._resume_handle))
+            if conv:
+                parts.append(conv)
+        except Exception as exc:
+            logger.warning("Контекст разговора не загрузился: %s", exc)
         parts.append(sys_prompt)
 
         return types.LiveConnectConfig(
@@ -1970,6 +2015,15 @@ class Jarvis:
                 result = await loop.run_in_executor(
                     None, lambda: sleep_timer(args, player=self.ui, bot=self)
                 )
+
+            # ── Инструмент: память ────────────────────────────────────────
+            elif name == "recall_memory":
+                from memory.conversation import recall
+                result = await asyncio.to_thread(recall, args.get("query", ""))
+
+            elif name == "forget_memory":
+                from memory.conversation import forget_about
+                result = await asyncio.to_thread(forget_about, args.get("query", ""))
 
             # ── Инструмент: перерывы и звонки ─────────────────────────────
             elif name == "break_reminder":
@@ -2664,6 +2718,7 @@ class Jarvis:
 
                             if full_out:
                                 self.ui.write_log(f"Джарвис: {full_out}")
+                            self._remember_turn(full_in, full_out)
 
                     if response.tool_call:
                         if addressed is None:

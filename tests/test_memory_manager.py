@@ -9,14 +9,14 @@ def _fresh(tmp_path, monkeypatch):
 
 def test_category_is_capped(tmp_path, monkeypatch):
     _fresh(tmp_path, monkeypatch)
-    for i in range(40):
+    for i in range(mm._PER_CATEGORY + 15):
         mm.update_memory({"notes": {f"n{i}": "факт"}})
     assert len(mm.load_memory()["notes"]) == mm._PER_CATEGORY
 
 
 def test_prompt_is_bounded_and_identity_first(tmp_path, monkeypatch):
     _fresh(tmp_path, monkeypatch)
-    for i in range(25):
+    for i in range(70):
         mm.update_memory({"notes": {f"n{i}": "очень длинная заметка " * 5}})
     mm.update_memory({"identity": {"name": "Сардор"}})
     out = mm.format_memory_for_prompt(mm.load_memory())
