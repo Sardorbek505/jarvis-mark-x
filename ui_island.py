@@ -66,6 +66,7 @@ class IslandModel:
     last_reply: str = ""
     banners: list[Banner] = field(default_factory=list)
     listen_since: float = 0.0      # когда позвали «Джарвис» (для вспышки)
+    eyes: bool = False             # глаза открыты (core/eyes.py) — видно значок
 
     def set_state(self, ui_state: str, now: float | None = None):
         new = _STATE_FROM_UI.get((ui_state or "").upper(), ui_state if ui_state in STATE_RGB else "idle")
@@ -246,6 +247,7 @@ class Island(QWidget):
     _reply_sig = pyqtSignal(str)
     _event_sig = pyqtSignal(str, str)
     _media_sig = pyqtSignal(object, str, float)
+    _eyes_sig = pyqtSignal(bool)
 
     W, H = 460, 212                 # окно с запасом под самый большой вид
     TOP = 16                        # отступ от верхнего края экрана
@@ -282,6 +284,7 @@ class Island(QWidget):
         self._reply_sig.connect(lambda t: self.model.notify("ДЖАРВИС", t, "reply"))
         self._event_sig.connect(lambda title, text: self.model.notify(title, text, "event"))
         self._media_sig.connect(self._set_media)
+        self._eyes_sig.connect(lambda on: setattr(self.model, "eyes", on))
 
         self._tmr = QTimer(self)
         self._tmr.setTimerType(Qt.TimerType.PreciseTimer)
@@ -306,6 +309,9 @@ class Island(QWidget):
 
     def notify(self, title: str, text: str):
         self._event_sig.emit(str(title), str(text))
+
+    def set_eyes(self, on: bool):
+        self._eyes_sig.emit(bool(on))
 
     # ── показ ───────────────────────────────────────────────────────────────
     def _place(self):
@@ -504,12 +510,24 @@ class Island(QWidget):
         # компактный и «что играет»
         self._mini_orb(p, x0 + 20, h / 2, 9)
         media = m.media
+        eye_w = 18 if m.eyes else 0
         if mode == "activity" and media and w > 200:
-            self._text(p, QRectF(x0 + 38, 0, w - 80, h), media.title, 9, white)
+            self._text(p, QRectF(x0 + 38, 0, w - 80 - eye_w, h), media.title, 9, white)
             self._eq(p, x0 + w - 32, h / 2, media.playing)
+            if m.eyes:
+                self._eye(p, x0 + w - 46, h / 2)
         else:
             label = m.timer_text() if (m.timer_label and m.state == "idle") else STATE_LABEL.get(m.state, "")
-            self._text(p, QRectF(x0 + 36, 0, w - 50, h), label, 7.5, self._col(235, 0.25), bold=True, spacing=1.6)
+            self._text(p, QRectF(x0 + 36, 0, w - 50 - eye_w, h), label, 7.5, self._col(235, 0.25),
+                       bold=True, spacing=1.6)
+            if m.eyes:
+                self._eye(p, x0 + w - 20, h / 2)
+
+    def _eye(self, p: QPainter, cx: float, cy: float):
+        """Глаза открыты — Джарвис видит экран или камеру. Мягко пульсирует."""
+        from ui_icons import draw_icon
+        a = 170 + 70 * math.sin(self._clock * 2.4)
+        draw_icon(p, "eye", QPointF(cx, cy), 15, QColor(120, 200, 255, int(a)))
 
     def _paint_listen_glow(self, p: QPainter, path: QPainterPath, cap: QRectF):
         """«Позвали» — вспышка в момент имени и бегущий по краю свет, как у Siri."""
@@ -533,6 +551,8 @@ class Island(QWidget):
         self._mini_orb(p, x0 + 26, cy, 14)
         dots = "." * (int(self._clock * 2.5) % 4)
         self._text(p, QRectF(x0 + 50, 0, 120, h), "Слушаю" + dots, 10.5, white, bold=True)
+        if self.model.eyes:
+            self._eye(p, x0 + 157, cy)            # между «Слушаю…» и волной
         # Волна: живёт от голоса, а в тишине тихо «дышит» — видно, что микрофон открыт.
         n, bw, gap = len(self._wave), 3.0, 2.2
         right = x0 + w - 18

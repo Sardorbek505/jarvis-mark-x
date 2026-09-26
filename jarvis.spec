@@ -97,6 +97,7 @@ hidden_imports = [
     "core.wake_calibrate",
     "core.clock",
     "core.location",
+    "core.eyes",
     "qrcode",
     "telegram_bot.pc_userbot",
     "websockets.sync.client",

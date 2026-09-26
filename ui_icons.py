@@ -12,7 +12,7 @@ from PyQt6.QtCore import QPointF, QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 
 NAMES = ("play", "pause", "backward", "forward", "expand", "timer", "note", "film",
-         "close", "send", "back", "next", "reload", "check", "checks")
+         "close", "send", "back", "next", "reload", "check", "checks", "eye")
 
 
 def _tri(pts) -> QPolygonF:
@@ -108,6 +108,17 @@ def draw_icon(p: QPainter, name: str, c: QPointF, s: float, color: QColor):
         tip = QPointF(x + r * 0.17, y - r)
         p.drawLine(tip, QPointF(tip.x() - s * 0.16, tip.y() - s * 0.14))
         p.drawLine(tip, QPointF(tip.x() - s * 0.16, tip.y() + s * 0.14))
+    elif name == "eye":                           # eye.fill: миндаль и зрачок
+        p.setPen(line)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        w, h = s * 0.46, s * 0.30
+        path = QPainterPath(QPointF(x - w, y))
+        path.quadTo(QPointF(x, y - h * 2), QPointF(x + w, y))
+        path.quadTo(QPointF(x, y + h * 2), QPointF(x - w, y))
+        p.drawPath(path)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        p.drawEllipse(QPointF(x, y), s * 0.15, s * 0.15)
     elif name in ("check", "checks"):
         p.setPen(line)
         p.setBrush(Qt.BrushStyle.NoBrush)

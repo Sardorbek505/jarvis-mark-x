@@ -1231,6 +1231,29 @@ TOOLS = [
         }
     },
     {
+        "name": "eyes",
+        "description": (
+            "Глаза — постоянное зрение, как демонстрация экрана. «Смотри на экран», «следи за "
+            "экраном», «будь моими глазами» — open source=screen (window — только окно впереди); "
+            "«смотри на меня», «включи камеру» — open source=camera; «закрой глаза», «не смотри» — "
+            "close; «ты видишь?» — status. Пока глаза открыты, кадры приходят тебе сами: на «что "
+            "это?», «где ошибка?» отвечай по ним (для мелкого текста — look_at_screen). Сам по "
+            "кадрам не заговаривай. «Скажи, когда загрузка дойдёт до 100%», «следи, когда придёт "
+            "ответ» — watch (condition — что должно случиться, minutes — сколько ждать); "
+            "stop_watch — перестать."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["open", "close", "status", "watch", "stop_watch"]},
+                "source": {"type": "STRING", "enum": ["screen", "window", "camera"]},
+                "condition": {"type": "STRING", "description": "Для watch: что должно появиться на экране"},
+                "minutes": {"type": "NUMBER", "description": "Для watch: сколько минут следить (по умолчанию 30)"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "location",
         "description": (
             "Где пользователь: «где я», «какой у меня город» — where; «я живу в Ташкенте», «мой город "
@@ -1399,6 +1422,18 @@ class Jarvis:
         except Exception as exc:
             logger.warning("Сбор памяти не запустился: %s", exc)
 
+        # Глаза: постоянное зрение экрана или камеры (core/eyes.py).
+        try:
+            from core.eyes import SOURCES, eyes
+            ey = eyes()
+            ey.send = self._send_frame
+            ey.active = self.is_awake
+            ey.say = self.speak
+            ey.on_change = lambda src: self.ui.write_log(
+                "SYS: 👁 глаза закрыты" if src == "off" else f"SYS: 👁 смотрю на {SOURCES.get(src, src)}")
+        except Exception as exc:
+            logger.warning("Глаза не подключились: %s", exc)
+
         # Часы: таймеры, секундомер, будильники (core/clock.py). Сработало —
         # звук, голос Джарвиса и событие в журнале и капсуле.
         try:
@@ -1528,6 +1563,22 @@ class Jarvis:
             except Exception:
                 pass
             self._telegram_proc = None
+
+    # ── Глаза: кадр в Live-сессию (core/eyes.py) ──────────────────────────────
+    def _send_frame(self, jpeg: bytes) -> bool:
+        """Из потока глаз: кадр — в голосовую сессию. Нет связи или микрофон
+        выключен (Ctrl+M — «не слушай и не смотри») — кадр не уходит."""
+        if not jpeg or not self._loop or not self.session or not self._loop.is_running() or self.ui.muted:
+            return False
+        fut = asyncio.run_coroutine_threadsafe(
+            self.session.send_realtime_input(video=types.Blob(data=jpeg, mime_type="image/jpeg")),
+            self._loop)
+        try:
+            fut.result(timeout=3)
+            return True
+        except Exception as exc:
+            logger.debug("Кадр глаз не ушёл: %s", exc)
+            return False
 
     # ── Текстовый ввод ────────────────────────────────────────────────────────
     def _send_text_to_session(self, text: str):
@@ -2130,6 +2181,10 @@ class Jarvis:
             elif name == "clock":
                 from core.clock import clock_tool
                 result = await asyncio.to_thread(clock_tool, args)
+
+            elif name == "eyes":
+                from core.eyes import eyes_tool
+                result = await asyncio.to_thread(eyes_tool, args)
 
             elif name == "location":
                 from core.location import location_tool
