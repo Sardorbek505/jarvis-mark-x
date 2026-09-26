@@ -9,6 +9,7 @@ import logging
 import threading
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                              QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QTableWidget,
                              QTabWidget, QVBoxLayout, QWidget)
@@ -18,22 +19,59 @@ from core.macro_packs import PACKS
 
 logger = logging.getLogger(__name__)
 
-STYLE = """
-QDialog, QWidget { background: #0d1117; color: #e6edf3; font-family: 'Segoe UI'; font-size: 13px; }
-QTabWidget::pane { border: 1px solid #22303c; border-radius: 10px; }
-QTabBar::tab { background: #121a24; padding: 8px 18px; border-radius: 8px; margin: 4px; }
-QTabBar::tab:selected { background: #1f6feb; color: white; }
-QLineEdit, QPlainTextEdit, QComboBox, QTableWidget, QListWidget {
-  background: #121a24; border: 1px solid #22303c; border-radius: 8px; padding: 6px; }
-QListWidget::item { padding: 8px; border-radius: 6px; }
-QListWidget::item:selected { background: #1f3b61; }
-QPushButton { background: #1b2530; border: 1px solid #2a3947; border-radius: 8px; padding: 7px 14px; }
-QPushButton:hover { background: #243242; }
-QPushButton#primary { background: #1f6feb; border: none; color: white; font-weight: 600; }
-QHeaderView::section { background: #121a24; color: #8b98a5; border: none; padding: 4px; }
-QLabel#hint { color: #8b98a5; font-size: 12px; }
-QLabel#title { font-size: 18px; font-weight: 700; }
+from ui import C  # noqa: E402  (палитра Джарвиса — одна на все окна)
+
+# Тот же HUD, что у главного окна и оверлея настройки: почти чёрный фон,
+# тонкие рамки, бирюзовый акцент, «призрачные» кнопки, подписи капсом.
+STYLE = f"""
+QDialog {{ background: {C.BG}; }}
+QWidget {{ background: transparent; color: {C.TEXT}; font-family: 'Segoe UI'; font-size: 12px; }}
+QTabWidget::pane {{ border: 1px solid {C.BORDER}; border-radius: 3px; background: {C.PANEL}; top: -1px; }}
+QTabBar::tab {{ background: transparent; color: {C.TEXT_DIM}; padding: 7px 16px; margin-right: 2px;
+  font-family: Consolas; font-size: 11px; font-weight: bold; letter-spacing: 1px;
+  border: 1px solid transparent; border-bottom: none; }}
+QTabBar::tab:selected {{ color: {C.PRI}; border-color: {C.BORDER}; background: {C.PANEL};
+  border-top: 1px solid {C.PRI_DIM}; }}
+QTabBar::tab:hover {{ color: {C.TEXT_MED}; }}
+QLineEdit, QPlainTextEdit, QComboBox {{ background: #000d12; color: {C.TEXT};
+  border: 1px solid {C.BORDER}; border-radius: 3px; padding: 5px 8px; selection-background-color: {C.BORDER_B}; }}
+QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{ border: 1px solid {C.PRI}; }}
+QComboBox QAbstractItemView {{ background: {C.PANEL2}; border: 1px solid {C.BORDER_B};
+  selection-background-color: {C.PRI_GHO}; selection-color: {C.PRI}; }}
+QListWidget, QTableWidget {{ background: {C.DARK}; border: 1px solid {C.BORDER}; border-radius: 3px;
+  gridline-color: {C.BORDER}; outline: none; }}
+QListWidget::item {{ padding: 7px 8px; border-left: 2px solid transparent; }}
+QListWidget::item:hover {{ background: {C.PANEL2}; }}
+QListWidget::item:selected {{ background: {C.PRI_GHO}; color: {C.WHITE}; border-left: 2px solid {C.PRI}; }}
+QHeaderView::section {{ background: {C.PANEL}; color: {C.TEXT_DIM}; border: none;
+  border-bottom: 1px solid {C.BORDER}; padding: 4px; font-family: Consolas; font-size: 10px; }}
+QPushButton {{ background: transparent; color: {C.TEXT_MED}; border: 1px solid {C.BORDER_B};
+  border-radius: 3px; padding: 6px 12px; }}
+QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; background: {C.PRI_GHO}; }}
+QPushButton:disabled {{ color: {C.TEXT_DIM}; border-color: {C.BORDER}; }}
+QPushButton#primary {{ color: {C.PRI}; border: 1px solid {C.PRI_DIM}; font-family: Consolas; font-weight: bold; }}
+QPushButton#primary:hover {{ background: {C.PRI_GHO}; border-color: {C.PRI}; }}
+QPushButton#done {{ color: {C.GREEN}; border: 1px solid {C.GREEN_D}; font-family: Consolas; }}
+QCheckBox {{ color: {C.TEXT_MED}; spacing: 6px; }}
+QCheckBox::indicator {{ width: 12px; height: 12px; border: 1px solid {C.BORDER_B}; border-radius: 2px;
+  background: #000d12; }}
+QCheckBox::indicator:checked {{ background: {C.PRI_DIM}; border-color: {C.PRI}; }}
+QScrollBar:vertical {{ background: transparent; width: 4px; border: none; margin: 0; }}
+QScrollBar::handle:vertical {{ background: {C.BORDER_B}; border-radius: 2px; min-height: 20px; }}
+QScrollBar::handle:vertical:hover {{ background: {C.PRI_DIM}; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QLabel#hint {{ color: {C.TEXT_DIM}; font-size: 11px; }}
+QLabel#cap {{ color: {C.TEXT_DIM}; font-family: Consolas; font-size: 10px; font-weight: bold; letter-spacing: 1px; }}
+QLabel#title {{ color: {C.PRI}; font-family: Consolas; font-size: 14px; font-weight: bold; letter-spacing: 2px; }}
 """
+
+
+def _cap(text: str) -> QLabel:
+    """Подпись раздела капсом, как «GEMINI API КЛЮЧ» в оверлее настройки."""
+    w = QLabel(text.upper())
+    w.setObjectName("cap")
+    return w
+
 
 TYPES = list(mc.STEP_TYPES)
 
@@ -50,8 +88,8 @@ class MacrosDialog(QDialog):
         self.setStyleSheet(STYLE)
         self.resize(980, 640)
         tabs = QTabWidget()
-        tabs.addTab(self._commands_tab(), "Свои команды")
-        tabs.addTab(self._packs_tab(), "Паки программ")
+        tabs.addTab(self._commands_tab(), "СВОИ КОМАНДЫ")
+        tabs.addTab(self._packs_tab(), "ПАКИ ПРОГРАММ")
         lay = QVBoxLayout(self)
         lay.addWidget(tabs)
         self._ai_done.connect(self._on_ai)
@@ -65,10 +103,12 @@ class MacrosDialog(QDialog):
         self.search = QLineEdit(placeholderText="Поиск команды…")
         self.search.textChanged.connect(self.reload)
         self.list = QListWidget()
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list.setWordWrap(True)
         self.list.currentItemChanged.connect(lambda cur, _prev: self.show_command(cur.data(Qt.ItemDataRole.UserRole)
                                                                                  if cur else None))
         btns = QHBoxLayout()
-        new, dele = QPushButton("＋ Новая"), QPushButton("Удалить")
+        new, dele = QPushButton("+ НОВАЯ"), QPushButton("УДАЛИТЬ")
         new.clicked.connect(self.new_command)
         dele.clicked.connect(self.delete_command)
         btns.addWidget(new)
@@ -78,13 +118,13 @@ class MacrosDialog(QDialog):
         left.addLayout(btns)
 
         right = QVBoxLayout()
-        title = QLabel("Команда")
+        title = QLabel("◈ КОМАНДА")
         title.setObjectName("title")
         right.addWidget(title)
         # ИИ: описать словами
         ai = QHBoxLayout()
         self.ai_text = QLineEdit(placeholderText="Опишите словами: «открой OBS, подожди 2 секунды и включи музыку»")
-        self.ai_btn = QPushButton("✨ Собрать с помощью ИИ")
+        self.ai_btn = QPushButton("▸ СОБРАТЬ С ПОМОЩЬЮ ИИ")
         self.ai_btn.setObjectName("primary")
         self.ai_btn.clicked.connect(self.ask_ai)
         ai.addWidget(self.ai_text, 1)
@@ -102,11 +142,11 @@ class MacrosDialog(QDialog):
         opts.addWidget(self.app, 1)
         opts.addWidget(self.confirm)
         opts.addWidget(self.enabled)
-        for wdg in (QLabel("Название"), self.name, QLabel("Фразы для запуска"), self.phrases):
+        for wdg in (_cap("Название"), self.name, _cap("Фразы для запуска"), self.phrases):
             right.addWidget(wdg)
         right.addLayout(opts)
 
-        right.addWidget(QLabel("Шаги по порядку"))
+        right.addWidget(_cap("Шаги по порядку"))
         self.steps = QTableWidget(0, 3)
         self.steps.setHorizontalHeaderLabels(["Действие", "Значение", "Доп. (x,y / аргументы)"])
         self.steps.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -115,15 +155,15 @@ class MacrosDialog(QDialog):
         self.steps.verticalHeader().setVisible(False)
         right.addWidget(self.steps, 1)
         sb = QHBoxLayout()
-        for text, fn in (("＋ Шаг", self.add_step), ("↑", lambda: self.move_step(-1)),
-                         ("↓", lambda: self.move_step(1)), ("✕ Шаг", self.remove_step)):
+        for text, fn in (("+ ШАГ", self.add_step), ("↑", lambda: self.move_step(-1)),
+                         ("↓", lambda: self.move_step(1)), ("− ШАГ", self.remove_step)):
             b = QPushButton(text)
             b.clicked.connect(fn)
             sb.addWidget(b)
         sb.addStretch(1)
-        self.test_btn = QPushButton("▶ Проверить")
+        self.test_btn = QPushButton("▸ ПРОВЕРИТЬ")
         self.test_btn.clicked.connect(self.test_command)
-        save = QPushButton("Сохранить")
+        save = QPushButton("▸ СОХРАНИТЬ")
         save.setObjectName("primary")
         save.clicked.connect(self.save_command)
         sb.addWidget(self.test_btn)
@@ -144,10 +184,11 @@ class MacrosDialog(QDialog):
             text = f"{c.name}\n{c.phrases[0] if c.phrases else ''}"
             if q and q not in mc._norm(text):
                 continue
-            item = QListWidgetItem(("📦 " if c.pack else "⚡ ") + text)
+            tag = PACKS[c.pack]["title"].upper() if c.pack in PACKS else "СВОЯ"
+            item = QListWidgetItem(f"{c.name}\n{tag} · {c.phrases[0] if c.phrases else ''}")
             item.setData(Qt.ItemDataRole.UserRole, c.id)
             if not c.enabled:
-                item.setForeground(Qt.GlobalColor.gray)
+                item.setForeground(QColor(C.TEXT_DIM))
             self.list.addItem(item)
 
     def show_command(self, cid):
@@ -255,7 +296,7 @@ class MacrosDialog(QDialog):
             self.status.setText("Опишите, что должна делать команда.")
             return
         self.ai_btn.setEnabled(False)
-        self.ai_btn.setText("Собираю из действий…")
+        self.ai_btn.setText("▸ СОБИРАЮ ИЗ ДЕЙСТВИЙ…")
 
         def work():
             try:
@@ -267,7 +308,7 @@ class MacrosDialog(QDialog):
 
     def _on_ai(self, data, err: str):
         self.ai_btn.setEnabled(True)
-        self.ai_btn.setText("✨ Собрать с помощью ИИ")
+        self.ai_btn.setText("▸ СОБРАТЬ С ПОМОЩЬЮ ИИ")
         if not data:
             self.status.setText(f"Не собралось: {err}")
             return
@@ -292,8 +333,9 @@ class MacrosDialog(QDialog):
         self.pack_rows: dict[str, QPushButton] = {}
         for key, p in PACKS.items():
             row = QHBoxLayout()
-            text = QLabel(f"<b>{p['title']}</b> · {len(p['commands'])} команд<br>"
-                          f"<span style='color:#8b98a5'>{p['about']}</span>")
+            text = QLabel(f"<span style='color:{C.WHITE}'><b>{p['title']}</b></span>"
+                          f"<span style='color:{C.TEXT_DIM}'> · {len(p['commands'])} команд</span><br>"
+                          f"<span style='color:{C.TEXT_MED}'>{p['about']}</span>")
             btn = QPushButton()
             btn.setFixedWidth(150)
             btn.clicked.connect(lambda _=False, k=key: self.toggle_pack(k))
@@ -308,9 +350,9 @@ class MacrosDialog(QDialog):
     def _paint_packs(self):
         for key, btn in self.pack_rows.items():
             on = key in self.store.installed
-            btn.setText("✓ Установлен" if on else "Установить")
+            btn.setText("✓ УСТАНОВЛЕН" if on else "▸ УСТАНОВИТЬ")
             btn.setToolTip("Нажмите, чтобы убрать пак" if on else "Поставить команды пака")
-            btn.setObjectName("" if on else "primary")
+            btn.setObjectName("done" if on else "primary")
             btn.setStyleSheet("")          # применить objectName
 
     def toggle_pack(self, key: str):
