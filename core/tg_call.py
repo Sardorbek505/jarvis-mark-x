@@ -118,7 +118,8 @@ SILENCE = b"\0" * FRAME_BYTES
 
 END_CALL = {
     "name": "end_call",
-    "description": "Положить трубку. Вызывай, когда разговор окончен и вы попрощались.",
+    "description": ("Положить трубку. Только когда собеседник сам попрощался или попросил "
+                    "отключиться/положить трубку. Не вызывай сразу после того, как передал сообщение."),
     "parameters": {"type": "OBJECT", "properties": {}},
 }
 
@@ -132,8 +133,12 @@ def instruction(topic: str, context: str = "", name: str = "сэр") -> str:
         f"Повод звонка: {topic}.\n"
         + (f"Что нужно сообщить:\n{context}\n" if context else "")
         + "Это телефонный разговор: говори по-русски, коротко и живо, по одной мысли за раз, "
-        "без списков и разметки. Начни сам: поздоровайся и скажи, зачем звонишь. "
-        "Отвечай на вопросы. Когда разговор окончен и вы попрощались — вызови end_call."
+        "без списков и разметки. Начни сам: поздоровайся и скажи, зачем звонишь.\n"
+        "Сказав, зачем звонишь, НЕ клади трубку: это живой разговор. Замолчи и дай собеседнику "
+        "ответить; отвечай на всё, что он скажет («привет», «как дела» и т. п.), поддерживай беседу.\n"
+        "end_call вызывай ТОЛЬКО когда собеседник сам попрощался («пока», «до свидания», «спокойной "
+        "ночи») или попросил отключиться / положить трубку — тогда одной короткой фразой попрощайся "
+        "и сразу вызови end_call. Твоё собственное «спокойной ночи» — не повод класть трубку."
     )
 
 
@@ -225,7 +230,7 @@ class CallSession:
                 try:
                     await self.tg.hangup(self.peer)
                 except Exception as exc:
-                    logger.debug("Отбой: %s", exc)
+                    logger.warning("Отбой не удался: %s: %s", type(exc).__name__, exc)
         logger.info("Звонок: %s", self.audio_stats())
         for line in self.transcript[-40:]:
             logger.info("Звонок | %s", line[:200])
@@ -250,6 +255,9 @@ class CallSession:
     async def _pump_gemini(self, session):
         from google.genai import types
         while True:
+            # receive() отдаёт один ход; если он кончился сразу (сессия
+            # закрылась), без паузы цикл крутился бы вхолостую и душил звонок.
+            await asyncio.sleep(0.01)
             async for msg in session.receive():
                 sc = getattr(msg, "server_content", None)
                 if sc is not None and getattr(sc, "interrupted", False):
@@ -262,6 +270,10 @@ class CallSession:
                         tr = getattr(sc, attr, None)
                         if tr is not None and getattr(tr, "text", None):
                             self.transcript.append(f"{who}: {tr.text}")
+                            # Попрощался, а собеседник говорит дальше — трубку не кладём.
+                            if who == "Вы" and self._ending and tr.text.strip(" .,!?"):
+                                self._ending = False
+                                self.log("собеседник продолжает говорить — трубку не кладу")
                 tc = getattr(msg, "tool_call", None)
                 if tc is not None:
                     replies = []
@@ -271,8 +283,6 @@ class CallSession:
                         replies.append(types.FunctionResponse(id=fc.id, name=fc.name, response={"ok": True}))
                     if replies:
                         await session.send_tool_response(function_responses=replies)
-                    if self._ending:
-                        return
 
     async def _pace(self):
         """Кадр каждые 10 мс по часам, а не по sleep: на Windows sleep
@@ -394,7 +404,15 @@ class TgCall:
         await self.app.send_frame(peer, Device.MICROPHONE, frame)
 
     async def hangup(self, peer):
-        await self.app.leave_call(peer)
+        """Положить трубку. Если leave_call упал на полпути (связь остановлена,
+        а отбой в Telegram не ушёл), у собеседника звонок так и висит в
+        тишине — поэтому отбой в Telegram отправляем ещё раз напрямую."""
+        try:
+            await self.app.leave_call(peer)
+        except Exception as exc:
+            logger.warning("Отбой звонка не прошёл (%s: %s) — сбрасываю напрямую", type(exc).__name__, exc)
+            chat_id = await self.app.resolve_chat_id(peer)
+            await self.app._app.discard_call(chat_id, False)
 
 
 async def resolve_peer(client, target: str) -> int:
