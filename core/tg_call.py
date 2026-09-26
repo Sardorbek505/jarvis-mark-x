@@ -298,6 +298,16 @@ def session_path() -> str:
     return os.path.join(str(get_data_root()), "jarvis_caller")
 
 
+def _drop_session() -> None:
+    """Убрать файлы сессии, в которую так и не вошли."""
+    base = session_path()
+    for suffix in (".session", ".session-journal", ".login.json"):
+        try:
+            os.remove(base + suffix)
+        except OSError:
+            pass
+
+
 def ready() -> str:
     """'' — можно звонить, иначе — что мешает, человеческими словами."""
     try:
@@ -503,6 +513,7 @@ async def _login_async(ask: Callable[[str, bool], str], qr_view=None) -> str:
     api_id, api_hash = _credentials()
     client = TelegramClient(session_path(), api_id, api_hash)
     await client.connect()
+    logged_in = False
     try:
         if not await client.is_user_authorized():
             by_code = qr_view is None or ask(
@@ -524,6 +535,7 @@ async def _login_async(ask: Callable[[str, bool], str], qr_view=None) -> str:
                 except SessionPasswordNeededError:
                     await client.sign_in(password=ask("Пароль двухэтапной проверки аккаунта Джарвиса:", True))
         me = await client.get_me()
+        logged_in = True
         target = ask("Кому звонить — ВАШ @username или номер телефона:", False)
         if target:
             await resolve_peer(client, target)             # проверяем сразу, а не в 6 утра
@@ -534,6 +546,11 @@ async def _login_async(ask: Callable[[str, bool], str], qr_view=None) -> str:
                 "Добавьте этот аккаунт в свои контакты, иначе настройки приватности могут не пропустить звонок.")
     finally:
         await client.disconnect()
+        if not logged_in:
+            # Telethon создаёт файл сессии уже при connect, до всякого входа.
+            # Оставить его — значит соврать: ready() считает аккаунт
+            # подключённым по одному наличию файла.
+            _drop_session()
 
 
 def login(ask: Callable[[str, bool], str], qr_view=None) -> str:

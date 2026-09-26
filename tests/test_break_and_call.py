@@ -398,3 +398,60 @@ def test_qr_login_cancel():
 def test_qr_matrix_is_square_with_dark_cells():
     m = tc.qr_matrix("tg://login?token=AQIDBAUGBwgJCgsMDQ4PEA")
     assert len(m) == len(m[0]) >= 25 and any(any(r) for r in m)
+
+
+# ─── Огрызок сессии после неудачного входа ───────────────────────────────────
+class _StubClient:
+    """Телеграм-клиент, в который так и не вошли."""
+
+    def __init__(self, *a, **kw):
+        self.disconnected = False
+
+    async def connect(self):
+        return None
+
+    async def is_user_authorized(self):
+        return False
+
+    async def disconnect(self):
+        self.disconnected = True
+
+
+def _prepare_login(monkeypatch, tmp_path):
+    import telethon
+    monkeypatch.setattr(tc, "_credentials", lambda: (1, "hash"))
+    monkeypatch.setattr(tc, "session_path", lambda: str(tmp_path / "jarvis_caller"))
+    monkeypatch.setattr(telethon, "TelegramClient", _StubClient)
+    stub = tmp_path / "jarvis_caller.session"
+    stub.write_bytes(b"SQLite format 3\x00")          # как его оставляет telethon
+    return stub
+
+
+def test_aborted_login_does_not_leave_a_session_stub(monkeypatch, tmp_path):
+    """Живой случай: вход прервали, файл сессии остался — и ready() доложил,
+    что аккаунт подключён, хотя авторизации не было."""
+    stub = _prepare_login(monkeypatch, tmp_path)
+
+    answer = tc.login(lambda text, secret: "")        # отказ на первом же вопросе
+
+    assert "отмен" in answer.lower(), answer
+    assert not stub.exists(), "огрызок сессии остался и врёт про подключённый аккаунт"
+
+
+def test_successful_login_keeps_the_session(monkeypatch, tmp_path):
+    stub = _prepare_login(monkeypatch, tmp_path)
+
+    class _Ok(_StubClient):
+        async def is_user_authorized(self):
+            return True
+
+        async def get_me(self):
+            return type("Me", (), {"first_name": "Джарвис", "phone": "77014815055"})()
+
+    import telethon
+    monkeypatch.setattr(telethon, "TelegramClient", _Ok)
+
+    answer = tc.login(lambda text, secret: "")        # цель не указали — и не надо
+
+    assert answer.startswith("Готово"), answer
+    assert stub.exists(), "рабочую сессию удалять нельзя"
