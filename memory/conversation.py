@@ -255,7 +255,13 @@ def _quota_pause(exc: Exception) -> float:
     Gemini присылает свой срок («Please retry in 24.57893355s»), его и берём:
     ждать меньше бессмысленно, больше — терять факты."""
     text = str(exc)
-    if "RESOURCE_EXHAUSTED" not in text and "429" not in text:
+    # Одного числа «429» мало: оно попадается в счётчиках, id и таймаутах, а
+    # ложная пауза тихо останавливает память. Нужен либо явный код Gemini,
+    # либо 429 вместе со словами про лимит.
+    quota = "RESOURCE_EXHAUSTED" in text or bool(
+        re.search(r"\b429\b", text)
+        and re.search(r"quota|rate.?limit|exceeded|too many", text, re.IGNORECASE))
+    if not quota:
         return 0.0
     match = re.search(r"retry in ([\d.]+)s", text, re.IGNORECASE)
     if match:
