@@ -89,3 +89,7 @@ def test_sbc_brightness(monkeypatch):
     monkeypatch.setitem(sys.modules, "screen_brightness_control", fake)
     assert cs._brightness_windows("down", 20, None) == "Яркость 50%."
     assert state["v"] == 50
+
+
+def test_system_volume_up_by_100_is_max(win):
+    assert cs.computer_settings({"action": "volume_up", "value": "на 100"}) == "Громкость 100%."

@@ -245,3 +245,32 @@ def test_another_film_is_still_tried(monkeypatch):
     vp.play_film("Интерстеллар")
 
     assert len(calls) == 2, "чужой фильм не должен упираться в чужую неудачу"
+
+
+# ── громкость — строго по тому, о чём сказано ────────────────────────────────
+
+def test_music_volume_changes_spotify_not_film_nor_system(monkeypatch, fake_player):
+    """«Громкость музыки на 100» во время фильма — громкость Spotify. Раньше
+    при музыке на паузе команда уходила фильму, а без Spotify — в системную."""
+    from actions import music_player as mp
+    from actions import spotify_premium
+    from core import media_session
+    calls = []
+    monkeypatch.setattr(vp, "video_playing", lambda: True)
+    monkeypatch.setattr(mp, "_music_playing", lambda: False)
+    monkeypatch.setattr(media_session, "app_volume",
+                        lambda proc, mode, step=10, target=None: calls.append((proc, mode, step, target)) or 100)
+    assert mp.music_player({"action": "volume_up", "value": "100"}) == "Громкость Spotify 100%."
+    assert calls == [("spotify.exe", "up", 100, None)]
+    assert fake_player["vol"] == 0.5                                  # фильм не тронут
+
+    import actions.computer_settings as cs
+    monkeypatch.setattr(media_session, "app_volume", lambda *a, **k: None)   # Spotify не запущен
+    monkeypatch.setattr(spotify_premium, "control", lambda action, value=None: None)
+    monkeypatch.setattr(cs, "_volume", lambda *a, **k: pytest.fail("системную громкость трогать нельзя"))
+    assert "Spotify сейчас не играет" in mp.music_player({"action": "volume_set", "value": "80"})
+
+
+def test_film_volume_up_by_100_is_max(fake_player):
+    assert vp.control("volume_up", "100") == "Громкость видео 100%."
+    assert vp.control("volume_set", "пятьдесят") == "Громкость видео 50%."
