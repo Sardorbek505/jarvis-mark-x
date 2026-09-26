@@ -1162,6 +1162,45 @@ TOOLS = [
         }
     },
     {
+        "name": "break_reminder",
+        "description": (
+            "Напоминания о перерыве, когда пользователь долго смотрит фильм/YouTube или играет. "
+            "Джарвис сам напоминает через 2 часа, потом каждый час. Вызывай на: «не напоминай сегодня» "
+            "(off_today), «выключи напоминания о перерыве» (off), «включи напоминания» (on), "
+            "«напоминай через час / каждые 30 минут» (set), «сколько я уже смотрю/играю» (status)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["status", "off_today", "off", "on", "set"]},
+                "first_minutes": {"type": "NUMBER", "description": "set: через сколько минут первое напоминание"},
+                "repeat_minutes": {"type": "NUMBER", "description": "set: как часто потом, в минутах"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "phone_call",
+        "description": (
+            "Джарвис САМ звонит пользователю в Telegram и разговаривает голосом. "
+            "call_now — «позвони мне»; schedule — «позвони мне в 6 утра» (time \"06:00\"), "
+            "«звони каждое утро в 7» (repeat=daily), «позвони через 20 минут» (in_minutes); "
+            "topic — зачем звонить («утренний отчёт», «напомнить про встречу»): для утреннего звонка "
+            "Джарвис зачитает погоду, календарь и новости. cancel — отменить (time — какой), list — какие звонки стоят."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["call_now", "schedule", "cancel", "list"]},
+                "time": {"type": "STRING", "description": "ЧЧ:ММ, 24 часа: «6 утра» → \"06:00\", «в 9 вечера» → \"21:00\""},
+                "in_minutes": {"type": "NUMBER", "description": "позвонить через столько минут"},
+                "repeat": {"type": "STRING", "enum": ["once", "daily"]},
+                "topic": {"type": "STRING", "description": "повод звонка"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "switch_voice",
         "description": (
             "Переключает голос Джарвиса между киношным голосом Пола Беттани ('fish') и встроенным быстрым голосом ('gemini'). "
@@ -1240,6 +1279,15 @@ class Jarvis:
             win_apps.warm_up()
         except Exception as exc:
             logger.debug("Индекс программ: %s", exc)
+
+        # «Вы смотрите уже два часа…» — забота о перерывах (core/break_reminder.py)
+        # и звонки по расписанию в Telegram (core/tg_call.py).
+        try:
+            from core import break_reminder, tg_call
+            break_reminder.get(say=self.speak).start()
+            tg_call.start_scheduler(done=self._call_finished)
+        except Exception as exc:
+            logger.warning("Перерывы/звонки не запустились: %s", exc)
 
         # Локальное слово «Джарвис». Запускается в _listen_audio: модели
         # нужен событийный цикл, чтобы будить Джарвиса из своего потока.
@@ -1482,6 +1530,10 @@ class Jarvis:
             text = f"[СИСТЕМА: произнеси пользователю, своими словами не дополняй: «{text}»]"
         self.wake()
         self._send_text_to_session(text)
+
+    def _call_finished(self, result: str):
+        """Итог звонка — в журнал, не голосом: звонок мог быть в 6 утра."""
+        self.ui.write_log(f"SYS: 📞 {result}")
 
     def speak_error(self, tool_name: str, error: str):
         short = str(error)[:100]
@@ -1917,6 +1969,18 @@ class Jarvis:
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
                     None, lambda: sleep_timer(args, player=self.ui, bot=self)
+                )
+
+            # ── Инструмент: перерывы и звонки ─────────────────────────────
+            elif name == "break_reminder":
+                from core.break_reminder import break_reminder
+                result = break_reminder(args)
+
+            elif name == "phone_call":
+                from core import tg_call
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None, lambda: tg_call.phone_call(args, done=self._call_finished)
                 )
 
             # ── Инструмент: переключение голоса ───────────────────────────
@@ -2878,6 +2942,11 @@ def main():
     if "--selftest" in sys.argv:
         from core import selftest
         sys.exit(selftest.run())
+
+    # Вход аккаунта Джарвиса для звонков в Telegram (один раз).
+    if "--caller-login" in sys.argv:
+        from core import tg_call
+        sys.exit(tg_call.login_gui())
 
     # Без графики: JARVIS_HEADLESS=1 или --headless. Голосовой круг тот же,
     # разница только в том, кто показывает состояние и кто ждёт ключ.

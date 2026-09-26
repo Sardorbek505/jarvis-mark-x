@@ -75,9 +75,19 @@ def _check_browser() -> str:
     return f"браузер для видео: {exe}"
 
 
+def _check_calls() -> str:
+    import ntgcalls  # noqa: F401 — нативная библиотека звонков (DLL) доехала
+    import pytgcalls
+    import telethon
+    from core import tg_call
+    return f"звонки: py-tgcalls {pytgcalls.__version__}, telethon {telethon.__version__}; " + \
+        (tg_call.ready() or "аккаунт подключён")
+
+
 CHECKS = [("wake", _check_wake), ("media", _check_media), ("search", _check_search), ("volume", _check_volume), ("brightness", _check_brightness),
-          ("apps", _check_apps), ("browser", _check_browser)]
-REQUIRED = {"wake", "apps", "media", "search", "browser"}
+          ("apps", _check_apps), ("browser", _check_browser),
+          ("calls", _check_calls)]
+REQUIRED = {"wake", "apps", "media", "search", "browser", "calls"}
 
 
 def register(name: str, fn, required: bool = False):

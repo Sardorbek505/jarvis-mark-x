@@ -69,3 +69,9 @@ winrt-runtime>=2.0; sys_platform == "win32"
 winrt-Windows.Foundation>=2.0; sys_platform == "win32"
 winrt-Windows.Foundation.Collections>=2.0; sys_platform == "win32"
 winrt-Windows.Media.Control>=2.0; sys_platform == "win32"
+
+# Джарвис звонит в Telegram (core/tg_call.py) и шлёт сообщения от вашего
+# имени (telegram_bot/pc_userbot.py). Telethon раньше не было в списке —
+# userbot в сборке не мог работать вовсе.
+telethon>=1.36
+py-tgcalls==3.0.0

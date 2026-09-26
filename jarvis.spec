@@ -88,6 +88,9 @@ hidden_imports = [
     "actions.spotify_premium",
     "core.browser_cdp",
     "core.selftest",
+    "core.break_reminder",
+    "core.tg_call",
+    "telegram_bot.pc_userbot",
     "websockets.sync.client",
     "actions.sleep_timer",
     "actions.file_controller",
@@ -114,7 +117,7 @@ from PyInstaller.utils.hooks import collect_all
 # Каждый пакет — отдельно: раньше первый отсутствующий (openwakeword нет в
 # requirements) обрывал цикл, и pycaw/comtypes в сборку не попадали —
 # приглушение музыки и замер колонок в .exe молча не работали.
-for pkg in ["imageio_ffmpeg", "openwakeword", "pycaw", "comtypes", "pyaudiowpatch", "mss", "vosk", "screen_brightness_control", "winrt", "ddgs"]:
+for pkg in ["imageio_ffmpeg", "openwakeword", "pycaw", "comtypes", "pyaudiowpatch", "mss", "vosk", "screen_brightness_control", "winrt", "ddgs", "telethon", "pytgcalls", "ntgcalls"]:
     try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
     except Exception as e:
