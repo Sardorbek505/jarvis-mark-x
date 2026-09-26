@@ -1125,6 +1125,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             _logger.warning("Панель браузера недоступна: %s", exc)
         self._browser_sig.connect(self._reveal_browser)
+        self._setup_island()
         self._mute_sig.connect(self._toggle_mute)
         self._front_sig.connect(self._bring_to_front)
         self._overlay_sig.connect(self._show_overlay)
@@ -1132,6 +1133,12 @@ class MainWindow(QMainWindow):
     # ── Публичный API ──────────────────────────────────────────────────────────
     def write_log(self, text: str):
         self._log_sig.emit(text)
+        island = getattr(self, "_island", None)
+        if island is not None:
+            if text[:8].lower() == "джарвис:":
+                island.reply(text.split(":", 1)[1])
+            elif text.startswith("SYS: 📞"):
+                island.notify("ЗВОНОК", text[len("SYS: 📞"):].strip())
         # Готовый ответ (в том числе на текстовую команду) — ещё и субтитром.
         if text[:8].lower() == "джарвис:":
             self._sub_sig.emit(text.split(":", 1)[1])
@@ -1148,10 +1155,50 @@ class MainWindow(QMainWindow):
 
     def set_state(self, state: str):
         self._state_sig.emit(state)
+        if getattr(self, "_island", None) is not None:
+            self._island.set_state(state)
 
     def set_level(self, value: float):
         """Громкость 0..1 — ею дышит весь HUD. Зовётся из аудио-потока."""
         self._level_sig.emit(float(value))
+        if getattr(self, "_island", None) is not None:
+            self._island.feed_level(value)
+
+    # ── Капсула, когда окно свёрнуто (ui_island.py) ─────────────────────────
+    def _setup_island(self):
+        import os
+        self._island = None
+        if os.getenv("JARVIS_ISLAND", "1") == "0":
+            return
+        try:
+            from ui_island import Island
+            self._island = Island(on_open=self._restore_from_island)
+        except Exception as exc:
+            _logger.warning("Капсула недоступна: %s", exc)
+
+    def _restore_from_island(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _island_wanted(self, on: bool):
+        if getattr(self, "_island", None) is not None:
+            self._island.set_wanted(on)
+
+    def changeEvent(self, ev):
+        from PyQt6.QtCore import QEvent
+        if ev.type() == QEvent.Type.WindowStateChange:
+            self._island_wanted(bool(self.windowState() & Qt.WindowState.WindowMinimized))
+        super().changeEvent(ev)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        if not self.isMinimized():
+            self._island_wanted(False)
+
+    def hideEvent(self, ev):
+        super().hideEvent(ev)
+        self._island_wanted(True)                      # спрятали в трей
 
     def lock_on(self, tool: str):
         """Подписать над шаром инструмент, который сейчас выполняется."""
