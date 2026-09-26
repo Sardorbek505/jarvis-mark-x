@@ -1141,6 +1141,9 @@ class MainWindow(QMainWindow):
                 island.reply(text.split(":", 1)[1])
             elif text.startswith("SYS: 📞"):
                 island.notify("ЗВОНОК", text[len("SYS: 📞"):].strip())
+            elif text.startswith("SYS: ⏰") and ":" in text[7:]:
+                title, _, body = text[len("SYS: ⏰"):].strip().partition(":")
+                island.notify(title.strip(), body.strip())
         # Готовый ответ (в том числе на текстовую команду) — ещё и субтитром.
         if text[:8].lower() == "джарвис:":
             self._sub_sig.emit(text.split(":", 1)[1])

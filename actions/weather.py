@@ -3,9 +3,12 @@
 """
 
 import json
+import logging
 import time
 import urllib.parse
 import urllib.request
+
+logger = logging.getLogger(__name__)
 
 
 _CITY_ALIASES = {
@@ -80,7 +83,16 @@ _CACHE_TTL_SEC = 300  # 5 минут
 
 
 def weather_action(parameters: dict, player=None) -> str:
-    city = parameters.get("city", "").strip()
+    city = (parameters.get("city") or "").strip()
+    if not city:
+        # «Какая погода?» без города — там, где пользователь (core/location.py).
+        try:
+            from core import location
+            city = location.city()
+        except Exception as exc:
+            logger.debug("Местоположение для погоды: %s", exc)
+    if not city:
+        return "Для какого города, сэр? Не удалось определить, где вы."
     city_en = _CITY_ALIASES.get(city.lower(), city)
     now = time.monotonic()
 

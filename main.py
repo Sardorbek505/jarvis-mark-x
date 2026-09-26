@@ -638,13 +638,15 @@ TOOLS = [
     },
     {
         "name": "weather",
-        "description": "Погода в городе: сейчас и прогноз на сегодня, завтра и послезавтра. Вызывай и на «погода на завтра» — прогноз уже в ответе.",
+        "description": ("Погода в городе: сейчас и прогноз на сегодня, завтра и послезавтра. Вызывай и на "
+                        "«погода на завтра» — прогноз уже в ответе. Город не назван — не передавай city: "
+                        "возьмётся город, где пользователь."),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "city": {"type": "STRING", "description": "Название города"}
+                "city": {"type": "STRING", "description": "Название города (если назван)"}
             },
-            "required": ["city"]
+            "required": []
         }
     },
     {
@@ -776,15 +778,17 @@ TOOLS = [
             "Вызывай, когда пользователь просит: запиши/сохрани заметку, добавь в дневник, "
             "«что я записывал про…», найди заметку, прочитай заметку, покажи список заметок. "
             "action=write — новая заметка (title + content); "
+            "append — дописать в существующую заметку (title + content: «добавь в список покупок молоко»); "
+            "delete — удалить заметку (title; уходит в корзину, можно вернуть); "
             "append_daily — дописать строку в дневник за сегодня (content); "
             "search — найти по базе (query); "
-            "read — прочитать заметку по заголовку (title); "
+            "read — прочитать заметку по заголовку (title; «последняя» — самая свежая); "
             "list — список заметок (folder — опционально)."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":  {"type": "STRING", "description": "write | append_daily | search | read | list"},
+                "action":  {"type": "STRING", "description": "write | append | delete | append_daily | search | read | list"},
                 "title":   {"type": "STRING", "description": "Заголовок заметки (для write / read)"},
                 "content": {"type": "STRING", "description": "Текст заметки (для write / append_daily)"},
                 "query":   {"type": "STRING", "description": "Поисковый запрос (для search)"},
@@ -1189,6 +1193,57 @@ TOOLS = [
         }
     },
     {
+        "name": "clock",
+        "description": (
+            "Часы: время, таймеры, секундомер, будильники. ВСЕГДА вызывай на «который час», «какое "
+            "сегодня число/день» (action=now) — время в промпте устаревает. Время в другом городе — "
+            "world_time (city). Таймер: «поставь таймер на 10 минут», «таймер на пасту на 8 минут» — "
+            "timer_set (minutes/seconds/hours или duration, label); «сколько осталось» — timer_list; "
+            "«отмени таймер» — timer_cancel (label; «все»); «добавь 5 минут» — timer_add; пауза — "
+            "timer_pause / timer_resume. Секундомер: stopwatch_start / stopwatch_stop / stopwatch_lap / "
+            "stopwatch_reset / stopwatch_status. Будильник: «разбуди в 7», «будильник на 6:30 по "
+            "будням» — alarm_set (time, repeat, label); alarm_list; alarm_cancel (time или label; "
+            "«все»); звенит и просят отложить — alarm_snooze (minutes); выключить — alarm_stop. "
+            "«Напомни через час позвонить» — это не таймер, а calendar."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": [
+                    "now", "world_time", "timer_set", "timer_list", "timer_cancel", "timer_add",
+                    "timer_pause", "timer_resume", "stopwatch_start", "stopwatch_stop", "stopwatch_lap",
+                    "stopwatch_reset", "stopwatch_status", "alarm_set", "alarm_list", "alarm_cancel",
+                    "alarm_stop", "alarm_snooze"]},
+                "hours": {"type": "NUMBER"},
+                "minutes": {"type": "NUMBER", "description": "Минуты (таймер, добавить время, отложить будильник)"},
+                "seconds": {"type": "NUMBER"},
+                "duration": {"type": "STRING", "description": "Длительность словами, если так проще: «полчаса», «1:30»"},
+                "label": {"type": "STRING", "description": "Подпись таймера/будильника («паста», «созвон»)"},
+                "time": {"type": "STRING", "description": "Время будильника «07:30» (24 часа)"},
+                "repeat": {"type": "STRING", "enum": ["once", "daily", "weekdays", "weekends"]},
+                "city": {"type": "STRING", "description": "Город для world_time"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "location",
+        "description": (
+            "Где пользователь: «где я», «какой у меня город» — where; «я живу в Ташкенте», «мой город "
+            "Алматы» — set_home (city); «сколько километров до Москвы» — distance (city, опционально "
+            "from_city); координаты и часовой пояс города — coordinates (city; без него — свои)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["where", "set_home", "distance", "coordinates"]},
+                "city": {"type": "STRING"},
+                "from_city": {"type": "STRING"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "sleep_timer",
         "description": (
             "Управляет умным таймером сна с подтверждением голосом и автовыключением ноутбука/ПК. "
@@ -1339,6 +1394,17 @@ class Jarvis:
             shared.start()          # одна память с Telegram-ботом
         except Exception as exc:
             logger.warning("Сбор памяти не запустился: %s", exc)
+
+        # Часы: таймеры, секундомер, будильники (core/clock.py). Сработало —
+        # звук, голос Джарвиса и событие в журнале и капсуле.
+        try:
+            from core.clock import clock
+            ck = clock()
+            ck.say = self.speak
+            ck.notify = lambda title, text: self.ui.write_log(f"SYS: ⏰ {title}: {text}")
+            ck.start()
+        except Exception as exc:
+            logger.warning("Часы не запустились: %s", exc)
 
         # «Вы смотрите уже два часа…» — забота о перерывах (core/break_reminder.py)
         # и звонки по расписанию в Telegram (core/tg_call.py).
@@ -2057,6 +2123,14 @@ class Jarvis:
                 )
 
             # ── Инструмент: умный таймер сна ──────────────────────────────
+            elif name == "clock":
+                from core.clock import clock_tool
+                result = await asyncio.to_thread(clock_tool, args)
+
+            elif name == "location":
+                from core.location import location_tool
+                result = await asyncio.to_thread(location_tool, args)
+
             elif name == "sleep_timer":
                 from actions.sleep_timer import sleep_timer
                 loop = asyncio.get_event_loop()

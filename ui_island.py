@@ -157,6 +157,15 @@ def poll_media() -> Media | None:
 
 
 def poll_timer() -> tuple[str, float]:
+    # Часы Джарвиса важнее всего: звенящий будильник, идущий таймер,
+    # секундомер, ближайший будильник (core/clock.py).
+    try:
+        from core.clock import clock
+        label, end = clock().nearest()
+        if label:
+            return label, end
+    except Exception as exc:
+        logger.debug("Капсула, часы: %s", exc)
     try:
         from actions.sleep_timer import sleep_timer_manager as m
         if m.is_active():
