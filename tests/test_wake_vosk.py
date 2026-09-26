@@ -105,3 +105,84 @@ def test_name_heard_with_l_instead_of_v():
     assert has_wake_word("джарлис")
     assert not has_wake_word("Карлос уехал")
     assert not has_wake_word("парус")
+
+
+# ── имя, выученное на голосе владельца ───────────────────────────────────────
+import core.wake_vosk as wv  # noqa: E402
+
+
+def test_learn_aliases_keeps_repeated_name_sounds_only():
+    names = [["дар вис", "дар"], ["дар вис"], ["жар вис", "дар вис"], ["из"], ["дар вис кто"], ["шар"]]
+    negatives = ["какая сегодня погода", "сегодня очень жарко", "дарвин написал книгу", "кто там"]
+    got = wv.learn_aliases(names, negatives)
+    assert "дар вис" in got and "вис" in got        # повторились в записях имени
+    assert "из" not in got                          # короткое частое слово — будило бы на всём
+    assert "кто" not in got and "шар" not in got     # было в обычных фразах / лишь однажды
+
+
+def test_alias_match_is_whole_words():
+    assert wv.matches_alias("Эй, дар вис, включи", ["дар вис"])
+    assert not wv.matches_alias("дарвин", ["дар"])
+
+
+def test_local_wake_uses_learned_aliases():
+    heard = []
+    rec = _FakeRec(["", "дар вис"])
+    w = LocalWake(heard.append, recognizer_factory=lambda: rec, aliases=["дар вис"])
+    assert w.start()
+    for _ in range(5):
+        w.feed(b"\0" * 10)
+    end = time.monotonic() + 2
+    while not heard and time.monotonic() < end:
+        time.sleep(0.01)
+    w.stop()
+    assert heard == ["дар вис"]
+
+
+class _TagRec:
+    """«Распознаватель»: что слышит, зависит от метки в записи."""
+
+    def __init__(self, heard_by_tag, grammar=None):
+        self.map, self.grammar, self.got = heard_by_tag, grammar, b""
+
+    def AcceptWaveform(self, pcm):
+        self.got += pcm
+        return False
+
+    def PartialResult(self):
+        return json.dumps({"partial": ""})
+
+    def FinalResult(self):
+        tag = next((t for t in self.map if t in self.got), None)
+        text = self.map.get(tag, "")
+        if self.grammar is not None and not wv.matches_alias(text, self.grammar):
+            text = "[unk]"
+        return json.dumps({"text": text, "alternatives": [{"text": text}]})
+
+    def SetMaxAlternatives(self, n):
+        pass
+
+
+def test_calibrate_learns_and_checks_on_same_takes(monkeypatch):
+    heard = {b"N1": "дар вис", b"N2": "дар вис", b"N3": "жар вис", b"X1": "погода", b"X2": "жарко"}
+    monkeypatch.setattr(wv, "_free_recognizer", lambda model: _TagRec(heard))
+    monkeypatch.setattr(wv, "_grammar_recognizer", lambda model, aliases: _TagRec(heard, aliases))
+    rep = wv.calibrate(None, [b"N1", b"N2", b"N3"], [b"X1", b"X2"])
+    assert "дар вис" in rep["aliases"] and "погода" not in rep["aliases"]
+    assert rep["hits"] == 3 and rep["false"] == 0
+
+
+def test_calibration_saves_and_enables_local_wake(tmp_path, monkeypatch):
+    import main as jarvis_main
+    from core import wake_calibrate
+    monkeypatch.setenv("JARVIS_WAKE_ALIASES", str(tmp_path / "w.json"))
+    monkeypatch.delenv("JARVIS_LOCAL_WAKE", raising=False)
+    assert jarvis_main._local_wake_enabled() is False            # без калибровки — Gemini
+    monkeypatch.setattr(wv, "calibrate", lambda model, n, x: {"aliases": ["дар вис"], "names": 8,
+                                                             "negatives": 5, "hits": 7, "false": 0})
+    rep = wake_calibrate.run_calibration([b""], [b""], model=object())
+    assert "7 из 8" in wake_calibrate.describe(rep)
+    assert wv.load_aliases() == ["дар вис"]
+    assert jarvis_main._local_wake_enabled() is True             # после — на компьютере
+    monkeypatch.setenv("JARVIS_LOCAL_WAKE", "0")
+    assert jarvis_main._local_wake_enabled() is False            # выключатель сильнее

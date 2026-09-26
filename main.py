@@ -280,11 +280,17 @@ _AWAKE_SEC = float(os.getenv("JARVIS_AWAKE_SEC", "30"))
 # Как пишется имя (Джарвис, Жарвис, Джервис, Jarvis, падежи) — в одном месте,
 # им пользуются и расшифровка Gemini, и локальный детектор.
 from core.wake_vosk import WAKE_RE as _WAKE_RE, LocalWake  # noqa: E402
-# Офлайн-детектор имени — только по явному JARVIS_LOCAL_WAKE=1. Маленькая
+# Офлайн-детектор имени — только после калибровки на голосе владельца
+# (--wake-calibrate) или по явному JARVIS_LOCAL_WAKE=1. Без неё маленькая
 # русская модель Vosk слова «Джарвис» не знает (пишет «из») и ловила его лишь
-# по случайным промежуточным догадкам: на живом голосе владельца с модели не
-# сработала за час ни разу, и Джарвис «глох». Расшифровка Gemini имя слышит.
-_LOCAL_WAKE = os.getenv("JARVIS_LOCAL_WAKE", "0").strip() == "1"
+# по случайным промежуточным догадкам: на живом голосе владельца не сработала
+# за час ни разу, и Джарвис «глох». JARVIS_LOCAL_WAKE=0 — выключить совсем.
+def _local_wake_enabled() -> bool:
+    env = os.getenv("JARVIS_LOCAL_WAKE", "").strip()
+    if env in ("0", "1"):
+        return env == "1"
+    from core.wake_vosk import load_aliases
+    return bool(load_aliases())
 
 
 # Имя сказали, а расшифровка его потеряла: осталась запятая после обращения.
@@ -2257,7 +2263,7 @@ class Jarvis:
             except asyncio.QueueFull:
                 pass  # Drop audio frame silently to avoid flooding event loop
 
-        if self._local_wake is None and _WAKE_MODE == "wake_word" and not _LOCAL_WAKE:
+        if self._local_wake is None and _WAKE_MODE == "wake_word" and not _local_wake_enabled():
             self._local_wake = False         # имя ищется в расшифровке Gemini
         if self._local_wake is None and _WAKE_MODE == "wake_word":
             def _heard(text: str):
@@ -3061,6 +3067,15 @@ def main():
     if "--caller-login" in sys.argv:
         from core import tg_call
         sys.exit(tg_call.login_gui())
+
+    # Обучить слово «Джарвис» на своём голосе (Vosk, один раз).
+    if "--wake-calibrate" in sys.argv:
+        from core import wake_calibrate
+        try:
+            device = _pick_input_device()
+        except Exception:
+            device = None
+        sys.exit(wake_calibrate.run_gui(device))
 
     # Без графики: JARVIS_HEADLESS=1 или --headless. Голосовой круг тот же,
     # разница только в том, кто показывает состояние и кто ждёт ключ.

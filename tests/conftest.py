@@ -49,6 +49,8 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     import memory.conversation as conv
     import memory.memory_manager as mm
     d = tmp_path / "voice_memory"
+    # Выученное на голосе владельца слово — не из настоящей папки данных.
+    monkeypatch.setenv("JARVIS_WAKE_ALIASES", str(d / "wake_aliases.json"))
     monkeypatch.setattr(mm, "_MEMORY_FILE", d / "data.json")
     monkeypatch.setattr(conv, "DIALOG_FILE", d / "dialog.jsonl")
     monkeypatch.setattr(conv, "EPISODES_FILE", d / "episodes.jsonl")

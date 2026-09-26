@@ -94,6 +94,7 @@ hidden_imports = [
     "core.selftest",
     "core.break_reminder",
     "core.tg_call",
+    "core.wake_calibrate",
     "qrcode",
     "telegram_bot.pc_userbot",
     "websockets.sync.client",
