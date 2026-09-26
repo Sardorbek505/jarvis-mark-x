@@ -66,9 +66,18 @@ def _check_search() -> str:
     return "ddgs импортируется"
 
 
+def _check_browser() -> str:
+    from websockets.sync.client import connect  # noqa: F401 — управление видео через CDP
+    from core import browser_cdp
+    exe = browser_cdp.browser_exe()
+    if not exe:
+        raise RuntimeError("нет Chrome и Edge — фильмы и YouTube не запустить")
+    return f"браузер для видео: {exe}"
+
+
 CHECKS = [("wake", _check_wake), ("media", _check_media), ("search", _check_search), ("volume", _check_volume), ("brightness", _check_brightness),
-          ("apps", _check_apps)]
-REQUIRED = {"wake", "apps", "media", "search"}
+          ("apps", _check_apps), ("browser", _check_browser)]
+REQUIRED = {"wake", "apps", "media", "search", "browser"}
 
 
 def register(name: str, fn, required: bool = False):
