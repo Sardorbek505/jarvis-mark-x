@@ -203,47 +203,13 @@ def _volume(direction: str, player=None) -> str:
 
 # ─── Публичная точка входа ────────────────────────────────────────────────────
 def movie_player(parameters: dict, player=None) -> str:
-    """
-    Главная точка входа для tool 'movie_player'.
-
-    parameters:
-        action: play | pause | resume | fullscreen | seek_forward |
-                seek_back | volume_up | volume_down | exit
-        title:  название фильма для action=play
-    """
+    """Фильмы — VK Видео в окне Джарвиса: найти, открыть, запустить, полный
+    экран. Остальные действия — управление тем, что идёт (video_player)."""
+    from actions import video_player
     action = (parameters.get("action") or "").strip().lower()
-    title = (parameters.get("title") or "").strip()
-
-    # ── Воспроизведение нового фильма ─────────────────────────────────────────
+    title = (parameters.get("title") or parameters.get("query") or "").strip()
     if action in ("play", "start", "запустить", "включить"):
-        return _play(title, player, (parameters.get("provider") or "auto").strip().lower())
-
-    # ── Управление текущим воспроизведением ───────────────────────────────────
-    elif action in ("pause", "пауза"):
-        return _pause_resume(player, "pause")
-
-    elif action in ("resume", "продолжай", "play_resume"):
-        return _pause_resume(player, "play")
-
-    elif action in ("toggle",):
-        return _pause_resume(player, "toggle")
-
-    elif action in ("fullscreen", "full_screen", "полный_экран"):
-        return _fullscreen(player)
-
-    elif action in ("seek_forward", "forward", "вперёд", "вперед"):
-        return _seek_forward(player)
-
-    elif action in ("seek_back", "back", "rewind", "назад"):
-        return _seek_back(player)
-
-    elif action in ("volume_up", "louder", "громче"):
-        return _volume("up", player)
-
-    elif action in ("volume_down", "quieter", "тише"):
-        return _volume("down", player)
-
-    elif action in ("exit", "close", "stop", "выход", "закрыть"):
-        return _exit_movie(player)
-
-    return f"Не понял команду плеера: «{action}»."
+        return video_player.play_film(title, player)
+    res = video_player.control({"volume_up": "volume_up", "volume_down": "volume_down"}
+                               .get(action, action), parameters.get("value"))
+    return res or "Сейчас в окне Джарвиса ничего не идёт, сэр."

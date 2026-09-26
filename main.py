@@ -771,20 +771,59 @@ TOOLS = [
     {
         "name": "movie_player",
         "description": (
-            "Фильмы и сериалы: play + title — найти и открыть фильм (VK Видео, Кинопоиск, IVI, Okko; "
-            "provider — если пользователь назвал сайт). Управление тем, что идёт в браузере: pause, "
-            "resume, fullscreen, seek_forward/seek_back (±10 с), exit — закрыть вкладку с фильмом."
+            "ФИЛЬМЫ И СЕРИАЛЫ — всегда на VK Видео: найти, открыть, запустить и развернуть на весь "
+            "экран. «Поставь Железный человек 2», «включи фильм Интерстеллар», «хочу посмотреть "
+            "Дюну». Управление после запуска — video_control."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["play"]},
+                "title": {"type": "STRING", "description": "Название фильма/сериала (можно с годом, сезоном)"},
+            },
+            "required": ["action", "title"]
+        }
+    },
+    {
+        "name": "youtube_player",
+        "description": (
+            "ВИДЕО И КЛИПЫ — YouTube, сразу на весь экран. play + query: «поставь клип Люби меня», "
+            "«включи видео как собрать ПК». latest + channel: «поставь последнее видео MrBeast». "
+            "Управление после запуска — video_control."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["play", "latest"]},
+                "query": {"type": "STRING", "description": "Что искать (для клипа можно добавить «клип»)"},
+                "channel": {"type": "STRING", "description": "Канал для latest: «MrBeast», «Wylsacom»"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "video_control",
+        "description": (
+            "Управление фильмом или роликом, который идёт в окне Джарвиса (VK Видео, YouTube): пауза, "
+            "продолжи, перемотай вперёд/назад на N, перемотай на 1:20:00, «сколько осталось» / "
+            "«который час в фильме» (time), громче/тише/громкость N, выключи/включи звук видео, "
+            "полный экран / выйди из полного экрана, скорость, следующее видео, закрой фильм. "
+            "Если идёт видео, «пауза/громче/тише» — сюда, а не в music_player."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action": {
                     "type": "STRING",
-                    "enum": ["play", "pause", "resume", "fullscreen", "seek_forward", "seek_back",
-                             "volume_up", "volume_down", "exit"],
+                    "enum": ["pause", "resume", "seek_forward", "seek_back", "seek_to", "restart",
+                             "time", "volume_up", "volume_down", "volume_set", "mute", "unmute",
+                             "fullscreen", "exit_fullscreen", "speed", "next", "close"],
                 },
-                "title": {"type": "STRING", "description": "Название фильма/сериала для play"},
-                "provider": {"type": "STRING", "enum": ["auto", "vk", "kinopoisk", "ivi", "okko", "youtube"]},
+                "value": {
+                    "type": "STRING",
+                    "description": ("seek_forward/back — сколько («30 секунд», «5 минут», по умолчанию 10 с); "
+                                    "seek_to — время («1:20:00», «45 минут»); volume_* — проценты; speed — «1.5»"),
+                },
             },
             "required": ["action"]
         }
@@ -816,7 +855,8 @@ TOOLS = [
     {
         "name": "music_player",
         "description": (
-            "Музыка в Spotify (и что играет в Windows). play + query — включить трек/исполнителя/"
+            "МУЗЫКА — всегда Spotify (Premium). login — «подключи Spotify» (вход один раз). "
+            "play + query — включить трек/исполнителя/"
             "альбом («включи Believer», «поставь Любэ»); play без query — продолжить; mood + query — "
             "плейлист под настроение («спокойное», «для работы»); pause, resume, next, previous; "
             "now_playing — «что играет», «кто поёт»; volume_* — громкость самого Spotify, только если "
@@ -828,7 +868,7 @@ TOOLS = [
                 "action": {
                     "type": "STRING",
                     "enum": ["play", "mood", "pause", "resume", "next", "previous", "now_playing",
-                             "volume_up", "volume_down", "volume_set"],
+                             "volume_up", "volume_down", "volume_set", "shuffle", "login"],
                 },
                 "query": {
                     "type": "STRING",
@@ -1186,6 +1226,13 @@ class Jarvis:
         # Чтобы включить его по-настоящему, микрофонному циклу нужен опорный
         # поток колонок (WASAPI loopback) — сейчас его нет: speaker_meter.py
         # отдаёт только скалярный уровень, не PCM. См. core/audio_capture.py.
+        # Spotify: токен и статус Premium — заранее, первая песня не ждёт.
+        try:
+            from actions import spotify_premium
+            spotify_premium.warm_up()
+        except Exception as exc:
+            logger.debug("Spotify заранее: %s", exc)
+
         # Список программ для «открой …» — собирается в фоне, пока грузится
         # остальное (Get-StartApps занимает пару секунд).
         try:
@@ -1692,6 +1739,26 @@ class Jarvis:
                 r = await loop.run_in_executor(
                     None, lambda: spotify_player(parameters=args, player=self.ui)
                 )
+                result = r or "Готово."
+
+            # ── YouTube и управление видео в окне Джарвиса ───────────
+            elif name == "youtube_player":
+                from actions import video_player
+                r = await loop.run_in_executor(None, lambda: video_player.play_youtube(
+                    args.get("query", ""), args.get("channel", "") if args.get("action") == "latest" else "",
+                    self.ui))
+                result = r or "Готово."
+
+            elif name == "video_control":
+                from actions import video_player
+                r = await loop.run_in_executor(
+                    None, lambda: video_player.control(args.get("action", ""), args.get("value")))
+                if not r:
+                    # Видео нет — может, речь про музыку («пауза»).
+                    r = await loop.run_in_executor(
+                        None, lambda: spotify_player(parameters=args, player=self.ui)) \
+                        if args.get("action") in ("pause", "resume", "volume_up", "volume_down", "volume_set") \
+                        else "Сейчас в окне Джарвиса ничего не идёт, сэр."
                 result = r or "Готово."
 
             # ── Инструмент: управление окнами Windows ────────────────

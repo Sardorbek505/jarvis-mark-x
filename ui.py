@@ -159,7 +159,7 @@ _TOOL_SHAPE = {
     "web_search": "globe", "browser": "globe", "weather": "globe",
     "translation": "globe", "morning_briefing": "globe",
     "music_player": "music", "switch_voice": "music",
-    "movie_player": "film",
+    "movie_player": "film", "youtube_player": "screen",
     "look_at_screen": "screen", "look_at_camera": "screen",
     "computer_control": "reactor", "window_control": "reactor", "files": "reactor",
     "sleep_timer": "reactor", "set_mode": "reactor",

@@ -73,3 +73,6 @@ logs/benchmark/
 *.zip
 # Модель Vosk качает сборка (scripts/build_exe.py)
 models/
+
+# профиль окна браузера Джарвиса (в режиме разработки)
+/browser/

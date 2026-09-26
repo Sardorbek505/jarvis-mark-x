@@ -595,7 +595,64 @@ def _volume(direction: str, player=None, value=None) -> str:
 
 
 # ─── Публичная точка входа ────────────────────────────────────────────────────
+_ALIASES = {"start": "play", "включить": "play", "запустить": "play", "stop": "pause",
+            "пауза": "pause", "стоп": "pause", "остановить": "pause", "продолжай": "resume",
+            "continue": "resume", "next_track": "next", "skip": "next", "следующий": "next",
+            "prev": "previous", "prev_track": "previous", "предыдущий": "previous",
+            "what": "now_playing", "что играет": "now_playing", "louder": "volume_up",
+            "громче": "volume_up", "quieter": "volume_down", "тише": "volume_down",
+            "volume": "volume_set"}
+_CONTROLS = ("pause", "resume", "next", "previous", "volume_up", "volume_down",
+             "volume_set", "now_playing", "shuffle")
+
+
 def music_player(parameters: dict, player=None) -> str:
+    """Музыка — Spotify. Premium: прямо через Web API (быстро и точно);
+    нет входа или Premium — ссылка на трек + медиа-сессия Windows."""
+    from actions import spotify_premium as sp
+    action = (parameters.get("action") or "").strip().lower()
+    action = _ALIASES.get(action, action)
+    query = (parameters.get("query") or "").strip()
+    value = parameters.get("value")
+
+    if action == "login":
+        return sp.login(player)
+
+    # «Пауза», «продолжи», «громче» — тому, что сейчас реально играет:
+    # идёт фильм, а музыка стоит — это про фильм.
+    if action in ("pause", "resume", "volume_up", "volume_down", "volume_set"):
+        try:
+            from actions import video_player
+            if video_player.video_playing() and not _music_playing():
+                return video_player.control(action, value)
+        except Exception as exc:
+            _logger.debug("Видео для паузы: %s", exc)
+
+    if action in ("play", "mood") and not parameters.get("playlist_url"):
+        q = f"{query} плейлист" if action == "mood" and query else query
+        res = sp.play(q)
+        if res is not None:
+            return res
+    elif action in _CONTROLS:
+        res = sp.control(action, value)
+        if res is not None:
+            return res
+    return _music_player_fallback({**parameters, "action": action}, player)
+
+
+def _music_playing() -> bool:
+    try:
+        from actions import spotify_premium as sp
+        if sp.ready() and sp.is_premium():
+            np = sp.now_playing()
+            return bool(np and np["playing"])
+    except Exception:
+        pass
+    np = _spotify_now()
+    return bool(np and np.playing)
+
+
+def _music_player_fallback(parameters: dict, player=None) -> str:
     """action: play | pause | resume | next | previous | stop | now_playing |
     volume_up | volume_down | volume_set | mood; query, value, playlist_url."""
     action = (parameters.get("action") or "").strip().lower()

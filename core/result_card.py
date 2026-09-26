@@ -27,6 +27,7 @@ _SHOT_TOOLS = {"browser", "open_app", "movie_player", "window_control"}
 _TITLES = {
     "web_search": "Поиск", "browser": "Браузер", "weather": "Погода",
     "open_app": "Приложение", "music_player": "Музыка", "movie_player": "Фильм",
+    "youtube_player": "YouTube", "video_control": "Видео",
     "translation": "Перевод", "calendar": "Календарь", "files": "Файлы",
     "obsidian": "Заметки", "morning_briefing": "Брифинг", "look_at_screen": "Экран",
     "look_at_camera": "Камера", "send_to_telegram": "Telegram",
@@ -134,6 +135,13 @@ def _card_data(name: str, args: dict, result: str) -> dict | None:
             heading = {"calendar": "События", "files": "Файлы", "obsidian": "Заметки"}[name]
             return {"card": "list", "heading": heading, "items": items}
         return None
+
+    if name == "youtube_player":
+        m = re.search(r"«(.+?)»", text)
+        title = m.group(1) if m else str(args.get("query") or args.get("channel") or "YouTube")
+        return {"card": "media", "media": "film", "title": title,
+                "status": "YouTube" + (" · последнее видео" if args.get("action") == "latest" else ""),
+                "playing": text.startswith("Включил")}
 
     if name in ("music_player", "movie_player"):
         action = str(args.get("action", "play")).lower()
