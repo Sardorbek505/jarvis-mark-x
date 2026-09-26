@@ -119,22 +119,12 @@ def _get_news() -> str:
     """Получает топ-3 новости."""
     try:
         from core.news_manager import NewsManager
-        manager = NewsManager()
-        articles = manager.fetch_all_news()
-        
+        # У NewsManager нет fetch_all_news (он у агрегатора): вызов падал, и
+        # новости не появлялись никогда. Персональные — уже отсортированы.
+        articles = NewsManager().get_personalized_news(limit=3)
         if not articles:
             return "Новостная лента недоступна."
-        
-        # Берём топ-3 по relevance
-        # NewsArticle — объект, а не dict: .get() тут падал, и новости в
-        # брифинге тоже не появлялись никогда.
-        top_articles = sorted(articles, key=lambda x: getattr(x, "relevance_score", 0), reverse=True)[:3]
-
-        headlines = []
-        for article in top_articles:
-            title = getattr(article, "title", "")
-            if title:
-                headlines.append(title)
+        headlines = [a.get("title", "") for a in articles if a.get("title")]
         
         if headlines:
             return ". ".join(headlines)

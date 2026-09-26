@@ -108,6 +108,7 @@ hidden_imports = [
     "core.keys",
     "core.contacts",
     "core.about_me",
+    "core.briefing",
     "ui_about",
     "ui_contacts",
     "qrcode",

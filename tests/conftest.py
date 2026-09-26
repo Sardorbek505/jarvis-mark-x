@@ -60,6 +60,8 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     monkeypatch.setenv("JARVIS_CONTACTS", str(d / "contacts.json"))
     monkeypatch.setenv("JARVIS_CONTACTS_LISTEN", "0")
     monkeypatch.setenv("JARVIS_ABOUT_STATE", str(d / "about_me_state.json"))
+    monkeypatch.setenv("JARVIS_BRIEFING_STATE", str(d / "briefing_state.json"))
+    monkeypatch.setenv("JARVIS_BRIEFING", "0")            # утром сам не срабатывает посреди чужих тестов
     for attr in ("_book", "_me", "_contacts"):
         monkeypatch.setattr(contacts_mod, attr, None)
     # Свои команды — из временного файла, не из настоящей папки данных.

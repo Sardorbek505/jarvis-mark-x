@@ -1231,12 +1231,10 @@ TOOLS = [
     {
         "name": "morning_briefing",
         "description": (
-            "Дневной брифинг — погода, события на сегодня, главные новости. "
-            "Приветствие зависит от времени суток: доброе утро (6-12), добрый день (12-18), "
-            "добрый вечер (18-22), доброй ночи (22-6). "
-            "Вызывай когда пользователь говорит 'брифинг', 'что сегодня', "
-            "'доброе утро', 'добрый день', 'введи в курс дня'. "
-            "Также вызывай автоматически при старте сессии если сейчас утро (6-10)."
+            "Брифинг — факты на сегодня: погода в его городе, будильники и таймеры, дела из календаря, "
+            "новые сообщения от близких, новости по его темам, день рождения. Вернёт факты — расскажи "
+            "своими словами, коротко. Вызывай на «брифинг», «что сегодня», «доброе утро», «введи в курс "
+            "дня». Утром система запускает его сама, один раз — сам повторно не вызывай."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -2399,11 +2397,8 @@ class Jarvis:
 
             # ── Инструмент: утренний брифинг ─────────────────────────────
             elif name == "morning_briefing":
-                from actions.morning_briefing import morning_briefing
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None, lambda: morning_briefing(args, player=self.ui)
-                )
+                from core.briefing import briefing_tool
+                result = await asyncio.to_thread(briefing_tool, args)
 
             # ── Инструмент: умный таймер сна ──────────────────────────────
             elif name == "clock":
@@ -3058,6 +3053,29 @@ class Jarvis:
         if text:
             await self._speak_fish(text)
 
+    def _maybe_briefing(self):
+        """Первый разговор утром (после подъёма из «Обо мне», до полудня, раз в
+        день) — после ответа на просьбу коротко рассказать, что сегодня."""
+        if getattr(self, "_intro_offered", False):
+            return                                      # сегодня знакомимся — хватит монологов
+        try:
+            from core import briefing
+            if not briefing.due():
+                return
+            briefing.mark_done()
+        except Exception as exc:
+            logger.debug("Брифинг: %s", exc)
+            return
+
+        def run():
+            try:
+                facts = briefing.gather()
+                logger.info("Утренний брифинг: %s", ", ".join(facts) or "фактов нет")
+                self.speak(briefing.instruction(facts))
+            except Exception as exc:
+                logger.warning("Утренний брифинг: %s", exc)
+        threading.Thread(target=run, daemon=True, name="briefing").start()
+
     def _run_tool_blocking(self, name: str, args: dict) -> str:
         """Инструмент Джарвиса из фонового потока (шаг своей команды)."""
         if not self._loop or not self._loop.is_running():
@@ -3290,6 +3308,7 @@ class Jarvis:
                                     self._user_turn += 1
                                     if not by_name:
                                         self._continue_conversation()
+                                    self._maybe_briefing()
                                 continue
 
                             if full_in:
@@ -3305,6 +3324,7 @@ class Jarvis:
                                 # бы Джарвиса «проснувшимся» бесконечно.
                                 if not by_name:
                                     self._continue_conversation()
+                                self._maybe_briefing()
 
                             if full_out:
                                 self.ui.write_log(f"Джарвис: {full_out}")
@@ -3543,24 +3563,10 @@ class Jarvis:
                         except Exception as exc:
                             logger.debug("Знакомство: %s", exc)
 
-                    # Авто-триггер утреннего брифинга (6-11 утра, 1 раз в день)
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    if not offer_intro and 6 <= datetime.now().hour < 11 \
-                            and getattr(self, "_last_briefing_date", None) != today_str:
-                        self._last_briefing_date = today_str
-                        async def _run_morning_briefing():
-                            await asyncio.sleep(1.5)
-                            try:
-                                from actions.morning_briefing import morning_briefing
-                                loop = asyncio.get_event_loop()
-                                briefing = await loop.run_in_executor(
-                                    None, lambda: morning_briefing({}, player=self.ui)
-                                )
-                                if briefing:
-                                    self.speak(briefing)
-                            except Exception as e:
-                                logger.warning("Утренний брифинг: %s", e)
-                        tg.create_task(_run_morning_briefing())
+                    # Утренний брифинг — не здесь (при каждом подключении), а в
+                    # первом разговоре утра: см. _maybe_briefing / core/briefing.py.
+                    if offer_intro:
+                        self._intro_offered = True
 
             except asyncio.CancelledError:
                 raise
