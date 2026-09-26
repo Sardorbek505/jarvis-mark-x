@@ -217,7 +217,7 @@ def test_main_window_minimize_shows_island(monkeypatch):
 def test_every_icon_draws_something():
     """Иконки векторные (ui_icons), без символов шрифта: каждая что-то рисует."""
     from PyQt6.QtWidgets import QApplication
-    QApplication.instance() or QApplication([])
+    app = QApplication.instance() or QApplication([])   # noqa: F841  (без ссылки приложение умирает сразу)
     import ui_icons
     for name in ui_icons.NAMES:
         img = ui_icons.qicon(name, 16, "#ffffff").pixmap(48, 48).toImage()

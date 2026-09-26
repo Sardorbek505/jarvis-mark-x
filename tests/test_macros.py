@@ -144,6 +144,8 @@ def test_every_pack_phrase_compiles_and_keys_are_known():
 
 
 def test_editor_window(store):
+    """Окно: список — только свои команды, ИИ заполняет рецепт, фразы-чипсы,
+    шаги лентой (действие Джарвиса — из списка, без JSON), паки отдельно."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
@@ -152,23 +154,36 @@ def test_editor_window(store):
     built = threading.Event()
     dlg = ui_macros.MacrosDialog(store=m, build=lambda text: (built.set(), mc.parse_ai(
         '{"name": "Стрим", "phrases": ["включи стрим"], "steps": [{"do": "open_app", "value": "OBS"},'
-        '{"do": "wait", "value": "2"}]}'))[1])
+        '{"do": "wait", "value": "2"}, {"do": "tool", "tool": "music_player",'
+        ' "args": {"action": "play", "query": "lofi"}}]}'))[1])
     try:
-        assert dlg.list.count() == len(m.commands)
-        dlg.ai_text.setText("открой OBS и подожди 2 секунды")
+        assert dlg.cmd_list.count() == 0 and dlg.empty.isVisibleTo(dlg)   # паки в список не лезут
+        dlg.ai_text.setText("открой OBS, подожди 2 секунды и включи lofi")
         dlg.ask_ai()
         for _ in range(200):
             app.processEvents()
             if dlg.name.text() == "Стрим":
                 break
             time.sleep(0.01)
-        assert built.is_set() and dlg.steps.rowCount() == 2
+        assert built.is_set() and len(dlg.step_rows) == 3
+        tool_row = dlg.step_rows[2]
+        assert tool_row.combo.currentText() == "Включить музыку" and tool_row.value.text() == "lofi"
+        assert not tool_row.args.isVisibleTo(tool_row)                   # JSON спрятан
+        dlg.phrase_in.setText("режим стрима")
+        dlg.add_phrase(dlg.phrase_in.text())
+        assert dlg.phrases() == ["включи стрим", "режим стрима"]
+        dlg._move_step(dlg.step_rows[1], -1)                              # пауза — первой
+        assert [r.number for r in dlg.step_rows] == [1, 2, 3] and dlg.step_rows[0].kind == "wait"
         assert dlg.save_command()
-        assert m.match("включи стрим")[0].name == "Стрим"
-        assert dlg.read_steps() == [{"do": "open_app", "value": "OBS"}, {"do": "wait", "value": "2"}]
+        assert m.match("режим стрима")[0].name == "Стрим" and dlg.cmd_list.count() == 1
+        assert dlg.read_steps()[2] == {"do": "tool", "value": "", "tool": "music_player",
+                                       "args": {"action": "play", "query": "lofi"}}
+        dlg.new_command()
+        assert not dlg.save_command() and "фразу" in dlg.status.text()   # подсказывает, чего не хватает
         dlg.toggle_pack("discord")
-        assert "discord" in m.installed
+        assert "discord" in m.installed and dlg.pack_btns["discord"].text().strip() == "Установлен"
         dlg.toggle_pack("discord")
         assert "discord" not in m.installed
+        dlg.repaint()
     finally:
         dlg.close()

@@ -1,80 +1,444 @@
-"""Окно «Свои команды»: список команд, фразы запуска, шаги, «Собрать с
-помощью ИИ» по описанию словами и готовые паки для программ.
+"""Окно «Свои команды».
 
-Сами команды живут в core/macros.py; окно только редактирует их."""
+Как им пользоваться — видно сразу, без объяснений:
+  1. Слева — ВАШИ команды (паки программ — на своей странице, не в куче).
+  2. Справа сверху — «Опишите словами» → «Собрать»: ИИ раскладывает на шаги.
+  3. Ниже — команда как рецепт: название, фразы-чипсы («включи режим
+     стрима» ×), шаги лентой сверху вниз — у каждого номер, иконка и одно
+     понятное поле. Сложные действия выбираются из списка, без JSON.
+  4. Внизу — «Проверить» и «Сохранить».
+
+Стиль — Джарвиса (палитра ui.C): почти чёрные панели, тонкие рамки,
+бирюзовый акцент, подписи капсом, векторные иконки ui_icons.
+Сами команды живут в core/macros.py; окно только редактирует их.
+"""
 from __future__ import annotations
 
 import json
 import logging
 import threading
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                             QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QTableWidget,
-                             QTabWidget, QVBoxLayout, QWidget)
+from PyQt6.QtCore import QPointF, QRect, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen
+from PyQt6.QtWidgets import (QAbstractButton, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
+                             QLayout, QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton, QScrollArea,
+                             QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from core import macros as mc
 from core.macro_packs import PACKS
+from ui import C
+from ui_icons import draw_icon, qicon
 
 logger = logging.getLogger(__name__)
 
-from ui import C  # noqa: E402  (палитра Джарвиса — одна на все окна)
+# ── что умеет шаг: иконка, название, подсказка поля ─────────────────────────
+STEP_META = {
+    "open_app": ("app", "Запустить программу", "Имя программы — OBS Studio, Telegram, Steam"),
+    "open_url": ("globe", "Открыть сайт", "Адрес — youtube.com"),
+    "keys": ("keyboard", "Нажать клавиши", "Сочетание — ctrl+shift+s, f5, alt+tab"),
+    "type": ("text", "Набрать текст", "Что напечатать — можно {слово} из фразы"),
+    "click": ("cursor", "Клик мышью", ""),
+    "wait": ("timer", "Подождать", "Секунды — 2"),
+    "volume": ("volume", "Громкость системы", "Уровень 0–100"),
+    "media": ("play", "Медиаклавиша", ""),
+    "say": ("speak", "Сказать вслух", "Фраза Джарвиса"),
+    "tool": ("bolt", "Действие Джарвиса", ""),
+}
+STEP_ORDER = ["open_app", "wait", "keys", "tool", "open_url", "type", "volume", "media", "say", "click"]
+MEDIA = [("playpause", "Пауза / играть"), ("next", "Следующий трек"), ("previous", "Предыдущий трек"),
+         ("mute", "Выключить звук")]
 
-# Тот же HUD, что у главного окна и оверлея настройки: почти чёрный фон,
-# тонкие рамки, бирюзовый акцент, «призрачные» кнопки, подписи капсом.
+# Действия Джарвиса — по-человечески. (подпись, инструмент, аргументы, поле-значение, подсказка)
+ACTIONS = [
+    ("Включить музыку", "music_player", {"action": "play"}, "query", "Что включить — lofi, Believer"),
+    ("Музыка на паузу", "music_player", {"action": "pause"}, "", ""),
+    ("Музыку дальше", "music_player", {"action": "next"}, "", ""),
+    ("Громкость музыки", "music_player", {"action": "volume_set"}, "value", "Уровень 0–100"),
+    ("Ролик на YouTube", "youtube_player", {"action": "play"}, "query", "Что найти"),
+    ("Фильм", "movie_player", {"action": "play"}, "title", "Название фильма"),
+    ("Таймер", "clock", {"action": "timer_set"}, "minutes", "Минуты — 10"),
+    ("Погода", "weather", {}, "", ""),
+    ("Свернуть все окна", "window_control", {"action": "minimize_all"}, "", ""),
+    ("Смотреть на экран", "eyes", {"action": "open", "source": "screen"}, "", ""),
+]
+
+
+def _action_of(step: dict) -> int | None:
+    """Какой пункт ACTIONS описывает шаг-инструмент (None — свой, вручную)."""
+    args = dict(step.get("args") or {})
+    for i, (_t, tool, base, field, _h) in enumerate(ACTIONS):
+        if step.get("tool") != tool:
+            continue
+        if {k: v for k, v in args.items() if k != field} == base:
+            return i
+    return None
+
+
+def plural(n: int, forms=("шаг", "шага", "шагов")) -> str:
+    n = abs(n) % 100
+    if 11 <= n <= 14:
+        return forms[2]
+    return forms[0] if n % 10 == 1 else forms[1] if 2 <= n % 10 <= 4 else forms[2]
+
+
+# ── стиль ────────────────────────────────────────────────────────────────────
 STYLE = f"""
 QDialog {{ background: {C.BG}; }}
-QWidget {{ background: transparent; color: {C.TEXT}; font-family: 'Segoe UI'; font-size: 12px; }}
-QTabWidget::pane {{ border: 1px solid {C.BORDER}; border-radius: 3px; background: {C.PANEL}; top: -1px; }}
-QTabBar::tab {{ background: transparent; color: {C.TEXT_DIM}; padding: 7px 16px; margin-right: 2px;
-  font-family: Consolas; font-size: 11px; font-weight: bold; letter-spacing: 1px;
-  border: 1px solid transparent; border-bottom: none; }}
-QTabBar::tab:selected {{ color: {C.PRI}; border-color: {C.BORDER}; background: {C.PANEL};
-  border-top: 1px solid {C.PRI_DIM}; }}
-QTabBar::tab:hover {{ color: {C.TEXT_MED}; }}
-QLineEdit, QPlainTextEdit, QComboBox {{ background: #000d12; color: {C.TEXT};
-  border: 1px solid {C.BORDER}; border-radius: 3px; padding: 5px 8px; selection-background-color: {C.BORDER_B}; }}
-QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{ border: 1px solid {C.PRI}; }}
-QComboBox QAbstractItemView {{ background: {C.PANEL2}; border: 1px solid {C.BORDER_B};
-  selection-background-color: {C.PRI_GHO}; selection-color: {C.PRI}; }}
-QListWidget, QTableWidget {{ background: {C.DARK}; border: 1px solid {C.BORDER}; border-radius: 3px;
-  gridline-color: {C.BORDER}; outline: none; }}
-QListWidget::item {{ padding: 7px 8px; border-left: 2px solid transparent; }}
+QWidget {{ color: {C.TEXT}; font-family: 'Segoe UI'; font-size: 13px; }}
+QLabel {{ background: transparent; }}
+QScrollArea {{ background: transparent; border: none; }}
+QWidget#canvas {{ background: {C.BG}; }}
+QLineEdit, QComboBox {{ background: {C.DARK}; color: {C.WHITE}; border: 1px solid {C.BORDER};
+  border-radius: 8px; padding: 7px 10px; selection-background-color: {C.BORDER_B}; }}
+QLineEdit:focus, QComboBox:focus {{ border-color: {C.PRI_DIM}; }}
+QLineEdit:disabled {{ color: {C.TEXT_DIM}; }}
+QLineEdit#title {{ background: transparent; border: 1px solid transparent; font-size: 22px;
+  font-weight: 600; padding: 2px 4px; }}
+QLineEdit#title:hover {{ border-color: {C.BORDER}; }}
+QLineEdit#title:focus {{ border-color: {C.PRI_DIM}; background: {C.DARK}; }}
+QComboBox::drop-down {{ border: none; width: 22px; }}
+QComboBox QAbstractItemView {{ background: {C.PANEL2}; border: 1px solid {C.BORDER_B}; outline: none;
+  selection-background-color: {C.PRI_GHO}; selection-color: {C.PRI}; padding: 4px; }}
+QListWidget {{ background: transparent; border: none; outline: none; }}
+QListWidget::item {{ border-radius: 10px; padding: 10px 8px; margin: 2px 0; color: {C.TEXT}; }}
 QListWidget::item:hover {{ background: {C.PANEL2}; }}
-QListWidget::item:selected {{ background: {C.PRI_GHO}; color: {C.WHITE}; border-left: 2px solid {C.PRI}; }}
-QHeaderView::section {{ background: {C.PANEL}; color: {C.TEXT_DIM}; border: none;
-  border-bottom: 1px solid {C.BORDER}; padding: 4px; font-family: Consolas; font-size: 10px; }}
+QListWidget::item:selected {{ background: {C.PRI_GHO}; color: {C.WHITE}; }}
 QPushButton {{ background: transparent; color: {C.TEXT_MED}; border: 1px solid {C.BORDER_B};
-  border-radius: 3px; padding: 6px 12px; }}
+  border-radius: 8px; padding: 8px 14px; }}
 QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; background: {C.PRI_GHO}; }}
 QPushButton:disabled {{ color: {C.TEXT_DIM}; border-color: {C.BORDER}; }}
-QPushButton#primary {{ color: {C.PRI}; border: 1px solid {C.PRI_DIM}; font-family: Consolas; font-weight: bold; }}
-QPushButton#primary:hover {{ background: {C.PRI_GHO}; border-color: {C.PRI}; }}
-QPushButton#done {{ color: {C.GREEN}; border: 1px solid {C.GREEN_D}; font-family: Consolas; }}
-QCheckBox {{ color: {C.TEXT_MED}; spacing: 6px; }}
-QCheckBox::indicator {{ width: 12px; height: 12px; border: 1px solid {C.BORDER_B}; border-radius: 2px;
-  background: #000d12; }}
-QCheckBox::indicator:checked {{ background: {C.PRI_DIM}; border-color: {C.PRI}; }}
-QScrollBar:vertical {{ background: transparent; width: 4px; border: none; margin: 0; }}
-QScrollBar::handle:vertical {{ background: {C.BORDER_B}; border-radius: 2px; min-height: 20px; }}
+QPushButton#primary {{ background: {C.PRI}; color: {C.BG}; border: none; font-weight: 700; }}
+QPushButton#primary:hover {{ background: #5fe0cf; }}
+QPushButton#primary:disabled {{ background: {C.PRI_DIM}; color: {C.PANEL}; }}
+QPushButton#ghost {{ border: none; padding: 4px; border-radius: 6px; }}
+QPushButton#ghost:hover {{ background: {C.PRI_GHO}; }}
+QPushButton#danger {{ color: {C.TEXT_DIM}; border: 1px solid {C.BORDER}; }}
+QPushButton#danger:hover {{ color: {C.RED}; border-color: {C.RED}; background: #1a0a0e; }}
+QPushButton#seg {{ border: none; border-radius: 8px; padding: 7px 16px; color: {C.TEXT_MED}; }}
+QPushButton#seg:hover {{ color: {C.WHITE}; background: transparent; }}
+QPushButton#seg:checked {{ background: {C.PANEL2}; color: {C.PRI}; }}
+QPushButton#add {{ border: 1px dashed {C.BORDER_B}; color: {C.TEXT_MED}; padding: 11px; border-radius: 12px; }}
+QPushButton#add:hover {{ border-color: {C.PRI_DIM}; color: {C.PRI}; }}
+QMenu {{ background: {C.PANEL2}; border: 1px solid {C.BORDER_B}; border-radius: 10px; padding: 6px; }}
+QMenu::item {{ padding: 8px 20px 8px 10px; border-radius: 6px; color: {C.TEXT}; }}
+QMenu::item:selected {{ background: {C.PRI_GHO}; color: {C.PRI}; }}
+QToolTip {{ background: {C.PANEL2}; color: {C.TEXT}; border: 1px solid {C.BORDER_B}; padding: 4px 8px; }}
+QScrollBar:vertical {{ background: transparent; width: 6px; margin: 2px; }}
+QScrollBar::handle:vertical {{ background: {C.BORDER_B}; border-radius: 3px; min-height: 30px; }}
 QScrollBar::handle:vertical:hover {{ background: {C.PRI_DIM}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-QLabel#hint {{ color: {C.TEXT_DIM}; font-size: 11px; }}
-QLabel#cap {{ color: {C.TEXT_DIM}; font-family: Consolas; font-size: 10px; font-weight: bold; letter-spacing: 1px; }}
-QLabel#title {{ color: {C.PRI}; font-family: Consolas; font-size: 14px; font-weight: bold; letter-spacing: 2px; }}
+QFrame#card {{ background: {C.PANEL}; border: 1px solid {C.BORDER}; border-radius: 14px; }}
+QFrame#ai {{ background: {C.PRI_GHO}; border: 1px solid {C.PRI_DIM}; border-radius: 14px; }}
+QFrame#step {{ background: {C.PANEL}; border: 1px solid {C.BORDER}; border-radius: 12px; }}
+QFrame#step:hover {{ border-color: {C.BORDER_B}; }}
+QFrame#chip {{ background: {C.PRI_GHO}; border: 1px solid {C.PRI_DIM}; border-radius: 15px; }}
+QFrame#sidebar {{ background: {C.PANEL}; border: none; border-right: 1px solid {C.BORDER}; }}
+QFrame#bar {{ background: {C.PANEL}; border: none; }}
+QFrame#seg {{ background: {C.DARK}; border: 1px solid {C.BORDER}; border-radius: 10px; }}
+QLabel#cap {{ color: {C.TEXT_DIM}; font-family: Consolas; font-size: 11px; font-weight: bold; }}
+QLabel#hint {{ color: {C.TEXT_DIM}; font-size: 12px; }}
+QLabel#h1 {{ color: {C.WHITE}; font-size: 17px; font-weight: 700; }}
+QLabel#h2 {{ color: {C.WHITE}; font-size: 15px; font-weight: 600; }}
+QLabel#brand {{ color: {C.PRI}; font-family: Consolas; font-size: 11px; font-weight: bold; }}
+QLabel#stepTitle {{ color: {C.TEXT_MED}; font-size: 12px; font-weight: 600; }}
+QLabel#status {{ color: {C.TEXT_MED}; font-size: 12px; }}
 """
 
 
-def _cap(text: str) -> QLabel:
-    """Подпись раздела капсом, как «GEMINI API КЛЮЧ» в оверлее настройки."""
-    w = QLabel(text.upper())
-    w.setObjectName("cap")
+def _label(text: str, name: str = "", wrap: bool = True) -> QLabel:
+    w = QLabel(text)
+    if name:
+        w.setObjectName(name)
+    w.setWordWrap(wrap)
     return w
 
 
-TYPES = list(mc.STEP_TYPES)
+def _cap(text: str) -> QLabel:
+    """Подпись раздела капсом, с разрядкой — как в HUD."""
+    w = _label(text.upper(), "cap")
+    f = w.font()
+    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.6)
+    w.setFont(f)
+    return w
 
+
+def _icon_btn(icon: str, tip: str, size: int = 14, color: str = C.TEXT_MED) -> QPushButton:
+    b = QPushButton()
+    b.setObjectName("ghost")
+    b.setIcon(qicon(icon, size, color))
+    b.setIconSize(QSize(size, size))
+    b.setToolTip(tip)
+    b.setCursor(Qt.CursorShape.PointingHandCursor)
+    b.setFixedSize(28, 28)
+    return b
+
+
+class IconBadge(QWidget):
+    """Иконка в скруглённом квадрате — как в настройках iPhone, в цветах Джарвиса."""
+
+    def __init__(self, icon: str, size: int = 32, parent=None):
+        super().__init__(parent)
+        self.icon = icon
+        self.setFixedSize(size, size)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QPen(QColor(C.PRI_DIM), 1))
+        p.setBrush(QColor(C.PRI_GHO))
+        p.drawRoundedRect(r, self.width() * 0.28, self.width() * 0.28)
+        draw_icon(p, self.icon, r.center(), self.width() * 0.5, QColor(C.PRI))
+
+
+class Toggle(QAbstractButton):
+    """Переключатель вкл/выкл."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(40, 22)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        on = self.isChecked()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(C.PRI if on else C.BORDER_B))
+        p.drawRoundedRect(QRectF(0, 0, 40, 22), 11, 11)
+        p.setBrush(QColor(C.BG if on else C.TEXT_MED))
+        p.drawEllipse(QPointF(29 if on else 11, 11), 8, 8)
+
+
+class FlowLayout(QLayout):
+    """Элементы в строку с переносом — для чипсов фраз."""
+
+    def __init__(self, parent=None, spacing: int = 8):
+        super().__init__(parent)
+        self._items = []
+        self.setSpacing(spacing)
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, w):
+        return self._layout(QRect(0, 0, w, 0), True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._layout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        s = QSize()
+        for it in self._items:
+            s = s.expandedTo(it.minimumSize())
+        return s
+
+    def _layout(self, rect, test):
+        x, y, line = rect.x(), rect.y(), 0
+        sp = self.spacing()
+        for it in self._items:
+            hint = it.sizeHint()
+            if x + hint.width() > rect.right() and line > 0:
+                x, y, line = rect.x(), y + line + sp, 0
+            if not test:
+                it.setGeometry(QRect(x, y, hint.width(), hint.height()))
+            x += hint.width() + sp
+            line = max(line, hint.height())
+        return y + line - rect.y()
+
+
+class Chip(QFrame):
+    removed = pyqtSignal(str)
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self.text = text
+        self.setObjectName("chip")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 3, 3, 3)
+        lay.setSpacing(2)
+        lbl = QLabel(text)
+        lbl.setStyleSheet(f"color: {C.WHITE};")
+        x = _icon_btn("close", "Убрать фразу", 10)
+        x.setFixedSize(24, 24)
+        x.clicked.connect(lambda: self.removed.emit(self.text))
+        lay.addWidget(_small_icon("mic"))
+        lay.addWidget(lbl)
+        lay.addWidget(x)
+
+
+def _small_icon(name: str, size: int = 12, color: str = C.PRI) -> QLabel:
+    lbl = QLabel()
+    lbl.setPixmap(qicon(name, size, color).pixmap(size, size))
+    return lbl
+
+
+class StepRow(QWidget):
+    """Шаг: номер на ленте слева, карточка справа — иконка, название, поле."""
+
+    moved = pyqtSignal(object, int)
+    removed = pyqtSignal(object)
+
+    def __init__(self, step: dict, parent=None):
+        super().__init__(parent)
+        self.kind = step["do"]
+        self.number, self.last = 1, True
+        icon, title, hint = STEP_META[self.kind]
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+        self.rail = _Rail(self)
+        row.addWidget(self.rail)
+
+        card = QFrame()
+        card.setObjectName("step")
+        lay = QHBoxLayout(card)
+        lay.setContentsMargins(12, 10, 6, 10)
+        lay.setSpacing(12)
+        lay.addWidget(IconBadge(icon), 0, Qt.AlignmentFlag.AlignTop)
+        body = QVBoxLayout()
+        body.setSpacing(6)
+        body.addWidget(_label(title, "stepTitle"))
+        self.fields = QHBoxLayout()
+        self.fields.setSpacing(8)
+        body.addLayout(self.fields)
+        lay.addLayout(body, 1)
+        tools = QHBoxLayout()
+        tools.setSpacing(0)
+        up, down = _icon_btn("up", "Выше"), _icon_btn("down", "Ниже")
+        rm = _icon_btn("trash", "Убрать шаг", 14, C.TEXT_DIM)
+        up.clicked.connect(lambda: self.moved.emit(self, -1))
+        down.clicked.connect(lambda: self.moved.emit(self, 1))
+        rm.clicked.connect(lambda: self.removed.emit(self))
+        for b in (up, down, rm):
+            tools.addWidget(b)
+        lay.addLayout(tools)
+        lay.setAlignment(tools, Qt.AlignmentFlag.AlignTop)
+        row.addWidget(card, 1)
+        self._build_fields(step, hint)
+
+    def _build_fields(self, step: dict, hint: str):
+        v = str(step.get("value", ""))
+        self.value = self.x = self.y = self.combo = self.args = None
+        if self.kind == "click":
+            self.x, self.y = QLineEdit(str(step.get("x", 0))), QLineEdit(str(step.get("y", 0)))
+            self.combo = QComboBox()
+            for key, text in (("left", "Левой кнопкой"), ("right", "Правой кнопкой"), ("double", "Двойной")):
+                self.combo.addItem(text, key)
+            self.combo.setCurrentIndex(max(0, self.combo.findData(v or "left")))
+            for w, ph in ((self.x, "X"), (self.y, "Y")):
+                w.setPlaceholderText(ph)
+                w.setFixedWidth(76)
+                self.fields.addWidget(w)
+            self.fields.addWidget(self.combo)
+            self.fields.addStretch(1)
+        elif self.kind == "media":
+            self.combo = QComboBox()
+            for key, text in MEDIA:
+                self.combo.addItem(text, key)
+            self.combo.setCurrentIndex(max(0, self.combo.findData(v or "playpause")))
+            self.fields.addWidget(self.combo, 1)
+        elif self.kind == "tool":
+            self.combo = QComboBox()
+            for title, *_ in ACTIONS:
+                self.combo.addItem(title)
+            self.combo.addItem("Другое — вручную")
+            self.value, self.args = QLineEdit(), QLineEdit()
+            self.args.setPlaceholderText('инструмент {"action": "…"}')
+            i = _action_of(step)
+            if i is None:
+                self.combo.setCurrentIndex(len(ACTIONS))
+                self.args.setText(f"{step.get('tool', '')} {json.dumps(step.get('args') or {}, ensure_ascii=False)}")
+            else:
+                self.combo.setCurrentIndex(i)
+                field = ACTIONS[i][3]
+                self.value.setText(str((step.get("args") or {}).get(field, "")) if field else "")
+            self.combo.currentIndexChanged.connect(self._tool_changed)
+            self.fields.addWidget(self.combo)
+            self.fields.addWidget(self.value, 1)
+            self.fields.addWidget(self.args, 1)
+            self._tool_changed()
+        else:
+            self.value = QLineEdit(v)
+            self.value.setPlaceholderText(hint)
+            self.fields.addWidget(self.value, 1)
+
+    def _tool_changed(self):
+        i = self.combo.currentIndex()
+        custom = i >= len(ACTIONS)
+        self.args.setVisible(custom)
+        hint = "" if custom else ACTIONS[i][4]
+        self.value.setVisible(bool(hint))
+        self.value.setPlaceholderText(hint)
+
+    def read(self) -> dict:
+        if self.kind == "click":
+            return {"do": "click", "value": self.combo.currentData(),
+                    "x": self.x.text().strip() or 0, "y": self.y.text().strip() or 0}
+        if self.kind == "media":
+            return {"do": "media", "value": self.combo.currentData()}
+        if self.kind == "tool":
+            i = self.combo.currentIndex()
+            if i >= len(ACTIONS):
+                tool, _, args = self.args.text().strip().partition(" ")
+                return {"do": "tool", "tool": tool, "args": args or "{}", "value": ""}
+            _t, tool, base, field, _h = ACTIONS[i]
+            args = dict(base)
+            if field and self.value.text().strip():
+                args[field] = self.value.text().strip()
+            return {"do": "tool", "tool": tool, "args": args, "value": ""}
+        return {"do": self.kind, "value": self.value.text().strip()}
+
+
+class _Rail(QWidget):
+    """Лента слева от шагов: кружок с номером и линия к соседям."""
+
+    def __init__(self, row: StepRow):
+        super().__init__(row)
+        self.row = row
+        self.setFixedWidth(26)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        cx, cy = 13, 27
+        p.setPen(QPen(QColor(C.BORDER_B), 2))
+        if self.row.number > 1:
+            p.drawLine(QPointF(cx, -4), QPointF(cx, cy - 11))
+        if not self.row.last:
+            p.drawLine(QPointF(cx, cy + 11), QPointF(cx, self.height() + 4))
+        p.setPen(QPen(QColor(C.PRI_DIM), 1.5))
+        p.setBrush(QColor(C.BG))
+        p.drawEllipse(QPointF(cx, cy), 11, 11)
+        p.setPen(QColor(C.PRI))
+        f = QFont("Consolas", 9)
+        f.setBold(True)
+        p.setFont(f)
+        p.drawText(QRectF(cx - 11, cy - 11, 22, 22), int(Qt.AlignmentFlag.AlignCenter), str(self.row.number))
+
+
+# ── окно ─────────────────────────────────────────────────────────────────────
 
 class MacrosDialog(QDialog):
     _ai_done = pyqtSignal(object, str)
@@ -84,219 +448,439 @@ class MacrosDialog(QDialog):
         self.store = store or mc.macros()
         self.build = build or mc.build_with_ai
         self.current: mc.Command | None = None
+        self.step_rows: list[StepRow] = []
+        self._phrases: list[str] = []
         self.setWindowTitle("ДЖАРВИС — свои команды")
         self.setStyleSheet(STYLE)
-        self.resize(980, 640)
-        tabs = QTabWidget()
-        tabs.addTab(self._commands_tab(), "СВОИ КОМАНДЫ")
-        tabs.addTab(self._packs_tab(), "ПАКИ ПРОГРАММ")
-        lay = QVBoxLayout(self)
-        lay.addWidget(tabs)
+        self.resize(1080, 740)
+        self.setMinimumSize(920, 600)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._header())
+        root.addWidget(_line())
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self._commands_page())
+        self.pages.addWidget(self._packs_page())
+        root.addWidget(self.pages, 1)
         self._ai_done.connect(self._on_ai)
         self.reload()
+        self.new_command()
 
-    # ── вкладка команд ───────────────────────────────────────────────────────
-    def _commands_tab(self) -> QWidget:
-        w = QWidget()
-        row = QHBoxLayout(w)
-        left = QVBoxLayout()
-        self.search = QLineEdit(placeholderText="Поиск команды…")
-        self.search.textChanged.connect(self.reload)
-        self.list = QListWidget()
-        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.list.setWordWrap(True)
-        self.list.currentItemChanged.connect(lambda cur, _prev: self.show_command(cur.data(Qt.ItemDataRole.UserRole)
-                                                                                 if cur else None))
-        btns = QHBoxLayout()
-        new, dele = QPushButton("+ НОВАЯ"), QPushButton("УДАЛИТЬ")
-        new.clicked.connect(self.new_command)
-        dele.clicked.connect(self.delete_command)
-        btns.addWidget(new)
-        btns.addWidget(dele)
-        left.addWidget(self.search)
-        left.addWidget(self.list, 1)
-        left.addLayout(btns)
-
-        right = QVBoxLayout()
-        title = QLabel("◈ КОМАНДА")
-        title.setObjectName("title")
-        right.addWidget(title)
-        # ИИ: описать словами
-        ai = QHBoxLayout()
-        self.ai_text = QLineEdit(placeholderText="Опишите словами: «открой OBS, подожди 2 секунды и включи музыку»")
-        self.ai_btn = QPushButton("▸ СОБРАТЬ С ПОМОЩЬЮ ИИ")
-        self.ai_btn.setObjectName("primary")
-        self.ai_btn.clicked.connect(self.ask_ai)
-        ai.addWidget(self.ai_text, 1)
-        ai.addWidget(self.ai_btn)
-        right.addLayout(ai)
-
-        self.name = QLineEdit(placeholderText="Название — «Режим стрима»")
-        self.phrases = QPlainTextEdit(placeholderText="Фразы запуска, по одной в строке:\nвключи режим стрима\n"
-                                                      "найди на ютубе {запрос}")
-        self.phrases.setFixedHeight(80)
-        opts = QHBoxLayout()
-        self.app = QLineEdit(placeholderText="Только в программе (chrome.exe) — можно пусто")
-        self.confirm = QCheckBox("Переспрашивать")
-        self.enabled = QCheckBox("Включена")
-        opts.addWidget(self.app, 1)
-        opts.addWidget(self.confirm)
-        opts.addWidget(self.enabled)
-        for wdg in (_cap("Название"), self.name, _cap("Фразы для запуска"), self.phrases):
-            right.addWidget(wdg)
-        right.addLayout(opts)
-
-        right.addWidget(_cap("Шаги по порядку"))
-        self.steps = QTableWidget(0, 3)
-        self.steps.setHorizontalHeaderLabels(["Действие", "Значение", "Доп. (x,y / аргументы)"])
-        self.steps.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.steps.setColumnWidth(0, 190)
-        self.steps.setColumnWidth(2, 230)
-        self.steps.verticalHeader().setVisible(False)
-        right.addWidget(self.steps, 1)
-        sb = QHBoxLayout()
-        for text, fn in (("+ ШАГ", self.add_step), ("↑", lambda: self.move_step(-1)),
-                         ("↓", lambda: self.move_step(1)), ("− ШАГ", self.remove_step)):
-            b = QPushButton(text)
-            b.clicked.connect(fn)
-            sb.addWidget(b)
-        sb.addStretch(1)
-        self.test_btn = QPushButton("▸ ПРОВЕРИТЬ")
-        self.test_btn.clicked.connect(self.test_command)
-        save = QPushButton("▸ СОХРАНИТЬ")
-        save.setObjectName("primary")
-        save.clicked.connect(self.save_command)
-        sb.addWidget(self.test_btn)
-        sb.addWidget(save)
-        right.addLayout(sb)
-        self.status = QLabel("")
-        self.status.setObjectName("hint")
-        right.addWidget(self.status)
-
-        row.addLayout(left, 2)
-        row.addLayout(right, 5)
+    # ── шапка ────────────────────────────────────────────────────────────────
+    def _header(self) -> QWidget:
+        w = QFrame()
+        w.setObjectName("bar")
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(24, 14, 24, 14)
+        lay.setSpacing(14)
+        lay.addWidget(IconBadge("bolt", 38))
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        brand = _label("ДЖАРВИС", "brand")
+        f = brand.font()
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 3)
+        brand.setFont(f)
+        col.addWidget(brand)
+        col.addWidget(_label("Свои команды", "h1"))
+        lay.addLayout(col)
+        lay.addStretch(1)
+        seg = QFrame()
+        seg.setObjectName("seg")
+        sl = QHBoxLayout(seg)
+        sl.setContentsMargins(3, 3, 3, 3)
+        sl.setSpacing(2)
+        self.seg_own = QPushButton("  Мои команды")
+        self.seg_packs = QPushButton("  Паки программ")
+        for b, icon, page in ((self.seg_own, "bolt", 0), (self.seg_packs, "grid", 1)):
+            b.setObjectName("seg")
+            b.setCheckable(True)
+            b.setIcon(qicon(icon, 14, C.PRI))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, i=page: self.show_page(i))
+            sl.addWidget(b)
+        self.seg_own.setChecked(True)
+        lay.addWidget(seg)
         return w
 
+    def show_page(self, i: int):
+        self.pages.setCurrentIndex(i)
+        self.seg_own.setChecked(i == 0)
+        self.seg_packs.setChecked(i == 1)
+
+    # ── мои команды ─────────────────────────────────────────────────────────
+    def _commands_page(self) -> QWidget:
+        page = QWidget()
+        row = QHBoxLayout(page)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+
+        side = QFrame()
+        side.setObjectName("sidebar")
+        side.setFixedWidth(290)
+        sl = QVBoxLayout(side)
+        sl.setContentsMargins(16, 18, 16, 16)
+        sl.setSpacing(10)
+        new = QPushButton("  Новая команда")
+        new.setObjectName("primary")
+        new.setIcon(qicon("plus", 14, C.BG))
+        new.setCursor(Qt.CursorShape.PointingHandCursor)
+        new.clicked.connect(self.new_command)
+        sl.addWidget(new)
+        self.search = QLineEdit(placeholderText="Найти команду")
+        self.search.textChanged.connect(self.reload)
+        sl.addWidget(self.search)
+        sl.addSpacing(4)
+        sl.addWidget(_cap("Мои команды"))
+        self.cmd_list = QListWidget()
+        self.cmd_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.cmd_list.setWordWrap(True)
+        self.cmd_list.setIconSize(QSize(16, 16))
+        self.cmd_list.currentItemChanged.connect(
+            lambda cur, _p: cur and self.show_command(cur.data(Qt.ItemDataRole.UserRole)))
+        sl.addWidget(self.cmd_list, 1)
+        self.empty = _label("Пока пусто.\n\nОпишите справа словами, что должна\nделать команда, — ИИ соберёт шаги.",
+                            "hint")
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        sl.addWidget(self.empty, 1)
+        tip = QFrame()
+        tip.setObjectName("card")
+        tl = QHBoxLayout(tip)
+        tl.setContentsMargins(12, 10, 12, 10)
+        tl.addWidget(_small_icon("mic", 14), 0, Qt.AlignmentFlag.AlignTop)
+        tl.addWidget(_label("Скажите «Джарвис» и фразу команды — всё выполнится само, мгновенно.", "hint"), 1)
+        sl.addWidget(tip)
+        row.addWidget(side)
+
+        right = QVBoxLayout()
+        right.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        body.setObjectName("canvas")
+        self.body = QVBoxLayout(body)
+        self.body.setContentsMargins(30, 22, 30, 26)
+        self.body.setSpacing(10)
+        self.body.addWidget(self._ai_card())
+        self.body.addSpacing(10)
+        self.name = QLineEdit(placeholderText="Название команды")
+        self.name.setObjectName("title")
+        self.body.addWidget(self.name)
+
+        self.body.addSpacing(6)
+        self.body.addWidget(self._section("mic", "Как запустить",
+                                          "Фраза после «Джарвис». {слово} — изменяемая часть: «найди на ютубе {запрос}»"))
+        chips = QWidget()
+        self.chips = FlowLayout(chips)
+        self.body.addWidget(chips)
+        self.phrase_in = QLineEdit(placeholderText="Добавить фразу — например «включи режим стрима» и Enter")
+        self.phrase_in.returnPressed.connect(lambda: self.add_phrase(self.phrase_in.text()))
+        self.body.addWidget(self.phrase_in)
+
+        self.body.addSpacing(12)
+        self.body.addWidget(self._section("bolt", "Что сделать", "Шаги идут по порядку, сверху вниз"))
+        steps = QWidget()
+        self.steps_box = QVBoxLayout(steps)
+        self.steps_box.setContentsMargins(0, 0, 0, 0)
+        self.steps_box.setSpacing(8)
+        self.body.addWidget(steps)
+        add = QPushButton("  Добавить шаг")
+        add.setObjectName("add")
+        add.setIcon(qicon("plus", 14, C.TEXT_MED))
+        add.setCursor(Qt.CursorShape.PointingHandCursor)
+        add.clicked.connect(lambda: self._step_menu(add))
+        self.body.addWidget(add)
+
+        self.body.addSpacing(12)
+        self.body.addWidget(self._section("check", "Условия", ""))
+        self.body.addWidget(self._options_card())
+        self.body.addStretch(1)
+        scroll.setWidget(body)
+        right.addWidget(scroll, 1)
+        right.addWidget(_line())
+        right.addWidget(self._footer())
+        row.addLayout(right, 1)
+        return page
+
+    @staticmethod
+    def _section(icon: str, title: str, hint: str) -> QWidget:
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        lay.addWidget(_small_icon(icon, 13))
+        lay.addWidget(_cap(title))
+        if hint:
+            lay.addWidget(_label("—  " + hint, "hint", wrap=False))
+        lay.addStretch(1)
+        return w
+
+    def _ai_card(self) -> QWidget:
+        card = QFrame()
+        card.setObjectName("ai")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(10)
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        head.addWidget(IconBadge("spark", 30))
+        t = QVBoxLayout()
+        t.setSpacing(0)
+        t.addWidget(_label("Опишите словами", "h2"))
+        t.addWidget(_label("ИИ сам разложит на шаги — потом можно поправить руками", "hint"))
+        head.addLayout(t, 1)
+        lay.addLayout(head)
+        line = QHBoxLayout()
+        line.setSpacing(8)
+        self.ai_text = QLineEdit(placeholderText="Открой OBS, подожди 2 секунды и включи музыку")
+        self.ai_text.returnPressed.connect(self.ask_ai)
+        self.ai_btn = QPushButton("  Собрать")
+        self.ai_btn.setObjectName("primary")
+        self.ai_btn.setIcon(qicon("spark", 14, C.BG))
+        self.ai_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ai_btn.setFixedWidth(128)
+        self.ai_btn.clicked.connect(self.ask_ai)
+        line.addWidget(self.ai_text, 1)
+        line.addWidget(self.ai_btn)
+        lay.addLayout(line)
+        return card
+
+    def _options_card(self) -> QWidget:
+        card = QFrame()
+        card.setObjectName("card")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(16, 6, 16, 6)
+        lay.setSpacing(0)
+
+        def row(title: str, hint: str, toggle: Toggle, extra: QWidget | None = None, sep=True):
+            w = QWidget()
+            r = QHBoxLayout(w)
+            r.setContentsMargins(0, 10, 0, 10)
+            col = QVBoxLayout()
+            col.setSpacing(0)
+            col.addWidget(_label(title, "stepTitle"))
+            col.addWidget(_label(hint, "hint"))
+            r.addLayout(col, 1)
+            if extra:
+                r.addWidget(extra)
+            r.addWidget(toggle)
+            lay.addWidget(w)
+            if sep:
+                lay.addWidget(_line())
+
+        self.only_app = Toggle()
+        self.app = QLineEdit(placeholderText="chrome.exe")
+        self.app.setFixedWidth(170)
+        self.only_app.toggled.connect(self.app.setEnabled)
+        row("Только в программе", "Работает, когда эта программа впереди", self.only_app, self.app)
+        self.confirm = Toggle()
+        row("Спрашивать перед запуском", "Для того, что жалко сделать случайно", self.confirm)
+        self.enabled = Toggle()
+        row("Команда включена", "Выключенную Джарвис пропускает", self.enabled, sep=False)
+        return card
+
+    def _footer(self) -> QWidget:
+        w = QFrame()
+        w.setObjectName("bar")
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(30, 12, 30, 12)
+        lay.setSpacing(10)
+        self.status = _label("", "status")
+        lay.addWidget(self.status, 1)
+        self.del_btn = QPushButton("  Удалить")
+        self.del_btn.setObjectName("danger")
+        self.del_btn.setIcon(qicon("trash", 14, C.TEXT_DIM))
+        self.del_btn.clicked.connect(self.delete_command)
+        self.test_btn = QPushButton("  Проверить")
+        self.test_btn.setIcon(qicon("play", 12, C.TEXT_MED))
+        self.test_btn.clicked.connect(self.test_command)
+        save = QPushButton("Сохранить")
+        save.setObjectName("primary")
+        save.setFixedWidth(130)
+        save.clicked.connect(self.save_command)
+        for b in (self.del_btn, self.test_btn, save):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            lay.addWidget(b)
+        return w
+
+    # ── список ───────────────────────────────────────────────────────────────
     def reload(self):
-        q = mc._norm(self.search.text()) if hasattr(self, "search") else ""
-        self.list.clear()
-        for c in sorted(self.store.commands, key=lambda c: (bool(c.pack), c.pack, c.name.lower())):
-            text = f"{c.name}\n{c.phrases[0] if c.phrases else ''}"
-            if q and q not in mc._norm(text):
+        q = mc._norm(self.search.text())
+        self.cmd_list.blockSignals(True)
+        self.cmd_list.clear()
+        own = [c for c in self.store.commands if not c.pack]
+        for c in sorted(own, key=lambda c: c.name.lower()):
+            phrase = c.phrases[0] if c.phrases else ""
+            if q and q not in mc._norm(c.name + " " + phrase):
                 continue
-            tag = PACKS[c.pack]["title"].upper() if c.pack in PACKS else "СВОЯ"
-            item = QListWidgetItem(f"{c.name}\n{tag} · {c.phrases[0] if c.phrases else ''}")
+            n = len(c.steps)
+            item = QListWidgetItem(f"{c.name}\n«{phrase}» · {n} {plural(n)}")
             item.setData(Qt.ItemDataRole.UserRole, c.id)
+            item.setIcon(qicon("bolt", 16, C.PRI if c.enabled else C.TEXT_DIM))
             if not c.enabled:
                 item.setForeground(QColor(C.TEXT_DIM))
-            self.list.addItem(item)
+            self.cmd_list.addItem(item)
+            if self.current and c.id == self.current.id:
+                self.cmd_list.setCurrentItem(item)
+        self.cmd_list.blockSignals(False)
+        self.empty.setVisible(not own)
+        self.cmd_list.setVisible(bool(own))
 
+    # ── форма ────────────────────────────────────────────────────────────────
     def show_command(self, cid):
         c = next((x for x in self.store.commands if x.id == cid), None)
         self.current = c
-        c = c or mc.Command("", [], [])
+        self._fill(c or mc.Command("", [], [], enabled=True))
+        self.del_btn.setVisible(c is not None)
+        self.status.setText("")
+
+    def _fill(self, c: mc.Command):
         self.name.setText(c.name)
-        self.phrases.setPlainText("\n".join(c.phrases))
+        self._phrases = []
+        for p in c.phrases:
+            self.add_phrase(p)
+        self._render_chips()
+        self.only_app.setChecked(bool(c.app))
         self.app.setText(c.app)
+        self.app.setEnabled(bool(c.app))
         self.confirm.setChecked(c.confirm)
         self.enabled.setChecked(c.enabled)
-        self.steps.setRowCount(0)
+        for r in self.step_rows:
+            r.setParent(None)
+            r.deleteLater()
+        self.step_rows = []
         for s in c.steps:
             self.add_step(s)
 
     def new_command(self):
-        self.list.clearSelection()
+        self.cmd_list.clearSelection()
         self.show_command(None)
-        self.enabled.setChecked(True)
-        self.name.setFocus()
+        self.ai_text.setFocus()
 
-    def add_step(self, step: dict | None = None):
-        step = step if isinstance(step, dict) else {"do": "keys", "value": ""}
-        r = self.steps.rowCount()
-        self.steps.insertRow(r)
-        box = QComboBox()
-        for t in TYPES:
-            box.addItem(mc.STEP_TYPES[t], t)
-        box.setCurrentIndex(max(0, TYPES.index(step["do"]) if step["do"] in TYPES else 0))
-        self.steps.setCellWidget(r, 0, box)
-        self.steps.setCellWidget(r, 1, QLineEdit(str(step.get("value", ""))))
-        extra = ""
-        if step["do"] == "click":
-            extra = f"{step.get('x', 0)},{step.get('y', 0)}"
-        elif step["do"] == "tool":
-            extra = f"{step.get('tool', '')} {json.dumps(step.get('args') or {}, ensure_ascii=False)}"
-        self.steps.setCellWidget(r, 2, QLineEdit(extra))
+    def add_phrase(self, text: str):
+        text = " ".join((text or "").split()).strip(" «»\"")
+        if text and text.lower() not in (p.lower() for p in self._phrases):
+            self._phrases.append(text)
+            self._render_chips()
+        self.phrase_in.clear()
 
-    def remove_step(self):
-        r = self.steps.currentRow()
-        if r >= 0:
-            self.steps.removeRow(r)
+    def _remove_phrase(self, text: str):
+        self._phrases = [p for p in self._phrases if p != text]
+        self._render_chips()
 
-    def move_step(self, d: int):
-        r = self.steps.currentRow()
-        rows = self.read_steps()
-        if r < 0 or not (0 <= r + d < len(rows)):
+    def _render_chips(self):
+        while self.chips.count():
+            it = self.chips.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        for p in self._phrases:
+            chip = Chip(p)
+            chip.removed.connect(self._remove_phrase)
+            self.chips.addWidget(chip)
+        self.chips.parentWidget().setVisible(bool(self._phrases))
+
+    def phrases(self) -> list[str]:
+        extra = " ".join(self.phrase_in.text().split())
+        return self._phrases + ([extra] if extra and extra not in self._phrases else [])
+
+    def _step_menu(self, anchor: QPushButton):
+        menu = QMenu(self)
+        for kind in STEP_ORDER:
+            icon, title, _h = STEP_META[kind]
+            act = menu.addAction(qicon(icon, 16, C.PRI), "  " + title)
+            act.triggered.connect(lambda _=False, k=kind: self.add_step({"do": k, "value": ""}))
+        menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+
+    def add_step(self, step: dict) -> StepRow:
+        row = StepRow(step)
+        row.moved.connect(self._move_step)
+        row.removed.connect(self._remove_step)
+        self.step_rows.append(row)
+        self.steps_box.addWidget(row)
+        self._renumber()
+        return row
+
+    def _move_step(self, row: StepRow, d: int):
+        i = self.step_rows.index(row)
+        j = i + d
+        if not 0 <= j < len(self.step_rows):
             return
-        rows[r], rows[r + d] = rows[r + d], rows[r]
-        self.steps.setRowCount(0)
-        for s in rows:
-            self.add_step(s)
-        self.steps.setCurrentCell(r + d, 1)
+        self.step_rows[i], self.step_rows[j] = self.step_rows[j], self.step_rows[i]
+        for r in self.step_rows:
+            self.steps_box.removeWidget(r)
+        for r in self.step_rows:
+            self.steps_box.addWidget(r)
+        self._renumber()
+
+    def _remove_step(self, row: StepRow):
+        self.step_rows.remove(row)
+        row.setParent(None)
+        row.deleteLater()
+        self._renumber()
+
+    def _renumber(self):
+        for i, r in enumerate(self.step_rows, 1):
+            r.number, r.last = i, i == len(self.step_rows)
+            r.rail.update()
 
     def read_steps(self) -> list[dict]:
-        out = []
-        for r in range(self.steps.rowCount()):
-            do = self.steps.cellWidget(r, 0).currentData()
-            step = {"do": do, "value": self.steps.cellWidget(r, 1).text().strip()}
-            extra = self.steps.cellWidget(r, 2).text().strip()
-            if do == "click":
-                xy = [p for p in extra.replace(";", ",").split(",") if p.strip()]
-                step["x"], step["y"] = (int(float(xy[0])), int(float(xy[1]))) if len(xy) == 2 else (0, 0)
-            if do == "tool":
-                tool, _, args = extra.partition(" ")
-                step["tool"], step["args"] = tool, args or "{}"
-            out.append(step)
-        return mc.clean_steps(out)
+        return mc.clean_steps([r.read() for r in self.step_rows])
 
     def form(self) -> mc.Command:
-        return mc.Command(name=self.name.text().strip() or "Без названия",
-                          phrases=[p.strip() for p in self.phrases.toPlainText().splitlines() if p.strip()],
-                          steps=self.read_steps(), app=self.app.text().strip(), confirm=self.confirm.isChecked(),
-                          enabled=self.enabled.isChecked(), pack=self.current.pack if self.current else "",
-                          id=self.current.id if self.current else mc.Command("", [], []).id)
+        cur = self.current
+        return mc.Command(name=self.name.text().strip() or "Без названия", phrases=self.phrases(),
+                          steps=self.read_steps(), app=self.app.text().strip() if self.only_app.isChecked() else "",
+                          confirm=self.confirm.isChecked(), enabled=self.enabled.isChecked(),
+                          pack=cur.pack if cur else "", id=cur.id if cur else mc.Command("", [], []).id)
+
+    def _say(self, text: str, ok: bool = True):
+        self.status.setStyleSheet(f"color: {C.PRI if ok else C.ACC};")
+        self.status.setText(text)
 
     def save_command(self) -> bool:
         c = self.form()
-        if not c.phrases or not c.steps:
-            self.status.setText("Нужны хотя бы одна фраза и один шаг.")
+        if not c.phrases:
+            self._say("Добавьте фразу, которой будете запускать команду.", False)
+            self.phrase_in.setFocus()
+            return False
+        if not c.steps:
+            self._say("Добавьте хотя бы один шаг.", False)
             return False
         self.store.upsert(c)
         self.current = c
+        self.phrase_in.clear()
+        self._phrases = list(c.phrases)
+        self._render_chips()
         self.reload()
-        self.status.setText(f"✓ Сохранено. Скажите: «{c.phrases[0]}».")
+        self.del_btn.setVisible(True)
+        self._say(f"✓  Сохранено. Скажите: «Джарвис, {c.phrases[0]}».")
         return True
 
     def delete_command(self):
         if self.current and self.store.delete(self.current.id):
-            self.status.setText(f"Удалена «{self.current.name}».")
-            self.current = None
+            name = self.current.name
+            self.new_command()
             self.reload()
-            self.show_command(None)
+            self._say(f"Команда «{name}» удалена.")
 
     def test_command(self):
         c = self.form()
         if not c.steps:
+            self._say("Нечего проверять — добавьте шаги.", False)
             return
-        self.status.setText(self.store.run(c) + " Переключитесь в нужное окно — через 3 с.")
+        self._say(self.store.run(c) + " Шаги идут в окне, которое сейчас впереди.")
 
     # ── ИИ ───────────────────────────────────────────────────────────────────
     def ask_ai(self):
         text = self.ai_text.text().strip()
         if not text:
-            self.status.setText("Опишите, что должна делать команда.")
+            self._say("Напишите, что должна делать команда.", False)
+            self.ai_text.setFocus()
             return
         self.ai_btn.setEnabled(False)
-        self.ai_btn.setText("▸ СОБИРАЮ ИЗ ДЕЙСТВИЙ…")
+        self.ai_btn.setText("  Собираю…")
 
         def work():
             try:
@@ -308,52 +892,85 @@ class MacrosDialog(QDialog):
 
     def _on_ai(self, data, err: str):
         self.ai_btn.setEnabled(True)
-        self.ai_btn.setText("▸ СОБРАТЬ С ПОМОЩЬЮ ИИ")
+        self.ai_btn.setText("  Собрать")
         if not data:
-            self.status.setText(f"Не собралось: {err}")
+            self._say(f"Не собралось: {err}", False)
             return
-        self.current = None
         cmd = mc.Command.from_dict(data)
-        self.show_command(None)
-        self.name.setText(cmd.name)
-        self.phrases.setPlainText("\n".join(cmd.phrases))
-        self.app.setText(cmd.app)
-        self.enabled.setChecked(True)
-        for s in cmd.steps:
-            self.add_step(s)
-        self.status.setText(f"Готово — {len(cmd.steps)} шагов. Проверьте и нажмите «Сохранить».")
+        cmd.enabled = True
+        self.cmd_list.clearSelection()
+        self.current = None
+        self.del_btn.setVisible(False)
+        self._fill(cmd)
+        self._say(f"Готово — {len(cmd.steps)} {plural(len(cmd.steps))}. Проверьте и нажмите «Сохранить».")
 
     # ── паки ─────────────────────────────────────────────────────────────────
-    def _packs_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        hint = QLabel("Команды пака работают, только когда эта программа впереди. Ставятся в один клик.")
-        hint.setObjectName("hint")
-        lay.addWidget(hint)
-        self.pack_rows: dict[str, QPushButton] = {}
-        for key, p in PACKS.items():
-            row = QHBoxLayout()
-            text = QLabel(f"<span style='color:{C.WHITE}'><b>{p['title']}</b></span>"
-                          f"<span style='color:{C.TEXT_DIM}'> · {len(p['commands'])} команд</span><br>"
-                          f"<span style='color:{C.TEXT_MED}'>{p['about']}</span>")
-            btn = QPushButton()
-            btn.setFixedWidth(150)
-            btn.clicked.connect(lambda _=False, k=key: self.toggle_pack(k))
-            self.pack_rows[key] = btn
-            row.addWidget(text, 1)
-            row.addWidget(btn)
-            lay.addLayout(row)
+    def _packs_page(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        body.setObjectName("canvas")
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(30, 24, 30, 24)
+        lay.setSpacing(16)
+        lay.addWidget(_label("Готовые команды для программ", "h1"))
+        lay.addWidget(_label("Ставятся в один клик и работают, только когда программа впереди: «новая вкладка» — "
+                             "в браузере, «кисть» — в Photoshop.", "hint"))
+        grid = QGridLayout()
+        grid.setSpacing(14)
+        self.pack_btns: dict[str, QPushButton] = {}
+        for i, (key, p) in enumerate(PACKS.items()):
+            grid.addWidget(self._pack_card(key, p), i // 2, i % 2)
+        lay.addLayout(grid)
         lay.addStretch(1)
+        scroll.setWidget(body)
         self._paint_packs()
-        return w
+        return scroll
+
+    def _pack_card(self, key: str, p: dict) -> QWidget:
+        card = QFrame()
+        card.setObjectName("card")
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(10)
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        head.addWidget(IconBadge(_PACK_ICON.get(key, "grid"), 40))
+        t = QVBoxLayout()
+        t.setSpacing(0)
+        t.addWidget(_label(p["title"], "h2"))
+        n = len(p["commands"])
+        t.addWidget(_label(f"{n} {plural(n, ('команда', 'команды', 'команд'))}", "hint"))
+        head.addLayout(t, 1)
+        btn = QPushButton()
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setMinimumWidth(148)
+        btn.clicked.connect(lambda _=False, k=key: self.toggle_pack(k))
+        self.pack_btns[key] = btn
+        head.addWidget(btn, 0, Qt.AlignmentFlag.AlignTop)
+        lay.addLayout(head)
+        lay.addWidget(_label(p["about"][:1].upper() + p["about"][1:], "hint"))
+        ex = QWidget()
+        flow = FlowLayout(ex, 6)
+        for c in p["commands"][:4]:
+            chip = QLabel(f"«{c['phrases'][0]}»")
+            chip.setStyleSheet(f"color: {C.TEXT_MED}; background: {C.DARK}; border: 1px solid {C.BORDER};"
+                               f" border-radius: 11px; padding: 3px 10px; font-size: 12px;")
+            flow.addWidget(chip)
+        lay.addWidget(ex)
+        return card
 
     def _paint_packs(self):
-        for key, btn in self.pack_rows.items():
+        for key, btn in self.pack_btns.items():
             on = key in self.store.installed
-            btn.setText("✓ УСТАНОВЛЕН" if on else "▸ УСТАНОВИТЬ")
+            btn.setText("  Установлен" if on else "  Установить")
+            btn.setIcon(qicon("check", 12, C.PRI) if on else qicon("plus", 12, C.BG))
+            btn.setObjectName("" if on else "primary")
             btn.setToolTip("Нажмите, чтобы убрать пак" if on else "Поставить команды пака")
-            btn.setObjectName("done" if on else "primary")
-            btn.setStyleSheet("")          # применить objectName
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
 
     def toggle_pack(self, key: str):
         if key in self.store.installed:
@@ -361,7 +978,17 @@ class MacrosDialog(QDialog):
         else:
             self.store.install_pack(key)
         self._paint_packs()
-        self.reload()
+
+
+_PACK_ICON = {"windows": "app", "browser": "globe", "telegram": "speak", "vscode": "keyboard",
+              "photoshop": "cursor", "discord": "mic", "spotify": "note"}
+
+
+def _line() -> QFrame:
+    ln = QFrame()
+    ln.setFixedHeight(1)
+    ln.setStyleSheet(f"background: {C.BORDER}; border: none;")
+    return ln
 
 
 def open_dialog(parent=None) -> MacrosDialog:
