@@ -266,18 +266,26 @@ class Panel:
             except Exception as exc:
                 logger.debug("Полный экран окна: %s", exc)
         cdp.bring_to_front()
-        for _ in range(10):
+        # Переход окна в полный экран идёт асинхронно и может сбросить полный
+        # экран элемента уже после удачной попытки — считаем готовым, только
+        # когда элемент держится два замера подряд. До 6 с: медленный ПК.
+        stable, end = 0, time.monotonic() + 6.0
+        while time.monotonic() < end and stable < 2:
             try:
                 r = self.call("Runtime.evaluate", userGesture=True, awaitPromise=True, returnByValue=True,
                               expression="(async () => { const el = window.__jarvisFsEl;"
-                                         " if (!el || !el.isConnected) return true;"
-                                         " if (document.fullscreenElement !== el) await el.requestFullscreen();"
+                                         " if (!el || !el.isConnected) return 'none';"
+                                         " if (document.fullscreenElement !== el) {"
+                                         "   try { await el.requestFullscreen(); } catch (e) { return false; } }"
                                          " return document.fullscreenElement === el; })()")
-                if r.get("result", {}).get("value"):
+                v = r.get("result", {}).get("value")
+                if v == "none":
                     return
+                stable = stable + 1 if v else 0
             except Exception as exc:
+                stable = 0
                 logger.debug("Полный экран элемента: %s", exc)
-            time.sleep(0.15)
+            time.sleep(0.25)
 
     def expand(self):
         """«На весь экран»: настоящее окно Chrome — вперёд, развёрнутым."""
