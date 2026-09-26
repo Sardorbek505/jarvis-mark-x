@@ -287,8 +287,33 @@ from core.wake_vosk import WAKE_RE as _WAKE_RE, LocalWake  # noqa: E402
 _LOCAL_WAKE = os.getenv("JARVIS_LOCAL_WAKE", "0").strip() == "1"
 
 
+# Имя сказали, а расшифровка его потеряла: осталась запятая после обращения.
+# Журнал владельца 26.09: «Джарвис, привет» пришло как «, привет.» — и Джарвис
+# решил, что это не ему, и промолчал.
+_LOST_NAME_RE = re.compile(r"^\s*[,，]\s*\w")
+
+
 def _has_wake_word(text: str) -> bool:
-    return bool(text) and bool(_WAKE_RE.search(text))
+    return bool(text) and bool(_WAKE_RE.search(text) or _LOST_NAME_RE.match(text))
+
+
+# Микрофоны, которые звук своих динамиков не слышат: с шумоподавлением в
+# драйвере (ASUS AI Noise-cancelling вычитает звук динамиков) и гарнитуры.
+_SPEAKER_DEAF_MICS = ("noise-cancelling", "noise cancelling", "noise-canceling", "шумоподавлен",
+                      "ai noise", "headset", "headphone", "гарнитур", "наушник", "buds", "airpods",
+                      "hands-free")
+
+
+def _mic_hears_speakers(device) -> bool:
+    """Слышит ли выбранный микрофон собственные динамики. Для тех, что не
+    слышат, глушить микрофон по громкости динамиков незачем — а глушение
+    делало Джарвиса глухим на всё время музыки, фильма и игры."""
+    try:
+        info = sd.query_devices(device) if device is not None else sd.query_devices(kind="input")
+        name = str(info.get("name", "")).lower()
+    except Exception:
+        return True
+    return not any(k in name for k in _SPEAKER_DEAF_MICS)
 
 
 # Сколько после собственной речи ещё не слушать микрофон: звук досыпается из
@@ -2274,7 +2299,8 @@ class Jarvis:
             # Громко играет музыка/кино из своих динамиков — в облако не шлём:
             # по громкости её от голоса не отличить (см. _IGNORE_SPEAKERS).
             # Слушаем только ключевое слово «Джарвис», чтобы приглушить звук.
-            if self._speaker_meter is not None and self._speaker_meter.peak > _SPEAKER_GATE:
+            if (self._speaker_meter is not None and getattr(self, "_mic_hears_speakers", True)
+                    and self._speaker_meter.peak > _SPEAKER_GATE):
                 self._note_gate(
                     f"звук в динамиках {self._speaker_meter.peak:.3f} > "
                     f"порога {_SPEAKER_GATE}"
@@ -2322,6 +2348,9 @@ class Jarvis:
                 # Перебор устройств пишет пробы звука — не в событийном цикле.
                 device = await asyncio.to_thread(_pick_input_device)
                 self._input_device = device
+                self._mic_hears_speakers = await asyncio.to_thread(_mic_hears_speakers, device)
+                if not self._mic_hears_speakers:
+                    logger.info("Микрофон не слышит динамики — при музыке и фильмах он не глушится")
             try:
                 with sd.InputStream(
                     samplerate=SEND_SAMPLE_RATE,

@@ -687,3 +687,58 @@ async def test_модель_vosk_не_глушит_джарвиса(по_име�
 
     assert _DeafVosk.started == 0
     assert по_имени.out.written == [b"\x01\x02" * 100]
+
+
+@pytest.mark.asyncio
+async def test_имя_потерянное_в_расшифровке_всё_равно_будит(по_имени):
+    """Журнал владельца: «Джарвис, привет» пришло как «, привет.» — молчал."""
+    script = [
+        _resp(heard=", привет."),
+        _resp(data=b"\x01\x02" * 100),
+        _resp(said="Добрый вечер, сэр.", turn_complete=True),
+    ]
+    await _прогнать(по_имени, [_loud()], script)
+    assert по_имени.out.written == [b"\x01\x02" * 100]
+
+
+# Сценарий со звуком ответа: прогон ждёт, пока он доиграет, — к этому
+# времени кадры микрофона успевают дойти (или не дойти) до сессии.
+_SPOKEN = [_resp(heard="включи музыку"), _resp(data=b"\x01\x02" * 100),
+           _resp(said="Да, сэр.", turn_complete=True)]
+
+
+class _LoudSpeakers:
+    peak = 0.5          # играет музыка / фильм / игра
+
+
+def _audio_sent(session):
+    return [m for m in session.sent if m]
+
+
+@pytest.mark.asyncio
+async def test_микрофон_с_шумоподавлением_слышит_при_музыке(стенд):
+    """Раньше при громких динамиках микрофон глушился целиком — во время
+    музыки, фильма и CS2 Джарвис был глух. Микрофону ASUS с шумоподавлением
+    (он сам вычитает динамики) и гарнитуре это не нужно."""
+    j = стенд.jarvis
+    j._speaker_meter = _LoudSpeakers()
+    j._mic_hears_speakers = False
+    session = await _прогнать(стенд, [_loud()] * 5, _SPOKEN, timeout=2.0)
+    assert _audio_sent(session), "голос не ушёл в Gemini при играющей музыке"
+
+
+@pytest.mark.asyncio
+async def test_обычный_микрофон_при_музыке_глушится_как_раньше(стенд):
+    j = стенд.jarvis
+    j._speaker_meter = _LoudSpeakers()
+    j._mic_hears_speakers = True
+    session = await _прогнать(стенд, [_loud()] * 5, _SPOKEN, timeout=2.0)
+    assert not _audio_sent(session)
+
+
+def test_какие_микрофоны_не_слышат_динамики(monkeypatch):
+    names = {1: "AI Noise-cancelling Input (ASUS", 2: "Микрофон (Realtek(R) Audio)", 3: "Headset (AirPods)"}
+    monkeypatch.setattr(jarvis_main.sd, "query_devices", lambda d=None, kind=None: {"name": names[d]})
+    assert jarvis_main._mic_hears_speakers(1) is False
+    assert jarvis_main._mic_hears_speakers(3) is False
+    assert jarvis_main._mic_hears_speakers(2) is True
