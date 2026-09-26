@@ -87,6 +87,8 @@ hidden_imports = [
     "actions.video_player",
     "actions.spotify_premium",
     "core.browser_cdp",
+    "core.browser_panel",
+    "ui_browser",
     "core.selftest",
     "core.break_reminder",
     "core.tg_call",

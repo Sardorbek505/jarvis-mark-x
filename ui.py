@@ -201,6 +201,10 @@ class HudCanvas(QWidget):
 
         self._shape_until = 0.0
 
+        # Справа открыта панель браузера (ui_browser.py): шар уезжает влево.
+        self.side_px = 0.0
+        self._side_vis = 0.0
+
         # Карточка «что сделал»: {'title', 'address', 'body', 'img'}.
         self._card: dict | None = None
         self._card_t = 0.0
@@ -316,6 +320,9 @@ class HudCanvas(QWidget):
             self._card_vis += ((1.0 if shown else 0.0) - self._card_vis) * (1.0 - math.exp(-dt * rate))
             if not shown and self._card_vis < 0.01:
                 self._card, self._card_vis = None, 0.0
+
+        target = 1.0 if self.side_px > 0 else 0.0
+        self._side_vis += (target - self._side_vis) * (1.0 - math.exp(-dt * 6.0))
 
         visible = bool(self._sub_text) and (self.speaking or now - self._sub_t < _SUB_HOLD_SEC)
         rate = 6.0 if visible else 2.5
@@ -462,9 +469,13 @@ class HudCanvas(QWidget):
 
         e = self._orb.energy
         Hh = max(200, H - self.bottom_reserve)
+        # Панель браузера справа — шар живёт в оставшейся полосе слева.
+        sv = self._side_vis * self._side_vis * (3 - 2 * self._side_vis)
+        W = W - sv * (self.side_px or 0.0)
         fw = min(W, Hh)
         # Карточка справа — шар плавно уступает место влево и чуть сжимается.
-        cv = self._card_vis * self._card_vis * (3 - 2 * self._card_vis)
+        # При открытом браузере карточки нет: браузер и есть результат.
+        cv = self._card_vis * self._card_vis * (3 - 2 * self._card_vis) * (1.0 - sv)
         card_w = min(W * 0.42, 440.0) if W > 560 else 0.0
         R = fw * 0.25 * (1.0 + 0.05 * e) * (1.0 - 0.14 * cv * (card_w > 0))
         cx, cy = W / 2 - cv * card_w * 0.42, Hh / 2 - fw * 0.02 + 10
@@ -881,6 +892,7 @@ class MainWindow(QMainWindow):
     _tool_sig  = pyqtSignal(str)
     _sub_sig   = pyqtSignal(str)
     _card_sig  = pyqtSignal(str, str, str, bytes, str)
+    _browser_sig = pyqtSignal(str)
     # Глобальные хоткеи приходят из потока Win32-сообщений — тоже чужого.
     _mute_sig  = pyqtSignal()
     _front_sig = pyqtSignal()
@@ -1103,6 +1115,16 @@ class MainWindow(QMainWindow):
         self._tool_sig.connect(self._count_tool)
         self._sub_sig.connect(self._hud.set_subtitle)
         self._card_sig.connect(self._hud.show_card)
+
+        # ── Браузер рядом с шаром (ui_browser.py) ────────────────────
+        self._browser = None
+        try:
+            from ui_browser import BrowserPanelView
+            self._browser = BrowserPanelView(self._hud)
+            self._browser.on_visibility = self._browser_shown
+        except Exception as exc:
+            _logger.warning("Панель браузера недоступна: %s", exc)
+        self._browser_sig.connect(self._reveal_browser)
         self._mute_sig.connect(self._toggle_mute)
         self._front_sig.connect(self._bring_to_front)
         self._overlay_sig.connect(self._show_overlay)
@@ -1287,10 +1309,48 @@ class MainWindow(QMainWindow):
         w = min(W - 40, 560 if wide else 360)
         return QRectF((W - w) / 2, H - 56, w, 40)
 
+    def _browser_rect(self) -> QRectF:
+        W, H = self._hud.width(), self._hud.height()
+        x = 12 if W < 760 else W * 0.36          # узкое окно — поверх шара
+        return QRectF(x, 12, W - x - 12, max(220, H - 24 - self._hud.bottom_reserve))
+
+    def _browser_shown(self, shown: bool):
+        r = self._browser_rect()
+        self._hud.side_px = (self._hud.width() - r.x() + 12) if shown and r.x() > 12 else 0.0
+
+    def _reveal_browser(self, url: str):
+        if getattr(self, "_browser", None) is None:
+            return
+        self._browser.setGeometry(self._browser_rect().toRect())
+        self._browser.reveal(url)
+        self._chat.raise_()
+        self._pill.raise_()
+
+    def browser_view_size(self) -> tuple[int, int, float]:
+        """Размер страницы под панель — из рабочего потока, до её показа."""
+        r = self._browser_rect()
+        return int(r.width() - 16), int(r.height() - 50), float(self.devicePixelRatioF())
+
+    def open_in_panel(self, url: str) -> bool:
+        """Открыть страницу в панели рядом с шаром. Из любого потока (кроме Qt:
+        ждёт браузер). False — панель недоступна, пусть откроется как раньше."""
+        if getattr(self, "_browser", None) is None:
+            return False
+        from core import browser_panel
+        w, h, d = self.browser_view_size()
+        if not browser_panel.panel().open(url, w, h, d):
+            return False
+        self._browser_sig.emit(url)
+        return True
+
     def _place_overlays(self):
         r = self._chat_rect(self._chat_open)
         self._chat_anim.stop()
         self._chat.setGeometry(r.toRect())
+        browser = getattr(self, "_browser", None)     # зовётся и до её создания
+        if browser is not None and browser.isVisible():
+            browser.setGeometry(self._browser_rect().toRect())
+            self._browser_shown(True)
         self._pill_anim.stop()
         self._pill.setGeometry(self._pill_rect(self._input.hasFocus()).toRect())
         self._chat.raise_()

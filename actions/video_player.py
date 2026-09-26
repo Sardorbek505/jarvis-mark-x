@@ -67,6 +67,12 @@ def _say_duration(sec: float) -> str:
 # ── общий запуск: открыть страницу, дождаться плеера, play, полный экран ─────
 
 def _start(url: str, fullscreen: bool = True, wait_sec: float = 15.0) -> dict | None:
+    # Панель браузера рядом с шаром отдаёт окно: фильм — на весь экран.
+    try:
+        from core import browser_panel
+        browser_panel.release_for_video()
+    except Exception as exc:
+        logger.debug("Панель браузера: %s", exc)
     t = cdp.tab()
     if not t:
         return None

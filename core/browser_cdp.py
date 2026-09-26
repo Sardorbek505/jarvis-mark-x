@@ -88,7 +88,14 @@ def ensure_browser(headless: bool = False, timeout: float = 25.0) -> bool:
             "--no-first-run", "--no-default-browser-check",
             # Видео запускается само и со звуком — без клика по странице.
             "--autoplay-policy=no-user-gesture-required",
-            "--start-maximized", "--disable-features=Translate,MediaRouter", "about:blank"]
+            "--start-maximized",
+            # Панель в интерфейсе (core/browser_panel.py) показывает окно, которое
+            # стоит за краем экрана. Без этих флагов Windows считает его закрытым
+            # другими окнами, и Chrome перестаёт его рисовать — панель застывает.
+            "--disable-features=Translate,MediaRouter,CalculateNativeWinOcclusion",
+            "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
+            "--disable-background-timer-throttling",
+            "about:blank"]
     if headless:
         args[1:1] = ["--headless=new", "--mute-audio"]
     extra = os.getenv("JARVIS_BROWSER_ARGS", "").split()

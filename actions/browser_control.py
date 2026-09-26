@@ -115,6 +115,19 @@ def _open_url(url: str, browser: str | None = None) -> bool:
         return False
 
 
+def _open(url: str, browser: str | None, player) -> bool:
+    """Сначала — в панель рядом с шаром (ui_browser.py), если она есть и
+    конкретный браузер не просили. Не вышло — как раньше, отдельным окном."""
+    if (not browser and player is not None and hasattr(player, "open_in_panel")
+            and os.getenv("JARVIS_BROWSER_PANEL", "1") != "0" and _is_safe_url(url)):
+        try:
+            if player.open_in_panel(url):
+                return True
+        except Exception as exc:
+            _logger.warning("Панель браузера: %s — открываю окном", exc)
+    return _open_url(url, browser)
+
+
 def browser_control(parameters: dict, player=None) -> str:
     action = parameters.get("action", "go_to").lower()
     browser = parameters.get("browser")
@@ -126,7 +139,7 @@ def browser_control(parameters: dict, player=None) -> str:
         if action == "go_to" and url:
             if not url.startswith("http"):
                 url = "https://" + url
-            if not _open_url(url, browser):
+            if not _open(url, browser, player):
                 return f"Не получилось открыть {url}."
             if player:
                 player.write_log(f"SYS: Браузер → {url}")
@@ -135,14 +148,14 @@ def browser_control(parameters: dict, player=None) -> str:
         elif action == "search" and query:
             template = _SEARCH_ENGINES.get(engine, _SEARCH_ENGINES["google"])
             search_url = template.format(urllib.parse.quote(query))
-            if not _open_url(search_url, browser):
+            if not _open(search_url, browser, player):
                 return "Не получилось открыть браузер."
             if player:
                 player.write_log(f"SYS: Поиск в браузере → {query}")
             return f"Открыл поиск «{query}» в браузере."
 
         elif url:
-            return f"Открыл {url}." if _open_url(url, browser) else f"Не получилось открыть {url}."
+            return f"Открыл {url}." if _open(url, browser, player) else f"Не получилось открыть {url}."
         return "Укажите URL или поисковый запрос."
 
     except Exception as e:
