@@ -281,7 +281,12 @@ def play(query: str) -> str | None:
             np = now_playing()
             if np and np["playing"]:
                 return f"Включил {_say(np) if ':track:' in uri else desc}."
-        return f"Отправил {desc} в Spotify, но не вижу, что заиграло — проверьте Spotify на компьютере."
+        # Команду приняли (204), а музыки нет: клиент Spotify из Microsoft
+        # Store команды Connect подтверждает, но не исполняет. Молчать про это
+        # нельзя, но и закрывать вопрос отпиской тоже — запасной путь открывает
+        # spotify:track: прямо в приложении, и оно играет.
+        logger.warning("Spotify принял команду, но воспроизведение не началось — отдаю запасному пути")
+        return None
     except PermissionError:
         return None
     except Exception as exc:

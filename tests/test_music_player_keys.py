@@ -95,6 +95,38 @@ def test_pause_is_explicit_not_toggle(spotify):
     assert fake.cmds == ["pause"] and fake.np.playing is False   # не запустилась
 
 
+def test_store_version_counts_as_installed(monkeypatch):
+    """Spotify из Microsoft Store: ни ключа HKCU\\Software\\Spotify, ни
+    Program Files\\Spotify. Детектор отвечал «не установлен», Джарвис уходил
+    на YouTube — хотя spotify:track: открывается и играет.
+
+    Значение имеет одно: зарегистрирован ли протокол spotify: — им и
+    открывается трек."""
+    import winreg
+    monkeypatch.setattr(mp, "_OS", "Windows")
+
+    def only_protocol(root, path, *a, **k):
+        if root == winreg.HKEY_CLASSES_ROOT and path.lower().startswith("spotify"):
+            return object()
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(winreg, "OpenKey", only_protocol)
+    monkeypatch.setattr(winreg, "CloseKey", lambda k: None)
+    monkeypatch.setattr(mp.os.path, "exists", lambda p: False)
+
+    assert mp._is_spotify_installed() is True
+
+
+def test_no_spotify_at_all_is_still_false(monkeypatch):
+    import winreg
+    monkeypatch.setattr(mp, "_OS", "Windows")
+    monkeypatch.setattr(winreg, "OpenKey", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
+    monkeypatch.setattr(mp.os.path, "exists", lambda p: False)
+    monkeypatch.setattr(mp.glob, "glob", lambda p: [])
+
+    assert mp._is_spotify_installed() is False
+
+
 def test_next_names_the_new_track(spotify):
     spotify(title="Believer", playing=True)
     assert mp.music_player({"action": "next"}) == "Следующий: «Thunder» — Imagine Dragons."
