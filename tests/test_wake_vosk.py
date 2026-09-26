@@ -166,7 +166,6 @@ class _TagRec:
 def test_calibrate_learns_and_checks_on_same_takes(monkeypatch):
     heard = {b"N1": "дар вис", b"N2": "дар вис", b"N3": "жар вис", b"X1": "погода", b"X2": "жарко"}
     monkeypatch.setattr(wv, "_free_recognizer", lambda model: _TagRec(heard))
-    monkeypatch.setattr(wv, "_grammar_recognizer", lambda model, aliases: _TagRec(heard, aliases))
     rep = wv.calibrate(None, [b"N1", b"N2", b"N3"], [b"X1", b"X2"])
     assert "дар вис" in rep["aliases"] and "погода" not in rep["aliases"]
     assert rep["hits"] == 3 and rep["false"] == 0
@@ -181,8 +180,20 @@ def test_calibration_saves_and_enables_local_wake(tmp_path, monkeypatch):
     monkeypatch.setattr(wv, "calibrate", lambda model, n, x: {"aliases": ["дар вис"], "names": 8,
                                                              "negatives": 5, "hits": 7, "false": 0})
     rep = wake_calibrate.run_calibration([b""], [b""], model=object())
-    assert "7 из 8" in wake_calibrate.describe(rep)
+    assert rep["saved"] and "7 из 8" in wake_calibrate.describe(rep)
     assert wv.load_aliases() == ["дар вис"]
     assert jarvis_main._local_wake_enabled() is True             # после — на компьютере
     monkeypatch.setenv("JARVIS_LOCAL_WAKE", "0")
     assert jarvis_main._local_wake_enabled() is False            # выключатель сильнее
+
+
+def test_bad_calibration_is_not_saved(tmp_path, monkeypatch):
+    """Слабая самопроверка — не включать: пусть имя ищет Gemini."""
+    from core import wake_calibrate
+    monkeypatch.setenv("JARVIS_WAKE_ALIASES", str(tmp_path / "w.json"))
+    for rep in ({"aliases": ["дар"], "names": 8, "negatives": 5, "hits": 4, "false": 0},
+                {"aliases": ["дар"], "names": 8, "negatives": 5, "hits": 8, "false": 1}):
+        monkeypatch.setattr(wv, "calibrate", lambda model, n, x, r=rep: dict(r))
+        got = wake_calibrate.run_calibration([b""], [b""], model=object())
+        assert not got["saved"] and "Пока не включаю" in wake_calibrate.describe(got)
+    assert wv.load_aliases() == []

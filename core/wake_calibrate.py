@@ -4,7 +4,8 @@
 8 раз сказать «Джарвис» и несколько обычных фраз. Vosk слушает, как он слышит
 имя именно у этого человека и этим микрофоном, и сохраняет варианты в
 wake_aliases.json. После этого слово «Джарвис» слушается прямо на компьютере
-(до него звук никуда не уходит) — см. core/wake_vosk.py.
+(до него звук никуда не уходит): выученные варианты будят вдобавок к обычным
+написаниям имени — см. core/wake_vosk.py.
 
 Сама наука — в wake_vosk.calibrate; здесь только запись и окно.
 """
@@ -32,8 +33,16 @@ def steps() -> list[tuple[str, bool]]:
     return [("Джарвис", True)] * NAME_TAKES + [(p, False) for p in NEGATIVE_PHRASES]
 
 
+def good_enough(report: dict) -> bool:
+    """Включать слово на компьютере, только если на своих же записях имя
+    узнано хотя бы в 3 из 4 случаев и ни одного ложного: иначе лучше пусть
+    имя по-прежнему ищет Gemini, чем Джарвис глохнет или просыпается зря."""
+    n = report.get("names") or 0
+    return bool(n) and report.get("hits", 0) >= 0.75 * n and report.get("false", 1) == 0
+
+
 def run_calibration(name_pcms: list[bytes], negative_pcms: list[bytes], model=None) -> dict:
-    """Выучить, сохранить и вернуть отчёт. Нет вариантов — файл не трогаем."""
+    """Выучить, проверить и — если проверка хорошая — сохранить. Отчёт."""
     if model is None:
         import vosk
         vosk.SetLogLevel(-1)
@@ -42,18 +51,22 @@ def run_calibration(name_pcms: list[bytes], negative_pcms: list[bytes], model=No
             raise FileNotFoundError(f"нет модели models/{wake_vosk.MODEL_DIRNAME}")
         model = vosk.Model(str(model_dir))
     report = wake_vosk.calibrate(model, name_pcms, negative_pcms)
-    if report["aliases"]:
-        wake_vosk.save_aliases(report["aliases"], {k: v for k, v in report.items() if k != "aliases"})
+    report["saved"] = good_enough(report)
+    if report["saved"]:
+        wake_vosk.save_aliases(report["aliases"] or ["джарвис"],
+                               {k: v for k, v in report.items() if k != "aliases"})
     return report
 
 
 def describe(report: dict) -> str:
-    if not report.get("aliases"):
-        return ("Не получилось: Vosk ни разу не услышал имя одинаково. Говорите «Джарвис» чётко, "
-                "в обычную громкость, рядом с микрофоном — и попробуйте ещё раз.")
-    return (f"Готово. Ваше «Джарвис» Vosk слышит как: {', '.join('«' + a + '»' for a in report['aliases'])}.\n"
-            f"Проверка на ваших же записях: имя узнано {report.get('hits', 0)} из {report['names']}, "
-            f"ложных срабатываний {report.get('false', 0)} из {report['negatives']}.\n"
+    check = (f"Проверка на ваших же записях: имя узнано {report.get('hits', 0)} из {report.get('names', 0)}, "
+             f"ложных срабатываний {report.get('false', 0)} из {report.get('negatives', 0)}.")
+    heard = ", ".join("«" + a + "»" for a in report.get("aliases") or []) or "по-разному"
+    if not report.get("saved"):
+        return (f"Пока не включаю: {check}\nVosk слышит ваше имя как {heard}. Говорите «Джарвис» чётко, "
+                "в обычную громкость, рядом с микрофоном — и попробуйте ещё раз. До тех пор имя "
+                "по-прежнему ищет Gemini.")
+    return (f"Готово. Ваше «Джарвис» Vosk слышит как: {heard}.\n{check}\n"
             "Перезапустите Джарвиса — слово будет слушаться прямо на компьютере.")
 
 
@@ -136,7 +149,7 @@ def run_gui(device=None) -> int:
         logger.exception("Калибровка")
         report, msg = {}, f"Калибровка не удалась: {type(exc).__name__}: {exc}"
     QMessageBox.information(None, "ДЖАРВИС — слово «Джарвис»", msg)
-    return 0 if report.get("aliases") else 1
+    return 0 if report.get("saved") else 1
 
 
 if __name__ == "__main__":

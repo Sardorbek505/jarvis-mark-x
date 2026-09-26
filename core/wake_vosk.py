@@ -52,11 +52,13 @@ _COOLDOWN_SEC = 1.5          # одно «Джарвис» — одно проб
 # Слова «Джарвис» в словаре маленькой модели нет, и свободное распознавание
 # пишет вместо него что попало («из» — на синтезе в CI, на живом голосе —
 # ни одного попадания за час). Калибровка (core/wake_calibrate.py) слушает, как
-# Vosk слышит «Джарвис» у ЭТОГО человека, и сохраняет эти слова. Дальше Vosk
-# работает с грамматикой из них и «[unk]»: выбирать ему приходится между
-# «похоже на имя» и «что-то другое» — классический приём поиска ключевого слова.
-# Все варианты — из словаря модели (Vosk сам их и выдал), иначе грамматика их
-# молча выкинула бы.
+# Vosk слышит «Джарвис» у ЭТОГО человека, и сохраняет эти слова — они будят
+# вдобавок к WAKE_RE при обычном (свободном) распознавании.
+#
+# Грамматику «варианты + [unk]» пробовали и отказались: в CI на синтезе она
+# ловила 10/10 имён, но давала 10 ложных из 10 — модель, которой выбирать
+# только «имя или не имя», записывала в «джарвис» и «сегодня очень жарко».
+# Свободное распознавание на тех же фразах: 10/10 и ни одного ложного.
 ALIASES_FILE = "wake_aliases.json"
 # Короткие частые слова: попадись одно из них в варианты — будило бы на
 # каждой второй фразе.
@@ -165,9 +167,8 @@ def _free_recognizer(model):
     return rec
 
 
-def _grammar_recognizer(model, aliases: list[str]):
-    import vosk
-    return vosk.KaldiRecognizer(model, SAMPLE_RATE, json.dumps(aliases + ["[unk]"], ensure_ascii=False))
+def names_in(texts: list[str], aliases: list[str]) -> bool:
+    return any(has_wake_word(t) or (aliases and matches_alias(t, aliases)) for t in texts)
 
 
 def calibrate(model, name_pcms: list[bytes], negative_pcms: list[bytes]) -> dict:
@@ -178,12 +179,11 @@ def calibrate(model, name_pcms: list[bytes], negative_pcms: list[bytes]) -> dict
     aliases = learn_aliases(name_texts, neg_texts)
     report = {"aliases": aliases, "names": len(name_pcms), "negatives": len(negative_pcms),
               "heard": [sorted(set(t))[:6] for t in name_texts]}
-    if aliases:
-        hits = sum(any(matches_alias(t, aliases) for t in scan(_grammar_recognizer(model, aliases), pad + p + pad))
-                   for p in name_pcms)
-        false = sum(any(matches_alias(t, aliases) for t in scan(_grammar_recognizer(model, aliases), pad + p + pad))
-                    for p in negative_pcms)
-        report.update(hits=hits, false=false)
+    # Проверка — так, как будет работать: свободное распознавание, имя по
+    # WAKE_RE или по выученным вариантам.
+    hits = sum(names_in(scan(_free_recognizer(model), pad + p + pad), aliases) for p in name_pcms)
+    false = sum(names_in(scan(_free_recognizer(model), pad + p + pad), aliases) for p in negative_pcms)
+    report.update(hits=hits, false=false)
     return report
 
 
@@ -280,9 +280,8 @@ class LocalWake:
         vosk.SetLogLevel(-1)
         model = vosk.Model(str(model_dir))
         if self._aliases:
-            logger.info("Слово «Джарвис»: выученные варианты %s", self._aliases)
-            return _grammar_recognizer(model, self._aliases)
-        # Без калибровки — свободное распознавание + регулярка по тексту.
+            logger.info("Слово «Джарвис»: вдобавок выученные варианты %s", self._aliases)
+        # Свободное распознавание + имя по регулярке и выученным вариантам.
         return vosk.KaldiRecognizer(model, SAMPLE_RATE)
 
     # ── вход ─────────────────────────────────────────────────────────────────

@@ -116,8 +116,9 @@ def _check(model_dir: Path, tmp: str, aliases: list[str] | None, title: str) -> 
 def _calibrated(model_dir: Path, tmp: str):
     """Калибровка, как у владельца (core/wake_calibrate.py): несколько «Джарвис»
     одним голосом с разной скоростью и обычные фразы — и проверка всех фраз
-    обоими голосами с выученными вариантами. Пока только печать: смотрим,
-    как калибровка ведёт себя на настоящей модели."""
+    обоими голосами с выученными вариантами. Проверяем,
+    как калибровка ведёт себя на настоящей модели. Выученные варианты будят
+    вдобавок к WAKE_RE, поэтому хуже, чем без калибровки, быть не должно."""
     import vosk
     vosk.SetLogLevel(-1)
     model = vosk.Model(str(model_dir))
@@ -128,20 +129,16 @@ def _calibrated(model_dir: Path, tmp: str):
     rep = _mod.calibrate(model, names, negs)
     print(f"\nКалибровка: варианты {rep['aliases']}, на своих записях {rep.get('hits')}/{rep['names']}, "
           f"ложных {rep.get('false')}/{rep['negatives']}; слышал: {rep['heard']}")
-    if rep["aliases"]:
-        _check(model_dir, tmp, rep["aliases"], "после калибровки (голос калибровки и чужой)")
+    return _check(model_dir, tmp, rep["aliases"], "после калибровки (голос калибровки и чужой)")
 
 
 def main():
     model_dir = Path(sys.argv[1] if len(sys.argv) > 1 else "models/vosk-small-ru")
     with tempfile.TemporaryDirectory() as tmp:
         misses, false_hits = _check(model_dir, tmp, None, "без калибровки")
-        try:
-            _calibrated(model_dir, tmp)
-        except Exception as exc:                  # сведения, а не проверка: CI не роняем
-            print(f"Калибровка упала: {type(exc).__name__}: {exc}")
+        cal_misses, cal_false = _calibrated(model_dir, tmp)
     # Синтезированный голос — не живой, поэтому допуск на один промах.
-    if len(misses) > 1 or false_hits:
+    if len(misses) > 1 or false_hits or len(cal_misses) > 1 or cal_false:
         sys.exit(1)
 
 
