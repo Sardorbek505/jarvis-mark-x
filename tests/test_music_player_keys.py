@@ -39,6 +39,18 @@ class _Spotify:
         return True
 
 
+@pytest.fixture(autouse=True)
+def _no_premium_api(monkeypatch):
+    """Путь Premium Web API — выключен: здесь проверяется медиа-сессия.
+
+    Без этого тесты шли в живой Spotify на машине разработчика (ready() там
+    правдив) и, например, «next» честно переключал человеку трек, а ответ
+    приходил из API — мимо всего, что проверяется ниже.
+    """
+    from actions import spotify_premium
+    monkeypatch.setattr(spotify_premium, "ready", lambda: False)
+
+
 @pytest.fixture
 def spotify(monkeypatch):
     def make(**kw):

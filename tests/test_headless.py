@@ -42,6 +42,11 @@ def test_флаг_командной_строки_включает_режим(mo
 def test_без_ключа_падаем_внятно_а_не_виснем(tmp_path, monkeypatch):
     """Ради этого headless и затевался: окно бы молча ждало человека."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    # ensure_gemini_key намеренно ищет ключ ещё и в %APPDATA%\JARVIS — иначе
+    # мастер сохранял туда, а Джарвис не находил. Значит «ключа нет» надо
+    # изображать целиком, иначе тест проходит только на чистой машине.
+    import core.paths
+    monkeypatch.setattr(core.paths, "load_api_keys", lambda *a, **k: {})
     ui = HeadlessUI(config_path=tmp_path / "api_keys.json")
 
     with pytest.raises(RuntimeError) as ошибка:
