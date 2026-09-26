@@ -48,6 +48,7 @@ class HeadlessUI:
     def __init__(self, config_path: Path | None = None):
         self.muted = False
         self.on_text_command = None
+        self.on_voice_intro = None      # кнопка «Познакомиться голосом» (в окне; тут — нет)
         self.state = "INIT"
         self.logs: list[str] = []
         self._config_path = config_path or _CONFIG

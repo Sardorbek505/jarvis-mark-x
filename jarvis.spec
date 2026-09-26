@@ -107,6 +107,8 @@ hidden_imports = [
     "ui_keys",
     "core.keys",
     "core.contacts",
+    "core.about_me",
+    "ui_about",
     "ui_contacts",
     "qrcode",
     "telegram_bot.pc_userbot",

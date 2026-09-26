@@ -899,6 +899,7 @@ class MainWindow(QMainWindow):
     _macros_sig = pyqtSignal()
     _keys_sig = pyqtSignal()
     _contacts_sig = pyqtSignal()
+    _about_sig = pyqtSignal()
     # wait_for_api_key зовётся из рабочего потока: оверлей — только сигналом.
     _overlay_sig = pyqtSignal(str)
 
@@ -1136,6 +1137,7 @@ class MainWindow(QMainWindow):
         self._macros_sig.connect(self._show_macros)
         self._keys_sig.connect(self._show_keys)
         self._contacts_sig.connect(self._show_contacts)
+        self._about_sig.connect(self._show_about)
         self._overlay_sig.connect(self._show_overlay)
 
     # ── Публичный API ──────────────────────────────────────────────────────────
@@ -1237,6 +1239,17 @@ class MainWindow(QMainWindow):
     def open_macros(self):
         """Окно «Свои команды» (ui_macros.py). Из любого потока."""
         self._macros_sig.emit()
+
+    def open_about(self):
+        """Окно «Обо мне» (ui_about.py). Из любого потока."""
+        self._about_sig.emit()
+
+    def _show_about(self):
+        try:
+            from ui_about import open_dialog
+            self._about_dlg = open_dialog(None, start_voice=getattr(self, "on_voice_intro", None))
+        except Exception as exc:
+            _logger.warning("Окно «Обо мне» не открылось: %s", exc)
 
     def open_contacts(self):
         """Окно «Контакты» (ui_contacts.py). Из любого потока."""

@@ -13,15 +13,15 @@ import logging
 import threading
 import webbrowser
 
-from PyQt6.QtCore import QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QGuiApplication, QPainter
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QGuiApplication
 from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QInputDialog, QLineEdit, QPushButton, QScrollArea,
                              QVBoxLayout, QWidget)
 
 from core import keys as K
 from ui import C
 from ui_icons import qicon
-from ui_kit import STYLE, IconBadge, _cap, _icon_btn, _label, _line, _small_icon
+from ui_kit import STYLE, IconBadge, Progress, _cap, _icon_btn, _label, _line, _small_icon
 
 logger = logging.getLogger(__name__)
 
@@ -44,24 +44,6 @@ QLabel#num {{ color: {C.PRI}; font-family: Consolas; font-weight: bold; }}
 QLabel#msg {{ font-size: 12px; }}
 QFrame#head {{ background: transparent; border: none; }}
 """
-
-
-class Progress(QWidget):
-    """Тонкая полоска «подключено N из M»."""
-
-    def __init__(self):
-        super().__init__()
-        self.value = 0.0
-        self.setFixedHeight(4)
-
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(C.BORDER))
-        p.drawRoundedRect(QRectF(self.rect()), 2, 2)
-        p.setBrush(QColor(C.PRI))
-        p.drawRoundedRect(QRectF(0, 0, self.width() * self.value, self.height()), 2, 2)
 
 
 class ServiceCard(QFrame):

@@ -218,3 +218,21 @@ def _line() -> QFrame:
     ln.setFixedHeight(1)
     ln.setStyleSheet(f"background: {C.BORDER}; border: none;")
     return ln
+
+
+class Progress(QWidget):
+    """Тонкая полоска «подключено N из M»."""
+
+    def __init__(self):
+        super().__init__()
+        self.value = 0.0
+        self.setFixedHeight(4)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(C.BORDER))
+        p.drawRoundedRect(QRectF(self.rect()), 2, 2)
+        p.setBrush(QColor(C.PRI))
+        p.drawRoundedRect(QRectF(0, 0, self.width() * self.value, self.height()), 2, 2)

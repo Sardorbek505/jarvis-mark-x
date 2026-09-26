@@ -1347,6 +1347,25 @@ TOOLS = [
         }
     },
     {
+        "name": "about_me",
+        "description": (
+            "Знакомство с пользователем — анкета «Обо мне» (имя, как обращаться, город, подъём/отбой, "
+            "музыка, новости, близкие, цели…). next — какой вопрос задать следующим; answer (key, value) — "
+            "сохранить ответ, вернёт следующий вопрос; skip (key) — пропустить; later — «потом»/«хватит»; "
+            "restart — «давай познакомимся», «спроси меня обо мне»; status — «что ты обо мне знаешь по "
+            "анкете». Окно — app_window window=about. Отдельные факты вне анкеты — save_to_memory."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["next", "answer", "skip", "later", "restart", "status"]},
+                "key": {"type": "STRING", "description": "Ключ вопроса из next (name, city, wake_time…)"},
+                "value": {"type": "STRING", "description": "answer: ответ кратко, как сказал пользователь"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "contacts",
         "description": (
             "ЛЮДИ из записной книжки пользователя. message — «напиши маме, что задержусь на 20 минут» "
@@ -1377,11 +1396,12 @@ TOOLS = [
         "description": (
             "Открыть окно Джарвиса: keys — «открой ключи», «где ввести ключ», «проверь ключи», "
             "«подключи Spotify/звонки» (там же вход кнопкой); commands — «открой редактор команд»; "
-            "contacts — «открой контакты», «подключи мой телеграм»."
+            "contacts — «открой контакты», «подключи мой телеграм»; about — «открой обо мне», «что ты обо мне знаешь» "
+            "(окно)."
         ),
         "parameters": {
             "type": "OBJECT",
-            "properties": {"window": {"type": "STRING", "enum": ["keys", "commands", "contacts"]}},
+            "properties": {"window": {"type": "STRING", "enum": ["keys", "commands", "contacts", "about"]}},
             "required": ["window"]
         }
     },
@@ -1593,6 +1613,12 @@ class Jarvis:
                 logger.debug("Проверка ключей: %s", exc)
         if os.getenv("JARVIS_KEYS_CHECK", "1") != "0":
             threading.Thread(target=_check_keys, daemon=True, name="keys-check").start()
+
+        # «Обо мне»: кнопка «Познакомиться голосом» в окне зовёт сюда.
+        def _voice_intro():
+            from core import about_me
+            self.speak(about_me.intro_instruction(restart=True))
+        self.ui.on_voice_intro = _voice_intro
 
         # Контакты (core/contacts.py): новые сообщения близких — в капсулу.
         try:
@@ -2391,7 +2417,7 @@ class Jarvis:
             elif name == "app_window":
                 which = str(args.get("window", "")).lower()
                 titles = {"keys": ("open_keys", "Ключи и подключения"), "commands": ("open_macros", "Свои команды"),
-                          "contacts": ("open_contacts", "Контакты")}
+                          "contacts": ("open_contacts", "Контакты"), "about": ("open_about", "Обо мне")}
                 method, title = titles.get(which, titles["commands"])
                 opener = getattr(self.ui, method, None)
                 if opener:
@@ -2399,6 +2425,10 @@ class Jarvis:
                     result = f"Открыл окно «{title}»."
                 else:
                     result = "Окна тут нет — запущен без интерфейса."
+
+            elif name == "about_me":
+                from core.about_me import about_tool
+                result = await asyncio.to_thread(about_tool, args)
 
             elif name == "contacts":
                 from core.contacts import contacts_tool
@@ -3493,9 +3523,30 @@ class Jarvis:
                     tg.create_task(self._receive_audio())
                     tg.create_task(self._play_audio())
 
+                    # Первое знакомство: пока Джарвис почти ничего о владельце не
+                    # знает — предложить (не чаще раза в день, не больше 3 раз,
+                    # никогда после «не надо»; core/about_me.py). В этот раз —
+                    # без брифинга: два монолога подряд — перебор.
+                    offer_intro = False
+                    if getattr(self, "_intro_checked", False) is False:
+                        self._intro_checked = True
+                        try:
+                            from core import about_me
+                            offer_intro = await asyncio.to_thread(about_me.should_offer)
+                            if offer_intro:
+                                about_me.mark_offered()
+
+                                async def _intro():
+                                    await asyncio.sleep(2.0)
+                                    self.speak(about_me.intro_instruction())
+                                tg.create_task(_intro())
+                        except Exception as exc:
+                            logger.debug("Знакомство: %s", exc)
+
                     # Авто-триггер утреннего брифинга (6-11 утра, 1 раз в день)
                     today_str = datetime.now().strftime("%Y-%m-%d")
-                    if 6 <= datetime.now().hour < 11 and getattr(self, "_last_briefing_date", None) != today_str:
+                    if not offer_intro and 6 <= datetime.now().hour < 11 \
+                            and getattr(self, "_last_briefing_date", None) != today_str:
                         self._last_briefing_date = today_str
                         async def _run_morning_briefing():
                             await asyncio.sleep(1.5)
