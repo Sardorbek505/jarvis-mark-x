@@ -457,3 +457,55 @@ def test_stuck_speaking_releases_volume(tmp_path):
         assert _wait(lambda: cs2.v == 1.0, 2.0)
     finally:
         dc.close()
+
+
+def test_volume_command_while_ducked_changes_real_volume(tmp_path):
+    """«Сделай Spotify громче», пока Джарвис слушает: раньше +10 считалось от
+    приглушённых 20 %, а после речи возвращалось старое — команда пропадала."""
+    spotify = _Ctl(0.6)
+    dc = _with_apps(_silent_controller(attack_ms=10, release_ms=10, state_path=str(tmp_path / "d.json")),
+                    {10: ("spotify.exe", spotify)})
+    try:
+        dc.duck()
+        assert _wait(lambda: spotify.v < 0.2)
+        got = dc.adjust_app("Spotify.exe", lambda old: old + 0.1)
+        assert abs(got - 0.7) < 1e-6
+        assert _wait(lambda: abs(spotify.v - 0.7 * dc._get_master_volume()) < 0.02)  # приглушено от нового
+        dc.restore()
+        assert _wait(lambda: abs(spotify.v - 0.7) < 1e-6)                            # после речи — 70 %
+        assert dc.adjust_app("spotify.exe", lambda old: 1.0) is None                 # не приглушена
+    finally:
+        dc.close()
+
+
+def test_slider_moved_during_duck_is_kept(tmp_path):
+    """Подвинул громкость в микшере, пока Джарвис говорил, — не затирать."""
+    cs2 = _Ctl(1.0)
+    dc = _with_apps(_silent_controller(attack_ms=10, release_ms=10, state_path=str(tmp_path / "d.json")),
+                    {10: ("cs2.exe", cs2)})
+    try:
+        dc.duck()
+        assert _wait(lambda: cs2.v < 0.3)
+        cs2.v = 0.45                                  # человек сам поставил 45 %
+        dc.restore()
+        assert _wait(lambda: dc.state == DuckingState.IDLE)
+        time.sleep(0.1)
+        assert cs2.v == 0.45
+    finally:
+        dc.close()
+
+
+def test_app_volume_goes_through_ducking(monkeypatch):
+    import core.ducking_controller as ducking
+    from core import media_session
+    calls = []
+
+    class _Dc:
+        def adjust_app(self, name, change):
+            calls.append(name)
+            return change(0.5)
+
+    monkeypatch.setattr(ducking, "_singleton", _Dc())
+    assert media_session.app_volume("spotify.exe", "up", 10) == 60
+    assert media_session.app_volume("spotify.exe", "set", 10, 30) == 30
+    assert calls == ["spotify.exe", "spotify.exe"]
