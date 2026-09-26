@@ -136,6 +136,10 @@ async def ping():
     from fastapi.responses import PlainTextResponse
     return PlainTextResponse("ok", headers=_NOCACHE)
 
+@app.get("/orb.js")
+async def orb_js():
+    return FileResponse(MINIAPP_DIR / "orb.js", media_type="application/javascript", headers=_NOCACHE)
+
 @app.get("/worklet.js")
 async def serve_worklet():
     return FileResponse(MINIAPP_DIR / "worklet.js", media_type="application/javascript", headers=_NOCACHE)
@@ -258,7 +262,10 @@ async def _build_view(user_id: int, view: str) -> dict:
         # "About me" section — the digital-twin snapshot.
         facts = await _memory.get_facts(user_id) if hasattr(_memory, "get_facts") else []
         about = {"about": profile.get("about", ""), "goals": profile.get("goals", ""),
-                 "facts": facts[-7:]}
+                 "facts": facts[-60:][::-1]}           # новые сверху
+        voice = [{"who": "Вы" if v["role"] == "pc_user" else "Джарвис", "text": v["text"][:240]}
+                 for v in _memory.cached_voice(user_id) if v["role"] != "pc_episode"][-6:]
+        episodes = [v["text"] for v in _memory.cached_voice(user_id) if v["role"] == "pc_episode"][-3:][::-1]
         journal_last = ""
         mem = {}
         try:
@@ -284,6 +291,8 @@ async def _build_view(user_id: int, view: str) -> dict:
                 if reminders else ""
             ),
             "about": about,
+            "pc_voice": voice,
+            "pc_episodes": episodes,
             "journal_last": journal_last,
             "mem": mem,
         }
@@ -333,6 +342,11 @@ async def _handle_action(ws: WebSocket, user_id: int, msg: dict):
     elif mtype in ("reminder_delete", "reminder_done") and msg.get("id") is not None:
         await _memory.delete_reminder(user_id, int(msg["id"]))
         await _send_view(ws, user_id, "tasks")
+    elif mtype == "fact_delete" and msg.get("text"):
+        # По тексту, а не по номеру: пока открыта сводка, ПК мог добавить
+        # факты, и номер указал бы на чужой. С ПК факт уйдёт при синхронизации.
+        await _memory.del_fact_text(user_id, str(msg["text"]))
+        await _send_view(ws, user_id, "dashboard")
 
 
 # ── Mini App clients (browser / Telegram) ─────────────────────────────────────
@@ -355,6 +369,7 @@ async def ws_endpoint(ws: WebSocket):
         "type": "pc_status",
         "online": _bridge.connected if _bridge else False,
     }))
+    await _send_history(ws, user_id)
 
     try:
         while True:
@@ -384,7 +399,8 @@ async def ws_endpoint(ws: WebSocket):
 
             if mtype in ("habit_add", "habit_toggle", "habit_delete",
                          "task_add", "task_done", "task_delete",
-                         "reminder_add", "reminder_delete", "reminder_done"):
+                         "reminder_add", "reminder_delete", "reminder_done",
+                         "fact_delete"):
                 await _handle_action(ws, user_id, msg)
                 continue
 
@@ -558,9 +574,43 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
             if summary:
                 reply += "\n\n✅ Добавил — " + ", ".join(summary)
             asyncio.create_task(_memory.observe(user_id, _gemini, text, reply))
+        await _remember(user_id, text, reply)       # уже без служебных блоков
     else:
         reply = "AI-сервис недоступен."
     await _send_text(ws, reply, want_audio)
+
+
+async def _remember(user_id: int, text: str, reply: str):
+    """Переписка Mini App — в ту же историю, что и чат бота. Раньше она
+    нигде не хранилась: после перезагрузки приложение открывалось пустым,
+    а разговоры не попадали в общую память с ПК."""
+    if not _memory:
+        return
+    try:
+        await _memory.add_message(user_id, "user", text)
+        if reply:
+            await _memory.add_message(user_id, "model", reply)
+    except Exception as exc:
+        logger.warning("Mini App: переписка не сохранилась: %s", exc)
+
+
+async def _send_history(ws: WebSocket, user_id: int, limit: int = 30):
+    """Последние сообщения — чтобы приложение открывалось с разговором."""
+    if not _memory:
+        return
+    try:
+        await _memory.ensure_loaded(user_id)
+        msgs = await _memory.recent_messages(user_id, limit)
+    except Exception as exc:
+        logger.debug("История Mini App: %s", exc)
+        return
+    import re as _re
+    clean = []
+    for m in msgs:
+        text = _re.sub(r"\[\[(SEND|FETCH)\]\].*?\[\[/\1\]\]", "", m["text"], flags=_re.S | _re.I).strip()
+        if text:
+            clean.append({"role": "user" if m["role"] == "user" else "bot", "text": text})
+    await ws.send_text(json.dumps({"type": "history", "messages": clean}))
 
 
 async def _handle_voice(ws: WebSocket, user_id: int, pcm: bytes, want_audio: bool = True):
