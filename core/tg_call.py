@@ -155,9 +155,27 @@ class CallSession:
         self._mic: asyncio.Queue[bytes] | None = None
         self._hung_up = asyncio.Event()
         self._ending = False
+        # Что реально пришло из трубки. Жалоба «говорит, но не отвечает»
+        # неотличима по поведению для «звук не приходит», «приходит тишина»
+        # и «приходит, но Gemini не слышит речь» — журнал их различает.
+        self.frames_in, self.sizes, self._sq, self._samples = 0, set(), 0.0, 0
+
+    def audio_stats(self) -> str:
+        rms = (self._sq / self._samples) ** 0.5 if self._samples else 0.0
+        heard = sum(1 for t in self.transcript if t.startswith("Вы:"))
+        return (f"из трубки кадров: {self.frames_in}, размеры: {sorted(self.sizes)[:4]}, "
+                f"громкость RMS: {rms:.0f}, реплик собеседника в расшифровке: {heard}")
 
     # колбэки из py-tgcalls (его цикл — тот же, что у нас)
     def _on_audio(self, pcm48: bytes):
+        self.frames_in += 1
+        if len(self.sizes) < 8:
+            self.sizes.add(len(pcm48))
+        if self.frames_in % 10 == 1 and len(pcm48) >= 2:
+            import numpy as np
+            x = np.frombuffer(pcm48[: len(pcm48) // 2 * 2], dtype="<i2").astype(np.float64)
+            self._sq += float((x * x).sum())
+            self._samples += x.size
         if self._mic is not None:
             chunk = self.down(pcm48)
             if chunk:
@@ -183,6 +201,7 @@ class CallSession:
                     turns=[{"role": "user", "parts": [{"text": "[Собеседник взял трубку. Начинай разговор.]"}]}],
                     turn_complete=True)
                 pace = asyncio.create_task(self._pace())
+                watch = asyncio.create_task(self._watch_audio())
                 ended = asyncio.create_task(self._hung_up.wait())
                 pumps = {asyncio.create_task(self._pump_mic(session)),
                          asyncio.create_task(self._pump_gemini(session))}
@@ -199,7 +218,7 @@ class CallSession:
                     if not done or pace in done or ended in done or failed:
                         break
                     waiting -= done
-                for t in pumps | {pace, ended}:
+                for t in pumps | {pace, ended, watch}:
                     t.cancel()
         finally:
             if not self._hung_up.is_set():
@@ -207,9 +226,20 @@ class CallSession:
                     await self.tg.hangup(self.peer)
                 except Exception as exc:
                     logger.debug("Отбой: %s", exc)
+        logger.info("Звонок: %s", self.audio_stats())
+        for line in self.transcript[-40:]:
+            logger.info("Звонок | %s", line[:200])
         mins = (time.monotonic() - started) / 60
         who = "вы положили трубку" if self._hung_up.is_set() and not self._ending else "попрощались"
         return f"Поговорили {max(1, round(mins))} мин, {who}."
+
+    async def _watch_audio(self, after: float = 6.0):
+        await asyncio.sleep(after)
+        if self.frames_in == 0:
+            logger.warning("Звонок: за %.0f с из трубки не пришло ни одного кадра звука — "
+                           "Джарвис говорит, но собеседника не слышит", after)
+        else:
+            logger.info("Звонок: звук из трубки идёт — %s", self.audio_stats())
 
     async def _pump_mic(self, session):
         from google.genai import types

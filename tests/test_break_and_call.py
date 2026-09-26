@@ -455,3 +455,18 @@ def test_successful_login_keeps_the_session(monkeypatch, tmp_path):
 
     assert answer.startswith("Готово"), answer
     assert stub.exists(), "рабочую сессию удалять нельзя"
+
+
+def test_call_logs_what_came_from_the_phone(caplog):
+    """«Говорит, но не отвечает»: журнал обязан показать, дошёл ли голос."""
+    import logging
+    s = tc.CallSession(tg=None, live=None, peer=1, prompt="")
+    s._on_audio((np.full(480, 3000, dtype="<i2")).tobytes())
+    s.transcript.append("Вы: алло")
+    st = s.audio_stats()
+    assert "кадров: 1" in st and "960" in st and "RMS: 3000" in st and "собеседника в расшифровке: 1" in st
+
+    silent = tc.CallSession(tg=None, live=None, peer=1, prompt="")
+    with caplog.at_level(logging.WARNING, logger=tc.logger.name):
+        asyncio.run(silent._watch_audio(after=0.01))
+    assert "не пришло ни одного кадра" in caplog.text

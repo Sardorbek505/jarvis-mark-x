@@ -2771,6 +2771,12 @@ class Jarvis:
 
                             if full_out:
                                 self.ui.write_log(f"Джарвис: {full_out}")
+                            # В журнал — каждый принятый ход. «Не слышит» и «молчит»
+                            # иначе неотличимы: «Не ко мне» журнал писал, а ход,
+                            # принятый и оставшийся без ответа, не оставлял следа.
+                            if full_in or full_out:
+                                logger.info("Ход: «%s» → «%s»%s", full_in[:120], full_out[:120],
+                                            "" if full_out else "  [ответа нет]")
                             self._remember_turn(full_in, full_out)
 
                     if response.tool_call:
