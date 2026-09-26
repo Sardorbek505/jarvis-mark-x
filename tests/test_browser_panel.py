@@ -122,7 +122,7 @@ def test_panel_streams_page_and_forwards_input(chrome):
     t.eval("scrollTo(0, 0)")                  # «назад» вернул страницу прокрученной
     assert _until(lambda: t.eval("scrollY") == 0)
     p.click(140, 325)
-    assert _until(lambda: not p.active) and closed == [1]
+    assert _until(lambda: closed == [1]) and not p.active    # on_closed — после возврата окна
     assert _until(lambda: t.eval("!!document.fullscreenElement"), timeout=10)   # CI медленный
     wid = p._window()
     assert _until(lambda: p.call("Browser.getWindowBounds", windowId=wid)["bounds"]["windowState"] == "fullscreen")
