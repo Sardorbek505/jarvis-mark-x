@@ -2208,7 +2208,9 @@ class Jarvis:
         if self._speaker_meter is None and _IGNORE_SPEAKERS:
             from speaker_meter import SpeakerMeter
             meter = SpeakerMeter()
-            if meter.start():
+            # start() ждёт рабочий поток до 5 с — не в событийном цикле:
+            # иначе на это время вставали бы голос и связь с Gemini.
+            if await asyncio.to_thread(meter.start):
                 self._speaker_meter = meter
                 logger.info("Speaker meter started successfully (loopback active)")
             else:

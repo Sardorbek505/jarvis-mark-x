@@ -381,9 +381,15 @@ def _click_fullscreen_button(t: Tab) -> bool:
         b = t.eval(_FS_BUTTON)
         if not b:
             return False
+        before = video_state(t)
         t.call("Input.dispatchMouseEvent", type="mouseMoved", x=b["x"], y=b["y"])
         for kind in ("mousePressed", "mouseReleased"):
             t.call("Input.dispatchMouseEvent", type=kind, x=b["x"], y=b["y"], button="left", clickCount=1)
+        # Кнопка была скрыта — клик пришёлся в само видео и поставил паузу.
+        time.sleep(0.3)
+        after = video_state(t)
+        if before and after and not before["paused"] and after["paused"]:
+            video_js("try { await v.play() } catch (e) {}", t)
         return True
     except Exception as exc:
         logger.debug("Кнопка полного экрана: %s", exc)

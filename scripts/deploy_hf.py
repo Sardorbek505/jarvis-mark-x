@@ -21,11 +21,23 @@ if len(sys.argv) != 2:
 folder_path = sys.argv[1]
 repo_id = "atabekovch/jarvis-mark-x"
 
+# upload_folder не читает .gitignore и выложил бы ВСЁ из папки: ключи
+# (config/api_keys.json), сессии Telegram, базу памяти, картинки — Space
+# отклоняет бинарные файлы, а ключи в публичном Space — утечка.
+IGNORE = [
+    ".git/*", "**/.git/*", "config/api_keys.json", "**/api_keys.json", "*.session", "**/*.session",
+    "*.session-journal", "**/*.session-journal", "*.env", ".env", "**/.env",
+    "memory/*", "*.db", "**/*.db", "*.log", "**/*.log", "browser/*", "models/*",
+    "*.zip", "*.ico", "*.png", "*.jpg", "*.exe", "assets/*", "__pycache__/*", "**/__pycache__/*",
+    ".venv/*", "venv/*",
+]
+
 api = HfApi(token=TOKEN)
 commit_info = api.upload_folder(
     folder_path=folder_path,
     repo_id=repo_id,
     repo_type="space",
-    commit_message="Sync latest master: живой разговор, self-test, browser panel, video player, Spotify Premium",
+    ignore_patterns=IGNORE,
+    commit_message="deploy",
 )
 print("Deployed:", commit_info)
