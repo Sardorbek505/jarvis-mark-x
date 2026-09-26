@@ -77,3 +77,21 @@ def test_name_variants():
         assert has_wake_word(t), t
     for t in ("жевать", "черви", "дарвин", "сервис", "джаз"):
         assert not has_wake_word(t), t
+
+
+# ─── Имя чужим письмом ───────────────────────────────────────────────────────
+def test_name_written_in_another_script_still_wakes():
+    """Живой журнал: человек сказал «Джарвис», Gemini записал «ჯარის»
+    грузинскими буквами — и Джарвис промолчал, «обращались не ко мне».
+    Расшифровка гуляет по письменностям (там же были китайский и тайский),
+    поэтому имя надо узнавать и так."""
+    assert has_wake_word("ჯარის")                    # ровно то, что было в журнале
+    assert has_wake_word("ჯარვის")                   # полное написание
+    assert has_wake_word("ჯარვის, როგორ ხარ")        # внутри фразы
+
+
+def test_other_scripts_do_not_wake_on_anything():
+    """Расширение не должно будить на любой чужой речи."""
+    assert not has_wake_word("看到了。")
+    assert not has_wake_word("ტელევიზორი ჩართე")     # грузинский без имени
+    assert not has_wake_word("Türkçenin galosu mu sana?")

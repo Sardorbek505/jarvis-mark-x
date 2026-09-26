@@ -46,8 +46,27 @@ SAMPLE_RATE = 16000
 _COOLDOWN_SEC = 1.5          # одно «Джарвис» — одно пробуждение
 
 
+# Расшифровка Gemini гуляет по письменностям: в живом журнале «Джарвис»
+# приехал как «ჯარის» (грузинским), рядом были китайский и тайский. Имя должно
+# узнаваться и так, поэтому буквы, которыми оно вообще может быть записано,
+# переводим в латиницу — дальше работает обычная латинская ветка WAKE_RE.
+_TRANSLIT = str.maketrans({
+    "ჯ": "j", "ჩ": "ch", "დ": "d", "ა": "a", "ე": "e", "რ": "r",
+    "ვ": "v", "ფ": "f", "ი": "i", "ы": "y", "ს": "s", "ზ": "z",
+})
+
+
+# Чужое письмо теряет и звуки: «ჯარის» — это «jaris», без «в». Поэтому здесь
+# «в» необязательна, но гласная после «р» обязательна: иначе просыпались бы на
+# «jars». Начало на «j/dj/ch» отсекает «Paris».
+_TRANSLIT_RE = re.compile(r"(?<![a-z])(?:dj|ch|j)[ae]r[vf]?[iey]s?", re.IGNORECASE)
+
+
 def has_wake_word(text: str) -> bool:
-    return bool(text) and bool(WAKE_RE.search(text))
+    if not text:
+        return False
+    return bool(WAKE_RE.search(text)
+                or _TRANSLIT_RE.search(text.translate(_TRANSLIT)))
 
 
 def find_model_dir() -> Path | None:
