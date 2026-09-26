@@ -22,7 +22,9 @@ PAGE = """<!doctype html><meta charset="utf-8"><title>Проверка пане�
 <button id="b" style="position:absolute;left:40px;top:40px;width:200px;height:60px"
         onclick="this.textContent='нажата'">кнопка</button>
 <input id="i" style="position:absolute;left:40px;top:140px;width:300px;height:40px">
-<a id="next" href="second.html" style="position:absolute;left:40px;top:220px">дальше</a>"""
+<a id="next" href="second.html" style="position:absolute;left:40px;top:220px">дальше</a>
+<button id="fs" style="position:absolute;left:40px;top:300px;width:200px;height:50px"
+        onclick="document.documentElement.requestFullscreen()">⛶ на весь экран</button>"""
 
 
 def test_address_bar_understands_sites_and_queries():
@@ -115,8 +117,20 @@ def test_panel_streams_page_and_forwards_input(chrome):
     assert _until(lambda: t.eval("document.title") == "Проверка панели")
     assert p.title() == "Проверка панели"
 
+    # Кнопка полного экрана на самом сайте (как ⛶ в плеере YouTube): окно
+    # должно выйти на экран во весь экран, а не развернуться за его краем.
+    t.eval("scrollTo(0, 0)")                  # «назад» вернул страницу прокрученной
+    assert _until(lambda: t.eval("scrollY") == 0)
+    p.click(140, 325)
+    assert _until(lambda: not p.active) and closed == [1]
+    assert _until(lambda: t.eval("!!document.fullscreenElement"))
+    wid = p._window()
+    assert _until(lambda: p.call("Browser.getWindowBounds", windowId=wid)["bounds"]["windowState"] == "fullscreen")
+    t.eval("document.exitFullscreen()")
+
+    assert p.open(None, 500, 400, 1.0) and p.active                           # снова в панель
     bp.release_for_video()                                                  # фильм забирает окно
-    assert not p.active and closed == [1]
+    assert not p.active and closed == [1, 1]
     assert _until(lambda: t.eval("innerWidth") != 500)                      # разметка сброшена
     n = p.frames
     time.sleep(0.4)

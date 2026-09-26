@@ -41,6 +41,16 @@ _KEYS = {
 }
 _MODS = {"alt": 1, "ctrl": 2, "meta": 4, "shift": 8}
 
+# Полный экран, запрошенный самой страницей (кнопка ⛶ в плеере YouTube, двойной
+# клик по видео), случился бы в окне за краем экрана — смотреть было бы нечего.
+# Страница сообщает об этом через binding, и Джарвис выводит окно на экран.
+_FS_BINDING = "__jarvisFullscreen"
+_FS_HOOK = ("(() => { if (window.__jarvisFsHook) return; window.__jarvisFsHook = true;"
+            " const on = () => { const el = document.fullscreenElement || document.webkitFullscreenElement;"
+            f" if (el) {{ window.__jarvisFsEl = el; window.{_FS_BINDING} && window.{_FS_BINDING}('on'); }} }};"
+            " document.addEventListener('fullscreenchange', on, true);"
+            " document.addEventListener('webkitfullscreenchange', on, true); })()")
+
 
 def normalize_url(text: str) -> str:
     """Что ввели в адресную строку → адрес: сайт или поиск Google."""
@@ -71,6 +81,7 @@ class Panel:
         self._window_id: int | None = None
         self._size = (900, 640, 1.0)
         self.active = False
+        self._hooked = False
         self.url = ""
         self.frames = 0
 
@@ -110,6 +121,10 @@ class Panel:
                     self.on_frame(base64.b64decode(params.get("data", "")), params.get("metadata", {}))
                 except Exception as exc:
                     logger.debug("Кадр панели: %s", exc)
+            elif method == "Runtime.bindingCalled" and params.get("name") == _FS_BINDING:
+                if self.active:
+                    # Из потока чтения call() звать нельзя — он сам ждёт этот поток.
+                    threading.Thread(target=self.fullscreen, daemon=True, name="panel-fs").start()
             elif method == "Page.frameNavigated" and not params.get("frame", {}).get("parentId"):
                 self.url = params["frame"].get("url", "")
                 self.on_url(self.url)
@@ -158,6 +173,15 @@ class Panel:
         if self._ws is None and not self._connect():
             return False
         self.call("Page.enable")
+        if not self._hooked:
+            self.call("Runtime.enable")
+            self.call("Runtime.addBinding", name=_FS_BINDING)
+            self.call("Page.addScriptToEvaluateOnNewDocument", source=_FS_HOOK)
+            self._hooked = True
+        try:
+            self.call("Runtime.evaluate", expression=_FS_HOOK)       # и в уже открытую страницу
+        except Exception as exc:
+            logger.debug("Хук полного экрана: %s", exc)
         self._apply_size()
         self._hide_window()
         if not self.active:
@@ -227,6 +251,34 @@ class Panel:
         if was:
             self.on_closed()
 
+    def fullscreen(self):
+        """Страница ушла в полный экран — настоящее окно на экран, во весь экран.
+        Видео дальше идёт в Chrome напрямую, в полном качестве.
+
+        Переезд окна сбрасывает полный экран элемента (плеер сворачивался бы
+        обратно в страницу), поэтому тот же элемент разворачиваем снова —
+        как по клику пользователя (userGesture), иначе браузер не даст."""
+        self.release(maximize=False)
+        wid = self._window()
+        if wid is not None:
+            try:
+                self.call("Browser.setWindowBounds", windowId=wid, bounds={"windowState": "fullscreen"})
+            except Exception as exc:
+                logger.debug("Полный экран окна: %s", exc)
+        cdp.bring_to_front()
+        for _ in range(10):
+            try:
+                r = self.call("Runtime.evaluate", userGesture=True, awaitPromise=True, returnByValue=True,
+                              expression="(async () => { const el = window.__jarvisFsEl;"
+                                         " if (!el || !el.isConnected) return true;"
+                                         " if (document.fullscreenElement !== el) await el.requestFullscreen();"
+                                         " return document.fullscreenElement === el; })()")
+                if r.get("result", {}).get("value"):
+                    return
+            except Exception as exc:
+                logger.debug("Полный экран элемента: %s", exc)
+            time.sleep(0.15)
+
     def expand(self):
         """«На весь экран»: настоящее окно Chrome — вперёд, развёрнутым."""
         self.release(maximize=True)
@@ -245,6 +297,7 @@ class Panel:
     def disconnect(self):
         ws, self._ws = self._ws, None
         self.active = False
+        self._hooked = False
         if ws is not None:
             try:
                 ws.close()

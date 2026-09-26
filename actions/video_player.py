@@ -305,7 +305,16 @@ def control(action: str, value=None) -> str:
         return "Звук видео включён."
 
     if a == "fullscreen":
-        return "Полный экран." if cdp.fullscreen(True) else "Не получилось развернуть на весь экран."
+        # Видео открыто в панели рядом с шаром — сначала окно на экран,
+        # иначе полный экран случился бы в окне за его краем.
+        try:
+            from core import browser_panel
+            browser_panel.release_for_video()
+        except Exception as exc:
+            logger.debug("Панель браузера: %s", exc)
+        ok = cdp.fullscreen(True)
+        cdp.bring_to_front()
+        return "Полный экран." if ok else "Не получилось развернуть на весь экран."
     if a == "exit_fullscreen":
         cdp.fullscreen(False)
         return "Вышел из полного экрана."
