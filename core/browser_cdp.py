@@ -75,7 +75,7 @@ def _profile_dir() -> str:
     return d
 
 
-def ensure_browser(headless: bool = False, timeout: float = 12.0) -> bool:
+def ensure_browser(headless: bool = False, timeout: float = 25.0) -> bool:
     """Поднять окно Джарвиса, если его нет. True — порт отвечает."""
     global _proc
     if running():
@@ -94,14 +94,31 @@ def ensure_browser(headless: bool = False, timeout: float = 12.0) -> bool:
     extra = os.getenv("JARVIS_BROWSER_ARGS", "").split()
     if extra:
         args[1:1] = extra
-    _proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             creationflags=_NO_WINDOW)
+    # Вывод браузера — в файл рядом с профилем: не поднялся — видно почему.
+    # (В PIPE нельзя: его никто не читает, и болтливый Chrome встал бы.)
+    profile = _profile_dir()
+    os.makedirs(profile, exist_ok=True)
+    log_path = os.path.join(profile, "browser.log")
+    with open(log_path, "wb") as log:
+        _proc = subprocess.Popen(args, stdout=log, stderr=log, creationflags=_NO_WINDOW)
+    # Первый запуск с новым профилем на медленном диске — до 10–20 с.
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         if running():
             return True
+        if _proc.poll() is not None:
+            break
         time.sleep(0.15)
+    logger.warning("Браузер не поднялся (код %s): %s", _proc.poll(), browser_log()[-600:])
     return False
+
+
+def browser_log() -> str:
+    try:
+        with open(os.path.join(_profile_dir(), "browser.log"), encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
 
 
 # ── вкладка ───────────────────────────────────────────────────────────────────

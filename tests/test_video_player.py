@@ -177,7 +177,7 @@ def test_real_browser_film_flow(tmp_path, monkeypatch):
     args = "--headless=new --mute-audio" + (" --no-sandbox" if hasattr(os, "geteuid") and os.geteuid() == 0 else "")
     monkeypatch.setenv("JARVIS_BROWSER_ARGS", args)
     try:
-        assert cdp.ensure_browser()
+        assert cdp.ensure_browser(), cdp.browser_log()[-2000:]
         st = vp._start(f"http://127.0.0.1:{srv.server_address[1]}/index.html")
         assert st and not st["paused"] and st["fs"], st
         assert vp.control("seek_to", "0:45") == "Перемотал на 0:45."
