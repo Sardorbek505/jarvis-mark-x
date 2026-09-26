@@ -158,10 +158,33 @@ def vk_find(title: str, film: bool = True) -> str | None:
     return web_find.film_page(title + (" фильм" if film else ""), "vk")
 
 
+_FAIL_COOLDOWN_SEC = 90.0        # столько не повторяем заведомо провальный фильм
+_last_fail: tuple[str, float, str] | None = None
+
+
+def _remember_fail(title: str, answer: str) -> None:
+    global _last_fail
+    _last_fail = (title.casefold(), time.monotonic(), answer)
+
+
+def _recent_fail(title: str) -> str | None:
+    """Тот же фильм только что не пошёл — не тратим ещё 18 секунд впустую."""
+    if not _last_fail:
+        return None
+    was, when, answer = _last_fail
+    if was == title.casefold() and time.monotonic() - when < _FAIL_COOLDOWN_SEC:
+        return answer
+    return None
+
+
 def play_film(title: str, player=None) -> str:
     title = (title or "").strip()
     if not title:
         return "Какой фильм включить, сэр?"
+    repeat = _recent_fail(title)
+    if repeat:
+        logger.info("Фильм «%s» только что не пошёл — не повторяю", title)
+        return repeat
     if player:
         player.write_log(f"SYS: 🎬 VK Видео — ищу «{title}»")
     if not cdp.ensure_browser():
@@ -171,7 +194,14 @@ def play_film(title: str, player=None) -> str:
         return f"Не нашёл «{title}» на VK Видео, сэр."
     st = _start(url, fullscreen=True)
     if not st:
-        return f"Открыл «{title}» на VK Видео, но плеер не загрузился — возможно, нужен вход в VK в окне Джарвиса."
+        # «Открыл …, но плеер не загрузился» модель читала как «почти вышло» и
+        # звала инструмент снова: в живом журнале семь заходов по 18 секунд,
+        # 27 секунд молчания и убитая по таймауту сессия Gemini. Говорим прямо,
+        # что повтор не поможет, и до чего это лечится.
+        answer = (f"Не смог включить «{title}»: плеер VK не загрузился. "
+                  "Повторять бесполезно — нужно один раз войти в VK в окне Джарвиса.")
+        _remember_fail(title, answer)
+        return answer
     if not _played(st):
         return f"Открыл «{title}» на VK Видео, но видео не запустилось — скажите «продолжи»."
     long = f", {_say_duration(st['d'])}" if st.get("d") else ""

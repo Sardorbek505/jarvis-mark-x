@@ -194,3 +194,54 @@ def test_real_browser_film_flow(tmp_path, monkeypatch):
                 cdp._proc.terminate()
         finally:
             srv.shutdown()
+
+
+# ─── Провал не должен повторяться по кругу ───────────────────────────────────
+def _film_that_never_starts(monkeypatch):
+    """VK открывается, но плеер не поднимается — живой случай без входа в VK."""
+    calls = []
+    monkeypatch.setattr(cdp, "ensure_browser", lambda: True)
+    monkeypatch.setattr(vp, "vk_find", lambda t, film=True: "https://vkvideo.ru/x")
+    monkeypatch.setattr(vp, "_start", lambda url, fullscreen=True, wait_sec=15.0:
+                        calls.append(url) or None)
+    vp._last_fail = None
+    return calls
+
+
+def test_failed_film_says_plainly_that_retrying_will_not_help(monkeypatch):
+    """Ответ «Открыл …, но плеер не загрузился» модель читала как «почти
+    получилось» и звала инструмент снова: в живом журнале семь заходов по
+    18 секунд подряд, 27 секунд молчания и убитая сессия Gemini."""
+    _film_that_never_starts(monkeypatch)
+
+    answer = vp.play_film("Железный человек")
+
+    assert not answer.startswith("Открыл"), answer
+    assert "не" in answer.lower() and "vk" in answer.lower()
+    assert "повтор" in answer.lower(), "модель должна понять, что повторять бесполезно"
+
+
+def test_same_film_is_not_retried_immediately(monkeypatch):
+    calls = _film_that_never_starts(monkeypatch)
+    now = [1000.0]
+    monkeypatch.setattr(vp.time, "monotonic", lambda: now[0])
+
+    first = vp.play_film("Железный человек")
+    second = vp.play_film("Железный человек")
+
+    assert len(calls) == 1, f"второй заход ходил в VK снова: {calls}"
+    assert second == first
+
+    now[0] += vp._FAIL_COOLDOWN_SEC + 1          # остыло — пробуем заново
+    vp.play_film("Железный человек")
+    assert len(calls) == 2
+
+
+def test_another_film_is_still_tried(monkeypatch):
+    calls = _film_that_never_starts(monkeypatch)
+    monkeypatch.setattr(vp.time, "monotonic", lambda: 1000.0)
+
+    vp.play_film("Железный человек")
+    vp.play_film("Интерстеллар")
+
+    assert len(calls) == 2, "чужой фильм не должен упираться в чужую неудачу"
