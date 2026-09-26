@@ -51,6 +51,10 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     d = tmp_path / "voice_memory"
     # Выученное на голосе владельца слово — не из настоящей папки данных.
     monkeypatch.setenv("JARVIS_WAKE_ALIASES", str(d / "wake_aliases.json"))
+    # Готовые фразы — не в настоящий кэш голоса и без озвучки по сети.
+    import core.quick as quick
+    monkeypatch.setattr(quick, "_cache", quick.VoiceCache(d / "voice_cache"))
+    monkeypatch.setenv("JARVIS_QUICK_PREWARM", "0")
     monkeypatch.setattr(mm, "_MEMORY_FILE", d / "data.json")
     monkeypatch.setattr(conv, "DIALOG_FILE", d / "dialog.jsonl")
     monkeypatch.setattr(conv, "EPISODES_FILE", d / "episodes.jsonl")

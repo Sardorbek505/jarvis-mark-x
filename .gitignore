@@ -80,3 +80,6 @@ models/
 # память голосового Джарвиса (в режиме разработки)
 memory/*.jsonl
 memory/collector.json
+
+# Озвученные заранее фразы Джарвиса (core/quick.py)
+voice_cache/

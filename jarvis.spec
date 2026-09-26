@@ -99,6 +99,7 @@ hidden_imports = [
     "core.location",
     "core.eyes",
     "core.verify",
+    "core.quick",
     "qrcode",
     "telegram_bot.pc_userbot",
     "websockets.sync.client",

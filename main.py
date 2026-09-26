@@ -46,6 +46,7 @@ import threading
 import time
 import subprocess
 import atexit
+from types import SimpleNamespace
 from datetime import datetime
 import logging
 
@@ -117,6 +118,7 @@ from core.team_collaboration import TeamCollaborationEngine
 from core.onboarding import ensure_gemini_key
 from core.latency import LatencyTracker
 from core.result_card import build_card, capture_foreground_png
+from core import quick
 from core.headless_ui import HeadlessUI, headless_requested
 from actions.open_app import open_app
 from actions.weather import weather_action
@@ -336,6 +338,18 @@ _SESSION_HEALTHY_SEC = 10.0
 _MIC_STALL_SEC = 2.0
 # Fish ждёт следующий кусок ответа не дольше этого (см. _fish_worker).
 _FISH_IDLE_SEC = 20.0
+
+# Мгновенные ответы (core/quick.py): сколько после своего ответа глушить
+# запоздалую речь Gemini на ту же команду, если пользователь молчит.
+_QUICK_HOLD_SEC = 8.0
+
+
+def _quick_allowed() -> bool:
+    """Готовые фразы — голосом Джарвиса (Fish). С голосом Gemini они звучали
+    бы чужим голосом посреди разговора, поэтому там — только по JARVIS_QUICK=1."""
+    if not quick.enabled():
+        return False
+    return get_voice_provider() == "fish" or os.getenv("JARVIS_QUICK", "").strip() == "1"
 # Сколько ждать ответа инструмента, прежде чем сказать «не успело».
 _TOOL_TIMEOUT_SEC = float(os.getenv("JARVIS_TOOL_TIMEOUT_SEC", "45"))
 # Сколько ждать расшифровку с именем, если вызов инструмента пришёл раньше.
@@ -1372,6 +1386,7 @@ class Jarvis:
         self._followups_left = 0      # сколько реплик без имени ещё продолжат разговор
         self._rearm_after_speech = False
         self._fish_task: asyncio.Task | None = None
+        self._quick_lift = False     # system-реплика: снять глушение мгновенного хода
         self._echo_guard_until = 0.0  # см. _ECHO_TAIL_SEC
         self._resume_handle: str | None = None  # возобновление сессии после разрыва
 
@@ -1442,6 +1457,22 @@ class Jarvis:
             vf.log = self.ui.write_log
         except Exception as exc:
             logger.warning("Самопроверка не подключилась: %s", exc)
+
+        # Мгновенные ответы (core/quick.py): готовые фразы озвучить заранее,
+        # один раз — дальше «Есть, сэр» звучит без сети и без ожидания.
+        if _quick_allowed() and os.getenv("JARVIS_QUICK_PREWARM", "1") != "0":
+            def _prewarm():
+                from telegram_bot import tts_edge, tts_fish
+
+                async def synth(text):
+                    if tts_fish.is_configured():
+                        return await tts_fish.speak_pcm(text, sample_rate=RECV_SAMPLE_RATE)
+                    return await tts_edge.speak_pcm(text, sample_rate=RECV_SAMPLE_RATE)
+                try:
+                    asyncio.run(quick.prewarm(synth, RECV_SAMPLE_RATE))
+                except Exception as exc:
+                    logger.warning("Готовые фразы не озвучены: %s", exc)
+            threading.Thread(target=_prewarm, daemon=True, name="quick-prewarm").start()
 
         # Часы: таймеры, секундомер, будильники (core/clock.py). Сработало —
         # звук, голос Джарвиса и событие в журнале и капсуле.
@@ -1729,6 +1760,7 @@ class Jarvis:
             return
         if not text.lstrip().startswith("["):
             text = f"[СИСТЕМА: произнеси пользователю, своими словами не дополняй: «{text}»]"
+        self._quick_lift = True     # это Джарвис должен сказать — не глушить
         self.wake()
         self._send_text_to_session(text)
 
@@ -2564,7 +2596,20 @@ class Jarvis:
             fish_alive = tts_fish.is_configured()
             probe: asyncio.Future | None = None
 
+            cache = quick.voice_cache()
+
             async def synth(fragment: str):
+                # Готовая фраза («Есть, сэр.») уже озвучена — звучит сразу.
+                pcm = cache.get(fragment, RECV_SAMPLE_RATE)
+                if pcm:
+                    return pcm
+                pcm = await synth_fresh(fragment)
+                # Кэш — только своим голосом: Edge вместо Fish туда не пишем.
+                if pcm and cache.wanted(fragment) and (fish_alive or not tts_fish.is_configured()):
+                    cache.put(fragment, RECV_SAMPLE_RATE, pcm)
+                return pcm
+
+            async def synth_fresh(fragment: str):
                 nonlocal fish_alive, probe
                 if fish_alive and probe is not None:
                     await probe
@@ -2769,6 +2814,38 @@ class Jarvis:
                     show(card["title"], card["address"], card["body"], png, card["extra"])
             threading.Thread(target=_shot, daemon=True, name="card-shot").start()
 
+    async def _quick_run(self, q, heard: str):
+        """Мгновенная команда: выполнить на ПК и сразу ответить готовой
+        фразой (или ответом инструмента, если не вышло) — без круга через
+        Gemini (core/quick.py)."""
+        started = time.perf_counter()
+        result = ""
+        if q.tool:
+            self._quick_seq = getattr(self, "_quick_seq", 0) + 1
+            fc = SimpleNamespace(id=f"quick-{self._quick_seq}", name=q.tool, args=dict(q.args))
+            try:
+                fr = await asyncio.wait_for(self._execute_tool(fc), _TOOL_TIMEOUT_SEC)
+                result = str((getattr(fr, "response", None) or {}).get("result", ""))
+                self._show_card(fc, fr)
+            except Exception as exc:
+                logger.warning("Мгновенная команда %s: %s", q.tool, exc)
+                result = f"Не получилось, сэр: {exc}"
+        text = quick.reply_for(q, result)
+        logger.info("⚡ Мгновенно: «%s» → %s %s → «%s» (%d мс)", heard[:80], q.tool or "-",
+                    q.args, text, int((time.perf_counter() - started) * 1000))
+        self.ui.write_log(f"Вы: {heard}")
+        self.ui.write_log(f"Джарвис: {text}")
+        self._remember_turn(heard, text)
+        if text:
+            await self._speak_fish(text)
+
+    async def _quick_absorb(self, function_calls, why: str):
+        """Gemini тоже решил выполнить команду, которую Джарвис уже сделал сам:
+        ответить ему «уже сделано», не выполняя второй раз."""
+        await self.session.send_tool_response(function_responses=[
+            types.FunctionResponse(id=fc.id, name=fc.name, response={"result": why})
+            for fc in function_calls])
+
     async def _deferred_tool_calls(self, function_calls, named: asyncio.Event):
         """Вызов пришёл раньше расшифровки с именем — ждём её немного.
         Раньше такой вызов отклонялся сразу: «Джарвис, открой хром» при
@@ -2818,9 +2895,52 @@ class Jarvis:
         def decide() -> bool:
             return self.is_awake() or named.is_set()
 
+        # Мгновенный ответ (core/quick.py): частую команду Джарвис выполнил и
+        # озвучил сам — речь и вызовы Gemini на неё глушатся, пока человек не
+        # заговорит снова (или _QUICK_HOLD_SEC после конца хода).
+        quick_on = False
+        quick_q = None              # что выполнили
+        quick_after = False         # ход с мгновенным ответом уже завершён
+        quick_until = 0.0
+        quick_skip = None           # досказал фразу — глушение снято, но повтор той же команды не делать
+        quick_timer: asyncio.Task | None = None
+        answered = False            # Gemini уже отвечает на этот ход — не перебивать
+
+        def quick_try() -> bool:
+            """Если фраза целиком — частая команда, выполнить её сразу."""
+            nonlocal quick_on, quick_q, quick_until, held, fish_text
+            if quick_on:
+                return True
+            if answered or not _quick_allowed() or not decide():
+                return False
+            heard = "".join(in_buf)
+            q = quick.match(heard)
+            if not q:
+                return False
+            quick_on, quick_q = True, q
+            quick_until = time.monotonic() + _QUICK_HOLD_SEC
+            held, fish_text = [], ""
+            fish_close()
+            self._drop_pending_speech()          # начатый ответ Gemini — не доигрывать
+            self._spawn(self._quick_run(q, _clean_dialog_text(heard)))
+            return True
+
+        async def quick_later():
+            await asyncio.sleep(quick.QUIET_SEC)
+            quick_try()
+
+        def quick_lift(why: str):
+            nonlocal quick_on, quick_q, quick_after
+            if quick_on:
+                logger.debug("Мгновенный ход: глушение снято (%s)", why)
+            quick_on, quick_q, quick_after = False, None, False
+
         try:
             while True:
                 async for response in self.session.receive():
+                    if quick_on and (self._quick_lift or (quick_after and time.monotonic() > quick_until)):
+                        quick_lift("system-реплика" if self._quick_lift else "время вышло")
+                    self._quick_lift = False
                     upd = response.session_resumption_update
                     if upd and upd.resumable and upd.new_handle:
                         self._resume_handle = upd.new_handle
@@ -2843,6 +2963,8 @@ class Jarvis:
                     if sc and sc.input_transcription:
                         txt = sc.input_transcription.text
                         if txt:
+                            if quick_after:
+                                quick_lift("новая реплика")
                             in_buf.append(txt)
                             self._latency.mark_transcript()
                             print(f"[ДЖАРВИС] 🎤 Фрагмент: '{txt}'")
@@ -2856,8 +2978,19 @@ class Jarvis:
                                             self._queue_answer_audio(chunk)
                                     held = []
                                     fish_flush()
+                            if quick_on and not quick.match("".join(in_buf)):
+                                # «Громче… и открой хром» — фраза шире команды:
+                                # остальное решает Gemini, громкость второй раз не трогаем.
+                                quick_skip = quick_q
+                                quick_lift("фраза продолжилась")
+                            elif not quick_on and _quick_allowed():
+                                # Конец фразы — тишина в расшифровке (или начало ответа).
+                                if quick_timer:
+                                    quick_timer.cancel()
+                                quick_timer = asyncio.create_task(quick_later())
 
-                    if response.data:
+                    if response.data and not quick_try():
+                        answered = True
                         if self._turn_done_event and self._turn_done_event.is_set():
                             self._turn_done_event.clear()
                         if addressed is None:
@@ -2872,7 +3005,9 @@ class Jarvis:
                             held.append(response.data)
 
                     if sc:
-                        if sc.output_transcription and sc.output_transcription.text:
+                        if (sc.output_transcription and sc.output_transcription.text
+                                and not quick_try()):
+                            answered = True
                             out_buf.append(sc.output_transcription.text)
                             fish_text += sc.output_transcription.text
                             if addressed is None:
@@ -2887,6 +3022,16 @@ class Jarvis:
                         if sc.turn_complete:
                             if addressed is None:
                                 addressed = decide()
+                            if quick_timer:
+                                quick_timer.cancel()
+                                quick_timer = None
+                            # Gemini промолчал, а фраза — частая команда: выполнить.
+                            quick_turn = quick_try()
+                            if quick_turn:
+                                quick_after = True
+                                quick_until = time.monotonic() + _QUICK_HOLD_SEC
+                            quick_skip = None
+                            answered = False
                             fish_flush(final=True)
                             fish_text = ""
                             # С внешним голосом ход закрывает _fish_worker,
@@ -2907,6 +3052,15 @@ class Jarvis:
                                 if full_in:
                                     logger.info("Не ко мне, молчу: «%s»", full_in[:80])
                                 self._release_ducking()
+                                continue
+
+                            if quick_turn:
+                                # Реплику и ответ уже записал _quick_run.
+                                if full_in:
+                                    self.last_user_text = full_in
+                                    self._user_turn += 1
+                                    if not by_name:
+                                        self._continue_conversation()
                                 continue
 
                             if full_in:
@@ -2937,6 +3091,20 @@ class Jarvis:
                         if addressed is None:
                             addressed = decide()
                         calls = response.tool_call.function_calls
+                        if quick_try():
+                            await self._quick_absorb(calls, "Уже выполнено мгновенно, пользователь уже "
+                                                     "услышал ответ. Ничего не говори.")
+                            continue
+                        if quick_skip is not None:
+                            same = [fc for fc in calls if fc.name == quick_skip.tool
+                                    and _action_of(dict(fc.args or {})) == quick_skip.args.get("action")]
+                            if same:
+                                await self._quick_absorb(same, "Это уже выполнено. Про это не говори.")
+                                calls = [fc for fc in calls if fc not in same]
+                            quick_skip = None
+                            if not calls:
+                                continue
+                        answered = True
                         if addressed:
                             await self._run_tool_calls(calls, True)
                         else:
