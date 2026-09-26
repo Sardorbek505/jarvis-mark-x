@@ -47,8 +47,17 @@ WITHOUT_NAME = [
 
 
 async def _synth(text: str, voice: str, out: Path):
+    """Сервис Edge иногда не отдаёт звук (NoAudioReceived) — это сбой
+    синтеза, а не детектора: пробуем ещё раз с паузой."""
     import edge_tts
-    await edge_tts.Communicate(text, voice).save(str(out))
+    for attempt in range(4):
+        try:
+            await edge_tts.Communicate(text, voice).save(str(out))
+            return
+        except Exception:
+            if attempt == 3:
+                raise
+            await asyncio.sleep(2 * (attempt + 1))
 
 
 def _ffmpeg() -> str:
