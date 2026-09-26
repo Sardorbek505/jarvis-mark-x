@@ -48,6 +48,7 @@ def auth():
         _auth = SpotifyAuth(cid, sec, (k.get("spotify_redirect_uri") or
                                        "http://127.0.0.1:8888/callback").strip())
         seed = (k.get("spotify_refresh_token") or "").strip()
+        _auth.seed_refresh_token = seed
         if seed and not _auth.refresh_token:
             _auth.set_refresh_token(seed)
     return _auth

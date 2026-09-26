@@ -44,7 +44,12 @@ class SpotifyAuth:
         self.access_token: Optional[str] = None
         self.refresh_token: Optional[str] = None
         self.token_expiry: Optional[float] = None
-        
+
+        # Токен из ключей Джарвиса. Сохранённый (ротированный) имеет приоритет,
+        # но если Spotify его инвалидировал — откатываемся сюда, иначе музыка
+        # умирает навсегда и чинится только руками.
+        self.seed_refresh_token: Optional[str] = None
+
         # Load stored tokens if available
         self._load_tokens()
     
@@ -129,32 +134,42 @@ class SpotifyAuth:
         if not self.refresh_token:
             print("[SpotifyAuth] No refresh token available")
             return False
-        
+
+        if self._request_refresh(self.refresh_token):
+            return True
+
+        seed = (self.seed_refresh_token or "").strip()
+        if not seed or seed == self.refresh_token:
+            return False
+
+        _logger.warning("Refresh-токен из хранилища мёртв, пробую токен из ключей")
+        return self._request_refresh(seed)
+
+    def _request_refresh(self, refresh_token: str) -> bool:
         data = {
             'grant_type': 'refresh_token',
-            'refresh_token': self.refresh_token,
+            'refresh_token': refresh_token,
             'client_id': self.client_id,
             'client_secret': self.client_secret
         }
-        
+
         try:
             response = requests.post(self.TOKEN_URL, data=data, timeout=(3, 10))
             response.raise_for_status()
-            
+
             token_data = response.json()
             self.access_token = token_data['access_token']
-            
+
             # Update refresh token if new one provided (Spotify sometimes rotates)
-            if 'refresh_token' in token_data:
-                self.refresh_token = token_data['refresh_token']
-            
+            self.refresh_token = token_data.get('refresh_token', refresh_token)
+
             expires_in = token_data.get('expires_in', 3600)
             self.token_expiry = time.time() + expires_in
-            
+
             self._save_tokens()
             print("[SpotifyAuth] Token refreshed successfully")
             return True
-            
+
         except Exception as e:
             print(f"[SpotifyAuth] Token refresh failed: {e}")
             return False

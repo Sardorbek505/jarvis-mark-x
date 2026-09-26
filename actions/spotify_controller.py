@@ -51,6 +51,8 @@ class SpotifyAPI:
             
             # Токен из ключей — только если своего нет: Spotify выдаёт новый
             # refresh-токен при обновлении, и старый из ключей его затирал.
+            # Но если сохранённый окажется мёртвым, откат на этот (seed).
+            self.controller.auth.seed_refresh_token = refresh_token
             if refresh_token and not getattr(self.controller.auth, "refresh_token", None):
                 self.controller.set_refresh_token(refresh_token)
             
