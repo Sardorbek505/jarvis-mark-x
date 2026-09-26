@@ -655,3 +655,35 @@ def test_разговор_без_имени_продлевается_огран�
         j._continue_conversation()
         продлений += before > j._followups_left
     assert продлений == jarvis_main._FOLLOWUPS
+
+
+class _DeafVosk:
+    """Модель Vosk на месте, но имени не слышит — как у владельца 26.09."""
+    started = 0
+
+    def __init__(self, on_wake):
+        pass
+
+    def start(self):
+        _DeafVosk.started += 1
+        return True
+
+    def feed(self, pcm):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_модель_vosk_не_глушит_джарвиса(по_имени):
+    """Живой случай: с моделью Vosk звук ждал локального имени, а Vosk его
+    не слышал — час «жду слово «Джарвис»». По умолчанию имя ищет Gemini."""
+    по_имени.monkeypatch.setattr(jarvis_main, "LocalWake", _DeafVosk)
+    _DeafVosk.started = 0
+    script = [
+        _resp(heard="Джарвис, включи музыку"),
+        _resp(data=b"\x01\x02" * 100),
+        _resp(said="Разумеется, сэр.", turn_complete=True),
+    ]
+    await _прогнать(по_имени, [_loud()], script)
+
+    assert _DeafVosk.started == 0
+    assert по_имени.out.written == [b"\x01\x02" * 100]

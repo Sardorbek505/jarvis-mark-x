@@ -280,6 +280,11 @@ _AWAKE_SEC = float(os.getenv("JARVIS_AWAKE_SEC", "30"))
 # Как пишется имя (Джарвис, Жарвис, Джервис, Jarvis, падежи) — в одном месте,
 # им пользуются и расшифровка Gemini, и локальный детектор.
 from core.wake_vosk import WAKE_RE as _WAKE_RE, LocalWake  # noqa: E402
+# Офлайн-детектор имени — только по явному JARVIS_LOCAL_WAKE=1. Маленькая
+# русская модель Vosk слова «Джарвис» не знает (пишет «из») и ловила его лишь
+# по случайным промежуточным догадкам: на живом голосе владельца с модели не
+# сработала за час ни разу, и Джарвис «глох». Расшифровка Gemini имя слышит.
+_LOCAL_WAKE = os.getenv("JARVIS_LOCAL_WAKE", "0").strip() == "1"
 
 
 def _has_wake_word(text: str) -> bool:
@@ -2082,7 +2087,10 @@ class Jarvis:
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-        print(f"[ДЖАРВИС] 📤 {name} → {str(result)[:80]}")
+        # В журнал, а не только в консоль: у собранного .exe консоли нет, и
+        # «музыку не поставил» по журналу было не разобрать — вызов виден,
+        # а что инструмент ответил, нет.
+        logger.info("📤 %s → %s", name, str(result).replace("\n", " ")[:200])
         return types.FunctionResponse(id=fc.id, name=name, response={"result": result})
 
     def _remember_tool_use(self, name: str, args: dict):
@@ -2212,6 +2220,8 @@ class Jarvis:
             except asyncio.QueueFull:
                 pass  # Drop audio frame silently to avoid flooding event loop
 
+        if self._local_wake is None and _WAKE_MODE == "wake_word" and not _LOCAL_WAKE:
+            self._local_wake = False         # имя ищется в расшифровке Gemini
         if self._local_wake is None and _WAKE_MODE == "wake_word":
             def _heard(text: str):
                 loop.call_soon_threadsafe(self._on_local_wake, _put_nowait_safe)
