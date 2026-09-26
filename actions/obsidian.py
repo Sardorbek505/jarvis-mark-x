@@ -97,9 +97,31 @@ def _strip_frontmatter(text: str) -> str:
 def _iter_notes(vault: Path):
     """Ленивый обход всех .md файлов vault (кроме служебного .obsidian)."""
     for path in vault.rglob("*.md"):
-        if ".obsidian" in path.parts:
+        if ".obsidian" in path.parts or ".trash" in path.parts:
             continue
         yield path
+
+
+_LATEST_WORDS = ("последн", "свеж", "новую", "новая", "latest", "last")
+
+
+def _find(title: str, vault: Path) -> Path | None:
+    """Заметка по заголовку (точное совпадение важнее частичного);
+    «последняя» — самая свежая."""
+    needle = (title or "").lower().strip()
+    notes = list(_iter_notes(vault))
+    if not notes:
+        return None
+    if not needle or any(w in needle for w in _LATEST_WORDS):
+        return max(notes, key=lambda p: p.stat().st_mtime)
+    best = None
+    for path in notes:
+        stem = path.stem.lower()
+        if stem == needle:
+            return path
+        if needle in stem and best is None:
+            best = path
+    return best
 
 
 # ── Под-действия ───────────────────────────────────────────────────────────
@@ -178,19 +200,9 @@ def _do_search(query: str, vault: Path) -> str:
 
 
 def _do_read(title: str, vault: Path) -> str:
-    if not title:
-        return "Сэр, какую заметку прочитать?"
-
-    needle = title.lower().strip()
-    best: Path | None = None
-    for path in _iter_notes(vault):
-        stem = path.stem.lower()
-        if needle in stem:
-            best = path
-            if stem == needle:
-                break
+    best = _find(title, vault)
     if best is None:
-        return f"Заметку «{title}» не нашёл в базе знаний."
+        return f"Заметку «{title}» не нашёл в базе знаний." if title else "Заметок пока нет."
 
     try:
         text = _strip_frontmatter(best.read_text(encoding="utf-8", errors="replace")).strip()
@@ -208,13 +220,44 @@ def _do_list(folder: str, vault: Path) -> str:
     if not root.exists():
         return f"Папки «{folder}» в базе знаний нет."
 
-    titles = [p.stem for p in _iter_notes(root)]
+    notes = sorted(_iter_notes(root), key=lambda p: p.stat().st_mtime, reverse=True)
+    titles = [p.stem for p in notes]                 # сначала свежие
     if not titles:
         return "В базе знаний пока нет заметок."
 
     shown = titles[:15]
     suffix = f" и ещё {len(titles) - 15}" if len(titles) > 15 else ""
     return f"В базе знаний {len(titles)} заметок: " + ", ".join(shown) + suffix + "."
+
+
+def _do_append(title: str, content: str, cfg: dict, vault: Path) -> str:
+    """Дописать в существующую заметку («добавь в список покупок молоко»);
+    нет такой — создать."""
+    if not content:
+        return "Сэр, что дописать?"
+    path = _find(title, vault) if title else None
+    if path is None:
+        return _do_write(title, content, "", cfg, vault)
+    text = path.read_text(encoding="utf-8", errors="replace").rstrip()
+    _write_md(path, f"{text}\n- {content.strip()}\n")
+    _logger.info("Obsidian: дописано в %s", path.name)
+    return f"Дописал в заметку «{path.stem}»."
+
+
+def _do_delete(title: str, vault: Path) -> str:
+    """Удалить — в корзину Obsidian (.trash в vault): по ошибке удалённое
+    можно вернуть."""
+    if not title:
+        return "Сэр, какую заметку удалить?"
+    path = _find(title, vault)
+    if path is None:
+        return f"Заметку «{title}» не нашёл."
+    trash = vault / ".trash"
+    trash.mkdir(exist_ok=True)
+    dest = _unique_path(trash, path.stem)
+    path.replace(dest)
+    _logger.info("Obsidian: %s → корзина", path.name)
+    return f"Удалил заметку «{path.stem}» (она в корзине Obsidian, можно вернуть)."
 
 
 # ── Точка входа ────────────────────────────────────────────────────────────
@@ -242,8 +285,12 @@ def obsidian_action(parameters: dict, player=None) -> str:
         return _do_read(title, vault)
     if action == "list":
         return _do_list(folder, vault)
+    if action == "append":
+        return _do_append(title, content, cfg, vault)
+    if action == "delete":
+        return _do_delete(title, vault)
 
     return (
         "Не понял действие для базы знаний. "
-        "Доступно: записать, добавить в дневник, найти, прочитать, список."
+        "Доступно: записать, дописать, удалить, добавить в дневник, найти, прочитать, список."
     )

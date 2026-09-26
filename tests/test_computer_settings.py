@@ -34,6 +34,11 @@ def win(monkeypatch):
 @pytest.mark.parametrize("raw,want", [
     ("50", 50), ("50%", 50), ("на 10", 10), ("до 30 процентов", 30),
     ("максимум", 100), ("минимум", 0), ("половина", 50), ("", None), ("150", 100),
+    # словами — так Gemini часто и передаёт
+    ("пятьдесят", 50), ("двадцать пять", 25), ("на тридцать процентов", 30), ("сто", 100),
+    ("на полную", 100), ("ноль", 0),
+    # не путать: «минута» — не «минимум», «полностью» — не «на полную», «просто» — не «сто»
+    ("через 5 минут", 5), ("полностью", None), ("просто громче", None),
 ])
 def test_parse_level(raw, want):
     assert cs.parse_level(raw) == want
@@ -84,3 +89,7 @@ def test_sbc_brightness(monkeypatch):
     monkeypatch.setitem(sys.modules, "screen_brightness_control", fake)
     assert cs._brightness_windows("down", 20, None) == "Яркость 50%."
     assert state["v"] == 50
+
+
+def test_system_volume_up_by_100_is_max(win):
+    assert cs.computer_settings({"action": "volume_up", "value": "на 100"}) == "Громкость 100%."

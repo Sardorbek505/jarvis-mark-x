@@ -22,19 +22,46 @@ _ACTIONS = {
 }
 
 
+_UNITS = {"ноль": 0, "один": 1, "одну": 1, "два": 2, "две": 2, "три": 3, "четыре": 4, "пять": 5,
+          "шесть": 6, "семь": 7, "восемь": 8, "девять": 9, "десять": 10, "одиннадцать": 11,
+          "двенадцать": 12, "тринадцать": 13, "четырнадцать": 14, "пятнадцать": 15,
+          "шестнадцать": 16, "семнадцать": 17, "восемнадцать": 18, "девятнадцать": 19}
+_TENS = {"двадцать": 20, "тридцать": 30, "сорок": 40, "пятьдесят": 50, "шестьдесят": 60,
+         "семьдесят": 70, "восемьдесят": 80, "девяносто": 90, "сто": 100}
+
+
+def _words_number(text: str) -> int | None:
+    """«пятьдесят», «двадцать пять», «сто» → число. Gemini часто передаёт
+    громкость словами, и «на пятьдесят» раньше не понималось вовсе."""
+    total, seen = 0, False
+    for w in re.findall(r"[а-яё]+", text.replace("ё", "е")):
+        if w in _TENS:
+            total, seen = total + _TENS[w], True
+        elif w in _UNITS:
+            total, seen = total + _UNITS[w], True
+        elif seen:
+            break
+    return total if seen else None
+
+
 def parse_level(value, default: int | None = None) -> int | None:
-    """«50», «50%», «на 10», «до 30», «максимум», «половина» → число 0..100."""
+    """«50», «50%», «на 10», «до 30», «пятьдесят», «максимум», «на полную»,
+    «половина» → число 0..100."""
     text = str(value or "").strip().lower()
     if not text:
         return default
-    if any(w in text for w in ("макс", "max", "полн", "100")):
+    # Слова целиком: «мин» раньше ловило «минуту», «полн» — «полностью».
+    if re.search(r"макс|\bmax|на\s*полн|\bполн(ую|ая|ой)\b|\bвсю\b", text):
         return 100
-    if any(w in text for w in ("мин", "min", "ноль")):
+    if re.search(r"\bминимум|\bминимальн|\bmin\b|\bmin(imum)?\b|\bноль\b|\bнуль\b", text):
         return 0
     if "полов" in text or "half" in text:
         return 50
     m = re.search(r"\d{1,3}", text)
-    return max(0, min(100, int(m.group()))) if m else default
+    if m:
+        return max(0, min(100, int(m.group())))
+    n = _words_number(text)
+    return max(0, min(100, n)) if n is not None else default
 
 
 def computer_settings(parameters: dict, response=None, player=None) -> str:

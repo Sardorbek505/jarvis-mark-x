@@ -137,6 +137,18 @@ def _media_key(cmd: str) -> bool:
 
 def app_volume(process: str, mode: str, step: int = 10, target: int | None = None) -> int | None:
     """Громкость одного приложения (Spotify), а не всей системы. % или None."""
+    def _new(now: int) -> int:
+        return (target if mode == "set" and target is not None
+                else min(100, now + step) if mode == "up" else max(0, now - step))
+
+    # Пока Джарвис слушает или говорит, программа приглушена: «громче» должно
+    # считаться от её настоящей громкости, а не от приглушённой (см.
+    # DuckingController.adjust_app).
+    import core.ducking_controller as ducking
+    if ducking._singleton is not None:
+        got = ducking._singleton.adjust_app(process, lambda old: _new(round(old * 100)) / 100)
+        if got is not None:
+            return round(got * 100)
     if sys.platform != "win32":
         return None
     import comtypes
@@ -149,9 +161,7 @@ def app_volume(process: str, mode: str, step: int = 10, target: int | None = Non
         for sess in AudioUtilities.GetAllSessions():
             if sess.Process and sess.Process.name().lower() == process.lower():
                 vol = sess.SimpleAudioVolume
-                now = round(vol.GetMasterVolume() * 100)
-                new = (target if mode == "set" and target is not None
-                       else min(100, now + step) if mode == "up" else max(0, now - step))
+                new = _new(round(vol.GetMasterVolume() * 100))
                 vol.SetMasterVolume(new / 100, None)
                 return new
         return None

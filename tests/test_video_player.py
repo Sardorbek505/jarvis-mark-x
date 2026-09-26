@@ -194,3 +194,83 @@ def test_real_browser_film_flow(tmp_path, monkeypatch):
                 cdp._proc.terminate()
         finally:
             srv.shutdown()
+
+
+# ─── Провал не должен повторяться по кругу ───────────────────────────────────
+def _film_that_never_starts(monkeypatch):
+    """VK открывается, но плеер не поднимается — живой случай без входа в VK."""
+    calls = []
+    monkeypatch.setattr(cdp, "ensure_browser", lambda: True)
+    monkeypatch.setattr(vp, "vk_find", lambda t, film=True: "https://vkvideo.ru/x")
+    monkeypatch.setattr(vp, "_start", lambda url, fullscreen=True, wait_sec=15.0:
+                        calls.append(url) or None)
+    vp._last_fail = None
+    return calls
+
+
+def test_failed_film_says_plainly_that_retrying_will_not_help(monkeypatch):
+    """Ответ «Открыл …, но плеер не загрузился» модель читала как «почти
+    получилось» и звала инструмент снова: в живом журнале семь заходов по
+    18 секунд подряд, 27 секунд молчания и убитая сессия Gemini."""
+    _film_that_never_starts(monkeypatch)
+
+    answer = vp.play_film("Железный человек")
+
+    assert not answer.startswith("Открыл"), answer
+    assert "не" in answer.lower() and "vk" in answer.lower()
+    assert "повтор" in answer.lower(), "модель должна понять, что повторять бесполезно"
+
+
+def test_same_film_is_not_retried_immediately(monkeypatch):
+    calls = _film_that_never_starts(monkeypatch)
+    now = [1000.0]
+    monkeypatch.setattr(vp.time, "monotonic", lambda: now[0])
+
+    first = vp.play_film("Железный человек")
+    second = vp.play_film("Железный человек")
+
+    assert len(calls) == 1, f"второй заход ходил в VK снова: {calls}"
+    assert second == first
+
+    now[0] += vp._FAIL_COOLDOWN_SEC + 1          # остыло — пробуем заново
+    vp.play_film("Железный человек")
+    assert len(calls) == 2
+
+
+def test_another_film_is_still_tried(monkeypatch):
+    calls = _film_that_never_starts(monkeypatch)
+    monkeypatch.setattr(vp.time, "monotonic", lambda: 1000.0)
+
+    vp.play_film("Железный человек")
+    vp.play_film("Интерстеллар")
+
+    assert len(calls) == 2, "чужой фильм не должен упираться в чужую неудачу"
+
+
+# ── громкость — строго по тому, о чём сказано ────────────────────────────────
+
+def test_music_volume_changes_spotify_not_film_nor_system(monkeypatch, fake_player):
+    """«Громкость музыки на 100» во время фильма — громкость Spotify. Раньше
+    при музыке на паузе команда уходила фильму, а без Spotify — в системную."""
+    from actions import music_player as mp
+    from actions import spotify_premium
+    from core import media_session
+    calls = []
+    monkeypatch.setattr(vp, "video_playing", lambda: True)
+    monkeypatch.setattr(mp, "_music_playing", lambda: False)
+    monkeypatch.setattr(media_session, "app_volume",
+                        lambda proc, mode, step=10, target=None: calls.append((proc, mode, step, target)) or 100)
+    assert mp.music_player({"action": "volume_up", "value": "100"}) == "Громкость Spotify 100%."
+    assert calls == [("spotify.exe", "up", 100, None)]
+    assert fake_player["vol"] == 0.5                                  # фильм не тронут
+
+    import actions.computer_settings as cs
+    monkeypatch.setattr(media_session, "app_volume", lambda *a, **k: None)   # Spotify не запущен
+    monkeypatch.setattr(spotify_premium, "control", lambda action, value=None: None)
+    monkeypatch.setattr(cs, "_volume", lambda *a, **k: pytest.fail("системную громкость трогать нельзя"))
+    assert "Spotify сейчас не играет" in mp.music_player({"action": "volume_set", "value": "80"})
+
+
+def test_film_volume_up_by_100_is_max(fake_player):
+    assert vp.control("volume_up", "100") == "Громкость видео 100%."
+    assert vp.control("volume_set", "пятьдесят") == "Громкость видео 50%."

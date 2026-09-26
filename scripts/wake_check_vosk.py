@@ -26,6 +26,7 @@ _spec = importlib.util.spec_from_file_location(
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 LocalWake = _mod.LocalWake
+SAMPLE_RATE = _mod.SAMPLE_RATE
 
 VOICES = ["ru-RU-DmitryNeural", "ru-RU-SvetlanaNeural"]
 WITH_NAME = [
@@ -46,13 +47,13 @@ WITHOUT_NAME = [
 ]
 
 
-async def _synth(text: str, voice: str, out: Path):
+async def _synth(text: str, voice: str, out: Path, rate: str = "+0%"):
     """Сервис Edge иногда не отдаёт звук (NoAudioReceived) — это сбой
     синтеза, а не детектора: пробуем ещё раз с паузой."""
     import edge_tts
     for attempt in range(4):
         try:
-            await edge_tts.Communicate(text, voice).save(str(out))
+            await edge_tts.Communicate(text, voice, rate=rate).save(str(out))
             return
         except Exception:
             if attempt == 3:
@@ -75,9 +76,9 @@ def _pcm(mp3: Path) -> bytes:
         check=True, capture_output=True).stdout
 
 
-def _detect(model_dir: Path, pcm: bytes) -> tuple[bool, str]:
+def _detect(model_dir: Path, pcm: bytes, aliases: list[str] | None = None) -> tuple[bool, str]:
     hit = threading.Event()
-    w = LocalWake(lambda t: hit.set(), model_dir=model_dir)
+    w = LocalWake(lambda t: hit.set(), model_dir=model_dir, aliases=aliases or [])
     assert w.start(), "Vosk не запустился"
     pad = b"\0" * 16000                       # полсекунды тишины вокруг — как в жизни
     data = pad + pcm + pad * 3
@@ -89,25 +90,55 @@ def _detect(model_dir: Path, pcm: bytes) -> tuple[bool, str]:
     return hit.is_set(), w.last_heard
 
 
+def _say(text: str, voice: str, tmp: str, rate: str = "+0%") -> bytes:
+    mp3 = Path(tmp) / "x.mp3"
+    asyncio.run(_synth(text, voice, mp3, rate))
+    return _pcm(mp3)
+
+
+def _check(model_dir: Path, tmp: str, aliases: list[str] | None, title: str) -> tuple[list, list]:
+    print(f"\n── {title} ──")
+    misses, false_hits = [], []
+    for voice in VOICES:
+        for phrase, expect in [(p, True) for p in WITH_NAME] + [(p, False) for p in WITHOUT_NAME]:
+            got, heard = _detect(model_dir, _say(phrase, voice, tmp), aliases)
+            mark = "OK " if got == expect else "ERR"
+            print(f"{mark} [{voice.split('-')[2]}] «{phrase}» → услышал «{heard}» → имя: {got}")
+            if expect and not got:
+                misses.append((voice, phrase))
+            if got and not expect:
+                false_hits.append((voice, phrase))
+    total = len(VOICES) * len(WITH_NAME)
+    print(f"Поймано имён: {total - len(misses)}/{total}; ложных: {len(false_hits)}")
+    return misses, false_hits
+
+
+def _calibrated(model_dir: Path, tmp: str):
+    """Калибровка, как у владельца (core/wake_calibrate.py): несколько «Джарвис»
+    одним голосом с разной скоростью и обычные фразы — и проверка всех фраз
+    обоими голосами с выученными вариантами. Проверяем,
+    как калибровка ведёт себя на настоящей модели. Выученные варианты будят
+    вдобавок к WAKE_RE, поэтому хуже, чем без калибровки, быть не должно."""
+    import vosk
+    vosk.SetLogLevel(-1)
+    model = vosk.Model(str(model_dir))
+    voice = VOICES[0]
+    names = [_say("Джарвис", voice, tmp, r) for r in ("-15%", "-5%", "+0%", "+5%", "+15%", "+25%")]
+    negs = [_say(p, voice, tmp) for p in ("Какая сегодня погода?", "Включи музыку погромче",
+                                          "Сегодня очень жарко", "Открой браузер", "Дарвин написал книгу")]
+    rep = _mod.calibrate(model, names, negs)
+    print(f"\nКалибровка: варианты {rep['aliases']}, на своих записях {rep.get('hits')}/{rep['names']}, "
+          f"ложных {rep.get('false')}/{rep['negatives']}; слышал: {rep['heard']}")
+    return _check(model_dir, tmp, rep["aliases"], "после калибровки (голос калибровки и чужой)")
+
+
 def main():
     model_dir = Path(sys.argv[1] if len(sys.argv) > 1 else "models/vosk-small-ru")
-    misses, false_hits = [], []
     with tempfile.TemporaryDirectory() as tmp:
-        for voice in VOICES:
-            for phrase, expect in [(p, True) for p in WITH_NAME] + [(p, False) for p in WITHOUT_NAME]:
-                mp3 = Path(tmp) / "x.mp3"
-                asyncio.run(_synth(phrase, voice, mp3))
-                got, heard = _detect(model_dir, _pcm(mp3))
-                mark = "OK " if got == expect else "ERR"
-                print(f"{mark} [{voice.split('-')[2]}] «{phrase}» → услышал «{heard}» → имя: {got}")
-                if expect and not got:
-                    misses.append((voice, phrase))
-                if got and not expect:
-                    false_hits.append((voice, phrase))
-    total = len(VOICES) * len(WITH_NAME)
-    print(f"\nПоймано имён: {total - len(misses)}/{total}; ложных: {len(false_hits)}")
+        misses, false_hits = _check(model_dir, tmp, None, "без калибровки")
+        cal_misses, cal_false = _calibrated(model_dir, tmp)
     # Синтезированный голос — не живой, поэтому допуск на один промах.
-    if len(misses) > 1 or false_hits:
+    if len(misses) > 1 or false_hits or len(cal_misses) > 1 or cal_false:
         sys.exit(1)
 
 

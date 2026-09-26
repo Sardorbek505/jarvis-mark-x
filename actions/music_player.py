@@ -29,7 +29,6 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from actions.computer_settings import computer_settings
 from actions.browser_control import browser_control
 
 import logging
@@ -593,19 +592,32 @@ def _now_playing_text() -> str:
 
 
 def _volume(direction: str, player=None, value=None) -> str:
-    """Громкость самого Spotify; нет его сессии — системная."""
+    """Громкость самого Spotify на этом компьютере — его звук в микшере
+    Windows. Системную громкость не трогает: «громкость музыки» — это музыка.
+
+    Через Web API — только если Spotify играет не здесь: клиент из Microsoft
+    Store команды Connect подтверждает, но не исполняет."""
     from core import media_session
     from actions.computer_settings import parse_level
     step = parse_level(value, 10) or 10
-    target = parse_level(value) if direction == "set" else None
+    target = parse_level(value, 50) if direction == "set" else None
     try:
         v = media_session.app_volume("spotify.exe", direction, step, target)
     except Exception as exc:
         _logger.debug("Громкость Spotify: %s", exc)
         v = None
     if v is not None:
+        if player:
+            player.write_log(f"SYS: 🎵 Громкость Spotify {v}%")
         return f"Громкость Spotify {v}%."
-    return computer_settings({"action": f"volume_{direction}", "value": value or "10"}, player=player)
+    try:
+        from actions import spotify_premium as sp
+        res = sp.control(f"volume_{direction}", value)
+        if res:
+            return res
+    except Exception as exc:
+        _logger.debug("Громкость Spotify через API: %s", exc)
+    return "Spotify сейчас не играет на компьютере — громкость музыки менять не у чего."
 
 
 # ─── Публичная точка входа ────────────────────────────────────────────────────
@@ -634,7 +646,12 @@ def music_player(parameters: dict, player=None) -> str:
 
     # «Пауза», «продолжи», «громче» — тому, что сейчас реально играет:
     # идёт фильм, а музыка стоит — это про фильм.
-    if action in ("pause", "resume", "volume_up", "volume_down", "volume_set"):
+    # Громкость музыки — всегда громкость Spotify на этом компьютере: не фильм
+    # (даже если музыка на паузе, а фильм идёт) и не системная.
+    if action in ("volume_up", "volume_down", "volume_set"):
+        return _volume({"volume_up": "up", "volume_down": "down", "volume_set": "set"}[action], player, value)
+
+    if action in ("pause", "resume"):
         try:
             from actions import video_player
             if video_player.video_playing() and not _music_playing():

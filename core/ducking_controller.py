@@ -68,6 +68,11 @@ class DuckingController:
         # Ключ — PID процесса (int), значение — громкость сессии до приглушения.
         self._saved_session_vols: Dict[int, float] = {}
         self._saved_names: Dict[int, str] = {}
+        # Что мы сами выставили сессии в последний раз. Если сейчас там другое —
+        # человек двинул ползунок в микшере, и эту программу мы больше не
+        # трогаем: раньше возврат громкости затирал его выбор.
+        self._last_set: Dict[int, float] = {}
+        self._user_owned: set = set()
         # Громкость, которую не успели вернуть (Джарвис закрыли или он упал,
         # пока музыка была приглушена): имя процесса -> громкость «до».
         # Windows помнит громкость приложений, и без этого CS2, Steam, браузер
@@ -225,6 +230,14 @@ class DuckingController:
             else:
                 grew = False
                 for pid, name, ctl in self._sessions():
+                    if pid in self._user_owned:
+                        continue
+                    if self._moved_by_user(pid, ctl):
+                        self._user_owned.add(pid)
+                        self._saved_session_vols.pop(pid, None)
+                        self._saved_names.pop(pid, None)
+                        grew = True
+                        continue
                     if pid not in self._saved_session_vols:
                         # Не вернули с прошлого раза — «до» берём оттуда, а
                         # не нынешний (уже заниженный) уровень.
@@ -232,7 +245,9 @@ class DuckingController:
                             or float(ctl.GetMasterVolume())
                         self._saved_names[pid] = name
                         grew = True
-                    ctl.SetMasterVolume(max(0.02, self._saved_session_vols[pid] * level), None)
+                    vol = max(0.02, self._saved_session_vols[pid] * level)
+                    ctl.SetMasterVolume(vol, None)
+                    self._last_set[pid] = vol
                 if grew:
                     self._persist()
             self._applied_level = level
@@ -249,7 +264,8 @@ class DuckingController:
             try:
                 for pid, _name, ctl in self._sessions():
                     if pid in self._saved_session_vols:
-                        ctl.SetMasterVolume(self._saved_session_vols[pid], None)
+                        if not self._moved_by_user(pid, ctl):
+                            ctl.SetMasterVolume(self._saved_session_vols[pid], None)
                         restored.add(pid)
             except Exception as e:
                 logger.debug("Restore sessions note: %s", e)
@@ -262,7 +278,40 @@ class DuckingController:
             self._saved_session_vols.clear()
             self._saved_names.clear()
             self._persist()
+        self._last_set.clear()
+        self._user_owned.clear()
         self._applied_level = 1.0
+
+    def _moved_by_user(self, pid: int, ctl) -> bool:
+        last = self._last_set.get(pid)
+        if last is None:
+            return False
+        try:
+            return abs(float(ctl.GetMasterVolume()) - last) > 0.03
+        except Exception:
+            return False
+
+    def adjust_app(self, name: str, change) -> Optional[float]:
+        """Команда громкости программе («сделай Spotify громче»), пока она
+        приглушена: менять её громкость «до приглушения», а не приглушённую.
+        Раньше «громче» считалось от 20 %, а возврат после речи ставил старое
+        значение — команда пропадала. None — программа сейчас не приглушена.
+
+        change(старая 0..1) -> новая 0..1."""
+        name = (name or "").lower()
+        with self._lock:
+            pids = [pid for pid, n in self._saved_names.items() if n == name]
+            if not pids:
+                # Громкость задали явно — «вернуть как было» ей больше не нужно.
+                if self._pending_heal.pop(name, None) is not None:
+                    self._persist()
+                return None
+            new = max(0.0, min(1.0, float(change(self._saved_session_vols[pids[0]]))))
+            for pid in pids:
+                self._saved_session_vols[pid] = new
+            self._applied_level = -1.0          # поток приглушения применит на следующем шаге
+            self._persist()
+            return new
 
     def _start_worker(self):
         def _loop():

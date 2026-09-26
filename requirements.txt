@@ -77,3 +77,5 @@ telethon>=1.36
 py-tgcalls==3.0.0
 # QR-код для входа в аккаунт Джарвиса без кода (core/tg_call.py).
 qrcode>=7.4
+# Часовые пояса для «время в Токио» (core/clock.py): на Windows своей базы поясов нет.
+tzdata>=2024.1

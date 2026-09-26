@@ -455,3 +455,68 @@ def test_successful_login_keeps_the_session(monkeypatch, tmp_path):
 
     assert answer.startswith("Готово"), answer
     assert stub.exists(), "рабочую сессию удалять нельзя"
+
+
+def test_call_logs_what_came_from_the_phone(caplog):
+    """«Говорит, но не отвечает»: журнал обязан показать, дошёл ли голос."""
+    import logging
+    s = tc.CallSession(tg=None, live=None, peer=1, prompt="")
+    s._on_audio((np.full(480, 3000, dtype="<i2")).tobytes())
+    s.transcript.append("Вы: алло")
+    st = s.audio_stats()
+    assert "кадров: 1" in st and "960" in st and "RMS: 3000" in st and "собеседника в расшифровке: 1" in st
+
+    silent = tc.CallSession(tg=None, live=None, peer=1, prompt="")
+    with caplog.at_level(logging.WARNING, logger=tc.logger.name):
+        asyncio.run(silent._watch_audio(after=0.01))
+    assert "не пришло ни одного кадра" in caplog.text
+
+
+def _heard(text):
+    m = Msg()
+    m.server_content.input_transcription = type("T", (), {"text": text})()
+    return m
+
+
+def test_keeps_talking_when_user_answers_after_goodbye():
+    """Живой случай: «позвони, скажи, что пора спать» — Джарвис сказал и
+    замолчал; на «привет, как дела» и «пока, отключись» — тишина. Прощание
+    Джарвиса не повод класть трубку, пока собеседник говорит."""
+    tg = FakeTg()
+    speech = sine(24000, 0.2).tobytes()
+    live = FakeLive([Msg(speech), Msg(end=True), _heard("привет, как дела?"),
+                     Msg(speech), _heard("пока, отключись"), Msg(end=True)])
+    sess = tc.CallSession(tg, live, 42, tc.instruction("сказать, что пора спать"), max_sec=5)
+    asyncio.run(sess.run())
+    assert tg.hung and not live.script                    # дослушал до конца и только потом отбой
+    assert "Вы: привет, как дела?" in sess.transcript
+    voiced = [f for f in tg.sent if any(f)]
+    assert len(voiced) == 40                              # оба ответа прозвучали
+
+
+def test_call_prompt_forbids_hanging_up_after_own_message():
+    p = tc.instruction("сказать, что пора спать")
+    assert "НЕ клади трубку" in p and "ТОЛЬКО когда собеседник сам попрощался" in p
+    assert "Не вызывай сразу" in tc.END_CALL["description"]
+
+
+def test_hangup_falls_back_to_discard_when_leave_call_fails():
+    called = []
+
+    class _Inner:
+        async def discard_call(self, chat_id, video):
+            called.append(chat_id)
+
+    class _App:
+        _app = _Inner()
+
+        async def leave_call(self, peer):
+            raise RuntimeError("связь уже остановлена")
+
+        async def resolve_chat_id(self, peer):
+            return peer
+
+    t = tc.TgCall.__new__(tc.TgCall)
+    t.app = _App()
+    asyncio.run(t.hangup(42))
+    assert called == [42]

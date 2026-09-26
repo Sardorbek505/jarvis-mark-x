@@ -213,3 +213,35 @@ def test_every_icon_draws_something():
         img = ui_icons.qicon(name, 16, "#ffffff").pixmap(48, 48).toImage()
         lit = sum(1 for x in range(img.width()) for y in range(img.height()) if img.pixelColor(x, y).alpha() > 80)
         assert lit > 20, name
+
+
+def test_wake_word_opens_listening_view():
+    """Свёрнут, сказал «Джарвис» — капсула раскрывается в «Слушаю…»."""
+    m = ui.IslandModel()
+    assert m.mode(False, now=0) == "compact"
+    m.set_state("LISTENING", now=10)
+    assert m.mode(False, now=10) == "listening" and m.listen_since == 10
+    m.set_state("LISTENING", now=12)
+    assert m.listen_since == 10                      # вспышка — только в момент имени
+    m.notify("ДЖАРВИС", "Слушаю, сэр.", "reply", now=12)
+    assert m.mode(False, now=12) == "banner"          # ответ важнее
+    assert m.mode(True, now=12) == "expanded"         # наведение — важнее всего
+    m.set_state("THINKING")
+    m.banners.clear()
+    assert m.mode(False) == "compact"
+
+
+def test_listening_capsule_grows_and_wave_follows_voice(island):
+    w, app, _ = island
+    w.set_wanted(True)
+    _settle(w, app, 0.8)
+    w.model.set_state("LISTENING")
+    for _ in range(60):
+        w.model.level = 0.9
+        w._step()
+        app.processEvents()
+        time.sleep(0.01)
+    lw, lh = ui.SIZES["listening"]
+    assert abs(w._w - lw) < 2 and abs(w._h - lh) < 2
+    assert max(w._wave) > 0.5                          # волна подхватила голос
+    w.repaint()                                        # рисуется без ошибок

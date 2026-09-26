@@ -280,11 +280,17 @@ _AWAKE_SEC = float(os.getenv("JARVIS_AWAKE_SEC", "30"))
 # Как пишется имя (Джарвис, Жарвис, Джервис, Jarvis, падежи) — в одном месте,
 # им пользуются и расшифровка Gemini, и локальный детектор.
 from core.wake_vosk import WAKE_RE as _WAKE_RE, LocalWake  # noqa: E402
-# Офлайн-детектор имени — только по явному JARVIS_LOCAL_WAKE=1. Маленькая
+# Офлайн-детектор имени — только после калибровки на голосе владельца
+# (--wake-calibrate) или по явному JARVIS_LOCAL_WAKE=1. Без неё маленькая
 # русская модель Vosk слова «Джарвис» не знает (пишет «из») и ловила его лишь
-# по случайным промежуточным догадкам: на живом голосе владельца с модели не
-# сработала за час ни разу, и Джарвис «глох». Расшифровка Gemini имя слышит.
-_LOCAL_WAKE = os.getenv("JARVIS_LOCAL_WAKE", "0").strip() == "1"
+# по случайным промежуточным догадкам: на живом голосе владельца не сработала
+# за час ни разу, и Джарвис «глох». JARVIS_LOCAL_WAKE=0 — выключить совсем.
+def _local_wake_enabled() -> bool:
+    env = os.getenv("JARVIS_LOCAL_WAKE", "").strip()
+    if env in ("0", "1"):
+        return env == "1"
+    from core.wake_vosk import load_aliases
+    return bool(load_aliases())
 
 
 # Имя сказали, а расшифровка его потеряла: осталась запятая после обращения.
@@ -632,13 +638,15 @@ TOOLS = [
     },
     {
         "name": "weather",
-        "description": "Погода в городе: сейчас и прогноз на сегодня, завтра и послезавтра. Вызывай и на «погода на завтра» — прогноз уже в ответе.",
+        "description": ("Погода в городе: сейчас и прогноз на сегодня, завтра и послезавтра. Вызывай и на "
+                        "«погода на завтра» — прогноз уже в ответе. Город не назван — не передавай city: "
+                        "возьмётся город, где пользователь."),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "city": {"type": "STRING", "description": "Название города"}
+                "city": {"type": "STRING", "description": "Название города (если назван)"}
             },
-            "required": ["city"]
+            "required": []
         }
     },
     {
@@ -662,8 +670,9 @@ TOOLS = [
             "Системные настройки ПК. Громкость: «громче», «тише», «громкость 50», «выключи/включи звук». "
             "Яркость: «ярче», «темнее», «яркость 30». Также lock — заблокировать, shutdown/restart — "
             "выключить/перезагрузить ПК (только по явной просьбе), screenshot — ТОЛЬКО сохранить снимок "
-            "в файл (чтобы посмотреть на экран — look_at_screen). «Громче/тише» — это системная громкость, "
-            "если не сказано «музыку громче»."
+            "в файл (чтобы посмотреть на экран — look_at_screen). Громкость здесь — СИСТЕМНАЯ (весь "
+            "ноутбук): «громче», «громкость на 100», «звук на 50» без уточнения. Про музыку — "
+            "music_player, про фильм/видео/ролик — video_control."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -770,15 +779,17 @@ TOOLS = [
             "Вызывай, когда пользователь просит: запиши/сохрани заметку, добавь в дневник, "
             "«что я записывал про…», найди заметку, прочитай заметку, покажи список заметок. "
             "action=write — новая заметка (title + content); "
+            "append — дописать в существующую заметку (title + content: «добавь в список покупок молоко»); "
+            "delete — удалить заметку (title; уходит в корзину, можно вернуть); "
             "append_daily — дописать строку в дневник за сегодня (content); "
             "search — найти по базе (query); "
-            "read — прочитать заметку по заголовку (title); "
+            "read — прочитать заметку по заголовку (title; «последняя» — самая свежая); "
             "list — список заметок (folder — опционально)."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":  {"type": "STRING", "description": "write | append_daily | search | read | list"},
+                "action":  {"type": "STRING", "description": "write | append | delete | append_daily | search | read | list"},
                 "title":   {"type": "STRING", "description": "Заголовок заметки (для write / read)"},
                 "content": {"type": "STRING", "description": "Текст заметки (для write / append_daily)"},
                 "query":   {"type": "STRING", "description": "Поисковый запрос (для search)"},
@@ -853,7 +864,9 @@ TOOLS = [
             "продолжи, перемотай вперёд/назад на N, перемотай на 1:20:00, «сколько осталось» / "
             "«который час в фильме» (time), громче/тише/громкость N, выключи/включи звук видео, "
             "полный экран / выйди из полного экрана, скорость, следующее видео, закрой фильм. "
-            "Если идёт видео, «пауза/громче/тише» — сюда, а не в music_player."
+            "Если идёт видео, «пауза» — сюда, а не в music_player. Громкость — сюда, только если "
+            "сказано про фильм/видео/ролик («громкость фильма на 100», «сделай видео тише»); просто "
+            "«громче» — системная (computer_control)."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -904,8 +917,9 @@ TOOLS = [
             "play + query — включить трек/исполнителя/"
             "альбом («включи Believer», «поставь Любэ»); play без query — продолжить; mood + query — "
             "плейлист под настроение («спокойное», «для работы»); pause, resume, next, previous; "
-            "now_playing — «что играет», «кто поёт»; volume_* — громкость самого Spotify, только если "
-            "сказано «музыку громче/тише» (иначе computer_control)."
+            "now_playing — «что играет», «кто поёт»; volume_* — громкость САМОГО Spotify, когда "
+            "речь про музыку: «громкость музыки на 100», «музыку тише», «сделай Spotify громче». "
+            "Просто «громче/тише/громкость» без слова «музыка» — computer_control."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -1183,6 +1197,80 @@ TOOLS = [
         }
     },
     {
+        "name": "clock",
+        "description": (
+            "Часы: время, таймеры, секундомер, будильники. ВСЕГДА вызывай на «который час», «какое "
+            "сегодня число/день» (action=now) — время в промпте устаревает. Время в другом городе — "
+            "world_time (city). Таймер: «поставь таймер на 10 минут», «таймер на пасту на 8 минут» — "
+            "timer_set (minutes/seconds/hours или duration, label); «сколько осталось» — timer_list; "
+            "«отмени таймер» — timer_cancel (label; «все»); «добавь 5 минут» — timer_add; пауза — "
+            "timer_pause / timer_resume. Секундомер: stopwatch_start / stopwatch_stop / stopwatch_lap / "
+            "stopwatch_reset / stopwatch_status. Будильник: «разбуди в 7», «будильник на 6:30 по "
+            "будням» — alarm_set (time, repeat, label); alarm_list; alarm_cancel (time или label; "
+            "«все»); звенит и просят отложить — alarm_snooze (minutes); выключить — alarm_stop. "
+            "«Напомни через час позвонить» — это не таймер, а calendar."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": [
+                    "now", "world_time", "timer_set", "timer_list", "timer_cancel", "timer_add",
+                    "timer_pause", "timer_resume", "stopwatch_start", "stopwatch_stop", "stopwatch_lap",
+                    "stopwatch_reset", "stopwatch_status", "alarm_set", "alarm_list", "alarm_cancel",
+                    "alarm_stop", "alarm_snooze"]},
+                "hours": {"type": "NUMBER"},
+                "minutes": {"type": "NUMBER", "description": "Минуты (таймер, добавить время, отложить будильник)"},
+                "seconds": {"type": "NUMBER"},
+                "duration": {"type": "STRING", "description": "Длительность словами, если так проще: «полчаса», «1:30»"},
+                "label": {"type": "STRING", "description": "Подпись таймера/будильника («паста», «созвон»)"},
+                "time": {"type": "STRING", "description": "Время будильника «07:30» (24 часа)"},
+                "repeat": {"type": "STRING", "enum": ["once", "daily", "weekdays", "weekends"]},
+                "city": {"type": "STRING", "description": "Город для world_time"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "eyes",
+        "description": (
+            "Глаза — постоянное зрение, как демонстрация экрана. «Смотри на экран», «следи за "
+            "экраном», «будь моими глазами» — open source=screen (window — только окно впереди); "
+            "«смотри на меня», «включи камеру» — open source=camera; «закрой глаза», «не смотри» — "
+            "close; «ты видишь?» — status. Пока глаза открыты, кадры приходят тебе сами: на «что "
+            "это?», «где ошибка?» отвечай по ним (для мелкого текста — look_at_screen). Сам по "
+            "кадрам не заговаривай. «Скажи, когда загрузка дойдёт до 100%», «следи, когда придёт "
+            "ответ» — watch (condition — что должно случиться, minutes — сколько ждать); "
+            "stop_watch — перестать."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["open", "close", "status", "watch", "stop_watch"]},
+                "source": {"type": "STRING", "enum": ["screen", "window", "camera"]},
+                "condition": {"type": "STRING", "description": "Для watch: что должно появиться на экране"},
+                "minutes": {"type": "NUMBER", "description": "Для watch: сколько минут следить (по умолчанию 30)"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "location",
+        "description": (
+            "Где пользователь: «где я», «какой у меня город» — where; «я живу в Ташкенте», «мой город "
+            "Алматы» — set_home (city); «сколько километров до Москвы» — distance (city, опционально "
+            "from_city); координаты и часовой пояс города — coordinates (city; без него — свои)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["where", "set_home", "distance", "coordinates"]},
+                "city": {"type": "STRING"},
+                "from_city": {"type": "STRING"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "sleep_timer",
         "description": (
             "Управляет умным таймером сна с подтверждением голосом и автовыключением ноутбука/ПК. "
@@ -1334,6 +1422,38 @@ class Jarvis:
         except Exception as exc:
             logger.warning("Сбор памяти не запустился: %s", exc)
 
+        # Глаза: постоянное зрение экрана или камеры (core/eyes.py).
+        try:
+            from core.eyes import SOURCES, eyes
+            ey = eyes()
+            ey.send = self._send_frame
+            ey.active = self.is_awake
+            ey.say = self.speak
+            ey.on_change = lambda src: self.ui.write_log(
+                "SYS: 👁 глаза закрыты" if src == "off" else f"SYS: 👁 смотрю на {SOURCES.get(src, src)}")
+        except Exception as exc:
+            logger.warning("Глаза не подключились: %s", exc)
+
+        # Самопроверка после команд: снимок экрана → «вышло ли» (core/verify.py).
+        try:
+            from core.verify import verifier
+            vf = verifier()
+            vf.say = self.speak
+            vf.log = self.ui.write_log
+        except Exception as exc:
+            logger.warning("Самопроверка не подключилась: %s", exc)
+
+        # Часы: таймеры, секундомер, будильники (core/clock.py). Сработало —
+        # звук, голос Джарвиса и событие в журнале и капсуле.
+        try:
+            from core.clock import clock
+            ck = clock()
+            ck.say = self.speak
+            ck.notify = lambda title, text: self.ui.write_log(f"SYS: ⏰ {title}: {text}")
+            ck.start()
+        except Exception as exc:
+            logger.warning("Часы не запустились: %s", exc)
+
         # «Вы смотрите уже два часа…» — забота о перерывах (core/break_reminder.py)
         # и звонки по расписанию в Telegram (core/tg_call.py).
         try:
@@ -1452,6 +1572,22 @@ class Jarvis:
             except Exception:
                 pass
             self._telegram_proc = None
+
+    # ── Глаза: кадр в Live-сессию (core/eyes.py) ──────────────────────────────
+    def _send_frame(self, jpeg: bytes) -> bool:
+        """Из потока глаз: кадр — в голосовую сессию. Нет связи или микрофон
+        выключен (Ctrl+M — «не слушай и не смотри») — кадр не уходит."""
+        if not jpeg or not self._loop or not self.session or not self._loop.is_running() or self.ui.muted:
+            return False
+        fut = asyncio.run_coroutine_threadsafe(
+            self.session.send_realtime_input(video=types.Blob(data=jpeg, mime_type="image/jpeg")),
+            self._loop)
+        try:
+            fut.result(timeout=3)
+            return True
+        except Exception as exc:
+            logger.debug("Кадр глаз не ушёл: %s", exc)
+            return False
 
     # ── Текстовый ввод ────────────────────────────────────────────────────────
     def _send_text_to_session(self, text: str):
@@ -2051,6 +2187,18 @@ class Jarvis:
                 )
 
             # ── Инструмент: умный таймер сна ──────────────────────────────
+            elif name == "clock":
+                from core.clock import clock_tool
+                result = await asyncio.to_thread(clock_tool, args)
+
+            elif name == "eyes":
+                from core.eyes import eyes_tool
+                result = await asyncio.to_thread(eyes_tool, args)
+
+            elif name == "location":
+                from core.location import location_tool
+                result = await asyncio.to_thread(location_tool, args)
+
             elif name == "sleep_timer":
                 from actions.sleep_timer import sleep_timer
                 loop = asyncio.get_event_loop()
@@ -2126,6 +2274,12 @@ class Jarvis:
         # «музыку не поставил» по журналу было не разобрать — вызов виден,
         # а что инструмент ответил, нет.
         logger.info("📤 %s → %s", name, str(result).replace("\n", " ")[:200])
+        # Сам глянуть на экран, вышло ли (core/verify.py) — в фоне, ответ не ждёт.
+        try:
+            from core.verify import verifier
+            verifier().after(name, args, result)
+        except Exception as exc:
+            logger.debug("Проверка не запущена: %s", exc)
         return types.FunctionResponse(id=fc.id, name=name, response={"result": result})
 
     def _remember_tool_use(self, name: str, args: dict):
@@ -2257,7 +2411,7 @@ class Jarvis:
             except asyncio.QueueFull:
                 pass  # Drop audio frame silently to avoid flooding event loop
 
-        if self._local_wake is None and _WAKE_MODE == "wake_word" and not _LOCAL_WAKE:
+        if self._local_wake is None and _WAKE_MODE == "wake_word" and not _local_wake_enabled():
             self._local_wake = False         # имя ищется в расшифровке Gemini
         if self._local_wake is None and _WAKE_MODE == "wake_word":
             def _heard(text: str):
@@ -2771,6 +2925,12 @@ class Jarvis:
 
                             if full_out:
                                 self.ui.write_log(f"Джарвис: {full_out}")
+                            # В журнал — каждый принятый ход. «Не слышит» и «молчит»
+                            # иначе неотличимы: «Не ко мне» журнал писал, а ход,
+                            # принятый и оставшийся без ответа, не оставлял следа.
+                            if full_in or full_out:
+                                logger.info("Ход: «%s» → «%s»%s", full_in[:120], full_out[:120],
+                                            "" if full_out else "  [ответа нет]")
                             self._remember_turn(full_in, full_out)
 
                     if response.tool_call:
@@ -3055,6 +3215,15 @@ def main():
     if "--caller-login" in sys.argv:
         from core import tg_call
         sys.exit(tg_call.login_gui())
+
+    # Обучить слово «Джарвис» на своём голосе (Vosk, один раз).
+    if "--wake-calibrate" in sys.argv:
+        from core import wake_calibrate
+        try:
+            device = _pick_input_device()
+        except Exception:
+            device = None
+        sys.exit(wake_calibrate.run_gui(device))
 
     # Без графики: JARVIS_HEADLESS=1 или --headless. Голосовой круг тот же,
     # разница только в том, кто показывает состояние и кто ждёт ключ.
