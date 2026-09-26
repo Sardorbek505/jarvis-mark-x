@@ -33,7 +33,7 @@ class SpotifySearch:
                 response = requests.get(
                     f"{self.API_BASE}{endpoint}",
                     headers=self.headers,
-                    params=params
+                    params=params, timeout=(3, 10)
                 )
                 
                 # If 401 Unauthorized, refresh token and retry

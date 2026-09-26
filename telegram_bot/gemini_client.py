@@ -1,5 +1,6 @@
 """Gemini API wrapper for Telegram bot — text, voice and image responses."""
 import asyncio
+import time
 import logging
 
 from google import genai
@@ -20,7 +21,8 @@ _SYSTEM_PROMPT = """Ты — ДЖАРВИС из фильмов о Железн�
 
 КАК ТЫ ПИШЕШЬ:
 - На том же языке, что и пользователь (русский → русский, узбекский → узбекский, казахский → казахский).
-- Коротко. Одно-два предложения. Списками — только если попросили разобрать подробно.
+- Длина — по ситуации. Команда или факт — коротко: «Готово, сэр». Живой разговор — отвечай как собеседник, а не автоответчик: откликнись на то, что человек СКАЗАЛ, по существу, можешь спросить в ответ, поделиться мнением. Списками — только если попросили разобрать подробно.
+- Никогда не отвечай шаблоном, который подошёл бы к любому сообщению («Приветствую, сэр. Я к вашим услугам», «Готов к распоряжениям»). Если сэр говорит «тебя долго не было» — ответь именно на это; если просит общаться нормально — стань живее и теплее, оставаясь собой.
 - Сначала суть, потом детали: «Готово, сэр» — и лишь затем что именно.
 - Твои слова: сэр · разумеется · боюсь · осмелюсь заметить · позвольте напомнить · сделано · готово · секунду · как скажете.
 - Не твои: окей · класс · супер · ага · ну · типа · крутяк · вау · упс · бро.
@@ -139,9 +141,11 @@ _SYSTEM_PROMPT = """Ты — ДЖАРВИС из фильмов о Железн�
 
 ЧЕСТНОСТЬ: не выдумывай факты и не притворяйся что выполнил действие. Если чего-то не знаешь — так и скажи.
 
-Ты его Джарвис. Немногословен, точен и всегда на его стороне."""
+Ты его Джарвис. Точен, живой в разговоре и всегда на его стороне."""
 
 _MAX_HISTORY = 40  # messages per user
+# Сколько Gemini отдыхает после исчерпанной квоты, если есть запасная модель.
+_GEMINI_REST_SEC = 60.0
 
 
 def _is_quota_error(exc: Exception) -> bool:
@@ -150,7 +154,29 @@ def _is_quota_error(exc: Exception) -> bool:
     return "429" in s or "RESOURCE_EXHAUSTED" in s or "quota" in s.lower()
 
 
+def _unavailable_message(err: Exception | None) -> str:
+    """Что сказать человеку, когда не ответила ни одна модель. Причина важна:
+    заблокированный ключ лечится новым ключом, квота — ожиданием."""
+    s = str(err or "").lower()
+    if any(t in s for t in ("leaked", "api key not valid", "api_key_invalid",
+                            "permission_denied", "api key expired", "403")):
+        return ("Ключ Gemini заблокирован или недействителен. Нужен новый ключ: "
+                "aistudio.google.com/apikey → секрет GEMINI_API_KEY.")
+    if err is not None and _is_quota_error(err):
+        return "Лимит Gemini на сегодня исчерпан. Попробуй позже или подключи запасную модель (GROQ_API_KEY)."
+    return "Извини, ИИ сейчас недоступен (проблема с моделью Gemini). Проверь API-ключ и квоту."
+
+
 class GeminiClient:
+    # Значения по умолчанию на классе: без запасных моделей и без отдыха
+    # (см. __init__) — клиент ведёт себя как раньше.
+    _fallback = None
+    _gemini_resting_until = 0.0
+    # Последний _generate вернул не ответ, а сообщение о сбое. По нему
+    # вызывающие не сохраняют «ответ» в заметки и историю: раньше «Лимит
+    # Gemini исчерпан…» становился заметкой и подмешивался в каждый промпт.
+    last_generate_failed = False
+
     def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
         self._client = genai.Client(
             api_key=api_key,
@@ -160,6 +186,12 @@ class GeminiClient:
         self._history: dict = {}  # user_id -> list of Content dicts
         self._context_provider = None  # callable(user_id) -> str (live time/location)
         self._recall_provider = None   # async (user_id, text) -> str (notes/facts recall)
+        # Запасные модели других сервисов (fallback_llm.py) и отдых Gemini
+        # после исчерпанной квоты: пока он отдыхает, запрос сразу идёт к
+        # запасной модели, а не ждёт отказа всех трёх моделей Gemini с паузой.
+        from telegram_bot.fallback_llm import FallbackChain
+        self._fallback = FallbackChain()
+        self._gemini_resting_until = 0.0
 
     def set_context_provider(self, fn):
         """Register a callback that returns live context (date/time/location)
@@ -234,6 +266,13 @@ class GeminiClient:
         system_instruction = self._system_for(user_id)
         if extra_system:
             system_instruction = f"{system_instruction}\n\n{extra_system}"
+
+        self.last_generate_failed = False
+        if self._fallback and time.monotonic() < self._gemini_resting_until:
+            text = await self._fallback.complete(contents, system_instruction)
+            if text:
+                return text
+        quota_only = True
         # Two passes: free-tier RPM bursts and 503 spikes are transient, so a
         # short backoff + retry recovers most of them instead of surfacing
         # "ИИ недоступен". The configured model (gemini-2.5-flash) stays first.
@@ -261,14 +300,25 @@ class GeminiClient:
                     last_err = e
                     if self._is_retryable(e):
                         retryable_seen = True
+                    if not _is_quota_error(e):
+                        quota_only = False
                     logger.error(f"Gemini model '{model}' failed: {e}")
                     continue
-            if retryable_seen and attempt == 0:
+            # Квота кончилась — повтор через 2.5 с её не вернёт. Если есть
+            # запасная модель, идём к ней сразу.
+            if retryable_seen and attempt == 0 and not (quota_only and self._fallback):
                 await asyncio.sleep(2.5)   # let an RPM/503 spike pass, try once more
                 continue
             break
         logger.error(f"All Gemini models failed. Last error: {last_err}")
-        return "Извини, ИИ сейчас недоступен (проблема с моделью Gemini). Проверь API-ключ и квоту."
+        if self._fallback:
+            if last_err is not None and quota_only:
+                self._gemini_resting_until = time.monotonic() + _GEMINI_REST_SEC
+            text = await self._fallback.complete(contents, system_instruction)
+            if text:
+                return text
+        self.last_generate_failed = True
+        return _unavailable_message(last_err)
 
     _EMBED_MODEL = "gemini-embedding-001"
     EMBED_DIM = 768
@@ -306,6 +356,8 @@ class GeminiClient:
 
         recall = await self._recall_for(user_id, text)
         reply = await self._generate(contents, user_id=user_id, extra_system=recall)
+        if self.last_generate_failed:
+            return reply           # сбой — не ответ, в историю не пишем
 
         history.append({"role": "user", "parts": [{"text": text}]})
         history.append({"role": "model", "parts": [{"text": reply}]})
@@ -314,22 +366,27 @@ class GeminiClient:
 
     async def chat_with_audio(self, user_id: int, audio_bytes: bytes,
                               mime_type: str = "audio/ogg", recall_text: str = "") -> str:
-        """Transcribe audio and respond as JARVIS. Supports ogg (Telegram) and wav (Mini App).
-        `recall_text` (the already-known transcript) enables notes/facts recall."""
-        contents = [
+        """Ответ на голосовое по самому звуку — когда расшифровки нет.
+
+        Указание «ответь на голосовое» идёт в системную инструкцию, а не
+        рядом со звуком: раньше оно лежало в реплике пользователя, и модель
+        отвечала на него — «Вы просили: транскрибируй это голосовое…».
+        """
+        history = self._history_for(user_id)
+        contents = history + [
             types.Content(
                 role="user",
-                parts=[
-                    types.Part(inline_data=types.Blob(mime_type=mime_type, data=audio_bytes)),
-                    types.Part(text="Транскрибируй это голосовое сообщение и ответь как JARVIS."),
-                ],
+                parts=[types.Part(inline_data=types.Blob(mime_type=mime_type, data=audio_bytes))],
             )
         ]
         recall = await self._recall_for(user_id, recall_text)
-        reply = await self._generate(contents, user_id=user_id, extra_system=recall)
+        hint = ("Последнее сообщение пользователя — голосовое. Ответь на то, что он "
+                "сказал, как в обычном разговоре. Не пересказывай и не упоминай "
+                "расшифровку.")
+        extra = f"{hint}\n\n{recall}" if recall else hint
+        reply = await self._generate(contents, user_id=user_id, extra_system=extra)
 
-        history = self._history_for(user_id)
-        history.append({"role": "user", "parts": [{"text": "[голосовое сообщение]"}]})
+        history.append({"role": "user", "parts": [{"text": recall_text or "[голосовое сообщение]"}]})
         history.append({"role": "model", "parts": [{"text": reply}]})
         self._trim_history(user_id)
         return reply
@@ -369,8 +426,8 @@ class GeminiClient:
                 )
                 text = (response.text or "").strip()
                 if text:
-                    if model != self._model:
-                        self._model = model
+                    # Основную модель не подменяем: один временный сбой раньше
+                    # навсегда (до перезапуска) переключал ВСЕ чаты на запасную.
                     return text
             except Exception as e:
                 logger.error(f"Transcribe model '{model}' failed: {e}")
@@ -502,29 +559,36 @@ class GeminiClient:
             "Если запоминать нечего — верни []."
             f"\n\nДиалог:\n{snippet}"
         )
+        def parse(raw: str) -> list:
+            raw = (raw or "").strip()
+            # Strip markdown fences if present
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            start, end = raw.find("["), raw.rfind("]")
+            if start == -1 or end == -1:
+                return []
+            import json as _json
+            facts = _json.loads(raw[start:end + 1])
+            return [str(f).strip() for f in facts if str(f).strip()][:8]
+
         loop = asyncio.get_event_loop()
-        for model in self._models_to_try():
+        if time.monotonic() >= self._gemini_resting_until:
+            for model in self._models_to_try():
+                try:
+                    resp = await loop.run_in_executor(
+                        None,
+                        lambda m=model: self._client.models.generate_content(
+                            model=m,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(temperature=0.0),
+                        ),
+                    )
+                    return parse(resp.text)
+                except Exception as e:
+                    logger.debug(f"extract_facts '{model}': {e}")
+                    continue
+        if self._fallback:
             try:
-                resp = await loop.run_in_executor(
-                    None,
-                    lambda m=model: self._client.models.generate_content(
-                        model=m,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(temperature=0.0),
-                    ),
-                )
-                raw = (resp.text or "").strip()
-                if not raw:
-                    return []
-                # Strip markdown fences if present
-                raw = raw.replace("```json", "").replace("```", "").strip()
-                start, end = raw.find("["), raw.rfind("]")
-                if start == -1 or end == -1:
-                    return []
-                import json as _json
-                facts = _json.loads(raw[start:end + 1])
-                return [str(f).strip() for f in facts if str(f).strip()][:8]
+                return parse(await self._fallback.complete(prompt, temperature=0.0))
             except Exception as e:
-                logger.debug(f"extract_facts '{model}': {e}")
-                continue
+                logger.debug(f"extract_facts fallback: {e}")
         return []

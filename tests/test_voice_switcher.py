@@ -1,8 +1,6 @@
 """Tests for JARVIS voice switcher and dynamic provider."""
 
-import os
 import json
-import pytest
 import main as jarvis_main
 
 

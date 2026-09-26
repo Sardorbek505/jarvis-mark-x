@@ -32,7 +32,13 @@ _logger = logging.getLogger(__name__)
 # ─── Пути ─────────────────────────────────────────────────────────────────────
 _BASE        = Path(__file__).resolve().parent.parent
 _CONFIG_PATH = _BASE / "config" / "modes.json"
-_STATE_PATH  = _BASE / "memory" / "current_mode.json"
+# Состояние — в папке данных (%APPDATA%\\JARVIS в .exe): в Program Files запись
+# молча не удавалась, и режим «забывался».
+try:
+    from core.paths import get_data_root as _data_root
+    _STATE_PATH = _data_root() / "memory" / "current_mode.json"
+except Exception:
+    _STATE_PATH = _BASE / "memory" / "current_mode.json"
 
 
 # ─── Конфиг и состояние ───────────────────────────────────────────────────────
@@ -59,11 +65,20 @@ def get_current_mode() -> dict:
     """Возвращает {'mode': 'work', 'preference': 'design'} или {'mode': 'normal'}."""
     try:
         if _STATE_PATH.exists():
+            # Режим старше нескольких часов (перезагрузка, приложения давно
+            # закрыты) — уже не «идёт». Раньше файл не сбрасывался никогда, и
+            # «режим учёбы» отвечал «уже идёт», ничего не открывая.
+            import time as _time
+            if _time.time() - _STATE_PATH.stat().st_mtime > _MODE_STALE_SEC:
+                return {"mode": "normal", "preference": ""}
             with open(_STATE_PATH, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception as exc:
         _logger.warning("Подавлено исключение: %s", exc, exc_info=True)
     return {"mode": "normal", "preference": ""}
+
+
+_MODE_STALE_SEC = 3 * 3600
 
 
 # ─── Дефолтная конфигурация (если файл потерян) ───────────────────────────────

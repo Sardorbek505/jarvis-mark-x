@@ -201,7 +201,9 @@ async def test_reconnect_delay_resets_after_success(monkeypatch):
 
     # Assert — the post-reconnect failure waits from the floor again, not the cap
     assert slept[-1] <= _ceiling(pc_server._RECONNECT_MIN_SEC)
-    assert slept[-1] < slept[-2]
+    # Сравниваем с паузой перед успешным подключением (после трёх отказов):
+    # между ними теперь ещё пауза штатного закрытия — она тоже с минимума.
+    assert slept[-1] < max(slept[:3])
 
 
 def _ceiling(base: float) -> float:

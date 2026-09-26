@@ -201,3 +201,14 @@ def test_own_playlist_still_wins_when_named_alike(controller):
     controller.play_query("классику")
 
     assert controller.played == [("playlist", "spotify:playlist:моя")]
+
+
+def test_artist_is_not_hijacked_by_similar_playlist(controller):
+    """«Включи Любэ» — исполнитель, а не плейлист «Любимое» (partial_ratio давал 86)."""
+    controller.search.get_user_playlists = lambda limit=50: [
+        {"name": "Любимое", "uri": "spotify:playlist:моя"}
+    ]
+
+    controller.play_query("любэ")
+
+    assert controller.played == [("track", "spotify:track:нужный")]

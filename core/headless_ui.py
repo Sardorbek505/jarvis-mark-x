@@ -75,11 +75,17 @@ class HeadlessUI:
         """Прицел на инструмент — в headless это просто строчка в логе."""
         _logger.debug("инструмент: %s", tool)
 
-    def toggle_mute(self) -> bool:
+    def set_subtitle(self, text: str) -> None:
+        """Субтитр под шаром — без окна показывать некому."""
+
+    def show_card(self, title: str, address: str, body: str, png: bytes = b"",
+                  extra: str = "") -> None:
+        """Карточка результата — без окна показывать некому."""
+
+    def toggle_mute(self) -> None:
         """Переключает состояние микрофона."""
         self.muted = not self.muted
         _logger.debug("микрофон переключён: muted=%s", self.muted)
-        return self.muted
 
     def bring_to_front(self) -> None:
         """В headless окна нет — заглушка."""

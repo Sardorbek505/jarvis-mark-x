@@ -133,19 +133,19 @@ class SpotifyController:
             if method == 'GET':
                 response = requests.get(
                     f"{self.API_BASE}{endpoint}",
-                    headers=self.devices.headers
+                    headers=self.devices.headers, timeout=(3, 10)
                 )
             elif method == 'PUT':
                 response = requests.put(
                     f"{self.API_BASE}{endpoint}",
                     headers=self.devices.headers,
-                    json=data
+                    json=data, timeout=(3, 10)
                 )
             elif method == 'POST':
                 response = requests.post(
                     f"{self.API_BASE}{endpoint}",
                     headers=self.devices.headers,
-                    json=data
+                    json=data, timeout=(3, 10)
                 )
 
             response.raise_for_status()
@@ -275,8 +275,11 @@ class SpotifyController:
                 
                 for playlist in user_playlists:
                     name = playlist.get('name', '')
-                    score = fuzz.partial_ratio(query.lower(), name.lower())
-                    if score > best_score and score > 60:  # 60% threshold
+                    # Только близкое совпадение названия (падеж — можно): partial_ratio > 60
+                    # давал «любэ» ~ «Любимое» = 86, и «включи Любэ» открывало
+                    # чужой по смыслу плейлист вместо исполнителя.
+                    score = fuzz.token_set_ratio(query.lower(), name.lower())
+                    if score > best_score and score >= 80:
                         best_score = score
                         best_playlist = playlist
                 
@@ -495,8 +498,9 @@ class SpotifyController:
                 
                 for playlist in user_playlists:
                     name = playlist.get('name', '')
-                    score = fuzz.partial_ratio(mood.lower(), name.lower())
-                    if score > best_score and score > 60:  # 60% threshold
+                    # Тот же порог, что в play_query: «любэ» ≠ «Любимое».
+                    score = fuzz.token_set_ratio(mood.lower(), name.lower())
+                    if score > best_score and score >= 80:
                         best_score = score
                         best_playlist = playlist
                 
@@ -512,6 +516,15 @@ class SpotifyController:
             return "Spotify недоступен, сэр."
         
         uri = self.moods.get_mood_playlist_uri(mood)
+        if not uri and self.search:
+            # /recommendations Spotify закрыл для новых приложений (ноябрь 2024) —
+            # без запасного пути «включи что-нибудь спокойное» не играло ничего.
+            found = self.search.search_playlists(mood, limit=5) or []
+            playlist = next((p for p in found if p and p.get("uri")), None)
+            if playlist and self.play_context(playlist["uri"]):
+                self.last_query = mood
+                self.last_uri = playlist["uri"]
+                return f"Включаю плейлист «{playlist.get('name', mood)}», сэр."
         if not uri:
             return f"Не нашёл плейлист для настроения: {mood}, сэр. Попробуйте указать название вашего плейлиста, сэр."
         

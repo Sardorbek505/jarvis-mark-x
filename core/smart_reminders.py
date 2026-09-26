@@ -8,24 +8,21 @@ Smart Reminders Engine — умная система напоминаний.
 - Интеграция с Кино (предложение приостановить)
 """
 
-import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import random
 
-from core.storage import atomic_write_json
+from core.storage import atomic_write_json, load_json_or_quarantine
 
 _logger = logging.getLogger(__name__)
 
 
 # ─── Пути ─────────────────────────────────────────────────────────────────────
 def _get_base_dir() -> Path:
-    import sys
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+    from core.paths import get_data_root   # см. там: .exe пишет в %APPDATA%
+    return get_data_root()
 
 
 _BASE = _get_base_dir()
@@ -48,7 +45,7 @@ def _load_patterns() -> Dict[str, Any]:
     
     try:
         with open(_PATTERNS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            return load_json_or_quarantine(f)
     except Exception:
         return _get_default_patterns()
 
@@ -506,7 +503,7 @@ class ActivityTracker:
         
         try:
             with open(self.activity_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                return load_json_or_quarantine(f)
         except Exception:
             return self._get_default_activities()
     

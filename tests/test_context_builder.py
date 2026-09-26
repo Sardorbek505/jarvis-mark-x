@@ -21,6 +21,7 @@ class _StubStore:
     def cached_schedule(self, uid): return self._d.get("schedule", [])
     def cached_projects(self, uid): return self._d.get("projects", [])
     def cached_notes(self, uid):    return self._d.get("notes", [])
+    def cached_voice(self, uid):    return self._d.get("voice", [])
 
 
 def test_contacts_projects_notes_appear():

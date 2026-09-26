@@ -62,8 +62,9 @@ def send_key(key: str) -> bool:
         try:
             cmd = f"(New-Object -ComObject WScript.Shell).SendKeys('{ps_key}')"
             result = subprocess.run(
-                ["powershell", "-Command", cmd],
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
                 capture_output=True, timeout=_SENDKEYS_TIMEOUT_SEC,
+                creationflags=0x08000000,       # CREATE_NO_WINDOW: консоль мелькала и крала фокус
             )
             return result.returncode == 0
         except Exception as exc:

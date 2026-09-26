@@ -130,6 +130,39 @@ _BOT_COMMANDS = [
     BotCommand("clear",      "Очистить историю диалога"),
 ]
 
+# ── Разметка, которая не должна ронять ответ ───────────────────────────────────
+# В ответы с parse_mode="Markdown" попадает текст пользователя и модели: имя
+# файла my_report.pdf, факт с «_», код в `кавычках`. Telegram отвергал такое
+# сообщение целиком (BadRequest: can't parse entities) — пользователь видел
+# «Не смог обработать документ», а заметка не сохранялась, /facts не
+# открывался. Страховка на все места сразу: не разобралось — шлём как текст.
+def _markdown_safe(method):
+    async def wrapper(self, *args, parse_mode=None, **kwargs):
+        from telegram.error import BadRequest
+        try:
+            return await method(self, *args, parse_mode=parse_mode, **kwargs)
+        except BadRequest as e:
+            if parse_mode and "parse" in str(e).lower():
+                logger.warning("Разметка не разобралась (%s) — отправляю текстом", e)
+                return await method(self, *args, **kwargs)
+            raise
+    wrapper._markdown_safe = True
+    return wrapper
+
+
+def _install_markdown_fallback():
+    from telegram import CallbackQuery, Message
+    for cls, names in ((Message, ("reply_text", "reply_voice", "edit_text")),
+                       (CallbackQuery, ("edit_message_text",))):
+        for name in names:
+            method = getattr(cls, name)
+            if not getattr(method, "_markdown_safe", False):
+                setattr(cls, name, _markdown_safe(method))
+
+
+_install_markdown_fallback()
+
+
 _PC_KEYWORDS = [
     # Music
     "play", "stop", "pause", "next", "prev",
@@ -213,11 +246,26 @@ _FETCH_UNSAFE = ("выключ", "выруб", "shutdown", "перезагруз
                  "громкост", "volume", "заверши процесс", "kill")
 
 
+# Что цепочка может запустить сама — только чтение. Раньше был список
+# запретов: «открой <url>», «отправь в тг …», музыка и приложения проходили.
+_FETCH_READ_ONLY = ("системн", "sysinfo", "батаре", "заряд", "что в папке",
+                    "содержимое папки", "список окон", "какие окна", "скриншот",
+                    "что на экране", "посмотри на экран", "screenshot")
+
+
 def _fetch_is_safe(cmd: str) -> bool:
     """Only read/info commands may auto-run in a chain — destructive ones must
     go through the normal explicit path."""
     low = cmd.lower()
-    return not any(w in low for w in _FETCH_UNSAFE)
+    if any(w in low for w in _FETCH_UNSAFE):
+        return False
+    return any(w in low for w in _FETCH_READ_ONLY)
+
+
+# Действия, которые ответ модели может запустить сам. Для чужого текста
+# (пересланное сообщение) они вырезаются: иначе чужое сообщение с
+# «[[SEND]]…» или «сделай [[FETCH]]…» управляло бы отправкой и ПК.
+_RE_ACTIONS = re.compile(r"\[\[(SEND|FETCH)\]\].*?\[\[/\1\]\]", re.S | re.I)
 
 
 async def _resolve_fetch(user_id: int, reply: str) -> str:
@@ -305,9 +353,19 @@ async def _apply_send_directives(update: Update, user_id: int, reply: str) -> st
 
 
 def _is_authorized(update: Update) -> bool:
+    # Пустой список раньше значил «отвечать всем»: любой, кто нашёл бота,
+    # получал доступ к памяти владельца и его ПК.
     if not cfg.allowed_user_ids:
-        return True
+        logger.error("TELEGRAM_ALLOWED_USERS пуст — отказываю всем (uid %s)",
+                     update.effective_user.id if update.effective_user else "?")
+        return False
     return update.effective_user.id in cfg.allowed_user_ids
+
+
+def _starts_like_pc_command(text: str) -> bool:
+    """Команда начинается с глагола-команды: «включи музыку», «сделай скриншот»."""
+    head = " ".join((text or "").lower().split()[:2])
+    return keywords.matches(head, _PC_KEYWORDS)
 
 
 def _looks_like_pc_command(text: str) -> bool:
@@ -739,13 +797,18 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await memory.complete_task(uid, int(data.split(":", 1)[1]))
             tasks = await memory.get_tasks(uid)
             await q.answer("Закрыто ✅")
-            await q.edit_message_text(agenda.render_list(tasks), parse_mode="Markdown",
+            await q.edit_message_text(agenda.render_list(tasks, now=_local(uid)), parse_mode="Markdown",
                                       reply_markup=_tasks_keyboard(tasks))
         else:
             await q.answer()
     except Exception as e:
         logger.error(f"on_callback '{data}': {e}")
         await q.answer("Не получилось 😕", show_alert=False)
+
+
+def _local(uid: int):
+    """Местное «сейчас» пользователя — сроки задач хранятся в его времени."""
+    return user_context.local_now(uid, cfg.timezone)
 
 
 def _today_str(uid: int) -> str:
@@ -849,11 +912,11 @@ async def cmd_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     uid = update.effective_user.id
-    due, title = agenda.parse(text)
+    due, title = agenda.parse(text, _local(uid))
     await memory.add_task(uid, title, due)
     if due:
         await update.effective_message.reply_text(
-            f"Записал 🗓 *{title}* — {agenda.fmt_due(due)}", parse_mode="Markdown"
+            f"Записал 🗓 *{title}* — {agenda.fmt_due(due, _local(uid))}", parse_mode="Markdown"
         )
     else:
         await update.effective_message.reply_text(
@@ -864,9 +927,10 @@ async def cmd_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    tasks = await memory.get_tasks(update.effective_user.id)
+    uid = update.effective_user.id
+    tasks = await memory.get_tasks(uid)
     await update.effective_message.reply_text(
-        agenda.render_list(tasks), parse_mode="Markdown",
+        agenda.render_list(tasks, now=_local(uid)), parse_mode="Markdown",
         reply_markup=_tasks_keyboard(tasks)
     )
 
@@ -878,7 +942,7 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     wd = user_context.local_now(uid, cfg.timezone).weekday()
     classes = await memory.schedule_for_day(uid, wd)
     tasks = [t for t in await memory.get_tasks(uid)
-             if t.get("due") and agenda.is_today(t["due"])]
+             if t.get("due") and agenda.is_today(t["due"], _local(uid))]
     cal = await asyncio.to_thread(gcal.list_events, 0, 0, cfg.timezone)
     lines = [f"🗓 *Сегодня ({_WD_NAMES[wd]})*"]
     if cal:
@@ -1203,10 +1267,12 @@ async def _run_pc(message, command: str, user_id: int, *,
     человеку «Не понял команду».
     """
     if not bridge.connected:
-        # Про офлайн говорим всегда. Узнать, была ли это настоящая команда,
-        # можно только у самого ПК, а он недоступен; промолчать здесь значит
-        # оставить человека думать, что просьбу про скриншот просто
-        # проигнорировали.
+        # Про офлайн говорим, если это похоже на команду (фраза начинается с
+        # неё). Обычная фраза со словом-ключом — «что дальше по плану?»,
+        # «запиши в заметки…» — раньше получала «ПК офлайн», и ни ответа,
+        # ни заметки не было: Gemini сообщения так и не видел.
+        if quiet_if_unknown and not _starts_like_pc_command(command):
+            return False
         await message.reply_text(_PC_OFFLINE, parse_mode="Markdown")
         return True
     try:
@@ -1389,6 +1455,9 @@ async def _handle_link(update: Update, user_id: int, url: str):
         await msg.reply_text("❌ Не смог прочитать страницу (закрыта/пустая).")
         return
     summary = await gemini.summarize_source(user_id, text, url)
+    if getattr(gemini, "last_generate_failed", False):
+        await msg.reply_text(summary)          # сбой — не конспект, в заметки не пишем
+        return
     await msg.reply_text(f"🔗 Конспект:\n\n{summary}")
     note = f"[Ссылка {url}] {summary[:600]}"
     await memory.add_note(user_id, note)
@@ -1410,7 +1479,7 @@ async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         data = bytes(await f.download_as_bytearray())
         summary = await gemini.summarize_document(
             data, doc.mime_type or "", doc.file_name or "файл", msg.caption or "")
-        if not summary or summary.startswith("Извини"):
+        if not summary or summary.startswith("Извини") or getattr(gemini, "last_generate_failed", False):
             await msg.reply_text(summary or "❌ Не смог разобрать документ.")
             return
         await msg.reply_text(f"📄 *{doc.file_name or 'документ'}*\n\n{summary}",
@@ -1428,6 +1497,9 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     text = update.effective_message.text
     user_id = update.effective_user.id
+    # Пересланное — чужие слова. Отвечаем на них, но действовать по ним
+    # (писать контактам, командовать ПК) не даём.
+    untrusted = getattr(update.effective_message, "forward_origin", None) is not None
     await update.effective_message.chat.send_action("typing")
 
     try:
@@ -1463,7 +1535,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Сюда попадают и обычные фразы: шлюз ищет ключевые слова, а «громкость
         # голоса у неё приятная» их содержит. Если ПК команду не узнал —
         # продолжаем разговором, а не показываем человеку «Не понял команду».
-        if _looks_like_pc_command(text):
+        if not untrusted and _looks_like_pc_command(text):
             if await _run_pc(update.effective_message, text, user_id,
                              quiet_if_unknown=True):
                 return
@@ -1476,10 +1548,16 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # conversation stays continuous (the RAM window is otherwise lost).
         if not gemini.has_history(user_id):
             gemini.seed_history(user_id, await memory.recent_messages(user_id, 40))
-        reply = await gemini.chat(user_id, text)
-        reply = await _resolve_fetch(user_id, reply)          # bounded 1-step action chain
+        reply = await gemini.chat(
+            user_id, f"[Переслано от другого человека]\n{text}" if untrusted else text)
+        failed = getattr(gemini, "last_generate_failed", False)
+        if untrusted:
+            reply = _RE_ACTIONS.sub("", reply)
+        else:
+            reply = await _resolve_fetch(user_id, reply)      # bounded 1-step action chain
         reply, summary = await _apply_reminder_directives(user_id, reply)
-        reply = await _apply_send_directives(update, user_id, reply)
+        if not untrusted:
+            reply = await _apply_send_directives(update, user_id, reply)
         if summary:
             reply += "\n\n✅ Добавил — " + ", ".join(summary)
         if reply.strip():
@@ -1497,8 +1575,9 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await update.effective_message.reply_text(reply)
         # Background, never blocks the reply: learn durable facts + log the raw
         # exchange forever (foundation for full recall).
-        asyncio.create_task(memory.observe(user_id, gemini, text, reply))
-        asyncio.create_task(_persist_exchange(user_id, text, reply))
+        if not failed:     # сообщение о сбое — не реплика, в память не пишем
+            asyncio.create_task(memory.observe(user_id, gemini, text, reply))
+            asyncio.create_task(_persist_exchange(user_id, text, reply))
     except Exception as e:
         logger.error(f"handle_text error: {e}")
         await update.effective_message.reply_text("❌ Что-то пошло не так. Попробуй ещё раз.")
@@ -1537,9 +1616,9 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 return
 
             if transcript and _looks_like_pc_command(transcript):
-                await msg.reply_text(f"🎙 «{transcript}»")
-                await _run_pc(msg, transcript, user_id)
-                return
+                # Не команда (ПК не узнал) — продолжаем обычным разговором.
+                if await _run_pc(msg, transcript, user_id, quiet_if_unknown=True):
+                    return
 
             # Расшифровка не удалась из-за лимита — говорим правду. Иначе
             # пустой текст уходил в модель, и та сочиняла «голосовое пришло
@@ -1557,7 +1636,14 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await memory.ensure_loaded(user_id)
             if not gemini.has_history(user_id):
                 gemini.seed_history(user_id, await memory.recent_messages(user_id, 40))
-            reply = await gemini.chat_with_audio(user_id, audio, recall_text=transcript or "")
+            # Расшифровка уже есть — отвечаем на неё обычным чатом: с историей,
+            # памятью и запасными моделями. Сам звук модели нужен, только если
+            # расшифровать не вышло.
+            if transcript:
+                reply = await gemini.chat(user_id, transcript)
+            else:
+                reply = await gemini.chat_with_audio(user_id, audio)
+            failed = getattr(gemini, "last_generate_failed", False)
             reply, summary = await _apply_reminder_directives(user_id, reply)
             reply = await _apply_send_directives(update, user_id, reply)
             if summary:
@@ -1570,7 +1656,7 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_voice(voice=ogg, caption=caption)
             else:
                 await msg.reply_text(reply)
-            if transcript:
+            if transcript and not failed:
                 asyncio.create_task(memory.observe(user_id, gemini, transcript, reply))
                 asyncio.create_task(_persist_exchange(user_id, transcript, reply))
     except Exception as e:

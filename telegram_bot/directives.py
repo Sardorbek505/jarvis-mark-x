@@ -102,7 +102,7 @@ async def apply(memory, user_id: int, reply: str, tz) -> tuple[str, list]:
     for line in _lines(_RE_TASKS, reply):
         t = _clean_line(line)
         if t:
-            due, title = agenda.parse(t)
+            due, title = agenda.parse(t, datetime.now(tz) if tz else None)
             await memory.add_task(user_id, title, due)
             n += 1
     if n:

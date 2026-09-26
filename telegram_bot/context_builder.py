@@ -55,6 +55,11 @@ def build_context(memory, cfg, uid: int) -> str:
             (f"{p['name']} — {p['status']}" if p.get("status") else p["name"]) for p in projects[:10]
         ) + ".")
 
+    from telegram_bot import shared_memory
+    voice = shared_memory.voice_block(memory, uid)
+    if voice:
+        parts.append(voice)
+
     notes = memory.cached_notes(uid)
     if notes:
         parts.append("Недавние заметки пользователя (можешь ссылаться на них): "

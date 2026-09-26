@@ -102,10 +102,15 @@ class PCBridge:
         if mtype == "response":
             fut = self._pending.pop(msg.get("req_id", ""), None)
             if fut and not fut.done():
-                fut.set_result({
+                result = {
                     "text": msg.get("text", ""),
                     "image_b64": msg.get("image_b64"),
-                })
+                }
+                # "ok" — только если клиент его прислал: старый клиент без
+                # поля иначе выглядел бы как «не доставлено» (см. delivered).
+                if msg.get("ok") is not None:
+                    result["ok"] = msg["ok"]
+                fut.set_result(result)
         elif mtype == "notification" and self._notify_cb:
             await self._notify_cb(msg.get("text", ""), msg.get("user_id"))
 
@@ -114,7 +119,7 @@ class PCBridge:
     async def _send(self, text: str, user_id: int, timeout: float) -> Optional[dict]:
         if not await self._await_client(timeout):
             return None
-        ws = next(iter(self._clients.values()))  # single PC for now
+        ws = next(reversed(self._clients.values()))  # самый свежий: старый мог тихо умереть  # single PC for now
         req_id = f"{user_id}_{int(time.monotonic() * 1000)}"
         loop = asyncio.get_event_loop()
         fut: asyncio.Future = loop.create_future()
@@ -159,7 +164,7 @@ class PCBridge:
         Returns the PC's {"text": ...} response, or None if no PC / timeout."""
         if not await self._await_client(timeout):
             return None
-        ws = next(iter(self._clients.values()))
+        ws = next(reversed(self._clients.values()))  # самый свежий: старый мог тихо умереть
         req_id = f"ub_{user_id}_{int(time.monotonic() * 1000)}"
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
         self._pending[req_id] = fut

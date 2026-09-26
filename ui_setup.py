@@ -14,7 +14,7 @@ from pathlib import Path
 
 from core.paths import load_api_keys, save_api_keys
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -181,8 +181,16 @@ class MicLevelWorker(QObject):
 
 # ── Главное диалоговое окно Setup Wizard ───────────────────────────────────────
 class SetupWizardDialog(QDialog):
+    # Результаты проверки ключа и пробного голоса приходят из рабочих потоков.
+    # QTimer.singleShot из потока без цикла событий Qt не срабатывает никогда —
+    # кнопки навсегда зависали на «Проверка связи…». Сигнал Qt доставит сам.
+    _key_checked = pyqtSignal(bool, str)
+    _voice_done = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._key_checked.connect(self._on_key_checked)
+        self._voice_done.connect(self._reset_voice_btn)
         self.setWindowTitle("JARVIS Mark X — Мастер настройки")
         self.setMinimumSize(620, 560)
         self.cfg = load_config_data()
@@ -447,7 +455,7 @@ class SetupWizardDialog(QDialog):
 
         def worker():
             ok, msg = validate_gemini_key(key)
-            QTimer.singleShot(0, lambda: self._on_key_checked(ok, msg))
+            self._key_checked.emit(ok, msg)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -579,7 +587,7 @@ class SetupWizardDialog(QDialog):
             except Exception as e:
                 logger.warning("Voice sample error: %s", e)
             finally:
-                QTimer.singleShot(0, lambda: self._reset_voice_btn())
+                self._voice_done.emit()
 
         threading.Thread(target=play, daemon=True).start()
 
@@ -686,6 +694,8 @@ class SetupWizardDialog(QDialog):
 
 
 # ── Запуск диалога при необходимости ──────────────────────────────────────────
+_APP = None
+
 def ensure_setup(force: bool = False) -> bool:
     """Проверяет наличие конфигурации. Если ключа нет или force=True, показывает окно."""
     cfg = load_config_data()
@@ -694,8 +704,12 @@ def ensure_setup(force: bool = False) -> bool:
     if has_key and not force:
         return True
 
-    _app = QApplication.instance() or QApplication(sys.argv)
-    del _app
+    # Ссылку держим до конца программы: после `del` PyQt уничтожал только что
+    # созданный QApplication, и первый же виджет ронял процесс нативно
+    # («Must construct a QApplication before a QWidget») — на каждом новом
+    # компьютере без ключа. JarvisUI затем возьмёт этот же экземпляр.
+    global _APP
+    _APP = QApplication.instance() or QApplication(sys.argv)
     wizard = SetupWizardDialog()
     res = wizard.exec()
     return res == QDialog.DialogCode.Accepted

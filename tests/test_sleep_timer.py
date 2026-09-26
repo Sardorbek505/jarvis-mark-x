@@ -1,8 +1,6 @@
 """Unit tests for actions/sleep_timer.py — Smart Sleep Timer with voice confirmation."""
 
-import time
-from unittest.mock import MagicMock, patch
-import pytest
+from unittest.mock import patch
 
 from actions.sleep_timer import SleepTimerManager, sleep_timer
 
@@ -95,3 +93,31 @@ def test_sleep_timer_expired_and_user_cancelled():
             assert any("планировали лечь спать" in s for s in bot.spoken)
             # Shutdown should NOT be called
             mock_shutdown.assert_not_called()
+
+
+def test_confirm_shuts_down_without_waiting_and_confirm_never_restarts_timer():
+    mgr = SleepTimerManager()
+    # «да» без вопроса — не перезаводит таймер (раньше уходило в set на 30 мин)
+    assert "не ожидает" in mgr.confirm_shutdown()
+    assert mgr.is_active() is False
+
+    with patch.object(mgr, "_execute_shutdown") as shut:
+        mgr.start_timer(0.001)
+        import time as _t
+        for _ in range(50):
+            if mgr._is_waiting_confirmation:
+                break
+            _t.sleep(0.02)
+        assert mgr._is_waiting_confirmation
+        mgr.confirm_shutdown()
+        mgr._timer_thread.join(2)
+        shut.assert_called_once()
+
+
+def test_question_is_instruction_not_user_words():
+    mgr = SleepTimerManager()
+    bot = DummyBot()
+    mgr.set_bot_reference(bot)
+    mgr._cancel_event.set()          # сразу «нет» — чтобы не ждать окно
+    mgr._on_timer_expired()
+    assert bot.spoken and bot.spoken[0].startswith("[СИСТЕМА")

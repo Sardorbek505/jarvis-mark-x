@@ -33,3 +33,42 @@ def test_vision_action_routing():
     with patch("actions.vision.analyze_vision", return_value="Экран чист"):
         res = vision.vision_action({"prompt": "посмотри на экран"})
         assert res == "Экран чист"
+
+
+def test_vision_request_disables_thinking_and_allows_long_answer(monkeypatch):
+    """При max_output_tokens=300 и включённом думании 2.5-flash отвечал пусто."""
+    from types import SimpleNamespace
+    seen = {}
+
+    class _Models:
+        def generate_content(self, model, contents, config):
+            seen["cfg"] = config
+            return SimpleNamespace(text="В строке 42 не закрыта скобка.")
+
+    monkeypatch.setattr(vision, "_get_api_key", lambda: "k")
+    monkeypatch.setattr(vision, "_client", lambda key: SimpleNamespace(models=_Models()))
+    out = vision.analyze_vision("где ошибка", "screen", image_bytes=b"\xff\xd8fake")
+    assert out == "В строке 42 не закрыта скобка."
+    assert seen["cfg"].thinking_config.thinking_budget == 0
+    assert seen["cfg"].max_output_tokens >= 800
+
+
+def test_camera_error_explains_privacy(monkeypatch):
+    import sys
+    import types as _t
+
+    class _Cap:
+        def __init__(self, *a):
+            pass
+
+        def isOpened(self):
+            return False
+
+        def release(self):
+            pass
+
+    fake_cv2 = _t.SimpleNamespace(VideoCapture=_Cap, CAP_DSHOW=700, CAP_MSMF=1400)
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+    monkeypatch.setattr(vision, "_get_api_key", lambda: "k")
+    out = vision.analyze_vision("что в руке", "camera")
+    assert "Конфиденциальность" in out

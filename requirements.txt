@@ -14,6 +14,11 @@ sounddevice>=0.4.6
 # Системный мониторинг
 psutil>=5.9.0
 
+# Приглушение музыки при речи и замер звука колонок (Windows CoreAudio).
+# Без них обе функции молча выключены: музыка из колонок уходит в Gemini.
+pycaw>=20240210; sys_platform == "win32"
+comtypes>=1.2; sys_platform == "win32"
+
 # Веб-камера — снимок с камеры ПК (/camera)
 opencv-python>=4.8.0
 
@@ -49,3 +54,24 @@ aiosqlite>=0.19.0
 edge-tts>=6.1.0
 pydub>=0.25.1
 imageio-ffmpeg>=0.4.8
+
+# Слово «Джарвис» офлайн на ПК (core/wake_vosk.py). Модель качает сборка.
+vosk>=0.3.45
+
+# Яркость: ноутбук (WMI) и внешние мониторы (DDC/CI)
+screen_brightness_control>=0.24; sys_platform == "win32"
+
+# Поиск без ключей: трек Spotify, страница фильма, факты (core/web_find.py)
+ddgs>=9.0
+
+# Медиа-сессии Windows: явные play/pause/next и «что играет» (core/media_session.py)
+winrt-runtime>=2.0; sys_platform == "win32"
+winrt-Windows.Foundation>=2.0; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=2.0; sys_platform == "win32"
+winrt-Windows.Media.Control>=2.0; sys_platform == "win32"
+
+# Джарвис звонит в Telegram (core/tg_call.py) и шлёт сообщения от вашего
+# имени (telegram_bot/pc_userbot.py). Telethon раньше не было в списке —
+# userbot в сборке не мог работать вовсе.
+telethon>=1.36
+py-tgcalls==3.0.0

@@ -126,16 +126,18 @@ def ensure_gemini_key(config_path: Path | None = None, *, interactive: bool = Tr
         stored = (cfg or {}).get(_KEY_FIELD, "").strip() if isinstance(cfg, dict) else ""
         if stored:
             return stored
-    else:
-        try:
-            from core.paths import load_api_keys
-            stored = load_api_keys().get(_KEY_FIELD, "").strip()
-            if stored:
-                return stored
-        except Exception as _e:
-            _logger.debug("load_api_keys lookup failed: %s", _e)
+    # Мастер и окно ключа сохраняют в %APPDATA%, а config_path мог указывать
+    # на пустой config/ проекта: окно ключ «видело», а Джарвис — нет.
+    try:
+        from core.paths import load_api_keys
+        stored = load_api_keys().get(_KEY_FIELD, "").strip()
+        if stored:
+            return stored
+    except Exception as _e:
+        _logger.debug("load_api_keys lookup failed: %s", _e)
 
-    if not interactive or not sys.stdin.isatty():
+    # В оконной сборке (pythonw/.exe без консоли) sys.stdin — None.
+    if not interactive or sys.stdin is None or not sys.stdin.isatty():
         _logger.error("Ключ Gemini не настроен, а мастер запустить негде (нет TTY)")
         return None
 

@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Set
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -30,6 +30,8 @@ _DEFAULT_CITY = os.getenv("DEFAULT_CITY", "Шымкент")
 # Shared secret — the home PC must present this to link. Set via env on Render.
 PC_LINK_TOKEN = os.getenv("PC_LINK_TOKEN", "")
 
+from telegram_bot.webapp_auth import verify_init_data  # noqa: E402
+
 _PC_KEYWORDS = [
     "play", "stop", "pause", "next", "prev", "volume",
     "включи", "выключи", "стоп", "пауза", "следующий", "предыдущий", "трек", "песн", "музык",
@@ -48,6 +50,21 @@ _PC_KEYWORDS = [
     "разблокир", "разблок", "нажми enter", "нажать enter", "нажми интер", "enter", "интер",
     "выключи пк", "перезагрузи", "restart", "shutdown",
 ]
+
+
+_CFG = None
+
+
+def _cfg():
+    global _CFG
+    if _CFG is None:
+        from telegram_bot.config import load
+        _CFG = load(require_bot=False)
+    return _CFG
+
+
+def _pc_link_token() -> str:
+    return (PC_LINK_TOKEN or getattr(_cfg(), "pc_link_token", "") or "").strip()
 
 
 def _looks_like_pc_command(text: str) -> bool:
@@ -119,6 +136,10 @@ async def ping():
     from fastapi.responses import PlainTextResponse
     return PlainTextResponse("ok", headers=_NOCACHE)
 
+@app.get("/orb.js")
+async def orb_js():
+    return FileResponse(MINIAPP_DIR / "orb.js", media_type="application/javascript", headers=_NOCACHE)
+
 @app.get("/worklet.js")
 async def serve_worklet():
     return FileResponse(MINIAPP_DIR / "worklet.js", media_type="application/javascript", headers=_NOCACHE)
@@ -141,10 +162,14 @@ async def broadcast_pc_status(online: bool):
 
 @app.websocket("/pc-link")
 async def pc_link(ws: WebSocket):
+    import hmac
     token = ws.query_params.get("token", "")
-    if PC_LINK_TOKEN and token != PC_LINK_TOKEN:
+    expected = _pc_link_token()
+    # Без настроенного токена — не пускаем никого. Раньше пустой токен значил
+    # «без проверки»: чужой «ПК» получал все команды и исходящие сообщения.
+    if not expected or not hmac.compare_digest(token.encode(), expected.encode()):
         await ws.close(code=1008)
-        logger.warning("PC link rejected — bad token")
+        logger.warning("PC link rejected — %s", "no PC_LINK_TOKEN configured" if not expected else "bad token")
         return
     await ws.accept()
     cid = await _bridge.register(ws) if _bridge else None
@@ -166,6 +191,32 @@ async def pc_link(ws: WebSocket):
             await _bridge.unregister(cid)
 
 
+# ── Общая память с голосовым Джарвисом на ПК ──────────────────────────────────
+
+@app.post("/api/memory/sync")
+async def memory_sync(request: Request):
+    """ПК отдаёт новое из своей памяти и забирает общую (telegram_bot/shared_memory.py).
+    Доступ — тем же секретом, что и /pc-link."""
+    import hmac
+
+    from fastapi.responses import JSONResponse
+
+    from telegram_bot import shared_memory
+    expected = _pc_link_token()
+    got = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    # Байты, а не str: compare_digest падает на не-ASCII символах (500 вместо 403).
+    if not expected or not hmac.compare_digest(got.encode(), expected.encode()):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    allowed = _cfg().allowed_user_ids
+    if not allowed or _memory is None:
+        return JSONResponse({"error": "no owner or memory"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    return await shared_memory.apply_sync(_memory, allowed[0], body)
+
+
 # ── Mini App data tabs (habits / tasks / reminders / dashboard) ───────────────
 
 def _today_iso(user_id: int) -> str:
@@ -177,7 +228,8 @@ async def _build_view(user_id: int, view: str) -> dict:
     if not _memory:
         return {"error": "memory offline"}
     await _memory.ensure_loaded(user_id)
-    tz = user_context.local_now(user_id, _DEFAULT_TZ).tzinfo
+    now = user_context.local_now(user_id, _DEFAULT_TZ)
+    tz = now.tzinfo
 
     if view == "habits":
         return {"habits": await _memory.get_habits(user_id, _today_iso(user_id))}
@@ -188,8 +240,8 @@ async def _build_view(user_id: int, view: str) -> dict:
         return {
             "tasks": [
                 {"id": t["id"], "title": t["title"],
-                 "due": agenda.fmt_due(t["due"]) if t.get("due") else "",
-                 "overdue": bool(t.get("due") and agenda.is_overdue(t["due"]))}
+                 "due": agenda.fmt_due(t["due"], now) if t.get("due") else "",
+                 "overdue": bool(t.get("due") and agenda.is_overdue(t["due"], now))}
                 for t in tasks
             ],
             "reminders": [
@@ -200,7 +252,7 @@ async def _build_view(user_id: int, view: str) -> dict:
 
     if view == "dashboard":
         tasks = await _memory.get_tasks(user_id)
-        today = [t for t in tasks if t.get("due") and agenda.is_today(t["due"])]
+        today = [t for t in tasks if t.get("due") and agenda.is_today(t["due"], now)]
         habits = await _memory.get_habits(user_id, _today_iso(user_id))
         reminders = await _memory.list_reminders(user_id)
         profile = await _memory.get_profile(user_id)
@@ -210,7 +262,10 @@ async def _build_view(user_id: int, view: str) -> dict:
         # "About me" section — the digital-twin snapshot.
         facts = await _memory.get_facts(user_id) if hasattr(_memory, "get_facts") else []
         about = {"about": profile.get("about", ""), "goals": profile.get("goals", ""),
-                 "facts": facts[-7:]}
+                 "facts": facts[-60:][::-1]}           # новые сверху
+        voice = [{"who": "Вы" if v["role"] == "pc_user" else "Джарвис", "text": v["text"][:240]}
+                 for v in _memory.cached_voice(user_id) if v["role"] != "pc_episode"][-6:]
+        episodes = [v["text"] for v in _memory.cached_voice(user_id) if v["role"] == "pc_episode"][-3:][::-1]
         journal_last = ""
         mem = {}
         try:
@@ -236,6 +291,8 @@ async def _build_view(user_id: int, view: str) -> dict:
                 if reminders else ""
             ),
             "about": about,
+            "pc_voice": voice,
+            "pc_episodes": episodes,
             "journal_last": journal_last,
             "mem": mem,
         }
@@ -265,7 +322,8 @@ async def _handle_action(ws: WebSocket, user_id: int, msg: dict):
         await _memory.delete_habit(user_id, int(msg["id"]))
         await _send_view(ws, user_id, "habits")
     elif mtype == "task_add" and msg.get("text"):
-        due, title = agenda.parse(msg["text"].strip())
+        due, title = agenda.parse(msg["text"].strip(),
+                                  user_context.local_now(user_id, _DEFAULT_TZ))
         await _memory.add_task(user_id, title, due)
         await _send_view(ws, user_id, "tasks")
     elif mtype == "task_done" and msg.get("id") is not None:
@@ -284,18 +342,26 @@ async def _handle_action(ws: WebSocket, user_id: int, msg: dict):
     elif mtype in ("reminder_delete", "reminder_done") and msg.get("id") is not None:
         await _memory.delete_reminder(user_id, int(msg["id"]))
         await _send_view(ws, user_id, "tasks")
+    elif mtype == "fact_delete" and msg.get("text"):
+        # По тексту, а не по номеру: пока открыта сводка, ПК мог добавить
+        # факты, и номер указал бы на чужой. С ПК факт уйдёт при синхронизации.
+        await _memory.del_fact_text(user_id, str(msg["text"]))
+        await _send_view(ws, user_id, "dashboard")
 
 
 # ── Mini App clients (browser / Telegram) ─────────────────────────────────────
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
+    cfg = _cfg()
+    user_id = verify_init_data(ws.query_params.get("init_data", ""), cfg.telegram_token)
+    allowed = cfg.allowed_user_ids
+    if user_id is None or not allowed or user_id not in allowed:
+        await ws.close(code=1008)
+        logger.warning("Mini App: отказ в доступе (uid=%s)", user_id)
+        return
     await ws.accept()
     _miniapp_clients.add(ws)
-    try:
-        user_id = int(ws.query_params.get("user_id", 0) or 0)
-    except ValueError:
-        user_id = 0
 
     _audio_buffers[user_id] = b""
 
@@ -303,6 +369,7 @@ async def ws_endpoint(ws: WebSocket):
         "type": "pc_status",
         "online": _bridge.connected if _bridge else False,
     }))
+    await _send_history(ws, user_id)
 
     try:
         while True:
@@ -332,7 +399,8 @@ async def ws_endpoint(ws: WebSocket):
 
             if mtype in ("habit_add", "habit_toggle", "habit_delete",
                          "task_add", "task_done", "task_delete",
-                         "reminder_add", "reminder_delete", "reminder_done"):
+                         "reminder_add", "reminder_delete", "reminder_done",
+                         "fact_delete"):
                 await _handle_action(ws, user_id, msg)
                 continue
 
@@ -495,6 +563,10 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
         if _memory:
             await _memory.ensure_loaded(user_id)
         reply = await _gemini.chat(user_id, text)
+        # SEND/FETCH Mini App не выполняет — и показывать/зачитывать их
+        # сырыми блоками не должен (раньше «[[SEND]] брат | …» звучало вслух).
+        import re as _re
+        reply = _re.sub(r"\[\[(SEND|FETCH)\]\].*?\[\[/\1\]\]", "", reply, flags=_re.S | _re.I).strip()
         # Execute any hidden reminder/habit/task directives → durable store
         if _memory:
             tz = user_context.local_now(user_id, _DEFAULT_TZ).tzinfo
@@ -502,9 +574,43 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
             if summary:
                 reply += "\n\n✅ Добавил — " + ", ".join(summary)
             asyncio.create_task(_memory.observe(user_id, _gemini, text, reply))
+        await _remember(user_id, text, reply)       # уже без служебных блоков
     else:
         reply = "AI-сервис недоступен."
     await _send_text(ws, reply, want_audio)
+
+
+async def _remember(user_id: int, text: str, reply: str):
+    """Переписка Mini App — в ту же историю, что и чат бота. Раньше она
+    нигде не хранилась: после перезагрузки приложение открывалось пустым,
+    а разговоры не попадали в общую память с ПК."""
+    if not _memory:
+        return
+    try:
+        await _memory.add_message(user_id, "user", text)
+        if reply:
+            await _memory.add_message(user_id, "model", reply)
+    except Exception as exc:
+        logger.warning("Mini App: переписка не сохранилась: %s", exc)
+
+
+async def _send_history(ws: WebSocket, user_id: int, limit: int = 30):
+    """Последние сообщения — чтобы приложение открывалось с разговором."""
+    if not _memory:
+        return
+    try:
+        await _memory.ensure_loaded(user_id)
+        msgs = await _memory.recent_messages(user_id, limit)
+    except Exception as exc:
+        logger.debug("История Mini App: %s", exc)
+        return
+    import re as _re
+    clean = []
+    for m in msgs:
+        text = _re.sub(r"\[\[(SEND|FETCH)\]\].*?\[\[/\1\]\]", "", m["text"], flags=_re.S | _re.I).strip()
+        if text:
+            clean.append({"role": "user" if m["role"] == "user" else "bot", "text": text})
+    await ws.send_text(json.dumps({"type": "history", "messages": clean}))
 
 
 async def _handle_voice(ws: WebSocket, user_id: int, pcm: bytes, want_audio: bool = True):

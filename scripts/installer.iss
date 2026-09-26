@@ -1,8 +1,10 @@
 ; Inno Setup Script for JARVIS Mark X
-; Compiles dist/JARVIS into JARVIS_Setup_v1.0.exe
+; Compiles dist/JARVIS into JARVIS_Setup_v<версия>.exe
 
 #define MyAppName "JARVIS Mark X"
-#define MyAppVersion "1.0.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "1.1.0"
+#endif
 #define MyAppPublisher "JARVIS Team"
 #define MyAppURL "https://github.com/Sardorbek505/jarvis-mark-x"
 #define MyAppExeName "JARVIS.exe"
@@ -20,7 +22,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DisableProgramGroupPage=yes
 ; Output setup file configuration
 OutputDir=..\dist
-OutputBaseFilename=JARVIS_Setup_v1.0
+OutputBaseFilename=JARVIS_Setup_v{#MyAppVersion}
 SetupIconFile=..\app.ico
 WizardImageFile=..\assets\wizard.bmp
 WizardSmallImageFile=..\assets\wizard_small.bmp
@@ -43,9 +45,9 @@ Source: "..\dist\JARVIS\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdir
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app.ico"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app.ico"; Tasks: desktopicon
-Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app.ico"; Tasks: autostart
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: autostart
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

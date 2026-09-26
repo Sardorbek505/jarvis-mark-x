@@ -44,19 +44,47 @@ import traceback
 import re
 import threading
 import time
-import random
 import subprocess
 import atexit
 from datetime import datetime
 import logging
 
 # Configure logging
+#
+# Лог пишется ещё и в файл %APPDATA%/JARVIS/jarvis.log. В оконной сборке
+# (.exe без консоли) stderr нет вовсе, и раньше логи не попадали никуда:
+# при любой поломке у пользователя диагностировать было нечем.
+def _log_handlers() -> list:
+    from logging.handlers import RotatingFileHandler
+    from core.paths import get_user_data_dir   # только stdlib — безопасно до Qt
+    handlers = []
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler())
+    try:
+        handlers.append(RotatingFileHandler(
+            get_user_data_dir() / "jarvis.log", maxBytes=2_000_000,
+            backupCount=2, encoding="utf-8"))
+    except OSError:
+        pass
+    return handlers
+
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%H:%M:%S'
+    datefmt='%H:%M:%S',
+    handlers=_log_handlers(),
 )
 logger = logging.getLogger('JARVIS')
+
+
+def _log_unhandled(exc_type, exc, tb):
+    logger.critical("Необработанная ошибка", exc_info=(exc_type, exc, tb))
+
+
+sys.excepthook = _log_unhandled
+# Падение рабочего потока раньше было беззвучным: окно жило, Джарвис — нет.
+threading.excepthook = lambda args: _log_unhandled(args.exc_type, args.exc_value, args.exc_traceback)
 
 import sounddevice as sd
 from google import genai
@@ -88,6 +116,7 @@ from core.proactive_engine import ProactiveEngine
 from core.team_collaboration import TeamCollaborationEngine
 from core.onboarding import ensure_gemini_key
 from core.latency import LatencyTracker
+from core.result_card import build_card, capture_foreground_png
 from core.headless_ui import HeadlessUI, headless_requested
 from actions.open_app import open_app
 from actions.weather import weather_action
@@ -113,9 +142,11 @@ from core import (
 
 
 # ─── Пути и константы ─────────────────────────────────────────────────────────
-from core.paths import get_base_dir, get_config_path, get_prompt_path
+from core.paths import get_base_dir, get_config_path, get_data_root, get_prompt_path
 
 BASE_DIR      = get_base_dir()
+# Изменяемые данные (профиль, прогнозы, команда): в .exe — %APPDATA%/JARVIS.
+DATA_DIR      = get_data_root()
 API_CONFIG    = get_config_path("api_keys.json")
 PROMPT_PATH   = get_prompt_path()
 
@@ -143,10 +174,11 @@ _PLAYBACK_RETRY_SEC = 1.0
 _NOISE_CANCEL_HINTS = ("noise-cancelling", "noise cancelling", "noise-canceling",
                        "шумоподавлен")
 
-# Сколько тишины ждать, прежде чем считать фразу законченной.
-# 220 мс обеспечивает мгновенную реакцию и диалог без неловких пауз.
-_VAD_SILENCE_MS = int(os.getenv("VAD_SILENCE_MS", "220"))
-_VAD_PREFIX_MS = int(os.getenv("VAD_PREFIX_MS", "60"))
+# Сколько тишины ждать, прежде чем считать фразу законченной. По умолчанию
+# модель ждёт около секунды — это и есть та самая пауза перед ответом.
+# Ниже 300 мс модель режет человека на паузах внутри фразы (см. _build_config).
+_VAD_SILENCE_MS = int(os.getenv("VAD_SILENCE_MS", "400"))
+_VAD_PREFIX_MS = int(os.getenv("VAD_PREFIX_MS", "120"))
 
 # Сколько модели позволено думать перед тем, как открыть рот.
 #
@@ -183,7 +215,17 @@ def _read_config_voice() -> str:
         pass
     return ""
 
-_VOICE_PROVIDER = (os.getenv("JARVIS_VOICE") or _read_config_voice() or "fish").strip().lower()
+def _default_voice() -> str:
+    # Без ключа Fish «киношный» голос недостижим: звук Gemini выбрасывается,
+    # а ответ ждёт полного текста и озвучивается Edge-TTS. Тогда пусть говорит
+    # сам Gemini — сразу и без лишней секунды.
+    try:
+        from telegram_bot import tts_fish
+        return "fish" if tts_fish.is_configured() else "gemini"
+    except Exception:
+        return "gemini"
+
+_VOICE_PROVIDER = (os.getenv("JARVIS_VOICE") or _read_config_voice() or _default_voice()).strip().lower()
 
 def get_voice_provider() -> str:
     global _VOICE_PROVIDER
@@ -226,14 +268,64 @@ _GATE_REPORT_SEC = float(os.getenv("MIC_GATE_REPORT_SEC", "5"))
 # фильм или плейлист ничем, кроме этого гейта.
 _IGNORE_SPEAKERS = os.getenv("MIC_IGNORE_SPEAKERS", "1") != "0"
 
+# ── Обращение по имени ───────────────────────────────────────────────────────
+# Пока Джарвис «спит», имя слушает офлайн-детектор на ПК (core/wake_vosk.py),
+# и в Gemini не уходит ничего. Услышал «Джарвис» — открывается окно разговора
+# (_AWAKE_SEC после последней реплики), звук идёт в Gemini. Модели Vosk нет —
+# запасной путь: звук идёт в Gemini, а имя ищется в его расшифровке (старый
+# детектор hey_jarvis русское «Джарвис» не слышал: 0.004 при пороге 0.5).
+# JARVIS_WAKE_MODE=always_on — отвечать на всё без имени.
+_WAKE_MODE = os.getenv("JARVIS_WAKE_MODE", "wake_word").strip().lower()
+_AWAKE_SEC = float(os.getenv("JARVIS_AWAKE_SEC", "30"))
+# Как пишется имя (Джарвис, Жарвис, Джервис, Jarvis, падежи) — в одном месте,
+# им пользуются и расшифровка Gemini, и локальный детектор.
+from core.wake_vosk import WAKE_RE as _WAKE_RE, LocalWake  # noqa: E402
 
-def _device_is_silent(index: int, seconds: float = 0.05) -> bool:
-    """Проверяет, является ли устройство мёртвым или фантомным виртуальным входом."""
+
+def _has_wake_word(text: str) -> bool:
+    return bool(text) and bool(_WAKE_RE.search(text))
+
+
+# Сколько после собственной речи ещё не слушать микрофон: звук досыпается из
+# буфера звуковой карты и отражается от стен. Без этого хвоста Джарвис
+# слышал конец своей фразы и отвечал сам себе.
+_ECHO_TAIL_SEC = float(os.getenv("JARVIS_ECHO_TAIL_SEC", "0.5"))
+
+# Потолок паузы между попытками подключения к Gemini.
+_RECONNECT_MAX_SEC = 30.0
+# Сессия считается здоровой, если прожила столько — иначе разрыв сразу после
+# подключения идёт с нарастающей паузой, а не крутится по два раза в секунду.
+_SESSION_HEALTHY_SEC = 10.0
+# Сколько секунд без кадров считать, что микрофон отвалился (см. _listen_audio).
+_MIC_STALL_SEC = 2.0
+# Fish ждёт следующий кусок ответа не дольше этого (см. _fish_worker).
+_FISH_IDLE_SEC = 20.0
+# Сколько ждать ответа инструмента, прежде чем сказать «не успело».
+_TOOL_TIMEOUT_SEC = float(os.getenv("JARVIS_TOOL_TIMEOUT_SEC", "45"))
+# Сколько ждать расшифровку с именем, если вызов инструмента пришёл раньше.
+_TOOL_WAKE_WAIT_SEC = 1.5
+# Сколько реплик подряд без имени продолжают разговор (см. _continue_conversation).
+_FOLLOWUPS = int(os.getenv("JARVIS_FOLLOWUPS", "4"))
+# Сколько звука до пробуждения отдать в Gemini: имя и начало команды —
+# «Джарвис, открой ютуб» говорят на одном дыхании. 32 кадра по 64 мс ≈ 2 с.
+_WAKE_PREROLL_FRAMES = 32
+
+
+def _device_is_silent(index: int, seconds: float = 0.05, need_signal: bool = True) -> bool:
+    """Проверяет, является ли устройство мёртвым или фантомным виртуальным входом.
+
+    need_signal=False — достаточно, что устройство открывается и пишет.
+    Гарнитура и микрофон с шумоподавлением (ASUS AI, Krisp) в тихой комнате
+    честно отдают цифровой ноль, и проверка «есть ли сигнал» отбрасывала их
+    в пользу встроенного массива.
+    """
     try:
         import numpy as np
         rec = sd.rec(int(seconds * SEND_SAMPLE_RATE), samplerate=SEND_SAMPLE_RATE,
                      channels=1, dtype="int16", device=index)
         sd.wait()
+        if not need_signal:
+            return False
         peak = int(np.abs(rec).max())
         return peak == 0
     except Exception as exc:
@@ -262,8 +354,10 @@ def _pick_input_device():
         if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
             continue
         name = d["name"].lower()
-        if any(k in name for k in ("headset", "headphone", "bluetooth", "wireless", "buds", "airpods", "freebuds", "wh-1000", "airdots", "гарнитур", "наушник", "hands-free", "usb")) and not _device_is_silent(i):
-            if "virtual" not in name and "line" not in name and "output" not in name:
+        if any(k in name for k in ("headset", "headphone", "bluetooth", "wireless", "buds", "airpods", "freebuds", "wh-1000", "airdots", "гарнитур", "наушник", "hands-free", "usb")) and not _device_is_silent(i, need_signal=False):
+            # Веб-камера тоже «USB», но её микрофон — через всю комнату.
+            is_camera = any(k in name for k in ("cam", "камер"))
+            if not is_camera and "virtual" not in name and "line" not in name and "output" not in name:
                 logger.info("Обнаружена подключенная гарнитура/наушники — выбран микрофон: «%s» (индекс %d)", d["name"], i)
                 return i
 
@@ -273,7 +367,7 @@ def _pick_input_device():
         if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
             continue
         name = d["name"].lower()
-        if any(k in name for k in ("noise-cancelling", "noise cancelling", "noise-canceling", "шумоподавлен", "ai noise")) and not _device_is_silent(i):
+        if any(k in name for k in ("noise-cancelling", "noise cancelling", "noise-canceling", "шумоподавлен", "ai noise")) and not _device_is_silent(i, need_signal=False):
             if "virtual line" not in name and "output" not in name:
                 logger.info("Выбран микрофон с аппаратным шумоподавлением: «%s» (индекс %d)", d["name"], i)
                 return i
@@ -292,15 +386,16 @@ def _pick_input_device():
     return None
 CHUNK_SIZE        = 1024
 
-# Порог тишины для микрофона (RMS по int16).
-# 35.0 обеспечивает высокую чувствительность к обычной речи и шёпоту
-# без необходимости повышать голос или кричать в микрофон ноутбука.
-MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "35.0"))
+# Порог тишины для микрофона (RMS по int16). Ниже него кадры в облако не
+# уходят вовсе. Речь в метре от ноутбука даёт ~1000-5000, тишина — единицы
+# и десятки. 150 отсекает пространственный шум комнаты, шёпот и шорохи.
+# Тихий микрофон — подобрать своё значение: scripts/mic_check.py.
+MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "150"))
 # Хвост тишины после речи — не косметика, а условие того, что тебе вообще
 # ответят. Конец фразы определяет VAD на стороне Gemini, и определить его он
 # может только по ПОЛУЧЕННОЙ тишине: когда гейт обрывает поток сразу за
 # последним громким кадром, сервер остаётся ждать продолжения фразы.
-MIC_HANGOVER_MS = int(os.getenv("MIC_HANGOVER_MS", "450"))
+MIC_HANGOVER_MS = int(os.getenv("MIC_HANGOVER_MS", str(_VAD_SILENCE_MS + 800)))
 _FRAME_MS = CHUNK_SIZE / SEND_SAMPLE_RATE * 1000
 MIC_HANGOVER_FRAMES = int(os.getenv(
     "MIC_HANGOVER_FRAMES", str(max(1, round(MIC_HANGOVER_MS / _FRAME_MS)))
@@ -320,6 +415,23 @@ _DESTRUCTIVE = {
 
 def _action_of(args: dict) -> str:
     return str(args.get("action", "")).strip().lower()
+
+
+def _args_key(name: str, args: dict) -> str:
+    """Подтверждение действует на ЭТОТ вызов целиком: «да» на удаление
+    a.txt не должно открывать удаление всего рабочего стола."""
+    import json as _json
+    return name + ":" + _json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+
+
+_YES_RE = re.compile(
+    r"\b(да|давай|подтверждаю|конечно|выключай|удаляй|перезагружай|ага|угу|"
+    r"yes|yeah|ok|окей|ha|ҳа|иә|иа)\b", re.IGNORECASE)
+_NO_RE = re.compile(r"\b(нет|не|отмена|стоп|no|yo'q|жоқ)\b", re.IGNORECASE)
+
+
+def _is_affirmative(text: str) -> bool:
+    return bool(text) and bool(_YES_RE.search(text)) and not _NO_RE.search(text)
 
 
 def _is_destructive(name: str, args: dict) -> bool:
@@ -444,21 +556,45 @@ def _split_for_speech(text: str) -> list[str]:
     return chunks
 
 
+def _take_speakable(buf: str, first: bool, final: bool) -> tuple[list[str], str]:
+    """Отрезает от потоковой расшифровки ответа готовые к синтезу куски.
+
+    Fish раньше получал ответ только по turn_complete — а тот приходит на
+    4-5 секунд позже первого звука Gemini (замер в test_voice_loop_e2e):
+    модель «проговаривает» весь ответ, прежде чем закрыть ход. Эти секунды
+    Джарвис молчал. Теперь предложение уходит в синтез, как только в
+    расшифровке появилась его точка. Пороги те же, что у _split_for_speech.
+    """
+    chunks: list[str] = []
+    while True:
+        floor = _MIN_FIRST_CHUNK if first and not chunks else _MIN_SPEECH_CHUNK
+        cut = next((m.end() for m in re.finditer(r"[.!?…]+(?=\s)", buf)
+                    if len(buf[:m.end()].strip()) >= floor), None)
+        if cut is None:
+            break
+        chunks.append(buf[:cut].strip())
+        buf = buf[cut:]
+    if final and buf.strip():
+        chunks.append(buf.strip())
+        buf = ""
+    return chunks, buf
+
+
 # ─── Описания инструментов (на русском) ───────────────────────────────────────
 TOOLS = [
     {
         "name": "open_app",
         "description": (
-            "Открывает любое приложение или программу на компьютере. "
-            "Вызывай всегда, когда пользователь просит открыть, запустить или включить что-либо. "
-            "Никогда не говори что открыл — всегда вызывай этот инструмент."
+            "Запускает установленную программу Windows по имени: Telegram, Chrome, Steam, Discord, "
+            "Spotify, Word, VS Code, калькулятор, проводник, настройки. Если уже запущена — выводит "
+            "её окно вперёд. НЕ для сайтов (browser), музыки (music_player), фильмов (movie_player)."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "app_name": {
                     "type": "STRING",
-                    "description": "Название приложения (например: Chrome, Telegram, Spotify)"
+                    "description": "Имя программы как сказал пользователь («телеграм», «хром», «стим»)"
                 }
             },
             "required": ["app_name"]
@@ -466,7 +602,7 @@ TOOLS = [
     },
     {
         "name": "weather",
-        "description": "Сообщает текущую погоду в указанном городе.",
+        "description": "Погода в городе: сейчас и прогноз на сегодня, завтра и послезавтра. Вызывай и на «погода на завтра» — прогноз уже в ответе.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -478,8 +614,9 @@ TOOLS = [
     {
         "name": "web_search",
         "description": (
-            "Ищет информацию в интернете по запросу пользователя. "
-            "Используй когда нужны актуальные данные, факты, новости или что-либо неизвестное."
+            "Найти в интернете и получить результаты ТЕКСТОМ, чтобы ответить вслух: факты, новости, "
+            "цены, «кто такой», «что случилось». Не открывает браузер. Если пользователь хочет сам "
+            "посмотреть выдачу на экране — browser."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -492,41 +629,45 @@ TOOLS = [
     {
         "name": "computer_control",
         "description": (
-            "Управляет настройками компьютера: громкость, яркость, скриншот, "
-            "блокировка экрана, выключение, перезагрузка."
+            "Системные настройки ПК. Громкость: «громче», «тише», «громкость 50», «выключи/включи звук». "
+            "Яркость: «ярче», «темнее», «яркость 30». Также lock — заблокировать, shutdown/restart — "
+            "выключить/перезагрузить ПК (только по явной просьбе), screenshot — ТОЛЬКО сохранить снимок "
+            "в файл (чтобы посмотреть на экран — look_at_screen). «Громче/тише» — это системная громкость, "
+            "если не сказано «музыку громче»."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action": {
                     "type": "STRING",
-                    "description": (
-                        "Действие: volume_up | volume_down | mute | "
-                        "brightness_up | brightness_down | screenshot | lock | "
-                        "shutdown | restart"
-                    )
+                    "enum": ["volume_up", "volume_down", "volume_set", "mute", "unmute",
+                             "brightness_up", "brightness_down", "brightness_set",
+                             "screenshot", "lock", "shutdown", "restart"],
                 },
-                "value": {"type": "STRING", "description": "Значение (например: 50 для 50%)"}
+                "value": {
+                    "type": "STRING",
+                    "description": ("Для *_set — целевой уровень 0-100 («50», «максимум»). "
+                                    "Для *_up/*_down — шаг в процентах, по умолчанию 10."),
+                },
             },
-            "required": []
+            "required": ["action"]
         }
     },
     {
         "name": "browser",
         "description": (
-            "Управляет браузером: открывает сайты, выполняет поиск в браузере."
+            "Открыть сайт или поисковую выдачу НА ЭКРАНЕ: «открой ютуб», «зайди на vk.com», "
+            "«покажи в гугле …». Для ответа голосом без браузера — web_search."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {
-                    "type": "STRING",
-                    "description": "go_to — открыть сайт | search — поиск в браузере"
-                },
-                "url":    {"type": "STRING", "description": "URL для go_to"},
-                "query":  {"type": "STRING", "description": "Поисковый запрос для search"},
-                "engine": {"type": "STRING", "description": "google | yandex | duckduckgo (по умолчанию google)"},
-                "browser": {"type": "STRING", "description": "chrome | firefox | edge (необязательно)"}
+                "action": {"type": "STRING", "enum": ["go_to", "search"]},
+                "url":    {"type": "STRING", "description": "Адрес для go_to (youtube.com, https://…)"},
+                "query":  {"type": "STRING", "description": "Запрос для search"},
+                "engine": {"type": "STRING", "enum": ["google", "yandex", "duckduckgo", "bing"]},
+                "browser": {"type": "STRING", "enum": ["chrome", "edge", "firefox", "yandex", "opera", "brave"],
+                            "description": "Только если пользователь назвал браузер"}
             },
             "required": ["action"]
         }
@@ -569,13 +710,28 @@ TOOLS = [
             "properties": {
                 "category": {
                     "type": "STRING",
-                    "description": "identity | preferences | projects | relationships | wishes | notes"
+                    "enum": ["identity", "relationships", "work", "health", "habits", "dates",
+                             "preferences", "projects", "wishes", "notes"],
                 },
-                "key":   {"type": "STRING", "description": "Ключ (snake_case, на английском)"},
-                "value": {"type": "STRING", "description": "Значение (на английском)"},
+                "key":   {"type": "STRING", "description": "Короткий ключ: name, city, любимая_музыка"},
+                "value": {"type": "STRING", "description": "Значение на языке пользователя, как он сказал"},
             },
             "required": ["category", "key", "value"]
         }
+    },
+    {
+        "name": "recall_memory",
+        "description": (
+            "Вспомнить, что ты знаешь о пользователе и о чём вы говорили. Вызывай на «что ты обо мне знаешь», "
+            "«помнишь, я говорил про…», «о чём мы вчера говорили», «как зовут моего брата», и когда сам "
+            "не уверен в факте о пользователе — прежде чем переспрашивать. query — тема; пусто — всё."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING"}}}
+    },
+    {
+        "name": "forget_memory",
+        "description": "Забыть факт о пользователе: «забудь, что я…», «удали из памяти…». query — о чём.",
+        "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING"}}, "required": ["query"]}
     },
     {
         "name": "obsidian",
@@ -606,19 +762,13 @@ TOOLS = [
         "description": (
             "Активирует один из lifestyle-режимов ДЖАРВИС или сбрасывает в обычный. "
             "Каждый режим открывает релевантные приложения и сайты. "
-            "Вызывай когда пользователь говорит: режим учебы, режим работы, режим кино, "
-            "режим музыки, обычный режим, пора учиться, пора работать, хочу фильм, включи музыку."
+            "Вызывай ТОЛЬКО на «режим учёбы/работы/кино/музыки», «обычный режим», «пора учиться», "
+            "«пора работать». «Включи музыку» — это music_player, «хочу фильм X» — movie_player."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "mode": {
-                    "type": "STRING",
-                    "description": (
-                        "study (учеба) | work (работа) | movie (кино) | "
-                        "music (музыка) | normal (обычный, сброс)"
-                    )
-                },
+                "mode": {"type": "STRING", "enum": ["study", "work", "movie", "music", "normal"]},
                 "preference": {
                     "type": "STRING",
                     "description": (
@@ -636,29 +786,59 @@ TOOLS = [
     {
         "name": "movie_player",
         "description": (
-            "Управляет видеоплеером фильмов и сериалов через VK Видео (https://vkvideo.ru/): "
-            "запуск фильма на vkvideo.ru, пауза (Space), полный экран (F), "
-            "перемотка вперед/назад на 10 сек (←/→), громкость (↑/↓), выход. "
-            "Вызывай когда пользователь говорит: включи фильм X, поставь X, фильм X, "
-            "пауза, продолжай, перемотай, полный экран, вперёд, назад, громче фильм, тише, выйти из фильма."
+            "ФИЛЬМЫ И СЕРИАЛЫ — всегда на VK Видео: найти, открыть, запустить и развернуть на весь "
+            "экран. «Поставь Железный человек 2», «включи фильм Интерстеллар», «хочу посмотреть "
+            "Дюну». Управление после запуска — video_control."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["play"]},
+                "title": {"type": "STRING", "description": "Название фильма/сериала (можно с годом, сезоном)"},
+            },
+            "required": ["action", "title"]
+        }
+    },
+    {
+        "name": "youtube_player",
+        "description": (
+            "ВИДЕО И КЛИПЫ — YouTube, сразу на весь экран. play + query: «поставь клип Люби меня», "
+            "«включи видео как собрать ПК». latest + channel: «поставь последнее видео MrBeast». "
+            "Управление после запуска — video_control."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["play", "latest"]},
+                "query": {"type": "STRING", "description": "Что искать (для клипа можно добавить «клип»)"},
+                "channel": {"type": "STRING", "description": "Канал для latest: «MrBeast», «Wylsacom»"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "video_control",
+        "description": (
+            "Управление фильмом или роликом, который идёт в окне Джарвиса (VK Видео, YouTube): пауза, "
+            "продолжи, перемотай вперёд/назад на N, перемотай на 1:20:00, «сколько осталось» / "
+            "«который час в фильме» (time), громче/тише/громкость N, выключи/включи звук видео, "
+            "полный экран / выйди из полного экрана, скорость, следующее видео, закрой фильм. "
+            "Если идёт видео, «пауза/громче/тише» — сюда, а не в music_player."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action": {
                     "type": "STRING",
-                    "description": (
-                        "play (запустить фильм на vkvideo.ru) | pause (Space, переключатель) | "
-                        "resume (Space) | fullscreen (F) | "
-                        "seek_forward (→ 10 сек) | seek_back (← 10 сек) | "
-                        "volume_up (громкость +10%) | volume_down (-10%) | "
-                        "exit (выход + закрыть вкладку)"
-                    )
+                    "enum": ["pause", "resume", "seek_forward", "seek_back", "seek_to", "restart",
+                             "time", "volume_up", "volume_down", "volume_set", "mute", "unmute",
+                             "fullscreen", "exit_fullscreen", "speed", "next", "close"],
                 },
-                "title": {
+                "value": {
                     "type": "STRING",
-                    "description": "Название фильма для воспроизведения на vkvideo.ru (для action=play)"
-                }
+                    "description": ("seek_forward/back — сколько («30 секунд», «5 минут», по умолчанию 10 с); "
+                                    "seek_to — время («1:20:00», «45 минут»); volume_* — проценты; speed — «1.5»"),
+                },
             },
             "required": ["action"]
         }
@@ -666,37 +846,22 @@ TOOLS = [
     {
         "name": "window_control",
         "description": (
-            "Управляет окнами и системой Windows: закрыть/свернуть/развернуть окно, "
-            "переключение окон, рабочий стол, проводник, диспетчер задач, параметры. "
-            "Вызывай когда пользователь говорит: закрой окно, сверни окно, разверни, "
-            "переключи окно, покажи рабочий стол, сверни все окна, открой проводник, "
-            "открой диспетчер задач, открой параметры, переключись на Chrome/Spotify/etc."
+            "Окна Windows: закрыть/свернуть/развернуть окно (target — программа: «хром», «телеграм»; "
+            "без target — окно впереди), переключиться на программу (activate), свернуть все, "
+            "рабочий стол, прижать влево/вправо, диспетчер задач, параметры Windows, «Выполнить»."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action": {
                     "type": "STRING",
-                    "description": (
-                        "close (Alt+F4 закрыть окно) | "
-                        "minimize (свернуть) | maximize (развернуть) | "
-                        "minimize_all (свернуть все окна Win+M) | "
-                        "snap_left (прижать влево Win+←) | snap_right (Win+→) | "
-                        "switch (переключиться Alt+Tab) | "
-                        "show_desktop (Win+D рабочий стол) | "
-                        "open_explorer (Win+E проводник) | "
-                        "task_manager (диспетчер задач) | "
-                        "settings (параметры Windows) | "
-                        "run (Win+R выполнить) | "
-                        "activate (переключиться на окно по имени, нужен target)"
-                    )
+                    "enum": ["close", "minimize", "maximize", "activate", "minimize_all",
+                             "show_desktop", "snap_left", "snap_right", "switch",
+                             "open_explorer", "task_manager", "settings", "run"],
                 },
                 "target": {
                     "type": "STRING",
-                    "description": (
-                        "Для action=activate — название приложения "
-                        "(например 'Chrome', 'Spotify', 'Telegram')"
-                    )
+                    "description": "Программа, чьё окно: «хром», «телеграм», «spotify». Для activate — обязательно."
                 }
             },
             "required": ["action"]
@@ -705,45 +870,27 @@ TOOLS = [
     {
         "name": "music_player",
         "description": (
-            "Управляет Spotify через официальный Web API: точный поиск треков, пауза, "
-            "переключение, громкость, перемешивание, повтор, информация о текущем треке, "
-            "mood mode (спокойное/мотивационное/ночной вайб). "
-            "Гарантирует воспроизведение запрошенного трека, не последнего проигранного. "
-            "Вызывай когда пользователь говорит: включи музыку, включи <исполнителя/трек>, "
-            "поставь песню, пауза, продолжи, следующий трек, предыдущий трек, "
-            "стоп музыку, громче, тише, громкость X, перемешай, повтор, что играет, "
-            "кто поет, включи спокойное/мотивационное/ночной вайб."
+            "МУЗЫКА — всегда Spotify (Premium). login — «подключи Spotify» (вход один раз). "
+            "play + query — включить трек/исполнителя/"
+            "альбом («включи Believer», «поставь Любэ»); play без query — продолжить; mood + query — "
+            "плейлист под настроение («спокойное», «для работы»); pause, resume, next, previous; "
+            "now_playing — «что играет», «кто поёт»; volume_* — громкость самого Spotify, только если "
+            "сказано «музыку громче/тише» (иначе computer_control)."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action": {
                     "type": "STRING",
-                    "description": (
-                        "play (запуск с поиском) | pause | resume | "
-                        "next (следующий трек) | prev (предыдущий) | stop | "
-                        "volume_up | volume_down | volume | shuffle | repeat | "
-                        "now_playing | mood"
-                    )
+                    "enum": ["play", "mood", "pause", "resume", "next", "previous", "now_playing",
+                             "volume_up", "volume_down", "volume_set", "shuffle", "login"],
                 },
                 "query": {
                     "type": "STRING",
-                    "description": (
-                        "Что играть (для action=play/mood): название трека, исполнителя, "
-                        "альбома, жанра или настроение. Например: 'Imagine Dragons', 'lofi hip hop', "
-                        "'Любэ', 'jazz', 'спокойное', 'мотивационное', 'ночной вайб'."
-                    )
+                    "description": "Для play/mood: трек, исполнитель, альбом или настроение — как сказал пользователь",
                 },
-                "value": {
-                    "type": "STRING",
-                    "description": (
-                        "Значение для action=volume (0-100) или action=repeat (track/context/off)"
-                    )
-                },
-                "playlist_url": {
-                    "type": "STRING",
-                    "description": "Прямой URL Spotify-плейлиста (опционально, имеет приоритет над query)"
-                }
+                "value": {"type": "STRING", "description": "Для volume_set — 0-100; для volume_up/down — шаг"},
+                "playlist_url": {"type": "STRING", "description": "Ссылка на плейлист, если пользователь её дал"},
             },
             "required": ["action"]
         }
@@ -809,8 +956,9 @@ TOOLS = [
     {
         "name": "shutdown_jarvis",
         "description": (
-            "Полностью завершает работу ДЖАРВИС. "
-            "Вызывай когда пользователь говорит: выключи, закрой, до свидания, пока, стоп, хватит."
+            "Завершить саму программу ДЖАРВИС. ТОЛЬКО на явное: «выключись, Джарвис», «заверши "
+            "работу», «закройся». НЕ на «стоп», «пауза», «хватит», «пока», «выключи музыку», "
+            "«закрой окно», «выключи компьютер» — для них другие инструменты или просто ответ."
         ),
         "parameters": {"type": "OBJECT", "properties": {}}
     },
@@ -936,20 +1084,18 @@ TOOLS = [
     {
         "name": "look_at_screen",
         "description": (
-            "Захватывает текущий экран или активное окно и анализирует его с помощью компьютерного зрения. "
-            "Вызывай когда пользователь просит посмотреть на экран, найти ошибку в коде, оценить дизайн, "
-            "прочитать что написано на мониторе, или говорит 'что на экране'."
+            "ЕДИНСТВЕННЫЙ способ увидеть экран. Вызывай на «что у меня на экране», «посмотри», "
+            "«где ошибка в коде», «прочитай», «оцени дизайн», «что это за окно». Никогда не описывай "
+            "экран без вызова. После ответа кадр остаётся у тебя — на уточнения отвечай по нему."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "prompt": {
-                    "type": "STRING",
-                    "description": "Что конкретно нужно проанализировать или найти на экране"
-                },
+                "prompt": {"type": "STRING", "description": "Вопрос пользователя про экран, его словами"},
                 "source": {
                     "type": "STRING",
-                    "description": "Источник: 'screen' (весь монитор) или 'active_window' (только активное окно)"
+                    "enum": ["screen", "active_window"],
+                    "description": "active_window — для кода, текста, одной программы (чётче); screen — весь монитор"
                 }
             },
             "required": ["prompt"]
@@ -958,16 +1104,13 @@ TOOLS = [
     {
         "name": "look_at_camera",
         "description": (
-            "Делает снимок с веб-камеры и анализирует окружающую обстановку. "
-            "Вызывай когда пользователь просит взглянуть через камеру, посмотреть на него или показать предмет."
+            "Посмотреть через веб-камеру: «что у меня в руке», «как я выгляжу», «посмотри на меня», "
+            "«что это за предмет»."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "prompt": {
-                    "type": "STRING",
-                    "description": "Вопрос или задача для анализа изображения с камеры"
-                }
+                "prompt": {"type": "STRING", "description": "Вопрос пользователя, его словами"}
             },
             "required": ["prompt"]
         }
@@ -1013,7 +1156,7 @@ TOOLS = [
         "name": "sleep_timer",
         "description": (
             "Управляет умным таймером сна с подтверждением голосом и автовыключением ноутбука/ПК. "
-            "По истечении времени Джарвис спросит разрешение выключить ПК. Если пользователь молчит 15 сек — выключает. "
+            "По истечении времени Джарвис спросит разрешение выключить ПК. Если пользователь молчит 30 сек — выключает. "
             "Вызывай когда пользователь говорит: 'через полчаса буду спать', 'через 30 минут спать', "
             "'таймер сна на 45 минут', 'через час выключи ноут', 'отмени таймер сна', 'сколько осталось до сна'."
         ),
@@ -1022,12 +1165,52 @@ TOOLS = [
             "properties": {
                 "action": {
                     "type": "STRING",
-                    "description": "set (установить таймер) | cancel (отменить) | status (проверить оставшееся время)"
+                    "enum": ["set", "cancel", "status", "confirm"],
+                    "description": "confirm — пользователь сказал «да» на вопрос о выключении"
                 },
                 "duration_minutes": {
                     "type": "NUMBER",
                     "description": "Время таймера в минутах (например, 30 для получаса, 60 для часа, 45, 15)"
                 }
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "break_reminder",
+        "description": (
+            "Напоминания о перерыве, когда пользователь долго смотрит фильм/YouTube или играет. "
+            "Джарвис сам напоминает через 2 часа, потом каждый час. Вызывай на: «не напоминай сегодня» "
+            "(off_today), «выключи напоминания о перерыве» (off), «включи напоминания» (on), "
+            "«напоминай через час / каждые 30 минут» (set), «сколько я уже смотрю/играю» (status)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["status", "off_today", "off", "on", "set"]},
+                "first_minutes": {"type": "NUMBER", "description": "set: через сколько минут первое напоминание"},
+                "repeat_minutes": {"type": "NUMBER", "description": "set: как часто потом, в минутах"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "phone_call",
+        "description": (
+            "Джарвис САМ звонит пользователю в Telegram и разговаривает голосом. "
+            "call_now — «позвони мне»; schedule — «позвони мне в 6 утра» (time \"06:00\"), "
+            "«звони каждое утро в 7» (repeat=daily), «позвони через 20 минут» (in_minutes); "
+            "topic — зачем звонить («утренний отчёт», «напомнить про встречу»): для утреннего звонка "
+            "Джарвис зачитает погоду, календарь и новости. cancel — отменить (time — какой), list — какие звонки стоят."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["call_now", "schedule", "cancel", "list"]},
+                "time": {"type": "STRING", "description": "ЧЧ:ММ, 24 часа: «6 утра» → \"06:00\", «в 9 вечера» → \"21:00\""},
+                "in_minutes": {"type": "NUMBER", "description": "позвонить через столько минут"},
+                "repeat": {"type": "STRING", "enum": ["once", "daily"]},
+                "topic": {"type": "STRING", "description": "повод звонка"}
             },
             "required": ["action"]
         }
@@ -1067,13 +1250,20 @@ class Jarvis:
         self._active_synth_tasks = 0
         self._speaker_meter  = None   # см. _listen_audio: не слушаем свои динамики
         self._turn_done_event: asyncio.Event | None = None
+        self._awake_until    = 0.0    # см. _WAKE_MODE: до какого момента идёт разговор
+        self._followups_left = 0      # сколько реплик без имени ещё продолжат разговор
+        self._rearm_after_speech = False
+        self._fish_task: asyncio.Task | None = None
+        self._echo_guard_until = 0.0  # см. _ECHO_TAIL_SEC
+        self._resume_handle: str | None = None  # возобновление сессии после разрыва
 
         # Новый мозг ДЖАРВИС
-        self.user_profile = UserProfile(BASE_DIR)
+        self.user_profile = UserProfile(DATA_DIR)
         self.initiative_engine = InitiativeEngine()
-        self.proactive_engine = ProactiveEngine(BASE_DIR)
-        self.team_engine = TeamCollaborationEngine(BASE_DIR)
+        self.proactive_engine = ProactiveEngine(DATA_DIR)
+        self.team_engine = TeamCollaborationEngine(DATA_DIR)
         self.last_user_text = ""
+        self._user_turn = 0      # номер последней реплики пользователя (для подтверждений)
 
         # Секундомер голосового хода. Пишет в лог задержку от конца речи до
         # первого звука ответа при JARVIS_DEBUG_UI=1.
@@ -1090,13 +1280,43 @@ class Jarvis:
         # Чтобы включить его по-настоящему, микрофонному циклу нужен опорный
         # поток колонок (WASAPI loopback) — сейчас его нет: speaker_meter.py
         # отдаёт только скалярный уровень, не PCM. См. core/audio_capture.py.
+        # Spotify: токен и статус Premium — заранее, первая песня не ждёт.
         try:
-            from core.wake_detector import WakeWordDetector2Stage
-            self._wake_detector = WakeWordDetector2Stage()
-            logger.info("WakeWord: 2-Stage KWS подключён к JarvisBot")
-        except Exception as _e:
-            logger.debug("WakeWord init note: %s", _e)
-            self._wake_detector = None
+            from actions import spotify_premium
+            spotify_premium.warm_up()
+        except Exception as exc:
+            logger.debug("Spotify заранее: %s", exc)
+
+        # Список программ для «открой …» — собирается в фоне, пока грузится
+        # остальное (Get-StartApps занимает пару секунд).
+        try:
+            from core import win_apps
+            win_apps.warm_up()
+        except Exception as exc:
+            logger.debug("Индекс программ: %s", exc)
+
+        # Память: после разговора факты и итог — в долгосрочную память.
+        try:
+            from memory.conversation import collector
+            collector().start()
+            from memory import shared
+            shared.start()          # одна память с Telegram-ботом
+        except Exception as exc:
+            logger.warning("Сбор памяти не запустился: %s", exc)
+
+        # «Вы смотрите уже два часа…» — забота о перерывах (core/break_reminder.py)
+        # и звонки по расписанию в Telegram (core/tg_call.py).
+        try:
+            from core import break_reminder, tg_call
+            break_reminder.get(say=self.speak).start()
+            tg_call.start_scheduler(done=self._call_finished)
+        except Exception as exc:
+            logger.warning("Перерывы/звонки не запустились: %s", exc)
+
+        # Локальное слово «Джарвис». Запускается в _listen_audio: модели
+        # нужен событийный цикл, чтобы будить Джарвиса из своего потока.
+        self._local_wake: LocalWake | None = None
+        self._wake_ring = collections.deque(maxlen=_WAKE_PREROLL_FRAMES)
 
         self.ui.on_text_command = self._on_text_command
 
@@ -1112,7 +1332,7 @@ class Jarvis:
             logger.debug("Hotkey init note: %s", _e)
             self._hotkey_mgr = None
 
-        # Автоматический запуск мобильного Telegram-бота (@Aimyjarvisbot) в фоне
+        # Локальный Telegram-бот — только по JARVIS_AUTOSTART_BOT=1 (см. метод)
         self._telegram_proc = self._start_telegram_bot()
         atexit.register(self.cleanup)
 
@@ -1121,13 +1341,9 @@ class Jarvis:
         logger.info("[Hotkey] Нажата горячая клавиша вызова Джарвиса (F8)")
         if self.ui.muted:
             self.ui.toggle_mute()
-            self.ui.write_log("SYS: ⚡ Микрофон активирован по горячей клавише F8.")
-        else:
-            self.ui.write_log("SYS: ⚡ Активация по горячей клавише F8.")
-        try:
-            self.ui.bring_to_front()
-        except Exception:
-            pass
+        self.wake()
+        self.ui.write_log("SYS: ⚡ Вызов по горячей клавише F8.")
+        self.ui.bring_to_front()
         try:
             from core.ducking_controller import ducking_controller
             ducking_controller.duck()
@@ -1140,10 +1356,24 @@ class Jarvis:
 
     def _start_telegram_bot(self):
         """Запускает Telegram-бота в отдельном фоновом процессе при наличии токена."""
+        # Только по явному JARVIS_AUTOSTART_BOT=1. Боевой бот живёт на Hugging
+        # Face по вебхуку; локальный polling-двойник снимал его вебхук,
+        # _webhook_keeper через 90 с ставил обратно — и два бота по очереди
+        # отбирали друг у друга сообщения. Со стороны: «бот не работает».
+        # В собранном .exe sys.executable — сам Джарвис: вместо бота
+        # запустилась бы его копия, а та — следующая.
+        if getattr(sys, "frozen", False) or os.getenv("JARVIS_AUTOSTART_BOT", "0") != "1":
+            return None
         try:
             from telegram_bot.config import load as load_config
             cfg = load_config(require_bot=False)
             if not cfg.telegram_token:
+                return None
+            # Бот уже живёт в облаке (Render/HF, вебхук). Локальный polling
+            # снял бы этот вебхук и увёл обновления у облачного бота.
+            if cfg.pc_link_url:
+                logger.info("Telegram-бот работает в облаке (%s) — локально не запускаю",
+                            cfg.pc_link_url)
                 return None
             bot_script = BASE_DIR / "telegram_bot" / "bot.py"
             if not bot_script.exists():
@@ -1164,6 +1394,12 @@ class Jarvis:
 
     def cleanup(self):
         """Корректное освобождение системных ресурсов и дочерних процессов."""
+        try:
+            import core.ducking_controller as dc
+            if dc._singleton is not None:
+                dc._singleton.close()     # вернуть громкость другим программам
+        except Exception:
+            pass
         if hasattr(self, "_hotkey_mgr") and self._hotkey_mgr:
             try:
                 self._hotkey_mgr.stop()
@@ -1180,13 +1416,18 @@ class Jarvis:
     # ── Текстовый ввод ────────────────────────────────────────────────────────
     def _send_text_to_session(self, text: str):
         """Отправляет текстовое сообщение в Live-сессию с корректной структурой типов."""
-        if not self._loop or not self.session or not self._loop.is_running() or not text:
+        if not text:
+            return
+        if not self._loop or not self.session or not self._loop.is_running():
+            # Раньше текст молча пропадал — команда «ушла», ответа нет.
+            logger.warning("Нет связи с Gemini — сообщение не отправлено: %s", text[:60])
+            self.ui.write_log("SYS: нет связи с Gemini, повторите через пару секунд")
             return
         content = types.Content(
             role="user",
             parts=[types.Part.from_text(text=text)],
         )
-        asyncio.run_coroutine_threadsafe(
+        fut = asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
                 turns=[content],
                 turn_complete=True,
@@ -1194,11 +1435,63 @@ class Jarvis:
             self._loop,
         )
 
+        def _report(f):
+            if not f.cancelled() and f.exception():
+                logger.warning("Сообщение в Gemini не ушло: %s", f.exception())
+                self.ui.write_log("SYS: сообщение не отправилось — повторите")
+        fut.add_done_callback(_report)
+
     def _on_text_command(self, text: str):
         # Normalize text before sending
         text = self._normalize_input_text(text)
         if text:
+            self.wake()
+            self.last_user_text = text
+            self._user_turn += 1
+            self._remember_turn(text, "")
             self._send_text_to_session(text)
+
+    # ── Обращение по имени ────────────────────────────────────────────────────
+    def wake(self):
+        """Открывает окно разговора: следующие _AWAKE_SEC Джарвис отвечает
+        без имени. Зовут: имя в речи, F8, текстовая команда, сам Джарвис."""
+        was_awake = self.is_awake()
+        self._followups_left = _FOLLOWUPS
+        self._arm()
+        if not was_awake:
+            logger.info("Джарвис слушает (окно %.0f с)", _AWAKE_SEC)
+            self._show_listen_state()
+
+    def _on_local_wake(self, put):
+        """Локальный детектор услышал имя (зовётся в событийном цикле).
+        Будим, приглушаем музыку и отдаём в Gemini звук с самого имени —
+        иначе «Джарвис, открой ютуб» дошло бы как «…ютуб»."""
+        if self.ui.muted:
+            return
+        self.wake()
+        try:
+            from core.ducking_controller import ducking_controller
+            ducking_controller.duck()
+        except Exception:
+            pass
+        while self._wake_ring:
+            put({"data": self._wake_ring.popleft(), "mime_type": "audio/pcm"})
+
+    def _arm(self):
+        self._awake_until = time.monotonic() + _AWAKE_SEC
+        # Окно отсчитывается от конца ответа — один раз на выданное окно.
+        self._rearm_after_speech = True
+
+    def _continue_conversation(self):
+        """Реплика без имени в окне разговора продлевает его ограниченное
+        число раз. Раньше каждый ответ продлевал окно заново, и речь из
+        телевизора держала Джарвиса «проснувшимся» без конца."""
+        if self._followups_left > 0:
+            self._followups_left -= 1
+            self._arm()
+
+    def is_awake(self) -> bool:
+        return _WAKE_MODE == "always_on" or time.monotonic() < self._awake_until
 
     def _normalize_input_text(self, text: str) -> str:
         """Normalize user input text for better intent parsing."""
@@ -1207,7 +1500,15 @@ class Jarvis:
     # ── Управление состоянием ─────────────────────────────────────────────────
     def set_speaking(self, value: bool):
         with self._speaking_lock:
+            was = self._is_speaking
             self._is_speaking = value
+        if was and not value:
+            self._echo_guard_until = time.monotonic() + _ECHO_TAIL_SEC
+            # Окно разговора отсчитывается от конца ответа, а не от начала:
+            # иначе длинный ответ съедал бы его целиком. Только раз на окно.
+            if self._rearm_after_speech and self.is_awake():
+                self._rearm_after_speech = False
+                self._awake_until = time.monotonic() + _AWAKE_SEC
         if value:
             self.ui.set_state("SPEAKING")
             try:
@@ -1215,18 +1516,61 @@ class Jarvis:
                 ducking_controller.set_state(DuckingState.SPEAKING)
             except Exception:
                 pass
-        elif not self.ui.muted:
-            self.ui.set_state("LISTENING")
-            try:
-                from core.ducking_controller import ducking_controller, DuckingState
-                ducking_controller.set_state(DuckingState.RESTORING)
-            except Exception:
-                pass
+        else:
+            if not self.ui.muted:
+                self._show_listen_state(force=True)
+            # Вернуть звук — всегда, и при выключенном микрофоне: раньше
+            # Ctrl+M во время ответа оставлял музыку приглушённой навсегда.
+            self._release_ducking()
+
+    def _release_ducking(self):
+        try:
+            from core.ducking_controller import ducking_controller, DuckingState
+            ducking_controller.set_state(DuckingState.RESTORING)
+        except Exception:
+            pass
+
+    def _show_listen_state(self, force: bool = False):
+        """«СЛУШАЕТ» — идёт разговор и имя не нужно; «ОЖИДАЕТ» — ждёт «Джарвис».
+        Без этого не видно, почему он молчит: спит или не расслышал."""
+        awake = self.is_awake()
+        if not force and awake == getattr(self, "_shown_awake", None):
+            return
+        self._shown_awake = awake
+        with self._speaking_lock:
+            speaking = self._is_speaking
+        if not speaking and not self.ui.muted:
+            self.ui.set_state("LISTENING" if awake else "IDLE")
 
     def speak(self, text: str):
-        """Отправляет текст в сессию для озвучки."""
-        if text:
-            self._send_text_to_session(text)
+        """Просит Джарвиса произнести текст.
+
+        Текст уходит в сессию репликой ПОЛЬЗОВАТЕЛЯ. Голая фраза «Сэр,
+        произошла ошибка…» читалась моделью как слова собеседника, и Джарвис
+        отвечал на неё — разговаривал сам с собой. Поэтому — указание.
+        """
+        if not text:
+            return
+        if not text.lstrip().startswith("["):
+            text = f"[СИСТЕМА: произнеси пользователю, своими словами не дополняй: «{text}»]"
+        self.wake()
+        self._send_text_to_session(text)
+
+    def _remember_turn(self, user: str, jarvis: str):
+        """Реплики — в журнал разговора (memory/conversation.py). В потоке:
+        этот цикл гонит звук, а журнал изредка подрезается на диске."""
+        def write():
+            from memory.conversation import log_turn
+            try:
+                log_turn("user", user)
+                log_turn("jarvis", jarvis)
+            except Exception as exc:
+                logger.warning("Журнал разговора: %s", exc)
+        threading.Thread(target=write, daemon=True).start()
+
+    def _call_finished(self, result: str):
+        """Итог звонка — в журнал, не голосом: звонок мог быть в 6 утра."""
+        self.ui.write_log(f"SYS: 📞 {result}")
 
     def speak_error(self, tool_name: str, error: str):
         short = str(error)[:100]
@@ -1269,6 +1613,16 @@ class Jarvis:
             parts.append(profile_str)
         if mem_str:
             parts.append(mem_str)
+        # Итоги прошлых разговоров, а если сессию не удалось возобновить
+        # (или это первый запуск) — ещё и хвост разговора: без него Джарвис
+        # после разрыва начинал с чистого листа.
+        try:
+            from memory.conversation import prompt_context
+            conv = prompt_context(resuming=bool(self._resume_handle))
+            if conv:
+                parts.append(conv)
+        except Exception as exc:
+            logger.warning("Контекст разговора не загрузился: %s", exc)
         parts.append(sys_prompt)
 
         return types.LiveConnectConfig(
@@ -1276,8 +1630,19 @@ class Jarvis:
             output_audio_transcription={},
             input_audio_transcription={},  # Без language_code (Pydantic не принимает)
             system_instruction="\n".join(parts),
-            tools=[{"function_declarations": TOOLS}],
-            session_resumption=types.SessionResumptionConfig(),
+            # Встроенный Google Search: «кто выиграл», «курс доллара», новости —
+            # модель ищет сама и отвечает по свежим данным. Сессия с ним не
+            # подключается — run() отключает его и пробует без (_grounding).
+            tools=([{"google_search": {}}] if getattr(self, "_grounding", False) else [])
+                  + [{"function_declarations": TOOLS}],
+            # Голосовая сессия без сжатия контекста живёт ~15 минут, потом
+            # сервер её закрывает. Скользящее окно снимает лимит, а handle
+            # возобновления переносит разговор через разрыв: раньше после
+            # каждого переподключения Джарвис начинал с чистого листа.
+            session_resumption=types.SessionResumptionConfig(handle=self._resume_handle),
+            context_window_compression=types.ContextWindowCompressionConfig(
+                sliding_window=types.SlidingWindow(),
+            ),
             # Когда считать, что человек договорил.
             #
             # По умолчанию модель ждёт около секунды тишины — отсюда пауза
@@ -1324,12 +1689,21 @@ class Jarvis:
         #
         # Блокировка экрана осталась без подтверждения: она безвредна и
         # обратима, а спрашивать о ней каждый раз — раздражать зря.
+        # Подтверждение засчитывается, только если пользователь ПОСЛЕ вопроса
+        # сам сказал «да» — новой репликой и именно на этот вызов. Раньше хватало
+        # повторного вызова того же инструмента в 90 секунд: модель могла
+        # «подтвердить» сама, вторым вызовом в той же пачке.
         if _is_destructive(name, args):
             pending = self._pending_destructive
-            same = pending and pending[0] == name and pending[1] == _action_of(args)
-            fresh = same and (time.time() - pending[2]) < _CONFIRM_WINDOW_SEC
+            key = _args_key(name, args)
+            fresh = bool(
+                pending and pending[0] == key
+                and (time.time() - pending[1]) < _CONFIRM_WINDOW_SEC
+                and self._user_turn > pending[2]
+                and _is_affirmative(self.last_user_text)
+            )
             if not fresh:
-                self._pending_destructive = (name, _action_of(args), time.time())
+                self._pending_destructive = (key, time.time(), self._user_turn)
                 logger.warning("Требую подтверждения: %s/%s", name, _action_of(args))
                 self.ui.write_log(f"SYS: жду подтверждения — {name}/{_action_of(args)}")
                 if not self.ui.muted:
@@ -1396,22 +1770,10 @@ class Jarvis:
 
             # ── Инструмент: управление компьютером ───────────────────
             elif name == "computer_control":
-                # Маппинг action → параметры
-                action_en = args.get("action", "")
-                action_map = {
-                    "volume_up":       {"action": "увеличить громкость", "value": args.get("value", "10")},
-                    "volume_down":     {"action": "уменьшить громкость", "value": args.get("value", "10")},
-                    "mute":            {"action": "без звука"},
-                    "brightness_up":   {"action": "увеличить яркость",  "value": args.get("value", "10")},
-                    "brightness_down": {"action": "уменьшить яркость",  "value": args.get("value", "10")},
-                    "screenshot":      {"action": "скриншот"},
-                    "lock":            {"action": "заблокировать"},
-                    "shutdown":        {"action": "выключить"},
-                    "restart":         {"action": "перезагрузить"},
-                }
-                mapped = action_map.get(action_en, {"action": action_en, "value": args.get("value", "")})
+                # Действия схемы computer_settings понимает напрямую.
+                params = {"action": args.get("action", ""), "value": args.get("value", "")}
                 r = await loop.run_in_executor(
-                    None, lambda: computer_settings(parameters=mapped, player=self.ui)
+                    None, lambda: computer_settings(parameters=params, player=self.ui)
                 )
                 result = r or "Готово."
 
@@ -1431,10 +1793,24 @@ class Jarvis:
 
             # ── Инструмент: Vision (анализ экрана и камеры) ─────────
             elif name in ("look_at_screen", "look_at_camera", "vision_review"):
-                from actions.vision import vision_action
+                from actions import vision
                 source = "camera" if name == "look_at_camera" else args.get("source", "screen")
                 args["source"] = source
-                r = await loop.run_in_executor(None, lambda: vision_action(args))
+                grab = (vision.capture_camera_jpeg if source == "camera"
+                        else vision.capture_active_window_jpeg if source == "active_window"
+                        else vision.capture_screen_jpeg)
+                jpeg = await loop.run_in_executor(None, grab)
+                # Кадр — и в саму голосовую сессию: тогда на «а что справа?»
+                # модель отвечает по картинке, а не по пересказу. Точный разбор
+                # (мелкий текст, код) делает отдельный запрос ниже.
+                if jpeg and self.session is not None:
+                    try:
+                        await self.session.send_realtime_input(
+                            video=types.Blob(data=jpeg, mime_type="image/jpeg"))
+                    except Exception as exc:
+                        logger.debug("Кадр в Live-сессию не ушёл: %s", exc)
+                r = await loop.run_in_executor(
+                    None, lambda: vision.analyze_vision(args.get("prompt", ""), source, jpeg))
                 result = r or "Анализ изображения завершен."
 
             # ── Инструмент: отправка в Telegram ──────────────────────
@@ -1462,6 +1838,26 @@ class Jarvis:
                 r = await loop.run_in_executor(
                     None, lambda: spotify_player(parameters=args, player=self.ui)
                 )
+                result = r or "Готово."
+
+            # ── YouTube и управление видео в окне Джарвиса ───────────
+            elif name == "youtube_player":
+                from actions import video_player
+                r = await loop.run_in_executor(None, lambda: video_player.play_youtube(
+                    args.get("query", ""), args.get("channel", "") if args.get("action") == "latest" else "",
+                    self.ui))
+                result = r or "Готово."
+
+            elif name == "video_control":
+                from actions import video_player
+                r = await loop.run_in_executor(
+                    None, lambda: video_player.control(args.get("action", ""), args.get("value")))
+                if not r:
+                    # Видео нет — может, речь про музыку («пауза»).
+                    r = await loop.run_in_executor(
+                        None, lambda: spotify_player(parameters=args, player=self.ui)) \
+                        if args.get("action") in ("pause", "resume", "volume_up", "volume_down", "volume_set") \
+                        else "Сейчас в окне Джарвиса ничего не идёт, сэр."
                 result = r or "Готово."
 
             # ── Инструмент: управление окнами Windows ────────────────
@@ -1622,6 +2018,27 @@ class Jarvis:
                     None, lambda: sleep_timer(args, player=self.ui, bot=self)
                 )
 
+            # ── Инструмент: память ────────────────────────────────────────
+            elif name == "recall_memory":
+                from memory.conversation import recall
+                result = await asyncio.to_thread(recall, args.get("query", ""))
+
+            elif name == "forget_memory":
+                from memory.conversation import forget_about
+                result = await asyncio.to_thread(forget_about, args.get("query", ""))
+
+            # ── Инструмент: перерывы и звонки ─────────────────────────────
+            elif name == "break_reminder":
+                from core.break_reminder import break_reminder
+                result = break_reminder(args)
+
+            elif name == "phone_call":
+                from core import tg_call
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None, lambda: tg_call.phone_call(args, done=self._call_finished)
+                )
+
             # ── Инструмент: переключение голоса ───────────────────────────
             elif name == "switch_voice":
                 provider = args.get("provider", "fish").strip().lower()
@@ -1640,6 +2057,7 @@ class Jarvis:
                     import time
                     import os
                     time.sleep(1.5)
+                    self.cleanup()     # os._exit не зовёт atexit: иначе звук остался бы приглушён
                     os._exit(0)
                 threading.Thread(target=_shutdown, daemon=True).start()
 
@@ -1647,46 +2065,53 @@ class Jarvis:
                 result = f"Неизвестный инструмент: {name}"
 
         except Exception as e:
+            # Ошибку модель получает в ответе инструмента и сама скажет о ней.
+            # Раньше здесь ещё и speak_error() слал отдельную реплику в сессию —
+            # Джарвис отвечал дважды, второй раз «сам себе».
             result = f"Ошибка инструмента '{name}': {e}"
             traceback.print_exc()
-            self.speak_error(name, e)
+            self.ui.write_log(f"ERR: {name} — {str(e)[:100]}")
 
-        # Обновление контекста (новый мозг)
-        if name in ["movie_player", "music_player", "set_mode"]:
-            activity = name
-            if name == "movie_player":
-                action = args.get("action", "")
-                if action == "play":
-                    title = args.get("title", "")
-                    if title:
-                        self.user_profile.add_to_history("recent_movies", title)
-                        activity = f"watching_movie: {title}"
-            elif name == "music_player":
-                action = args.get("action", "")
-                if action == "play":
-                    query = args.get("query", "")
-                    if query:
-                        self.user_profile.add_to_history("recent_music", query)
-                        activity = f"listening_music: {query}"
-            elif name == "set_mode":
-                mode = args.get("mode", "")
-                activity = f"mode_{mode}"
-
-            self.user_profile.update_context(activity=activity)
-
-            # Запись действия для прогнозирования (новый мозг)
-            context = {
-                "time": datetime.now().strftime("%H:%M"),
-                "emotion": self.user_profile.get_context().get("last_emotion", "neutral"),
-                "mode": get_current_mode().get("mode", "normal")
-            }
-            self.proactive_engine.record_action(name, context)
+        # Профиль и прогнозы пишутся на диск — в поток, и их сбой не должен
+        # рвать сессию: без ответа на вызов модель ждёт его и после реконнекта.
+        try:
+            await asyncio.to_thread(self._remember_tool_use, name, args)
+        except Exception as exc:
+            logger.debug("Профиль не обновлён: %s", exc, exc_info=True)
 
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
         print(f"[ДЖАРВИС] 📤 {name} → {str(result)[:80]}")
         return types.FunctionResponse(id=fc.id, name=name, response={"result": result})
+
+    def _remember_tool_use(self, name: str, args: dict):
+        """Обновление контекста (новый мозг)."""
+        if name not in ("movie_player", "music_player", "set_mode"):
+            return
+        activity = name
+        if name == "movie_player" and args.get("action", "") == "play":
+            title = args.get("title", "")
+            if title:
+                self.user_profile.add_to_history("recent_movies", title)
+                activity = f"watching_movie: {title}"
+        elif name == "music_player" and args.get("action", "") == "play":
+            query = args.get("query", "")
+            if query:
+                self.user_profile.add_to_history("recent_music", query)
+                activity = f"listening_music: {query}"
+        elif name == "set_mode":
+            activity = f"mode_{args.get('mode', '')}"
+
+        self.user_profile.update_context(activity=activity)
+
+        # Запись действия для прогнозирования (новый мозг)
+        context = {
+            "time": datetime.now().strftime("%H:%M"),
+            "emotion": self.user_profile.get_context().get("last_emotion", "neutral"),
+            "mode": get_current_mode().get("mode", "normal")
+        }
+        self.proactive_engine.record_action(name, context)
 
     # ── Отправка аудио на сервер ──────────────────────────────────────────────
     async def _send_realtime(self):
@@ -1787,12 +2212,24 @@ class Jarvis:
             except asyncio.QueueFull:
                 pass  # Drop audio frame silently to avoid flooding event loop
 
+        if self._local_wake is None and _WAKE_MODE == "wake_word":
+            def _heard(text: str):
+                loop.call_soon_threadsafe(self._on_local_wake, _put_nowait_safe)
+            wake = LocalWake(_heard)
+            if await asyncio.to_thread(wake.start):
+                self._local_wake = wake
+                self.ui.write_log("SYS: слово «Джарвис» слушается на компьютере — до него звук никуда не уходит")
+            else:
+                self._local_wake = False     # не пробовать при каждом переподключении
+                self.ui.write_log("SYS: нет модели слова «Джарвис» — слушаю через Gemini")
+
         preroll = collections.deque(maxlen=10)
 
         def callback(indata, frames, time_info, status):
+            self._mic_last_cb = time.monotonic()
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
-            if jarvis_speaking:
+            if jarvis_speaking or time.monotonic() < self._echo_guard_until:
                 self._note_gate("Джарвис говорит сам")
                 preroll.clear()
                 return
@@ -1803,15 +2240,25 @@ class Jarvis:
 
             pcm_bytes = indata.tobytes()
 
-            # Если в динамиках играет звук — проверяем ключевое слово для немедленного ducking
+            # Спит — звук только в локальный детектор имени, в облако ничего.
+            if self._local_wake and not self.is_awake():
+                self._wake_ring.append(pcm_bytes)
+                self._local_wake.feed(pcm_bytes)
+                self._is_loud_enough(indata)          # только чтобы HUD дышал
+                self._note_gate("жду слово «Джарвис»")
+                preroll.clear()
+                return
+
+            # Громко играет музыка/кино из своих динамиков — в облако не шлём:
+            # по громкости её от голоса не отличить (см. _IGNORE_SPEAKERS).
+            # Слушаем только ключевое слово «Джарвис», чтобы приглушить звук.
             if self._speaker_meter is not None and self._speaker_meter.peak > _SPEAKER_GATE:
-                if self._wake_detector:
-                    if self._wake_detector.process_pcm(pcm_bytes):
-                        try:
-                            from core.ducking_controller import ducking_controller
-                            ducking_controller.duck()
-                        except Exception:
-                            pass
+                self._note_gate(
+                    f"звук в динамиках {self._speaker_meter.peak:.3f} > "
+                    f"порога {_SPEAKER_GATE}"
+                )
+                preroll.clear()
+                return
 
             was_silent = getattr(self, "_quiet_frames", MIC_HANGOVER_FRAMES + 1) > MIC_HANGOVER_FRAMES
             if not self._is_loud_enough(indata):
@@ -1842,28 +2289,60 @@ class Jarvis:
                 {"data": pcm_bytes, "mime_type": "audio/pcm"},
             )
 
-        try:
-            with sd.InputStream(
-                samplerate=SEND_SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="int16",
-                blocksize=CHUNK_SIZE,
-                device=_pick_input_device(),
-                latency="low",
-                callback=callback,
-            ):
-                print("[ДЖАРВИС] 🎤 Поток микрофона открыт")
-                while True:
-                    await asyncio.sleep(0.1)
-        except Exception as e:
-            logger.error(f"Microphone error: {e}")
-            traceback.print_exc()
-            # Don't raise - let the task be recreated
-            # Brief pause before attempting to continue
-            await asyncio.sleep(1)
+        # Поток микрофона живёт в цикле. Раньше при выдернутой гарнитуре или
+        # смене устройства в Windows колбэк просто переставал вызываться, а
+        # задача спала дальше; при ошибке открытия — выходила, и микрофона не
+        # было до следующего переподключения. Джарвис «игнорировал».
+        backoff = 1.0
+        while True:
+            device = getattr(self, "_input_device", "unset")
+            if device == "unset":
+                # Перебор устройств пишет пробы звука — не в событийном цикле.
+                device = await asyncio.to_thread(_pick_input_device)
+                self._input_device = device
+            try:
+                with sd.InputStream(
+                    samplerate=SEND_SAMPLE_RATE,
+                    channels=CHANNELS,
+                    dtype="int16",
+                    blocksize=CHUNK_SIZE,
+                    device=device,
+                    latency="low",
+                    callback=callback,
+                ) as stream:
+                    print("[ДЖАРВИС] 🎤 Поток микрофона открыт")
+                    self._mic_last_cb = time.monotonic()
+                    backoff = 1.0
+                    while True:
+                        await asyncio.sleep(0.1)
+                        self._show_listen_state()   # окно разговора истекло → «ОЖИДАЕТ»
+                        silent_for = time.monotonic() - self._mic_last_cb
+                        if not stream.active or silent_for > _MIC_STALL_SEC:
+                            logger.warning("Микрофон замолчал (%.1f с без кадров) — переоткрываю", silent_for)
+                            self.ui.write_log("SYS: микрофон пропал — переподключаю…")
+                            break
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("Microphone error: %s", e)
+                self.ui.write_log("SYS: микрофон не открывается — пробую снова…")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 10.0)
+            # Устройство могло исчезнуть — выбираем заново.
+            self._input_device = "unset"
 
     async def _speak_fish(self, text: str):
-        """Озвучивает готовый ответ голосом Джарвиса из Telegram-бота."""
+        """Озвучивает готовый текст голосом Джарвиса из Telegram-бота."""
+        q: asyncio.Queue = asyncio.Queue()
+        for chunk in _split_for_speech(text):
+            q.put_nowait(chunk)
+        q.put_nowait(None)
+        await self._fish_worker(q)
+
+    async def _fish_worker(self, fragments: asyncio.Queue):
+        """Синтезирует куски из очереди (None — конец ответа) и играет их по
+        порядку. Каждый кусок уходит в синтез сразу, как пришёл, — пока
+        звучит первое предложение, следующие уже готовятся."""
         with self._speaking_lock:
             self._active_synth_tasks += 1
         self.set_speaking(True)
@@ -1872,206 +2351,395 @@ class Jarvis:
             from telegram_bot import tts_fish
             from telegram_bot import tts_edge
 
-            chunks = _split_for_speech(text)
-            if not chunks:
-                self._latency.mark_turn_complete()
-                return
-
-            # Жив ли Fish — решается ОДИН раз за ответ, а не на каждом куске.
-            #
-            # Раньше падение Fish стоило по таймауту на фрагмент: у запроса
-            # tts_fish._TIMEOUT_SEC = 60, и ответ из четырёх предложений мог
-            # молчать четыре минуты, каждый раз заново убеждаясь в том, что
-            # уже известно. Один отказ — и остаток ответа договаривает Edge.
+            # Жив ли Fish — решается один раз: после первого отказа остаток
+            # ответа договаривает Edge, а не ждёт таймаута на каждом куске.
+            # Куски синтезируются параллельно, поэтому первый запрос к Fish —
+            # пробный: остальные ждут его вердикта, а не бьются в мёртвый
+            # сервис каждый со своим таймаутом.
             fish_alive = tts_fish.is_configured()
+            probe: asyncio.Future | None = None
 
-            async def _synth_fragment(fragment: str):
-                nonlocal fish_alive
+            async def synth(fragment: str):
+                nonlocal fish_alive, probe
+                if fish_alive and probe is not None:
+                    await probe
                 if fish_alive:
-                    pcm = await tts_fish.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+                    first = probe is None
+                    if first:
+                        probe = asyncio.get_running_loop().create_future()
+                    pcm = None
+                    try:
+                        pcm = await tts_fish.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+                    finally:
+                        if not pcm and fish_alive:
+                            fish_alive = False
+                            self.ui.write_log("SYS: Fish молчит — остаток ответа озвучит Edge-TTS")
+                        if first:
+                            probe.set_result(None)
                     if pcm:
                         return pcm
-                    fish_alive = False
-                    self.ui.write_log("SYS: Fish молчит — остаток ответа озвучит Edge-TTS")
                 return await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
 
-            def synth(fragment: str):
-                return asyncio.create_task(_synth_fragment(fragment))
+            ordered: asyncio.Queue = asyncio.Queue()
 
-            pending = synth(chunks[0])
+            async def feed():
+                while True:
+                    # Страховка: конец ответа не пришёл (разрыв, сбой) — не
+                    # держать микрофон глухим вечно.
+                    try:
+                        fragment = await asyncio.wait_for(fragments.get(), _FISH_IDLE_SEC)
+                    except asyncio.TimeoutError:
+                        logger.warning("Fish: конец ответа не пришёл за %.0f с — закрываю", _FISH_IDLE_SEC)
+                        break
+                    if fragment is None:
+                        break
+                    ordered.put_nowait(asyncio.create_task(synth(fragment)))
+                ordered.put_nowait(None)
+
+            feeder = asyncio.create_task(feed())
             step = CHUNK_SIZE * 2
             spoken = 0
-
-            for i in range(len(chunks)):
-                pcm = await pending
-                pending = synth(chunks[i + 1]) if i + 1 < len(chunks) else None
-
-                if not pcm:
-                    self.ui.write_log("SYS: синтез речи недоступен — ответ остался текстом")
-                    if pending:
-                        pending.cancel()
-                    break
-
-                if not spoken:
-                    self._latency.mark_answer_audio()
-                spoken += len(pcm)
-
-                for j in range(0, len(pcm), step):
-                    try:
-                        self.audio_in_queue.put_nowait(pcm[j:j + step])
-                    except asyncio.QueueFull:
-                        await self.audio_in_queue.put(pcm[j:j + step])
+            try:
+                while True:
+                    task = await ordered.get()
+                    if task is None:
+                        break
+                    pcm = await task
+                    if not pcm:
+                        self.ui.write_log("SYS: синтез речи недоступен — ответ остался текстом")
+                        continue
+                    if not spoken:
+                        self._latency.mark_answer_audio()
+                    spoken += len(pcm)
+                    for j in range(0, len(pcm), step):
+                        try:
+                            self.audio_in_queue.put_nowait(pcm[j:j + step])
+                        except asyncio.QueueFull:
+                            await self.audio_in_queue.put(pcm[j:j + step])
+            finally:
+                feeder.cancel()
+                while not ordered.empty():
+                    leftover = ordered.get_nowait()
+                    if leftover is not None:
+                        leftover.cancel()
 
             if spoken:
-                logger.info("Голос Fish: %.1f с звука, %d фрагмент(ов) на %d символов",
-                            spoken / 2 / RECV_SAMPLE_RATE, len(chunks), len(text))
+                logger.info("Голос Fish: %.1f с звука", spoken / 2 / RECV_SAMPLE_RATE)
             self._latency.mark_turn_complete()
         finally:
             with self._speaking_lock:
                 self._active_synth_tasks = max(0, self._active_synth_tasks - 1)
 
     # ── Получение ответа от Gemini ────────────────────────────────────────────
+    def _spawn(self, coro):
+        """Фоновая задача, которую сборщик мусора не снимет на полуслове.
+
+        asyncio держит на задачу только слабую ссылку: create_task() без
+        сохранения результата может исчезнуть посреди работы — для озвучки
+        Fish это обрыв ответа на середине фразы.
+        """
+        tasks = self.__dict__.setdefault("_bg_tasks", set())
+        task = asyncio.create_task(coro)
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return task
+
+    def _learn_from_phrase(self, text: str):
+        """Эмоции и предпочтения из фразы — в профиль. Идёт в пуле потоков:
+        профиль пишется на диск, а цикл приёма ждать этого не должен.
+
+        Раньше здесь же InitiativeEngine и ProactiveEngine с шансом 30%
+        отправляли в сессию готовые реплики — «Я здесь, сэр», «Всё тихо,
+        сэр» — от лица ПОЛЬЗОВАТЕЛЯ. Модель отвечала на них, и Джарвис
+        разговаривал сам с собой. А ProactiveEngine на каждой фразе
+        синхронно ходил в Google Календарь прямо в событийном цикле —
+        приём звука стоял, пока не ответит сеть. Проактивность живёт в
+        Telegram-боте (proactive.py), там у неё свой канал и расписание.
+        """
+        try:
+            emotion = EmotionAnalyzer.analyze(text)
+            if emotion["emotion"] != "neutral":
+                logger.debug("Эмоция: %s (%.2f)", emotion["emotion"], emotion["confidence"])
+                self.user_profile.update_context(emotion=emotion["emotion"])
+            preference = self.initiative_engine.should_learn_preference(text, "")
+            if preference:
+                self.user_profile.update_preference(preference["type"], preference["value"])
+                logger.info("Выучил предпочтение: %s = %s", preference["type"], preference["value"])
+        except Exception as exc:
+            logger.debug("Обучение на фразе не удалось: %s", exc, exc_info=True)
+
+    def _queue_answer_audio(self, data: bytes):
+        self._latency.mark_answer_audio()
+        try:
+            self.audio_in_queue.put_nowait(data)
+        except asyncio.QueueFull:
+            # _play_audio не успевает — дропаем старейший
+            # фрейм, чтобы освободить место под новый.
+            try:
+                self.audio_in_queue.get_nowait()
+                self.audio_in_queue.put_nowait(data)
+            except (asyncio.QueueEmpty, asyncio.QueueFull):
+                pass
+
+    def _drop_pending_speech(self):
+        """Выбросить недоигранный ответ: Gemini прервал ход или начался новый.
+        Иначе старый ответ доигрывал поверх нового."""
+        task = getattr(self, "_fish_task", None)
+        if task and not task.done():
+            task.cancel()
+        self._fish_task = None
+        q = self.audio_in_queue
+        if q is not None:
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+    async def _run_tool_calls(self, function_calls, allowed: bool):
+        responses = []
+        for fc in function_calls:
+            if not allowed:
+                # Команда из чужого разговора: «выключи свет»
+                # по телевизору не должно выключать свет.
+                logger.info("Инструмент %s не выполнен: обращались не ко мне", fc.name)
+                responses.append(types.FunctionResponse(
+                    id=fc.id, name=fc.name,
+                    response={"result": "Не выполнено: реплика адресована не Джарвису. Промолчи."},
+                ))
+                continue
+            print(f"[ДЖАРВИС] 📞 {fc.name}")
+            # Джарвис у Старка не работает молча: HUD всегда
+            # показывает, на что наведён.
+            try:
+                self.ui.lock_on(fc.name)
+            except Exception as exc:
+                logger.debug("Прицел не встал: %s", exc, exc_info=True)
+            _tool_started = time.perf_counter()
+            try:
+                # Инструмент без ответа (Spotify не отвечает, браузерный вход в
+                # Google) держал весь приём: ни звука, ни реакции — «завис».
+                fr = await asyncio.wait_for(self._execute_tool(fc), _TOOL_TIMEOUT_SEC)
+            except asyncio.TimeoutError:
+                logger.error("Инструмент %s не ответил за %.0f с", fc.name, _TOOL_TIMEOUT_SEC)
+                self.ui.write_log(f"ERR: {fc.name} — нет ответа {_TOOL_TIMEOUT_SEC:.0f} с")
+                fr = types.FunctionResponse(id=fc.id, name=fc.name, response={
+                    "result": f"Не успело выполниться за {_TOOL_TIMEOUT_SEC:.0f} секунд."})
+            except Exception as exc:
+                # Сбой инструмента не должен рвать сессию: без ответа на
+                # вызов модель так и ждёт его после переподключения.
+                logger.exception("Инструмент %s упал", fc.name)
+                fr = types.FunctionResponse(id=fc.id, name=fc.name,
+                                            response={"result": f"Ошибка: {exc}"})
+            finally:
+                # Медленный инструмент — самая частая причина
+                # паузы, которую слышно как «завис».
+                self._latency.add_tool(
+                    fc.name,
+                    int((time.perf_counter() - _tool_started) * 1000),
+                )
+            responses.append(fr)
+            self._show_card(fc, fr)
+        await self.session.send_tool_response(function_responses=responses)
+
+    def _show_card(self, fc, fr):
+        """Карточка «что сделал» рядом с шаром. Окно, которое команда
+        открыла, снимается чуть позже — ему нужно время появиться."""
+        show = getattr(self.ui, "show_card", None)
+        if not show:
+            return
+        try:
+            card = build_card(fc.name, dict(fc.args or {}), getattr(fr, "response", None))
+        except Exception as exc:
+            logger.debug("Карточка не собралась: %s", exc)
+            return
+        if not card:
+            return
+        show(card["title"], card["address"], card["body"], b"", card["extra"])
+        if card["want_shot"]:
+            def _shot():
+                time.sleep(1.8)
+                png = capture_foreground_png()
+                if png:
+                    show(card["title"], card["address"], card["body"], png, card["extra"])
+            threading.Thread(target=_shot, daemon=True, name="card-shot").start()
+
+    async def _deferred_tool_calls(self, function_calls, named: asyncio.Event):
+        """Вызов пришёл раньше расшифровки с именем — ждём её немного.
+        Раньше такой вызов отклонялся сразу: «Джарвис, открой хром» при
+        отставшей расшифровке молча не выполнялось."""
+        try:
+            await asyncio.wait_for(named.wait(), _TOOL_WAKE_WAIT_SEC)
+        except asyncio.TimeoutError:
+            pass
+        await self._run_tool_calls(function_calls, named.is_set() or self.is_awake())
+
     async def _receive_audio(self):
         print("[ДЖАРВИС] 👂 Приём запущен")
         out_buf, in_buf = [], []
+        # Решение по текущему ходу: None — ещё не ясно, True — обращались к
+        # Джарвису, False — речь не к нему. Звук ответа до решения копится в
+        # held: имя может прийти в расшифровке чуть позже первых байт ответа.
+        addressed: bool | None = None
+        named = asyncio.Event()      # в этом ходе прозвучало имя
+        held: list[bytes] = []
+        # Голос Fish: расшифровка ответа ещё не отданная в синтез и очередь
+        # кусков для _fish_worker этого хода (см. _take_speakable).
+        fish_text = ""
+        fish_q: asyncio.Queue | None = None
+
+        def fish_close():
+            nonlocal fish_q
+            # Закрываем очередь всегда, при любом голосе: пока её не закрыли,
+            # воркер считается говорящим, и микрофон глух. Раньше закрытие
+            # пропускалось, если голос переключили на gemini посреди ответа.
+            if fish_q is not None:
+                fish_q.put_nowait(None)
+                fish_q = None
+
+        def fish_flush(final: bool = False):
+            nonlocal fish_text, fish_q
+            if addressed and get_voice_provider() == "fish":
+                chunks, fish_text = _take_speakable(fish_text, fish_q is None, final)
+                if chunks and fish_q is None:
+                    self._drop_pending_speech()   # один голос за раз
+                    fish_q = asyncio.Queue()
+                    self._fish_task = self._spawn(self._fish_worker(fish_q))
+                for chunk in chunks:
+                    fish_q.put_nowait(chunk)
+            if final:
+                fish_close()
+
+        def decide() -> bool:
+            return self.is_awake() or named.is_set()
 
         try:
             while True:
                 async for response in self.session.receive():
-                    if response.data:
-                        if self._turn_done_event and self._turn_done_event.is_set():
-                            self._turn_done_event.clear()
-                        if get_voice_provider() == "fish":
-                            # Говорит Fish — звук Gemini выбрасываем, иначе
-                            # два голоса произнесут один ответ одновременно.
-                            continue
-                        self._latency.mark_answer_audio()
-                        try:
-                            self.audio_in_queue.put_nowait(response.data)
-                        except asyncio.QueueFull:
-                            # _play_audio не успевает — дропаем старейший
-                            # фрейм, чтобы освободить место под новый.
-                            try:
-                                self.audio_in_queue.get_nowait()
-                                self.audio_in_queue.put_nowait(response.data)
-                            except (asyncio.QueueEmpty, asyncio.QueueFull):
-                                pass
+                    upd = response.session_resumption_update
+                    if upd and upd.resumable and upd.new_handle:
+                        self._resume_handle = upd.new_handle
 
-                    if response.server_content:
-                        sc = response.server_content
+                    if response.go_away:
+                        # Сервер скоро закроет сессию. Уходим сами, пока
+                        # handle свежий, — реконнект в run() займёт полсекунды.
+                        logger.info("Gemini просит переподключиться (GoAway)")
+                        raise ConnectionResetError("GoAway от сервера")
 
-                        if sc.output_transcription and sc.output_transcription.text:
-                            out_buf.append(sc.output_transcription.text)
+                    sc = response.server_content
 
-                        if sc.input_transcription and sc.input_transcription.text:
-                            txt = sc.input_transcription.text
+                    if sc and getattr(sc, "interrupted", None):
+                        # Сервер оборвал ответ (новая реплика) — хвост не доигрываем.
+                        self._drop_pending_speech()
+                        held = []
+                        fish_text = ""
+                        fish_close()
+
+                    if sc and sc.input_transcription:
+                        txt = sc.input_transcription.text
+                        if txt:
                             in_buf.append(txt)
                             self._latency.mark_transcript()
                             print(f"[ДЖАРВИС] 🎤 Фрагмент: '{txt}'")
+                            if not named.is_set() and _has_wake_word("".join(in_buf)):
+                                named.set()
+                                self.wake()
+                                if addressed is not True:
+                                    addressed = True
+                                    for chunk in held:
+                                        if get_voice_provider() != "fish":
+                                            self._queue_answer_audio(chunk)
+                                    held = []
+                                    fish_flush()
+
+                    if response.data:
+                        if self._turn_done_event and self._turn_done_event.is_set():
+                            self._turn_done_event.clear()
+                        if addressed is None:
+                            addressed = decide()
+                        if get_voice_provider() == "fish":
+                            # Говорит Fish — звук Gemini выбрасываем, иначе
+                            # два голоса произнесут один ответ одновременно.
+                            pass
+                        elif addressed:
+                            self._queue_answer_audio(response.data)
+                        else:
+                            held.append(response.data)
+
+                    if sc:
+                        if sc.output_transcription and sc.output_transcription.text:
+                            out_buf.append(sc.output_transcription.text)
+                            fish_text += sc.output_transcription.text
+                            if addressed is None:
+                                addressed = decide()
+                            if addressed:
+                                # Субтитр идёт вслед за речью, а не после неё.
+                                sub = getattr(self.ui, "set_subtitle", None)
+                                if sub:
+                                    sub(_clean_dialog_text("".join(out_buf)))
+                            fish_flush()
 
                         if sc.turn_complete:
-                            # С внешним голосом ход закрывает _speak_fish,
+                            if addressed is None:
+                                addressed = decide()
+                            fish_flush(final=True)
+                            fish_text = ""
+                            # С внешним голосом ход закрывает _fish_worker,
                             # когда звук реально пошёл: здесь готов только текст.
-                            if get_voice_provider() != "fish":
+                            if get_voice_provider() != "fish" or not addressed:
                                 self._latency.mark_turn_complete()
                             if self._turn_done_event:
                                 self._turn_done_event.set()
 
-                            raw_in = "".join(in_buf)
-                            full_in = _clean_dialog_text(raw_in)
-                            in_buf = []
+                            full_in = _clean_dialog_text("".join(in_buf))
+                            full_out = _clean_dialog_text("".join(out_buf))
+                            by_name = named.is_set()
+                            in_buf, out_buf, held = [], [], []
+                            was_addressed, addressed = addressed, None
+                            named = asyncio.Event()
+
+                            if not was_addressed:
+                                if full_in:
+                                    logger.info("Не ко мне, молчу: «%s»", full_in[:80])
+                                self._release_ducking()
+                                continue
 
                             if full_in:
                                 print(f"[ДЖАРВИС] 🎤 Полная фраза: '{full_in}'")
                                 self.ui.write_log(f"Вы: {full_in}")
                                 self.last_user_text = full_in
-
-                                # Анализ эмоций (новый мозг)
-                                emotion_result = EmotionAnalyzer.analyze(full_in)
-                                if emotion_result["emotion"] != "neutral":
-                                    print(f"[Эмоции] {emotion_result['emotion']} (confidence: {emotion_result['confidence']:.2f})")
-                                    self.user_profile.update_context(emotion=emotion_result["emotion"])
-
-                                    # Проверяем инициативу
-                                    mode_state = get_current_mode()
-                                    current_mode = mode_state.get("mode", "normal")
-                                    initiative = self.initiative_engine.should_show_initiative(
-                                        emotion_result,
-                                        self.user_profile.get_full_profile(),
-                                        current_mode
-                                    )
-                                    if initiative:
-                                        print(f"[Инициатива] {initiative}")
-                                        # Отправляем инициативное предложение
-                                        self._send_text_to_session(initiative)
-
-                                # Обучение из контекста
-                                preference = self.initiative_engine.should_learn_preference(full_in, "")
-                                if preference:
-                                    self.user_profile.update_preference(preference["type"], preference["value"])
-                                    print(f"[Обучение] Выучил предпочтение: {preference['type']} = {preference['value']}")
-
-                                # Прогнозирование потребностей (новый мозг)
-                                context = {
-                                    "current_activity": self.user_profile.get_context().get("current_activity"),
-                                    "mode": get_current_mode().get("mode", "normal"),
-                                    "last_emotion": emotion_result.get("emotion") if emotion_result else "neutral"
-                                }
-                                proactive_suggestions = self.proactive_engine.get_proactive_suggestions(context)
-                                if proactive_suggestions:
-                                    print(f"[Прогноз] Предложения: {proactive_suggestions}")
-                                    # Отправляем первое предложение (не навязчиво)
-                                    if proactive_suggestions and random.random() < 0.3:  # 30% шанс
-                                        self._send_text_to_session(proactive_suggestions[0])
-
-                            raw_out = "".join(out_buf)
-                            full_out = _clean_dialog_text(raw_out)
-                            out_buf = []
+                                self._user_turn += 1
+                                asyncio.get_running_loop().run_in_executor(
+                                    None, self._learn_from_phrase, full_in
+                                )
+                                # Продолжение разговора без имени продлевает окно
+                                # лишь несколько раз подряд — иначе телевизор держал
+                                # бы Джарвиса «проснувшимся» бесконечно.
+                                if not by_name:
+                                    self._continue_conversation()
 
                             if full_out:
                                 self.ui.write_log(f"Джарвис: {full_out}")
-                                if get_voice_provider() == "fish":
-                                    # Отдельной задачей: синтез идёт около
-                                    # секунды, а приём в это время должен
-                                    # продолжать читать сессию.
-                                    asyncio.create_task(self._speak_fish(full_out))
+                            self._remember_turn(full_in, full_out)
 
                     if response.tool_call:
-                        responses = []
-                        for fc in response.tool_call.function_calls:
-                            print(f"[ДЖАРВИС] 📞 {fc.name}")
-                            # Джарвис у Старка не работает молча: HUD всегда
-                            # показывает, на что наведён.
-                            try:
-                                self.ui.lock_on(fc.name)
-                            except Exception as exc:
-                                logger.debug("Прицел не встал: %s", exc, exc_info=True)
-                            _tool_started = time.perf_counter()
-                            try:
-                                fr = await self._execute_tool(fc)
-                            finally:
-                                # Медленный инструмент — самая частая причина
-                                # паузы, которую слышно как «завис».
-                                self._latency.add_tool(
-                                    fc.name,
-                                    int((time.perf_counter() - _tool_started) * 1000),
-                                )
-                            responses.append(fr)
-                        await self.session.send_tool_response(function_responses=responses)
+                        if addressed is None:
+                            addressed = decide()
+                        calls = response.tool_call.function_calls
+                        if addressed:
+                            await self._run_tool_calls(calls, True)
+                        else:
+                            self._spawn(self._deferred_tool_calls(calls, named))
 
         except Exception as e:
             logger.error("Приём оборвался: %s", e)
-            # Комментарий здесь обещал «внешний цикл переподключится», а код
-            # молча проглатывал ошибку и завершал задачу. Переподключаться было
-            # НЕКОМУ: остальные три задачи продолжали работать с мёртвой
-            # сессией, Джарвис оставался запущенным и глухим, а на разрыв
-            # 1011 от Gemini (тот приходит регулярно, это штатное поведение их
-            # серверов) просто закрывался посреди разговора.
-            #
-            # Пробрасываем наверх: TaskGroup свернётся, и сработает настоящий
-            # реконнект в `run()`, где уже есть счётчик попыток и backoff.
+            # Пробрасываем наверх: TaskGroup свернётся, и сработает
+            # реконнект в `run()` — с handle'ом возобновления, так что
+            # разговор продолжится с того же места.
             self.ui.write_log("SYS: связь с Gemini оборвалась — переподключаюсь…")
             raise
+        finally:
+            fish_close()
 
     # ── Воспроизведение аудио ─────────────────────────────────────────────────
     def _open_output(self):
@@ -2118,10 +2786,27 @@ class Jarvis:
         голос».
         """
         print("[ДЖАРВИС] 🔊 Воспроизведение запущено")
+        def _close(s):
+            try:
+                s.stop()
+                s.close()
+            except Exception as exc:
+                logger.debug("Закрытие потока вывода: %s", exc)
+
         while True:
             stream = None
+            pending_write = None
+            opening = asyncio.ensure_future(asyncio.to_thread(self._open_output))
             try:
-                stream = await asyncio.to_thread(self._open_output)
+                # Отмена посреди открытия (переподключение) не должна бросать
+                # уже открытый поток: поток-исполнитель доделает открытие, и
+                # его надо закрыть — иначе на каждом реконнекте утечка устройства.
+                try:
+                    stream = await asyncio.shield(opening)
+                except asyncio.CancelledError:
+                    opening.add_done_callback(
+                        lambda t: _close(t.result()) if not t.cancelled() and not t.exception() else None)
+                    raise
                 while True:
                     try:
                         chunk = await asyncio.wait_for(self.audio_in_queue.get(), timeout=0.1)
@@ -2143,7 +2828,9 @@ class Jarvis:
                     self.set_speaking(True)
                     self._latency.mark_playback()
                     self._push_level(_chunk_level(chunk))
-                    await asyncio.to_thread(stream.write, chunk)
+                    pending_write = asyncio.ensure_future(asyncio.to_thread(stream.write, chunk))
+                    await asyncio.shield(pending_write)
+                    pending_write = None
 
             except asyncio.CancelledError:
                 raise
@@ -2165,149 +2852,159 @@ class Jarvis:
             finally:
                 self.set_speaking(False)
                 if stream is not None:
-                    try:
-                        stream.stop()
-                        stream.close()
-                    except Exception as exc:
-                        logger.debug("Закрытие потока вывода: %s", exc)
+                    if pending_write is not None and not pending_write.done():
+                        # Закрывать поток, пока другой поток внутри Pa_WriteStream,
+                        # — зависание или падение на MME. Закроем, когда запись выйдет.
+                        pending_write.add_done_callback(lambda _t, s=stream: _close(s))
+                    else:
+                        _close(stream)
 
     # ── Основной цикл ─────────────────────────────────────────────────────────
     async def run(self):
         client = genai.Client(
             api_key=_get_api_key(),
-            http_options={"api_version": "v1alpha"},
+            http_options={"api_version": "v1beta"},
         )
 
-        retry_count = 0
-        max_retry_delay = 60  # Maximum delay between retries (seconds)
-        max_retries = 5  # Maximum number of retry attempts
+        # Разрывы Live-сессии — штатное явление: сервер закрывает голосовую
+        # сессию по лимиту времени, шлёт GoAway, отвечает 1011. Раньше после
+        # пяти неудач подряд цикл выходил, и Джарвис молча глох до перезапуска,
+        # а проверки «1008»/«ключ» не срабатывали вовсе: из TaskGroup ошибка
+        # приходит ExceptionGroup'ом, в str() которого нет текста причины.
+        # Теперь пробуем бесконечно, фатальны только проблемы с ключом.
+        failures = 0
+        first_connect = True
+        self._grounding = os.getenv("JARVIS_GOOGLE_SEARCH", "1") != "0"
 
         while True:
+            connected = 0.0
+            low = ""
             try:
                 print("[ДЖАРВИС] 🔌 Подключение к Gemini...")
                 self.ui.set_state("RECONNECTING")
                 config = self._build_config()
 
-                try:
-                    async with (
-                        client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
-                        asyncio.TaskGroup() as tg,
-                    ):
-                        self.session            = session
-                        self._loop              = asyncio.get_event_loop()
-                        # maxsize защищает от unbounded роста памяти
-                        # если _play_audio тормозит. При переполнении старые
-                        # фреймы дропаются в _receive_audio.
-                        self.audio_in_queue     = asyncio.Queue(maxsize=200)
-                        self.out_queue          = asyncio.Queue(maxsize=50)
-                        self._turn_done_event   = asyncio.Event()
+                async with (
+                    client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
+                    asyncio.TaskGroup() as tg,
+                ):
+                    connected = time.monotonic()
+                    self.session            = session
+                    self._loop              = asyncio.get_event_loop()
+                    # maxsize защищает от unbounded роста памяти
+                    # если _play_audio тормозит. При переполнении старые
+                    # фреймы дропаются в _receive_audio.
+                    self.audio_in_queue     = asyncio.Queue(maxsize=200)
+                    self.out_queue          = asyncio.Queue(maxsize=50)
+                    self._turn_done_event   = asyncio.Event()
 
-                        print("[ДЖАРВИС] ✅ Подключён.")
-                        self.ui.set_state("IDLE")
+                    print("[ДЖАРВИС] ✅ Подключён.")
+                    self.ui.set_state("IDLE")
+                    # Сигнал — только при запуске. На каждом переподключении
+                    # он звучал как «Джарвис активировался сам по себе».
+                    if first_connect:
+                        first_connect = False
                         try:
                             from core.wakeword import play_activation_chime
                             play_activation_chime()
                         except Exception:
                             pass
 
-                        # Reset retry count on successful connection
-                        retry_count = 0
+                    tg.create_task(self._send_realtime())
+                    tg.create_task(self._listen_audio())
+                    tg.create_task(self._receive_audio())
+                    tg.create_task(self._play_audio())
 
-                        tg.create_task(self._send_realtime())
-                        tg.create_task(self._listen_audio())
-                        tg.create_task(self._receive_audio())
-                        tg.create_task(self._play_audio())
+                    # Авто-триггер утреннего брифинга (6-11 утра, 1 раз в день)
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    if 6 <= datetime.now().hour < 11 and getattr(self, "_last_briefing_date", None) != today_str:
+                        self._last_briefing_date = today_str
+                        async def _run_morning_briefing():
+                            await asyncio.sleep(1.5)
+                            try:
+                                from actions.morning_briefing import morning_briefing
+                                loop = asyncio.get_event_loop()
+                                briefing = await loop.run_in_executor(
+                                    None, lambda: morning_briefing({}, player=self.ui)
+                                )
+                                if briefing:
+                                    self.speak(briefing)
+                            except Exception as e:
+                                logger.warning("Утренний брифинг: %s", e)
+                        tg.create_task(_run_morning_briefing())
 
-                        # Авто-триггер утреннего брифинга (6-11 утра, 1 раз в день)
-                        from datetime import datetime
-                        today_str = datetime.now().strftime("%Y-%m-%d")
-                        if 6 <= datetime.now().hour < 11 and getattr(self, "_last_briefing_date", None) != today_str:
-                            self._last_briefing_date = today_str
-                            async def _run_morning_briefing():
-                                await asyncio.sleep(1.5)
-                                try:
-                                    from actions.morning_briefing import morning_briefing
-                                    loop = asyncio.get_event_loop()
-                                    briefing = await loop.run_in_executor(
-                                        None, lambda: morning_briefing({}, player=self.ui)
-                                    )
-                                    if briefing:
-                                        self.speak(briefing)
-                                except Exception as e:
-                                    logger.warning("Утренний брифинг: %s", e)
-                            tg.create_task(_run_morning_briefing())
-                except Exception as e:
-                    logger.error(f"Live API connection error: {e}")
-                    logger.error(f"Error type: {type(e).__name__}")
-                    logger.error("Full traceback:")
-                    traceback.print_exc()
-                    
-                    # Различаем ошибки WebSocket: 1008 (policy violation) vs 1011 (server shutdown)
-                    error_msg = str(e)
-                    if "1008" in error_msg:
-                        logger.error("Policy violation (1008) - API key blocked")
-                        logger.error("Your API key was marked as leaked.")
-                        logger.error("What to do:")
-                        logger.error("  1. Go to https://aistudio.google.com/app/apikey")
-                        logger.error("  2. Delete old key and create new one")
-                        logger.error("  3. Update config/api_keys.json with new key")
-                        logger.error("  4. Restart JARVIS")
-                        logger.error("Important: never commit API keys to Git!")
-                        self.ui.write_log("SYS: ❌ API ключ заблокирован. Получите новый на https://aistudio.google.com/app/apikey")
-                        break
-                    elif "1011" in error_msg:
-                        print("[ДЖАРВИС] ⚠️ Server shutdown (1011) - нормальный перезапуск")
-                        retry_count += 1
-                        if retry_count > max_retries:
-                            print(f"[ДЖАРВИС] ❌ Превышен лимит попыток ({max_retries})")
-                            self.ui.write_log("SYS: Превышен лимит попыток подключения")
-                            break
-                        delay = min(2 ** retry_count, max_retry_delay)
-                        logger.info(f"Waiting {delay}s before retry {retry_count}/{max_retries}...")
-                        self.ui.set_state("RECONNECTING")
-                        await asyncio.sleep(delay)
-                        continue
-                    
-                    retry_count += 1
-                    if retry_count > max_retries:
-                        print(f"[ДЖАРВИС] ❌ Превышен лимит попыток ({max_retries})")
-                        self.ui.write_log("SYS: Превышен лимит попыток подключения")
-                        break
-                    delay = min(2 ** retry_count, max_retry_delay)
-                    print(f"[ДЖАРВИС] ⏸️ Ожидаю {delay} сек перед попыткой {retry_count}/{max_retries}...")
-                    await asyncio.sleep(delay)
-                    continue
+            except asyncio.CancelledError:
+                raise
+            except BaseException as e:
+                if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                    raise
+                reason = _root_error_text(e)
+                low = reason.lower()
+                logger.error("Сессия Gemini оборвалась: %s", reason)
+                logger.debug("Подробности разрыва", exc_info=True)
 
-            except Exception as e:
-                error_msg = str(e)
-                print(f"[ДЖАРВИС] ⚠️ {e}")
-                traceback.print_exc()
-                
-                # Check for API key errors - don't retry these
-                if any(key_word in error_msg.lower() for key_word in 
-                   ["api key expired", "api_key_invalid", "invalid api key", "api key not found"]):
-                    print("[JARVIS] FATAL: API key is invalid or expired!")
-                    print("[JARVIS] Please get a new key at: https://aistudio.google.com/apikey")
-                    print(f"[JARVIS] And update it in: {API_CONFIG}")
-                    self.ui.write_log("SYS: API key invalid. Please update config/api_keys.json")
-                    self.speak("Сэр, ключ API недействителен. Пожалуйста, обновите его.")
-                    break  # Exit the reconnect loop
-                
-                self.set_speaking(False)
-                self.ui.set_state("THINKING")
-                retry_count += 1
-                if retry_count > max_retries:
-                    print(f"[ДЖАРВИС] ❌ Превышен лимит попыток ({max_retries})")
-                    self.ui.write_log("SYS: Превышен лимит попыток подключения")
+                if "1008" in low or "leaked" in low:
+                    logger.error("Ключ Gemini заблокирован (1008) — создайте новый: "
+                                 "https://aistudio.google.com/app/apikey")
+                    self.ui.write_log("SYS: ❌ API ключ заблокирован. Получите новый на https://aistudio.google.com/app/apikey")
                     break
-                delay = min(2 ** retry_count, max_retry_delay)
-                logger.info(f"Reconnecting in {delay}s (attempt {retry_count}/{max_retries})...")
-                self.ui.set_state("RECONNECTING")
-                await asyncio.sleep(delay)
+                if any(k in low for k in ("api key not valid", "api key expired",
+                                          "api_key_invalid", "invalid api key",
+                                          "api key not found")):
+                    logger.error("Ключ Gemini недействителен. Обновите его в %s", API_CONFIG)
+                    self.ui.write_log("SYS: ❌ API ключ недействителен. Обновите config/api_keys.json")
+                    break
+
+            self.set_speaking(False)
+            self.session = None
+            if connected and time.monotonic() - connected >= _SESSION_HEALTHY_SEC:
+                # Сессия жила и закрылась — обычный разрыв. Возвращаемся сразу,
+                # с тем же handle'ом возобновления: разговор продолжается.
+                failures = 0
+                delay = 0.5
+            else:
+                # Упала сразу после подключения (отвергнутый handle, квота) —
+                # это неудача, а не разрыв: пауза растёт.
+                failures += 1
+                delay = min(2 ** failures, _RECONNECT_MAX_SEC)
+                # Сессия с поиском Google падает сразу — значит, модель его
+                # не принимает: работаем без него, чем не работать вовсе.
+                if self._grounding and (failures >= 2 or "search" in low or "tool" in low):
+                    self._grounding = False
+                    logger.warning("Встроенный поиск Google отключён: сессия с ним не подключается")
+                    self.ui.write_log("SYS: встроенный поиск Google недоступен — ищу своим поиском")
+                    delay = 0.5
+                # Протухший handle возобновления сервер не примет — и цикл
+                # бился бы в него бесконечно. Со второй неудачи — чистый старт.
+                if failures >= 2:
+                    self._resume_handle = None
+                if failures == 3:
+                    self.ui.write_log("SYS: нет связи с Gemini — продолжаю попытки…")
+            logger.info("Переподключение через %.1f с", delay)
+            self.ui.set_state("RECONNECTING")
+            await asyncio.sleep(delay)
+
+
+def _root_error_text(exc: BaseException) -> str:
+    """Текст первопричины, в том числе из ExceptionGroup, которой TaskGroup
+    заворачивает ошибку задачи."""
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    return f"{type(exc).__name__}: {exc}"
 
 
 # ─── Точка входа ──────────────────────────────────────────────────────────────
 def main():
+    # Самопроверка сборки (CI на Windows): без окна и без Gemini.
+    if "--selftest" in sys.argv:
+        from core import selftest
+        sys.exit(selftest.run())
+
+    # Вход аккаунта Джарвиса для звонков в Telegram (один раз).
+    if "--caller-login" in sys.argv:
+        from core import tg_call
+        sys.exit(tg_call.login_gui())
+
     # Без графики: JARVIS_HEADLESS=1 или --headless. Голосовой круг тот же,
     # разница только в том, кто показывает состояние и кто ждёт ключ.
     headless = headless_requested()
@@ -2331,6 +3028,10 @@ def main():
             asyncio.run(jarvis.run())
         except KeyboardInterrupt:
             print("\n🔴 Завершение работы...")
+        except SystemExit:
+            # sys.exit в рабочем потоке гасил только поток: окно оставалось
+            # висеть и молчать. Теперь хотя бы видно, почему.
+            ui.write_log("SYS: ❌ Ключ Gemini не найден. Перезапустите и введите ключ.")
         finally:
             jarvis.cleanup()
             summary = jarvis._latency.summary()

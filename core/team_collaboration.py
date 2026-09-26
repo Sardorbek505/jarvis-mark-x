@@ -3,14 +3,13 @@
 Автоматизация совместной работы, управление проектами, анализ коммуникаций
 """
 
-import json
 from pathlib import Path
 from typing import Dict, Optional, List
 from datetime import datetime
 
 import logging
 
-from core.storage import atomic_write_json
+from core.storage import atomic_write_json, load_json_or_quarantine
 
 _logger = logging.getLogger(__name__)
 
@@ -30,7 +29,7 @@ class TeamCollaborationEngine:
         if self.team_path.exists():
             try:
                 with open(self.team_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    return load_json_or_quarantine(f)
             except Exception as exc:
                 _logger.debug("Подавлено исключение: %s", exc, exc_info=True)
 

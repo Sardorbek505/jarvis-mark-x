@@ -42,14 +42,16 @@ _GOOGLE_CALENDAR_SERVICE = None
 
 try:
     from google.oauth2.credentials import Credentials  # noqa: F401 — проба доступности пакета
-    from google_auth_oauthlib.flow import InstalledAppFlow
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
     import pickle
     
     _SCOPES = ['https://www.googleapis.com/auth/calendar']
-    _TOKEN_FILE = _BASE / "config" / "calendar_token.pickle"
-    _CREDENTIALS_FILE = _BASE / "config" / "calendar_credentials.json"
+    # Токен и credentials — там же, где остальные ключи (%APPDATA%\\JARVIS);
+    # рядом с .exe в Program Files их не записать.
+    from core.paths import get_config_path as _cfg
+    _TOKEN_FILE = _cfg("calendar_token.pickle", for_writing=True)
+    _CREDENTIALS_FILE = _cfg("calendar_credentials.json")
     
     _GOOGLE_CALENDAR_ENABLED = True
 except ImportError:
@@ -76,14 +78,12 @@ def _get_google_calendar_service():
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
-            elif _CREDENTIALS_FILE.exists():
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    _CREDENTIALS_FILE, _SCOPES
-                )
-                creds = flow.run_local_server(port=0)
-                with open(_TOKEN_FILE, 'wb') as token:
-                    pickle.dump(creds, token)
             else:
+                # Интерактивный вход в Google здесь не запускаем: раньше
+                # flow.run_local_server() стартовал прямо из голосовой команды
+                # и ждал браузер без таймаута — Джарвис замирал. Без токена
+                # события просто остаются в локальном календаре.
+                _logger.info("Синхронизация с Google Календарём не настроена — событие только локально")
                 return None
         
         _GOOGLE_CALENDAR_SERVICE = build('calendar', 'v3', credentials=creds)

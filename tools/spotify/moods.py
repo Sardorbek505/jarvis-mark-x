@@ -28,7 +28,7 @@ class SpotifyMoods:
             response = requests.get(
                 f"{self.API_BASE}{endpoint}",
                 headers=self.headers,
-                params=params
+                params=params, timeout=(3, 10)
             )
             response.raise_for_status()
             return response.json()
@@ -206,7 +206,7 @@ class SpotifyMoods:
             response = requests.post(
                 f"{self.API_BASE}/users/{user_id}/playlists",
                 headers=self.headers,
-                json=playlist_data
+                json=playlist_data, timeout=(3, 10)
             )
             response.raise_for_status()
             playlist = response.json()
@@ -216,7 +216,7 @@ class SpotifyMoods:
             requests.post(
                 f"{self.API_BASE}/playlists/{playlist['id']}/tracks",
                 headers=self.headers,
-                json={'uris': track_uris}
+                json={'uris': track_uris}, timeout=(3, 10)
             )
             
             return playlist.get('uri')

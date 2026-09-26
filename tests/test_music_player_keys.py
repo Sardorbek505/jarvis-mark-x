@@ -1,101 +1,106 @@
-"""Основной сценарий запуска музыки не должен падать на отправке клавиши.
+"""Музыка: включается нужный трек, ответ — то, что реально заиграло.
 
-Коммит 0f4a136 «Fix music playback multi-layer fallback, Spotify URI auto-trigger
-and YouTube instant autoplay» добавил в actions/music_player.py вызовы
-`_send_key("space")`, но само определение осталось в actions/movie_player.py.
-
-Что это давало вживую:
-  * найден Spotify Track URI — NameError улетал наружу из _play(), то есть
-    основной путь «включи <трек>» падал целиком;
-  * откат на YouTube — NameError гасился `except Exception` и Джарвис отвечал
-    «Не удалось воспроизвести трек», хотя вкладка уже открылась и играла.
-
-Тесты pytest этого не видели: пути дёргают Spotify и браузер и не покрыты.
-Ловит такое линтер (ruff F821), который теперь стоит в CI отдельным шагом.
+Раньше «включи X» жал Space и Play/Pause подряд (два переключателя гасили
+друг друга), «пауза» на уже стоящей музыке её запускала, а ответ был
+«Включаю…» при любом исходе. Здесь медиа-сессия Spotify подменена фейком.
 """
+import pytest
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-import actions.music_player as music_player
-from actions.keyboard import send_key
+import actions.music_player as mp
+from core import media_session
+from core.media_session import NowPlaying
 
 
-def test_send_key_is_defined_in_music_player():
-    """Имя, которое модуль вызывает, должно существовать и быть вызываемым."""
-    assert callable(getattr(music_player, "_send_key", None))
+class _Spotify:
+    """Фейк медиа-сессии: что играет и какие команды пришли."""
+
+    def __init__(self, title=None, playing=False, opens_playing=True, opens="Believer"):
+        self.np = NowPlaying("Spotify.exe", title, "Imagine Dragons", playing) if title else None
+        self.cmds = []
+        self.opens_playing, self.opens = opens_playing, opens
+
+    def now_playing(self, app=None):
+        return self.np
+
+    def command(self, cmd, app=None):
+        self.cmds.append(cmd)
+        if self.np is None:
+            return False
+        self.np.playing = cmd in ("play",) or (cmd == "toggle" and not self.np.playing)
+        if cmd in ("next", "previous"):
+            self.np.title = "Thunder"
+        return True
+
+    def wait_for(self, app, timeout=8.0, playing=None):
+        return self.np if self.np and (playing is None or self.np.playing == playing) else None
+
+    def open_uri(self, uri):
+        self.np = NowPlaying("Spotify.exe", self.opens, "Imagine Dragons", self.opens_playing)
+        return True
 
 
-def test_music_and_movie_players_share_one_implementation():
-    """Обе реализации — одна функция, чтобы правки не расходились."""
-    import actions.movie_player as movie_player
-
-    assert music_player._send_key is send_key
-    assert movie_player._send_key is send_key
-
-
-def test_send_key_rejects_unknown_key_without_raising():
-    assert send_key("no-such-key") is False
-
-
-def test_play_with_track_uri_does_not_raise(monkeypatch):
-    """Путь «нашли Spotify URI» доходит до ответа, а не падает NameError."""
-    monkeypatch.setattr(music_player, "_spotify_search_track_uri", lambda q: "spotify:track:xyz")
-    monkeypatch.setattr(music_player, "_open_spotify_uri", lambda uri: True)
-    monkeypatch.setattr(music_player, "_focus_spotify_window", lambda: True)
-    monkeypatch.setattr(music_player, "_send_key", lambda key: True)
-    monkeypatch.setattr(music_player, "_send_media_key", lambda action: True)
-    monkeypatch.setattr(music_player.time, "sleep", lambda s: None)
-
-    answer = music_player._play(query="Bohemian Rhapsody")
-    assert "Bohemian Rhapsody" in answer
+@pytest.fixture
+def spotify(monkeypatch):
+    def make(**kw):
+        fake = _Spotify(**kw)
+        for name in ("now_playing", "command", "wait_for"):
+            monkeypatch.setattr(media_session, name, getattr(fake, name))
+        monkeypatch.setattr(mp, "_open_spotify_uri", fake.open_uri)
+        monkeypatch.setattr(mp, "_is_spotify_installed", lambda: True)
+        monkeypatch.setattr(mp.time, "sleep", lambda s: None)
+        return fake
+    return make
 
 
-def test_youtube_fallback_reports_success_when_tab_opened(monkeypatch):
-    """Промах по клавише не должен превращаться в «не удалось воспроизвести».
-
-    Вкладка открыта и играет — значит ответ пользователю положительный.
-    """
-    monkeypatch.setattr(music_player, "_spotify_search_track_uri", lambda q: None)
-    monkeypatch.setattr(music_player, "_is_spotify_installed", lambda: False)
-    monkeypatch.setattr(music_player, "_find_youtube_direct_url", lambda q: "https://youtu.be/x")
-    monkeypatch.setattr(music_player, "browser_control", lambda *a, **k: "ok")
-    monkeypatch.setattr(music_player, "_send_key", lambda key: False)      # клавиша не прошла
-    monkeypatch.setattr(music_player, "_send_media_key", lambda action: False)
-    monkeypatch.setattr(music_player.time, "sleep", lambda s: None)
-
-    answer = music_player._play(query="Smells Like Teen Spirit")
-    assert "Не удалось" not in answer
-    assert "Smells Like Teen Spirit" in answer
+def test_play_track_reports_what_actually_plays(spotify, monkeypatch):
+    fake = spotify(title="Old Song", playing=True)
+    monkeypatch.setattr(mp, "_spotify_search_track_uri", lambda q: "spotify:track:abc")
+    assert mp._play(query="Believer") == "Включил «Believer» — Imagine Dragons."
+    assert fake.cmds == []                       # без лишних переключателей
 
 
-def test_youtube_fallback_reports_failure_when_browser_fails(monkeypatch):
-    """А вот если браузер не открылся — честно сообщаем о провале."""
-    def _boom(*a, **k):
+def test_track_opened_paused_gets_one_play(spotify, monkeypatch):
+    fake = spotify(opens_playing=False)
+    monkeypatch.setattr(mp, "_spotify_search_track_uri", lambda q: "spotify:track:abc")
+    answer = mp._play(query="Believer")
+    assert fake.cmds == ["play"] and answer.startswith("Включил")
+
+
+def test_no_exact_track_opens_spotify_search_honestly(spotify, monkeypatch):
+    spotify()
+    monkeypatch.setattr(mp, "_spotify_search_track_uri", lambda q: None)
+    from core import web_find
+    monkeypatch.setattr(web_find, "spotify_uri", lambda q, kind=None: None)
+    opened = []
+    monkeypatch.setattr(mp, "_open_spotify_uri", lambda uri: opened.append(uri) or True)
+    answer = mp._play(query="редкая песня")
+    assert opened[0].startswith("spotify:search:") and "открыл поиск" in answer
+
+
+def test_pause_is_explicit_not_toggle(spotify):
+    fake = spotify(title="Believer", playing=False)          # уже на паузе
+    assert mp.music_player({"action": "pause"}) == "Пауза."
+    assert fake.cmds == ["pause"] and fake.np.playing is False   # не запустилась
+
+
+def test_next_names_the_new_track(spotify):
+    spotify(title="Believer", playing=True)
+    assert mp.music_player({"action": "next"}) == "Следующий: «Thunder» — Imagine Dragons."
+
+
+def test_nothing_playing(spotify):
+    spotify()
+    assert mp.music_player({"action": "pause"}) == "Сейчас ничего не играет, сэр."
+    assert mp.music_player({"action": "now_playing"}) == "Сейчас ничего не играет, сэр."
+
+
+def test_youtube_when_spotify_missing(monkeypatch):
+    monkeypatch.setattr(mp, "_is_spotify_installed", lambda: False)
+    monkeypatch.setattr(mp, "_find_youtube_direct_url", lambda q: "https://youtu.be/x")
+    monkeypatch.setattr(mp, "browser_control", lambda *a, **k: "ok")
+    assert "YouTube" in mp._play(query="Smells Like Teen Spirit")
+
+    def boom(*a, **k):
         raise RuntimeError("browser is gone")
-
-    monkeypatch.setattr(music_player, "_spotify_search_track_uri", lambda q: None)
-    monkeypatch.setattr(music_player, "_is_spotify_installed", lambda: False)
-    monkeypatch.setattr(music_player, "_find_youtube_direct_url", lambda q: "https://youtu.be/x")
-    monkeypatch.setattr(music_player, "browser_control", _boom)
-    monkeypatch.setattr(music_player.time, "sleep", lambda s: None)
-
-    assert "Не удалось" in music_player._play(query="что угодно")
-
-
-def test_playlist_with_non_spotify_url_does_not_raise(monkeypatch):
-    """Не-спотифаевская ссылка на плейлист: `spotify_opened` был не определён.
-
-    Ветка `if uri:` не выполнялась, и следующая строка читала переменную,
-    которой ещё нет, — UnboundLocalError вместо открытия ссылки в браузере.
-    """
-    monkeypatch.setattr(music_player, "_https_to_spotify_uri", lambda url: None)
-    monkeypatch.setattr(music_player, "browser_control", lambda *a, **k: "ok")
-    monkeypatch.setattr(music_player, "_focus_spotify_window", lambda: True)
-    monkeypatch.setattr(music_player, "_send_media_key", lambda action: True)
-    monkeypatch.setattr(music_player.time, "sleep", lambda s: None)
-
-    answer = music_player._play(playlist_url="https://music.yandex.ru/users/x/playlists/1")
-    assert "Не удалось" not in answer
+    monkeypatch.setattr(mp, "browser_control", boom)
+    assert mp._play(query="x").startswith("Не удалось")

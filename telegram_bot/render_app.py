@@ -7,6 +7,8 @@ FastAPI feeds them into the Application's update queue.
 """
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -24,6 +26,7 @@ from telegram import Update
 from telegram_bot.config import is_decommissioned, load as load_config
 from telegram_bot.gemini_client import GeminiClient
 from telegram_bot.pc_bridge import PCBridge
+from telegram_bot.pc_notice import PCStatusNotifier
 from telegram_bot import miniapp_server
 from telegram_bot import proactive
 from telegram_bot import context_builder
@@ -45,11 +48,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 cfg = load_config()
 
-# Webhook secret (Telegram sends it back in the X-Telegram-Bot-Api-Secret-Token
-# header). Derived from the bot token but stripped to the allowed charset
-# [A-Za-z0-9_-] — the raw token contains ':' which is NOT allowed here and
-# also breaks when placed in a URL path. Static path + header = robust delivery.
-_WEBHOOK_SECRET = re.sub(r"[^A-Za-z0-9_-]", "", cfg.telegram_token)[:256]
+# Секрет вебхука: Telegram возвращает его в заголовке
+# X-Telegram-Bot-Api-Secret-Token. Раньше это был сам токен бота без ':' —
+# любой лог заголовков или прокси отдавал токен целиком. Теперь — хеш токена:
+# стабилен между перезапусками, но токен из него не восстановить.
+# WEBHOOK_SECRET в env задаёт свой ([A-Za-z0-9_-], до 256 символов).
+_WEBHOOK_SECRET = (re.sub(r"[^A-Za-z0-9_-]", "", os.getenv("WEBHOOK_SECRET", ""))[:256]
+                   or hashlib.sha256(b"jarvis-webhook:" + cfg.telegram_token.encode()).hexdigest())
 _WEBHOOK_PATH = "/telegram-webhook"
 
 # Shared instances
@@ -73,8 +78,6 @@ miniapp_server._memory = memory
 
 
 # ── PC online/offline → keep Mini App in sync AND ping the user in Telegram ────
-_pc_online_notified = False
-_pc_offline_task = None
 
 
 async def _notify_users(text: str):
@@ -87,16 +90,29 @@ async def _notify_users(text: str):
             logger.debug(f"notify {uid}: {e}")
 
 
+_outbox_lock = asyncio.Lock()
+
+
 async def _flush_outbox():
-    """PC just came online — deliver any messages queued while it was off."""
-    if _tg_app is None:
+    """PC just came online — deliver any messages queued while it was off.
+
+    Под замком: запуск на каждом подключении ПК без него давал две
+    одновременные раздачи, и одно письмо могло уйти дважды."""
+    if _tg_app is None or _outbox_lock.locked():
         return
+    async with _outbox_lock:
+        await _flush_outbox_locked()
+
+
+async def _flush_outbox_locked():
     try:
         pending = await memory.pending_outbound()
     except Exception as e:
         logger.debug(f"outbox read: {e}")
         return
     for item in pending:
+        if not bridge.connected:
+            break   # PC dropped again — leave the rest queued for next time
         res = await bridge.send_userbot(item["target"], item["message"], item["as_voice"], item["user_id"])
         if bridge.delivered(res):
             await memory.delete_outbound(item["id"])
@@ -107,41 +123,19 @@ async def _flush_outbox():
             except Exception as exc:
                 logger.debug("Подавлено исключение: %s", exc, exc_info=True)
             await asyncio.sleep(1)   # gentle pacing, avoid spammy bursts
-        else:
-            break   # PC dropped again — leave the rest queued for next time
+        # Не доставлено при живом ПК (адресат не найден и т.п.) — идём дальше:
+        # раньше здесь был break, и одно «плохое» письмо стопорило всю очередь.
 
 
 async def _on_pc_status(online: bool):
     await miniapp_server.broadcast_pc_status(online)   # Mini App badge
-    global _pc_online_notified, _pc_offline_task
+    await _pc_notice.on_change(online)
     if online:
-        if _pc_offline_task:
-            _pc_offline_task.cancel()
-            _pc_offline_task = None
-        if not _pc_online_notified:
-            _pc_online_notified = True
-            await _notify_users("🖥 ПК онлайн — можно управлять компьютером.")
         asyncio.create_task(_flush_outbox())   # deliver anything queued while offline
-    else:
-        # Debounce: brief reconnects flap online/offline. Only announce offline
-        # after 20s without a reconnect, so we don't spam on network blips.
-        if _pc_offline_task:
-            return
-
-        async def _confirm_offline():
-            global _pc_online_notified, _pc_offline_task
-            try:
-                await asyncio.sleep(20)
-            except asyncio.CancelledError:
-                return
-            _pc_offline_task = None
-            if not bridge.connected:
-                _pc_online_notified = False
-                await _notify_users("🌙 ПК офлайн.")
-
-        _pc_offline_task = asyncio.create_task(_confirm_offline())
 
 
+# Когда писать в Telegram о пропаже ПК — см. pc_notice.py.
+_pc_notice = PCStatusNotifier(lambda text: _notify_users(text), lambda: bridge.connected)
 bridge.on_status_change(_on_pc_status)
 
 
@@ -186,6 +180,10 @@ async def _build_tg_app():
         .read_timeout(30.0)
         .write_timeout(30.0)
         .pool_timeout(30.0)
+        # По умолчанию PTB обрабатывает по одному обновлению: долгий ответ
+        # (голос, Gemini с запасными моделями) держал очередь, и нажатие
+        # «✖ Отменить» ждало, пока 5-секундная отправка уже уйдёт.
+        .concurrent_updates(4)
     )
 
     # HF Spaces block outbound to api.telegram.org. Route the bot's API + file
@@ -291,7 +289,9 @@ async def _set_webhook(bot, webhook_url: str, drop_pending: bool = False):
         url=webhook_url,
         secret_token=_WEBHOOK_SECRET,
         drop_pending_updates=drop_pending,
-        allowed_updates=["message", "edited_message", "callback_query"],
+        # Без edited_message: исправление опечатки прогоняло сообщение заново —
+        # второй ответ, дубли напоминаний и задач, повторная отправка контакту.
+        allowed_updates=["message", "callback_query"],
     )
 
 
@@ -377,7 +377,8 @@ async def _telegram_boot():
 
             if cfg.miniapp_url:
                 webhook_url = f"{cfg.miniapp_url.rstrip('/')}{_WEBHOOK_PATH}"
-                await _set_webhook(_tg_app.bot, webhook_url, drop_pending=True)
+                # Сообщения, пришедшие, пока Space перезапускался, не выбрасываем.
+                await _set_webhook(_tg_app.bot, webhook_url, drop_pending=False)
                 logger.info(f"Webhook registered: {webhook_url}")
                 _tasks.append(asyncio.create_task(_webhook_keeper(_tg_app.bot, webhook_url)))
             else:
@@ -455,7 +456,8 @@ miniapp_server.app.router.lifespan_context = lifespan
 @miniapp_server.app.post(_WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
     """Telegram calls this endpoint for every update."""
-    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != _WEBHOOK_SECRET:
+    got = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not hmac.compare_digest(got.encode(), _WEBHOOK_SECRET.encode()):
         logger.warning("Webhook rejected — bad secret token")
         return JSONResponse({"ok": False}, status_code=403)
     if _tg_app is None:

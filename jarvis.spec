@@ -32,6 +32,11 @@ for src, dst in safe_files:
 if (BASE_DIR / "assets").exists():
     datas.append((str(BASE_DIR / "assets"), "assets"))
 
+# Словарь слова «Джарвис» (~45 МБ): кладёт scripts/build_exe.py. Нет — Джарвис
+# работает, но имя ищет через Gemini (см. core/wake_vosk.py).
+if (BASE_DIR / "models" / "vosk-small-ru").exists():
+    datas.append((str(BASE_DIR / "models" / "vosk-small-ru"), "models/vosk-small-ru"))
+
 if (BASE_DIR / "telegram_bot" / "miniapp").exists():
     datas.append((str(BASE_DIR / "telegram_bot" / "miniapp"), "telegram_bot/miniapp"))
 
@@ -79,7 +84,26 @@ hidden_imports = [
     "actions.music_player",
     "actions.spotify_controller",
     "actions.movie_player",
+    "actions.video_player",
+    "actions.spotify_premium",
+    "core.browser_cdp",
+    "core.browser_panel",
+    "ui_browser",
+    "ui_island",
+    "core.selftest",
+    "core.break_reminder",
+    "core.tg_call",
+    "telegram_bot.pc_userbot",
+    "websockets.sync.client",
     "actions.sleep_timer",
+    "actions.file_controller",
+    "actions.morning_briefing",
+    "actions.calendar",
+    "core.storage",
+    "core.onboarding",
+    "core.hotkey_manager",
+    "core.headless_ui",
+    "mss",
     "imageio_ffmpeg",
     "pycaw",
     "comtypes",
@@ -91,15 +115,20 @@ hidden_imports = [
 ]
 
 binaries = []
-try:
-    from PyInstaller.utils.hooks import collect_all
-    for pkg in ["imageio_ffmpeg", "openwakeword", "pycaw", "comtypes", "pyaudiowpatch"]:
+from PyInstaller.utils.hooks import collect_all
+
+# Каждый пакет — отдельно: раньше первый отсутствующий (openwakeword нет в
+# requirements) обрывал цикл, и pycaw/comtypes в сборку не попадали —
+# приглушение музыки и замер колонок в .exe молча не работали.
+for pkg in ["imageio_ffmpeg", "openwakeword", "pycaw", "comtypes", "pyaudiowpatch", "mss", "vosk", "screen_brightness_control", "winrt", "ddgs", "telethon", "pytgcalls", "ntgcalls"]:
+    try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
-        datas += pkg_datas
-        binaries += pkg_binaries
-        hidden_imports += pkg_hidden
-except Exception as e:
-    print(f"Hook collection notice: {e}")
+    except Exception as e:
+        print(f"Hook collection notice ({pkg}): {e}")
+        continue
+    datas += pkg_datas
+    binaries += pkg_binaries
+    hidden_imports += pkg_hidden
 
 a = Analysis(
     ['main.py'],

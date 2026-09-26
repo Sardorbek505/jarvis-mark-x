@@ -47,3 +47,21 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           JARVIS_HEADLESS: "1"
         run: python -m pytest tests/ -q
+
+  wake-word:
+    # Слово «Джарвис» на настоящем звуке: голос Edge → настоящая модель Vosk
+    # → тот же LocalWake, что в программе. См. scripts/wake_check_vosk.py.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install vosk and edge-tts
+        run: pip install vosk edge-tts imageio-ffmpeg
+      - name: Download Vosk model
+        run: |
+          curl -sSL -o model.zip https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
+          mkdir -p models && unzip -q model.zip -d models && mv models/vosk-model-small-ru-0.22 models/vosk-small-ru
+      - name: Check wake word on synthesized speech
+        run: python scripts/wake_check_vosk.py models/vosk-small-ru

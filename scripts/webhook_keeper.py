@@ -35,7 +35,7 @@ _CONFIG_FILE = _BASE / "config" / "api_keys.json"
 _LOG_FILE = _BASE / "logs" / "webhook_keeper.log"
 
 _WEBHOOK_PATH = "/telegram-webhook"
-_ALLOWED_UPDATES = ["message", "edited_message", "callback_query"]
+_ALLOWED_UPDATES = ["message", "callback_query"]   # как в render_app: без правок
 _DEFAULT_HF_HOST = "atabekovch-jarvis-mark-x.hf.space"
 _INTERVAL_SEC = 300
 _API = "https://api.telegram.org"

@@ -33,19 +33,19 @@ class SpotifyDevices:
             if method == 'GET':
                 response = requests.get(
                     f"{self.API_BASE}{endpoint}",
-                    headers=self.headers
+                    headers=self.headers, timeout=(3, 10)
                 )
             elif method == 'PUT':
                 response = requests.put(
                     f"{self.API_BASE}{endpoint}",
                     headers=self.headers,
-                    json=data
+                    json=data, timeout=(3, 10)
                 )
             elif method == 'POST':
                 response = requests.post(
                     f"{self.API_BASE}{endpoint}",
                     headers=self.headers,
-                    json=data
+                    json=data, timeout=(3, 10)
                 )
             
             response.raise_for_status()

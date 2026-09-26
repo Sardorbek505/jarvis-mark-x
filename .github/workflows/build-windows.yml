@@ -1,0 +1,105 @@
+name: Windows installer
+
+# Собирает JARVIS.exe (PyInstaller) и установщик JARVIS_Setup_v*.exe (Inno Setup)
+# на Windows-машине GitHub. Готовый установщик — в артефактах запуска,
+# а для тега vX.Y.Z — ещё и в Releases.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - jarvis.spec
+      - scripts/installer.iss
+      - scripts/build_exe.py
+      - requirements.txt
+      - .github/workflows/build-windows.yml
+      - main.py
+      - ui.py
+      - orb.py
+      - hud_cards.py
+      - "core/**"
+      - "actions/**"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build exe and installer
+        env:
+          PYTHONIOENCODING: utf-8
+          JARVIS_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: python scripts/build_exe.py
+
+      - name: Check installer exists and holds no secrets
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist\JARVIS_Setup_v*.exe | Select-Object -First 1
+          if (-not $setup) { throw "Установщик не собран" }
+          $leaks = Get-ChildItem dist\JARVIS -Recurse -Include api_keys.json,*.session,jarvis_memory.db,token.json,spotify_tokens.json
+          if ($leaks) { $leaks | ForEach-Object { $_.FullName }; throw "В сборку попали секреты" }
+          "Собрано: $($setup.Name) ($([math]::Round($setup.Length / 1MB, 1)) MB)"
+
+      - name: Smoke test - install and launch
+        # Ставим установщик тихо и запускаем JARVIS.exe: если сборке не хватает
+        # модуля или запуск падает, это видно здесь, а не на ПК пользователя.
+        # Ключ заведомо неверный — окно мастера не открывается, Джарвис идёт
+        # дальше, получает отказ Gemini и остаётся жить с сообщением в окне.
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist\JARVIS_Setup_v*.exe | Select-Object -First 1).FullName
+          Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/DIR=C:\jarvis-smoke' -Wait
+          if (-not (Test-Path C:\jarvis-smoke\JARVIS.exe)) { throw "Установщик не поставил JARVIS.exe" }
+          $env:GEMINI_API_KEY = "smoke-test-not-a-real-key"
+          $p = Start-Process C:\jarvis-smoke\JARVIS.exe -PassThru
+          Start-Sleep -Seconds 30
+          $log = Join-Path $env:APPDATA "JARVIS\jarvis.log"
+          if (Test-Path $log) { Get-Content $log -Tail 40 }
+          if ($p.HasExited) { throw "JARVIS.exe завершился при запуске (код $($p.ExitCode))" }
+          Stop-Process -Id $p.Id -Force
+          if (-not (Test-Path $log)) { throw "Лог не создан — Джарвис не дошёл до старта" }
+          $text = Get-Content $log -Raw
+          if ($text -match "Необработанная ошибка") { throw "В логе необработанная ошибка" }
+          if ($text -notmatch "Подключение к Gemini|Сессия Gemini") { throw "Джарвис не дошёл до подключения к Gemini" }
+          "OK: установлен, запущен, дошёл до Gemini без падений"
+
+      - name: Self-test - wake word model inside the installed exe
+        # Модель и DLL Vosk должны доехать до установленной программы:
+        # JARVIS.exe --selftest грузит словарь и пишет итог в лог.
+        shell: pwsh
+        run: |
+          $p = Start-Process C:\jarvis-smoke\JARVIS.exe -ArgumentList '--selftest' -PassThru -Wait
+          $log = Join-Path $env:APPDATA "JARVIS\jarvis.log"
+          Get-Content $log | Select-String "SELFTEST"
+          if ($p.ExitCode -ne 0) { throw "Самопроверка не прошла (код $($p.ExitCode))" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-Setup
+          path: dist/JARVIS_Setup_v*.exe
+          retention-days: 30
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/JARVIS_Setup_v*.exe
