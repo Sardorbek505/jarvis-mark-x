@@ -34,7 +34,9 @@ _STATE_FROM_UI = {"IDLE": "idle", "LISTENING": "listening", "THINKING": "thinkin
                   "SPEAKING": "speaking", "RECONNECTING": "offline", "INITIALISING": "thinking"}
 
 # Размеры видов (ширина, высота) в точках экрана.
-SIZES = {"compact": (168, 34), "activity": (292, 34), "banner": (420, 66), "expanded": (440, 196)}
+SIZES = {"compact": (168, 34), "activity": (292, 34), "listening": (312, 48), "banner": (420, 66),
+         "expanded": (440, 196)}
+LISTEN_RGB = (70, 232, 128)
 BANNER_SEC = 5.5
 
 
@@ -63,9 +65,13 @@ class IslandModel:
     timer_end: float = 0.0         # time.time() окончания (для обратного отсчёта)
     last_reply: str = ""
     banners: list[Banner] = field(default_factory=list)
+    listen_since: float = 0.0      # когда позвали «Джарвис» (для вспышки)
 
-    def set_state(self, ui_state: str):
-        self.state = _STATE_FROM_UI.get((ui_state or "").upper(), ui_state if ui_state in STATE_RGB else "idle")
+    def set_state(self, ui_state: str, now: float | None = None):
+        new = _STATE_FROM_UI.get((ui_state or "").upper(), ui_state if ui_state in STATE_RGB else "idle")
+        if new == "listening" and self.state != "listening":
+            self.listen_since = time.monotonic() if now is None else now
+        self.state = new
 
     def notify(self, title: str, text: str, kind: str = "event", now: float | None = None, sec: float = BANNER_SEC):
         now = time.monotonic() if now is None else now
@@ -104,6 +110,9 @@ class IslandModel:
             return "expanded"
         if self.banner(now):
             return "banner"
+        # Позвали «Джарвис» — капсула раскрывается: «Слушаю…» и волна голоса.
+        if self.state == "listening":
+            return "listening"
         if self.media and self.media.playing:
             return "activity"
         return "compact"
@@ -212,8 +221,8 @@ def fullscreen_app_active() -> bool:
 # ── окно ─────────────────────────────────────────────────────────────────────
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal  # noqa: E402
-from PyQt6.QtGui import (QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath,  # noqa: E402
-                         QPen, QRegion)
+from PyQt6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QLinearGradient, QPainter,  # noqa: E402
+                         QPainterPath, QPen, QRegion)
 from PyQt6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 
@@ -254,6 +263,8 @@ class Island(QWidget):
         self._rgb = list(STATE_RGB["idle"])
         self._energy = 0.0
         self._buttons: dict[str, QRectF] = {}
+        self._wave = [0.0] * 24                   # громкость голоса — для волны «Слушаю»
+        self._wave_t = 0.0
         from orb import DotOrb
         self._orb = DotOrb(n=220, seed=3)
 
@@ -377,6 +388,10 @@ class Island(QWidget):
         if self._leaving and self._p < 0.03:
             self._hide_now()
             return
+        self._wave_t += dt
+        if self._wave_t >= 0.04:                   # волна сдвигается 25 раз в секунду
+            self._wave_t = 0.0
+            self._wave = self._wave[1:] + [m.level]
         tgt = STATE_RGB.get(m.state, STATE_RGB["idle"])
         for i in range(3):
             self._rgb[i] += (tgt[i] - self._rgb[i]) * (1 - math.exp(-dt * 6))
@@ -450,18 +465,24 @@ class Island(QWidget):
         path = QPainterPath()
         path.addRoundedRect(cap, radius, radius)
         p.fillPath(path, QColor(0, 0, 0, 250))
-        p.setPen(QPen(self._col(70 * min(1.0, max(0.0, self._p))), 1))
-        p.drawPath(path)
+        m = self.model
+        mode = m.mode(self.hovered)
+        if mode == "listening":
+            self._paint_listen_glow(p, path, cap)
+        else:
+            p.setPen(QPen(self._col(70 * min(1.0, max(0.0, self._p))), 1))
+            p.drawPath(path)
         p.setClipPath(path)
         # Содержимое проявляется, когда капсула почти выросла, и гаснет первым.
         p.setOpacity(min(1.0, max(0.0, (self._p - 0.55) / 0.4)))
         self._buttons = {}
-        m = self.model
-        mode = m.mode(self.hovered)
         white, dim = QColor(238, 243, 246), QColor(138, 150, 161)
         x0, w, h = cap.x(), cap.width(), cap.height()
         if mode == "expanded" and h > 110:
             self._paint_expanded(p, cap, white, dim)
+            return
+        if mode == "listening" and h > 40:
+            self._paint_listening(p, cap, white)
             return
         if mode == "banner" and h > 46:
             b = m.banner()
@@ -480,6 +501,41 @@ class Island(QWidget):
         else:
             label = m.timer_text() if (m.timer_label and m.state == "idle") else STATE_LABEL.get(m.state, "")
             self._text(p, QRectF(x0 + 36, 0, w - 50, h), label, 7.5, self._col(235, 0.25), bold=True, spacing=1.6)
+
+    def _paint_listen_glow(self, p: QPainter, path: QPainterPath, cap: QRectF):
+        """«Позвали» — вспышка в момент имени и бегущий по краю свет, как у Siri."""
+        r, g, b = LISTEN_RGB
+        flash = max(0.0, 1.0 - (time.monotonic() - self.model.listen_since) / 0.9)
+        if flash > 0:
+            p.fillPath(path, QColor(r, g, b, int(70 * flash * flash)))
+        grad = QConicalGradient(cap.center(), (-self._clock * 150) % 360)
+        grad.setColorAt(0.00, QColor(r, g, b, 235))
+        grad.setColorAt(0.18, QColor(63, 208, 189, 150))
+        grad.setColorAt(0.45, QColor(r, g, b, 0))
+        grad.setColorAt(0.55, QColor(r, g, b, 0))
+        grad.setColorAt(0.82, QColor(63, 208, 189, 150))
+        grad.setColorAt(1.00, QColor(r, g, b, 235))
+        p.setPen(QPen(QBrush(grad), 2.0 + 1.5 * flash))
+        p.drawPath(path)
+
+    def _paint_listening(self, p: QPainter, cap: QRectF, white: QColor):
+        x0, w, h = cap.x(), cap.width(), cap.height()
+        cy = cap.center().y()
+        self._mini_orb(p, x0 + 26, cy, 14)
+        dots = "." * (int(self._clock * 2.5) % 4)
+        self._text(p, QRectF(x0 + 50, 0, 120, h), "Слушаю" + dots, 10.5, white, bold=True)
+        # Волна: живёт от голоса, а в тишине тихо «дышит» — видно, что микрофон открыт.
+        n, bw, gap = len(self._wave), 3.0, 2.2
+        right = x0 + w - 18
+        r, g, b = LISTEN_RGB
+        for i, v in enumerate(self._wave):
+            breath = 0.07 + 0.05 * math.sin(self._clock * 3.2 + i * 0.55)
+            amp = max(breath, min(1.0, v * 1.6))
+            bh = 4 + (h - 20) * amp
+            x = right - (n - i) * (bw + gap)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(r, g, b, int(120 + 135 * (i / n))))
+            p.drawRoundedRect(QRectF(x, cy - bh / 2, bw, bh), 1.5, 1.5)
 
     def _paint_expanded(self, p: QPainter, cap: QRectF, white: QColor, dim: QColor):
         m = self.model
