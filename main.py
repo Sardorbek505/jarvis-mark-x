@@ -1434,6 +1434,15 @@ class Jarvis:
         except Exception as exc:
             logger.warning("Глаза не подключились: %s", exc)
 
+        # Самопроверка после команд: снимок экрана → «вышло ли» (core/verify.py).
+        try:
+            from core.verify import verifier
+            vf = verifier()
+            vf.say = self.speak
+            vf.log = self.ui.write_log
+        except Exception as exc:
+            logger.warning("Самопроверка не подключилась: %s", exc)
+
         # Часы: таймеры, секундомер, будильники (core/clock.py). Сработало —
         # звук, голос Джарвиса и событие в журнале и капсуле.
         try:
@@ -2265,6 +2274,12 @@ class Jarvis:
         # «музыку не поставил» по журналу было не разобрать — вызов виден,
         # а что инструмент ответил, нет.
         logger.info("📤 %s → %s", name, str(result).replace("\n", " ")[:200])
+        # Сам глянуть на экран, вышло ли (core/verify.py) — в фоне, ответ не ждёт.
+        try:
+            from core.verify import verifier
+            verifier().after(name, args, result)
+        except Exception as exc:
+            logger.debug("Проверка не запущена: %s", exc)
         return types.FunctionResponse(id=fc.id, name=name, response={"result": result})
 
     def _remember_tool_use(self, name: str, args: dict):
