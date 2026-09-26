@@ -296,3 +296,34 @@ def test_music_goes_to_this_pc_not_the_active_phone(monkeypatch):
     assert sp._pick_device(devs)["id"] == "me"
     assert sp._pick_device(devs[:2]) is None               # только телефон и веб — не играть туда
     assert sp._pick_device(devs[:3])["id"] == "other"      # имя другое, но это приложение на ПК
+
+
+# ─── Не заиграло — уступаем запасному пути ───────────────────────────────────
+def test_unconfirmed_playback_yields_to_fallback(monkeypatch):
+    """Живой случай на ПК владельца: Web API отвечает 204 на каждую команду,
+    а клиент Spotify из Microsoft Store её не исполняет — тишина. Ответ
+    «отправил, но не вижу, что заиграло» закрывал вопрос, и запасной путь
+    (открыть spotify:track: прямо в приложении — он играет) не пробовали.
+
+    None означает «Premium-путь не сработал, пусть работает запасной»."""
+    from actions import spotify_premium as sp
+    monkeypatch.setattr(sp, "ready", lambda: True)
+    monkeypatch.setattr(sp, "is_premium", lambda: True)
+    monkeypatch.setattr(sp, "find", lambda q: ("spotify:track:x", "«Трек» — Кто-то"))
+    monkeypatch.setattr(sp, "play_uri", lambda uri: (True, ""))
+    monkeypatch.setattr(sp, "now_playing", lambda: {"title": "", "artist": "", "playing": False})
+    monkeypatch.setattr(sp.time, "sleep", lambda s: None)
+
+    assert sp.play("трек") is None
+
+
+def test_confirmed_playback_still_answers(monkeypatch):
+    from actions import spotify_premium as sp
+    monkeypatch.setattr(sp, "ready", lambda: True)
+    monkeypatch.setattr(sp, "is_premium", lambda: True)
+    monkeypatch.setattr(sp, "find", lambda q: ("spotify:track:x", "«Трек» — Кто-то"))
+    monkeypatch.setattr(sp, "play_uri", lambda uri: (True, ""))
+    monkeypatch.setattr(sp, "now_playing", lambda: {"title": "Трек", "artist": "Кто-то", "playing": True})
+    monkeypatch.setattr(sp.time, "sleep", lambda s: None)
+
+    assert sp.play("трек") == "Включил «Трек» — Кто-то."
