@@ -155,3 +155,18 @@ def test_ordinary_error_is_retried_at_once():
     assert c.run_once().startswith("ошибка")
     c.llm = lambda p: _facts(facts=[{"category": "preferences", "key": "еда", "value": "плов"}])
     assert c.run_once() == "+1 −0"
+
+
+def test_number_429_in_an_unrelated_error_is_not_a_quota():
+    """«429» само по себе ничего не значит: оно бывает в id, счётчиках и
+    времени. Принять такое за квоту — тихо остановить память на минуту."""
+    assert conv._quota_pause(RuntimeError("не разобрал 429 реплик")) == 0.0
+    assert conv._quota_pause(RuntimeError("spotify:track:429abc не найден")) == 0.0
+    assert conv._quota_pause(RuntimeError("таймаут через 4290 мс")) == 0.0
+
+
+def test_real_quota_refusals_are_recognised():
+    assert conv._quota_pause(RuntimeError("429 RESOURCE_EXHAUSTED. quota")) > 0
+    assert conv._quota_pause(RuntimeError("RESOURCE_EXHAUSTED")) > 0
+    assert conv._quota_pause(RuntimeError("429 Too Many Requests")) > 0
+    assert conv._quota_pause(RuntimeError("429: You exceeded your current quota")) > 0
