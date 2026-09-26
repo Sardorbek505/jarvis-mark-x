@@ -628,6 +628,15 @@ def music_player(parameters: dict, player=None) -> str:
         except Exception as exc:
             _logger.debug("Видео для паузы: %s", exc)
 
+    if action in ("play", "mood"):
+        # Музыку просят вместо фильма — фильм на паузу, а не звучать поверх.
+        try:
+            from actions import video_player
+            if video_player.video_playing():
+                video_player.control("pause")
+        except Exception as exc:
+            _logger.debug("Пауза фильма перед музыкой: %s", exc)
+
     if action in ("play", "mood") and not parameters.get("playlist_url"):
         q = f"{query} плейлист" if action == "mood" and query else query
         res = sp.play(q)

@@ -116,3 +116,14 @@ def test_youtube_when_spotify_missing(monkeypatch):
         raise RuntimeError("browser is gone")
     monkeypatch.setattr(mp, "browser_control", boom)
     assert mp._play(query="x").startswith("Не удалось")
+
+
+def test_music_pauses_the_film(spotify, monkeypatch):
+    """Живой случай: попросил музыку — фильм играл дальше поверх неё."""
+    from actions import video_player
+    sent = []
+    monkeypatch.setattr(video_player, "video_playing", lambda: True)
+    monkeypatch.setattr(video_player, "control", lambda action, value=None: sent.append(action) or "Пауза.")
+    spotify()
+    mp.music_player({"action": "play", "query": "Believer"})
+    assert sent == ["pause"]

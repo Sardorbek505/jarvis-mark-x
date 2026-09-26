@@ -280,3 +280,19 @@ def test_artist_is_not_hijacked_by_similar_playlist(controller):
     controller.play_query("любэ")
 
     assert controller.played == [("track", "spotify:track:нужный")]
+
+
+# ─── Устройство: только этот компьютер ───────────────────────────────────────
+def test_music_goes_to_this_pc_not_the_active_phone(monkeypatch):
+    """Живой случай: Джарвис «включил», а на ПК тишина — играло на телефоне."""
+    from actions import spotify_premium as sp
+    monkeypatch.setenv("COMPUTERNAME", "ASUS-TUF")
+    devs = [
+        {"id": "phone", "type": "Smartphone", "name": "iPhone", "is_active": True},
+        {"id": "web", "type": "Computer", "name": "Web Player (Chrome)", "is_active": False},
+        {"id": "other", "type": "Computer", "name": "OFFICE-PC", "is_active": False},
+        {"id": "me", "type": "Computer", "name": "ASUS-TUF", "is_active": False},
+    ]
+    assert sp._pick_device(devs)["id"] == "me"
+    assert sp._pick_device(devs[:2]) is None               # только телефон и веб — не играть туда
+    assert sp._pick_device(devs[:3])["id"] == "other"      # имя другое, но это приложение на ПК

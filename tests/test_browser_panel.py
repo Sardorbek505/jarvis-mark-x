@@ -29,6 +29,17 @@ PAGE = """<!doctype html><meta charset="utf-8"><title>Проверка пане�
 <video style="width:320px;height:180px;background:#000"></video></div>"""
 
 
+# Как VK Видео: полный экран, включённый не кнопкой плеера, плеер сразу сбрасывает.
+VK_PAGE = """<!doctype html><meta charset="utf-8"><title>VK</title><body style="margin:0">
+<div id="player" style="position:relative;width:640px;height:360px;background:#000">
+<video style="width:640px;height:360px"></video>
+<button aria-label="Развернуть на весь экран" style="position:absolute;right:8px;bottom:8px;width:32px;height:32px"
+        onclick="window.byButton = true; player.requestFullscreen()"></button></div>
+<script>document.addEventListener('fullscreenchange', () => {
+  if (document.fullscreenElement && !window.byButton) document.exitFullscreen();
+  if (!document.fullscreenElement) window.byButton = false; });</script>"""
+
+
 def test_address_bar_understands_sites_and_queries():
     assert bp.normalize_url("youtube.com") == "https://youtube.com"
     assert bp.normalize_url("vk.com/video") == "https://vk.com/video"
@@ -52,6 +63,7 @@ def chrome(tmp_path, monkeypatch):
         pytest.skip("нет Chrome/Chromium")
     (tmp_path / "site").mkdir()
     (tmp_path / "site" / "index.html").write_text(PAGE, encoding="utf-8")
+    (tmp_path / "site" / "vk.html").write_text(VK_PAGE, encoding="utf-8")
     (tmp_path / "site" / "second.html").write_text('<meta charset="utf-8"><title>Вторая</title>вторая',
                                                    encoding="utf-8")
     http.server.SimpleHTTPRequestHandler.log_message = lambda *a: None
@@ -156,6 +168,15 @@ def test_film_after_closed_panel_goes_fullscreen_on_screen(chrome):
     assert cdp.fullscreen(True, t)
     assert _until(lambda: t.eval("!!document.fullscreenElement"))
     assert _until(lambda: state() == "fullscreen")
+
+
+def test_film_goes_fullscreen_on_player_that_resets_foreign_fullscreen(chrome):
+    """Живой случай: VK Видео — фильм играл в окне, а не на весь экран."""
+    t = cdp.tab()
+    t.navigate(chrome + "/vk.html")
+    assert _until(lambda: t.eval("document.title") == "VK")
+    assert cdp.fullscreen(True, t)
+    assert t.eval("document.fullscreenElement && document.fullscreenElement.id") == "player"
 
 
 # ── виджет ───────────────────────────────────────────────────────────────────
