@@ -1318,6 +1318,16 @@ class Jarvis:
         except Exception as exc:
             logger.warning("Перерывы/звонки не запустились: %s", exc)
 
+        # Громкость программам, которую не вернули в прошлый раз (Джарвис
+        # закрыли, пока музыка была приглушена), — сразу при запуске, а не
+        # при первом приглушении: контроллер создаётся лениво.
+        if sys.platform == "win32":
+            try:
+                from core.ducking_controller import get_ducking_controller
+                get_ducking_controller()
+            except Exception as exc:
+                logger.debug("Дакинг: %s", exc)
+
         # Локальное слово «Джарвис». Запускается в _listen_audio: модели
         # нужен событийный цикл, чтобы будить Джарвиса из своего потока.
         self._local_wake: LocalWake | None = None

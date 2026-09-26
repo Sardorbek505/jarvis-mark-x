@@ -51,6 +51,7 @@ class DuckingController:
         release_ms: float = 350.0,      # Длительность восстановления (мс)
         step_hz: float = 60.0,          # Частота обновления интерполяции (Гц)
         auto_pause_media: bool = False, # Ставить ли плеер на паузу вместо затухания
+        state_path: Optional[str] = None,  # куда сохранять громкость «до» (см. _persist)
     ):
         self.duck_ratio = max(0.05, min(1.0, duck_ratio))
         self.attack_ms = attack_ms
@@ -66,6 +67,15 @@ class DuckingController:
         self._current_volume: Optional[float] = None
         # Ключ — PID процесса (int), значение — громкость сессии до приглушения.
         self._saved_session_vols: Dict[int, float] = {}
+        self._saved_names: Dict[int, str] = {}
+        # Громкость, которую не успели вернуть (Джарвис закрыли или он упал,
+        # пока музыка была приглушена): имя процесса -> громкость «до».
+        # Windows помнит громкость приложений, и без этого CS2, Steam, браузер
+        # оставались тихими навсегда, а следующее приглушение запоминало тихий
+        # уровень как исходный и роняло его ещё ниже.
+        self._state_path = state_path
+        self._pending_heal: Dict[str, float] = self._load_pending()
+        self._heal_checked = 0.0
 
         # Windows CoreAudio Endpoint
         self._endpoint_volume = None
@@ -93,7 +103,77 @@ class DuckingController:
     # Работа с CoreAudio (COM) — только в собственном потоке: раньше она шла
     # прямо из колбэка микрофона и срывала первые кадры речи.
 
-    _HOLD_SEC = 6.0   # приглушили, а ответа так и нет — вернуть звук
+    _HOLD_SEC = 6.0      # приглушили, а ответа так и нет — вернуть звук
+    _SPEAK_HOLD_SEC = 90.0   # «говорит» дольше — ответ завис, звук вернуть
+
+    # ── сохранение «до приглушения» на диск ──────────────────────────────────
+    def _path(self) -> Optional[str]:
+        if self._state_path is None:
+            try:
+                from core.paths import get_user_data_dir
+                self._state_path = str(get_user_data_dir() / "ducked_sessions.json")
+            except Exception:
+                self._state_path = ""
+        return self._state_path or None
+
+    def _load_pending(self) -> Dict[str, float]:
+        path = self._path()
+        if not path:
+            return {}
+        try:
+            import json
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            return {str(k): float(v) for k, v in data.items() if 0.0 < float(v) <= 1.0}
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            logger.debug("ducked_sessions.json: %s", e)
+            return {}
+
+    def _persist(self):
+        """На диск — всё, что ещё предстоит вернуть: приглушённое сейчас и
+        не возвращённое с прошлого раза."""
+        path = self._path()
+        if not path:
+            return
+        data = dict(self._pending_heal)
+        for pid, vol in self._saved_session_vols.items():
+            name = self._saved_names.get(pid)
+            if name:
+                data[name] = vol
+        try:
+            import json
+            import os
+            if data:
+                tmp = path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False)
+                os.replace(tmp, path)
+            elif os.path.exists(path):
+                os.remove(path)
+        except Exception as e:
+            logger.debug("ducked_sessions.json: %s", e)
+
+    def _heal(self):
+        """Вернуть громкость программам, которым её не вернули в прошлый раз
+        (в том числе запущенным позже — проверяется раз в пару секунд)."""
+        if not self._pending_heal:
+            return
+        healed = False
+        for _pid, name, ctl in self._sessions():
+            if name in self._pending_heal:
+                try:
+                    ctl.SetMasterVolume(self._pending_heal[name], None)
+                    logger.info("Вернул громкость «%s»: %.0f%%", name, self._pending_heal[name] * 100)
+                except Exception as e:
+                    logger.debug("Heal %s: %s", name, e)
+                    continue
+                healed = True
+        if healed:
+            names = {n for _p, n, _c in self._sessions()}
+            self._pending_heal = {n: v for n, v in self._pending_heal.items() if n not in names}
+            self._persist()
 
     def _init_endpoint(self):
         self._endpoint_volume = None          # общую громкость не трогаем
@@ -132,7 +212,7 @@ class DuckingController:
                 name = ""
             if any(k in name for k in ("jarvis", "audiodg", "system")):
                 continue
-            out.append((pid, session._ctl.QueryInterface(ISimpleAudioVolume)))
+            out.append((pid, name, session._ctl.QueryInterface(ISimpleAudioVolume)))
         return out
 
     def _apply_sessions(self, level: float):
@@ -143,10 +223,18 @@ class DuckingController:
             if level >= 0.999:
                 self._restore_active_sessions()
             else:
-                for pid, ctl in self._sessions():
+                grew = False
+                for pid, name, ctl in self._sessions():
                     if pid not in self._saved_session_vols:
-                        self._saved_session_vols[pid] = float(ctl.GetMasterVolume())
+                        # Не вернули с прошлого раза — «до» берём оттуда, а
+                        # не нынешний (уже заниженный) уровень.
+                        self._saved_session_vols[pid] = self._pending_heal.pop(name, None) \
+                            or float(ctl.GetMasterVolume())
+                        self._saved_names[pid] = name
+                        grew = True
                     ctl.SetMasterVolume(max(0.02, self._saved_session_vols[pid] * level), None)
+                if grew:
+                    self._persist()
             self._applied_level = level
         except Exception as e:
             logger.debug("Duck sessions note: %s", e)
@@ -157,13 +245,23 @@ class DuckingController:
     def _restore_active_sessions(self):
         """Возвращает чужим программам громкость до приглушения."""
         if self._saved_session_vols:
+            restored = set()
             try:
-                for pid, ctl in self._sessions():
+                for pid, _name, ctl in self._sessions():
                     if pid in self._saved_session_vols:
                         ctl.SetMasterVolume(self._saved_session_vols[pid], None)
+                        restored.add(pid)
             except Exception as e:
                 logger.debug("Restore sessions note: %s", e)
-        self._saved_session_vols.clear()
+            # Программу закрыли, пока она была приглушена, — Windows запомнил
+            # её тихой. Вернём, когда она снова заиграет.
+            for pid, vol in self._saved_session_vols.items():
+                name = self._saved_names.get(pid)
+                if pid not in restored and name:
+                    self._pending_heal.setdefault(name, vol)
+            self._saved_session_vols.clear()
+            self._saved_names.clear()
+            self._persist()
         self._applied_level = 1.0
 
     def _start_worker(self):
@@ -190,12 +288,21 @@ class DuckingController:
                                 self.state = DuckingState.IDLE
                     # Приглушили на звук, а Джарвис так и не заговорил (кашель,
                     # чужая речь, беззвучный инструмент) — отпускаем сами.
-                    elif (self.state in (DuckingState.LISTENING, DuckingState.THINKING)
-                          and time.time() - self._ducked_at > self._HOLD_SEC):
+                    elif ((self.state in (DuckingState.LISTENING, DuckingState.THINKING)
+                           and time.time() - self._ducked_at > self._HOLD_SEC)
+                          or (self.state == DuckingState.SPEAKING
+                              and time.time() - self._ducked_at > self._SPEAK_HOLD_SEC)):
                         self.state = DuckingState.RESTORING
                         self._begin_fade(self._original_volume or 1.0, self.release_ms)
                     level = self._get_master_volume()
+                    idle = self.state == DuckingState.IDLE
                 self._apply_sessions(level)      # COM — вне блокировки
+                if idle and self._pending_heal and time.time() - self._heal_checked > 2.0:
+                    self._heal_checked = time.time()
+                    try:
+                        self._heal()
+                    except Exception as e:
+                        logger.debug("Heal: %s", e)
             self._restore_active_sessions()
 
         self._fade_thread = threading.Thread(target=_loop, daemon=True, name="ducking-worker")

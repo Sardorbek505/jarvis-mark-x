@@ -358,3 +358,102 @@ def test_voice_trigger_engine_drops_frames_when_stopped():
         assert clean_frames == []
     finally:
         vte.stop()
+
+
+# ─── Громкость программ возвращается даже после падения ──────────────────────
+class _Ctl:
+    def __init__(self, v):
+        self.v = v
+
+    def GetMasterVolume(self):
+        return self.v
+
+    def SetMasterVolume(self, v, ctx):
+        self.v = v
+
+
+def _with_apps(dc, apps):
+    """apps: {pid: (name, _Ctl)} — «открытые программы» вместо CoreAudio."""
+    dc._sessions = lambda: [(pid, name, ctl) for pid, (name, ctl) in list(apps.items())]
+    return dc
+
+
+def _wait(cond, sec=2.0):
+    end = time.time() + sec
+    while time.time() < end:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return cond()
+
+
+def test_volume_comes_back_after_crash_while_ducked(tmp_path):
+    """Живой случай: Джарвис закрыли, пока CS2 и Steam были приглушены, —
+    Windows запомнил их тихими, и громкость не возвращалась никогда."""
+    path = str(tmp_path / "ducked.json")
+    cs2, steam = _Ctl(1.0), _Ctl(0.8)
+    apps = {10: ("cs2.exe", cs2), 11: ("steam.exe", steam)}
+    dc = _with_apps(_silent_controller(attack_ms=10, release_ms=10, state_path=path), apps)
+    dc.duck()
+    assert _wait(lambda: cs2.v < 0.3 and steam.v < 0.3)
+    dc._restore_active_sessions = lambda: None   # «упал»: вернуть звук не успел
+    dc._active = False
+    dc._fade_thread.join(1)
+    assert cs2.v < 0.3
+
+    dc2 = _with_apps(_silent_controller(state_path=path), apps)   # новый запуск
+    try:
+        assert _wait(lambda: cs2.v == 1.0 and steam.v == 0.8, 4.0)
+        import os
+        assert not os.path.exists(path)      # всё вернули — файл убран
+    finally:
+        dc2.close()
+
+
+def test_app_closed_while_ducked_is_healed_when_it_returns(tmp_path):
+    path = str(tmp_path / "ducked.json")
+    cs2 = _Ctl(1.0)
+    apps = {10: ("cs2.exe", cs2)}
+    dc = _with_apps(_silent_controller(attack_ms=10, release_ms=10, state_path=path), apps)
+    try:
+        dc.duck()
+        assert _wait(lambda: cs2.v < 0.3)
+        del apps[10]                          # игру закрыли тихой
+        dc.restore()
+        assert _wait(lambda: dc.state == DuckingState.IDLE)
+        again = _Ctl(0.2)                     # запустили снова — Windows помнит 20 %
+        apps[20] = ("cs2.exe", again)
+        assert _wait(lambda: again.v == 1.0, 4.0)
+    finally:
+        dc.close()
+
+
+def test_stale_quiet_volume_is_not_taken_as_original(tmp_path):
+    """Не вернули с прошлого раза и сразу приглушили снова — «до» берётся из
+    сохранённого, а не нынешних 20 %: иначе каждый раз всё тише."""
+    import json
+    path = tmp_path / "ducked.json"
+    path.write_text(json.dumps({"cs2.exe": 1.0}), encoding="utf-8")
+    cs2 = _Ctl(0.2)
+    dc = _with_apps(_silent_controller(attack_ms=10, release_ms=10, state_path=str(path)), {10: ("cs2.exe", cs2)})
+    try:
+        dc.duck()                             # раньше, чем сработало восстановление
+        time.sleep(0.1)
+        dc.restore()
+        assert _wait(lambda: cs2.v == 1.0)
+    finally:
+        dc.close()
+
+
+def test_stuck_speaking_releases_volume(tmp_path):
+    cs2 = _Ctl(1.0)
+    dc = _with_apps(_silent_controller(attack_ms=10, release_ms=10, state_path=str(tmp_path / "d.json")),
+                    {10: ("cs2.exe", cs2)})
+    dc._SPEAK_HOLD_SEC = 0.3
+    try:
+        dc.duck()
+        dc.set_state(DuckingState.SPEAKING)   # ответ «завис»: конца речи нет
+        assert _wait(lambda: cs2.v < 0.3)
+        assert _wait(lambda: cs2.v == 1.0, 2.0)
+    finally:
+        dc.close()
