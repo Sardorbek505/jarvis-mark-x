@@ -90,6 +90,7 @@ hidden_imports = [
     "core.browser_panel",
     "ui_browser",
     "ui_island",
+    "ui_icons",
     "core.selftest",
     "core.break_reminder",
     "core.tg_call",

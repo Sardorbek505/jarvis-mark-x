@@ -163,8 +163,11 @@ class BrowserPanelView(QFrame):
         bar = QHBoxLayout()
         bar.setSpacing(4)
 
-        def btn(text, tip, fn, name=""):
-            b = QPushButton(text)
+        from ui_icons import qicon
+
+        def btn(icon, tip, fn, name=""):
+            b = QPushButton()
+            b.setIcon(qicon(icon, 14, PRI))
             b.setToolTip(tip)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             if name:
@@ -173,15 +176,15 @@ class BrowserPanelView(QFrame):
             bar.addWidget(b)
             return b
 
-        btn("←", "Назад", lambda: self.do(lambda p: p.back()))
-        btn("→", "Вперёд", lambda: self.do(lambda p: p.forward()))
-        btn("⟳", "Обновить", lambda: self.do(lambda p: p.reload()))
+        btn("back", "Назад", lambda: self.do(lambda p: p.back()))
+        btn("next", "Вперёд", lambda: self.do(lambda p: p.forward()))
+        btn("reload", "Обновить", lambda: self.do(lambda p: p.reload()))
         self.address = QLineEdit()
         self.address.setPlaceholderText("Адрес или поиск")
         self.address.returnPressed.connect(self._go)
         bar.addWidget(self.address, stretch=1)
-        btn("⤢", "На весь экран — в настоящем окне Chrome", self.expand)
-        btn("✕", "Закрыть панель", self.close_panel, name="close")
+        btn("expand", "На весь экран — в настоящем окне Chrome", self.expand)
+        btn("close", "Закрыть панель", self.close_panel, name="close")
         lay.addLayout(bar)
         self.view = PageView(self)
         lay.addWidget(self.view, stretch=1)

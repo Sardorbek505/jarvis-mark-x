@@ -202,3 +202,14 @@ def test_main_window_minimize_shows_island(monkeypatch):
         win._island.close()
         win.hide()
         win.deleteLater()
+
+
+def test_every_icon_draws_something():
+    """Иконки векторные (ui_icons), без символов шрифта: каждая что-то рисует."""
+    from PyQt6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    import ui_icons
+    for name in ui_icons.NAMES:
+        img = ui_icons.qicon(name, 16, "#ffffff").pixmap(48, 48).toImage()
+        lit = sum(1 for x in range(img.width()) for y in range(img.height()) if img.pixelColor(x, y).alpha() > 80)
+        assert lit > 20, name

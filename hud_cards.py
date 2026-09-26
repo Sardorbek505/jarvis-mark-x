@@ -248,9 +248,8 @@ def _media(p, r, data, col, since):
         p.setBrush(col(245, 0.3))
         p.drawPath(tri)
     else:
-        p.setFont(_font(40, True))
-        p.setPen(col(245, 0.3))
-        p.drawText(tile, Qt.AlignmentFlag.AlignCenter, "♪")
+        from ui_icons import draw_icon
+        draw_icon(p, "note", c, 44, col(245, 0.3))
 
     x = tile.right() + 18
     w = r.right() - x
@@ -375,10 +374,12 @@ def _message(p, r, data, col, since):
     p.setPen(QColor(WHITE))
     p.drawText(bubble.adjusted(12, 10, -12, -8), Qt.TextFlag.TextWordWrap, text)
     p.setOpacity(1.0)
+    from ui_icons import draw_icon
     p.setFont(_font(8))
     p.setPen(col(230, 0.25))
-    p.drawText(QRectF(r.left(), bubble.bottom() + 8, r.width(), 18), Qt.AlignmentFlag.AlignRight,
-               f"Отправлено в {data.get('to', 'Telegram')}  ✓✓")
+    p.drawText(QRectF(r.left(), bubble.bottom() + 8, r.width() - 24, 18), Qt.AlignmentFlag.AlignRight,
+               f"Отправлено в {data.get('to', 'Telegram')}")
+    draw_icon(p, "checks", QPointF(r.right() - 9, bubble.bottom() + 17), 14, col(230, 0.25))
 
 
 def _memory(p, r, data, col, since):

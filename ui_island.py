@@ -213,86 +213,11 @@ def fullscreen_app_active() -> bool:
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal  # noqa: E402
 from PyQt6.QtGui import (QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath,  # noqa: E402
-                         QPen, QPolygonF, QRegion)
+                         QPen, QRegion)
 from PyQt6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 
-# ── иконки ────────────────────────────────────────────────────────────────────
-# Векторные, в духе SF Symbols (как в Dynamic Island на iPhone): сплошные
-# фигуры со скруглёнными углами. Раньше здесь стояли символы шрифта ⏮ ⏸ ▶ ⏭ ⏱ —
-# на Windows они рисовались мутно, разной толщины, а то и цветными эмодзи.
-
-def _tri(pts) -> QPolygonF:
-    return QPolygonF([QPointF(x, y) for x, y in pts])
-
-
-def draw_icon(p: QPainter, name: str, c: QPointF, s: float, color: QColor):
-    """Иконка name с центром c и высотой около s."""
-    p.save()
-    x, y = c.x(), c.y()
-    solid = QPen(color, max(1.0, s * 0.14), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                 Qt.PenJoinStyle.RoundJoin)            # толстый круглый шов = скруглённые углы
-    line = QPen(color, max(1.2, s * 0.11), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                Qt.PenJoinStyle.RoundJoin)
-    if name == "play":
-        p.setPen(solid)
-        p.setBrush(color)
-        p.drawPolygon(_tri([(x - s * 0.30, y - s * 0.40), (x - s * 0.30, y + s * 0.40), (x + s * 0.40, y)]))
-    elif name == "pause":
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(color)
-        for dx in (-s * 0.19, s * 0.19):
-            p.drawRoundedRect(QRectF(x + dx - s * 0.12, y - s * 0.42, s * 0.24, s * 0.84), s * 0.07, s * 0.07)
-    elif name in ("forward", "backward"):
-        k = 1 if name == "forward" else -1
-        p.setPen(solid)
-        p.setBrush(color)
-        w, h = s * 0.40, s * 0.30
-        for off in (-w, 0.0):
-            bx = x + k * off
-            p.drawPolygon(_tri([(bx, y - h), (bx, y + h), (bx + k * w, y)]))
-    elif name == "expand":                        # две стрелки по диагонали — «развернуть»
-        p.setPen(line)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        a, t = s * 0.40, s * 0.20
-        for k in (1, -1):
-            tip = QPointF(x + k * a, y - k * a)
-            p.drawLine(QPointF(x + k * a * 0.15, y - k * a * 0.15), tip)
-            p.drawLine(tip, QPointF(tip.x() - k * t, tip.y()))
-            p.drawLine(tip, QPointF(tip.x(), tip.y() + k * t))
-    elif name == "timer":
-        p.setPen(line)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        r = s * 0.38
-        cy = y + s * 0.07
-        p.drawEllipse(QPointF(x, cy), r, r)
-        p.drawLine(QPointF(x, cy), QPointF(x + r * 0.45, cy - r * 0.55))
-        p.drawLine(QPointF(x - s * 0.12, y - s * 0.44), QPointF(x + s * 0.12, y - s * 0.44))
-    elif name in ("note", "film"):
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(color)
-        if name == "note":                        # восьмая нота
-            p.save()
-            p.translate(x - s * 0.13, y + s * 0.26)
-            p.rotate(-20)
-            p.drawEllipse(QPointF(0, 0), s * 0.17, s * 0.12)
-            p.restore()
-            p.drawRoundedRect(QRectF(x + s * 0.01, y - s * 0.42, s * 0.08, s * 0.68), s * 0.03, s * 0.03)
-            flag = QPainterPath(QPointF(x + s * 0.05, y - s * 0.42))
-            flag.cubicTo(QPointF(x + s * 0.20, y - s * 0.30), QPointF(x + s * 0.38, y - s * 0.22),
-                         QPointF(x + s * 0.26, y - s * 0.02))
-            flag.cubicTo(QPointF(x + s * 0.28, y - s * 0.18), QPointF(x + s * 0.18, y - s * 0.22),
-                         QPointF(x + s * 0.09, y - s * 0.24))
-            flag.closeSubpath()
-            p.drawPath(flag)
-        else:                                     # экран с треугольником — видео
-            p.setPen(line)
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(QRectF(x - s * 0.44, y - s * 0.32, s * 0.88, s * 0.64), s * 0.12, s * 0.12)
-            p.setPen(solid)
-            p.setBrush(color)
-            p.drawPolygon(_tri([(x - s * 0.10, y - s * 0.14), (x - s * 0.10, y + s * 0.14), (x + s * 0.15, y)]))
-    p.restore()
+from ui_icons import draw_icon  # noqa: E402  (иконки — общие с окном)
 
 
 class Island(QWidget):
