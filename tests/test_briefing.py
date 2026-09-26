@@ -1,7 +1,6 @@
 """Утренний брифинг: раз в день, после подъёма и до полудня, в первом
 разговоре; факты собираются параллельно (упал один источник — остальные
 есть), говорится своими словами, лично; новости — по темам из «Обо мне»."""
-import asyncio
 import time
 from datetime import datetime
 from types import SimpleNamespace
@@ -79,10 +78,10 @@ def test_news_by_my_topics(monkeypatch):
     assert B._news(about_me.answers()) == "Футбол: Пахтакор выиграл | Новый iPhone представлен"
 
 
-def test_clock_today():
+def test_clock_today(tmp_path, monkeypatch):
     from core import clock as ck
-    c = ck.clock()
-    c.alarms, c.timers = [], []
+    c = ck.Clock(tmp_path / "clock.json")                 # не настоящие часы Джарвиса
+    monkeypatch.setattr(ck, "_clock", c)
     c.alarm_set("23:59")
     assert "будильники сегодня: 23:59" in B._clock(datetime.now())
 
