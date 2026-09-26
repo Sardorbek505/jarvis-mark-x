@@ -485,6 +485,12 @@ def _is_affirmative(text: str) -> bool:
 
 
 def _is_destructive(name: str, args: dict) -> bool:
+    if name == "macro" and _action_of(args) == "run":
+        try:
+            from core.macros import macros
+            return macros().needs_confirm(str(args.get("name") or args.get("phrase") or ""))
+        except Exception:
+            return False
     keys = _DESTRUCTIVE.get(name)
     if not keys:
         return False
@@ -1268,6 +1274,51 @@ TOOLS = [
         }
     },
     {
+        "name": "macro",
+        "description": (
+            "СВОИ КОМАНДЫ пользователя: фраза → цепочка действий. create — «создай команду режим "
+            "стрима: открой OBS, подожди 2 секунды, нажми ctrl+shift+s и включи музыку» (разложи на "
+            "steps сам; phrases — как он будет её говорить, 1-3 варианта; {слово} во фразе — "
+            "переменная часть). run — выполнить по названию, list — какие есть, show — что делает, "
+            "delete — удалить. packs — готовые паки для программ (браузер, Windows, Telegram, VS Code, "
+            "Photoshop, Discord, Spotify), install_pack / remove_pack (name — пак). editor — открыть "
+            "окно «Свои команды». Сказанная фраза своей команды обычно выполняется сама мгновенно."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["create", "run", "list", "show", "delete", "packs",
+                                                      "install_pack", "remove_pack", "editor"]},
+                "name": {"type": "STRING", "description": "Название команды или пака"},
+                "phrases": {"type": "ARRAY", "items": {"type": "STRING"},
+                            "description": "create: фразы запуска («включи режим стрима»)"},
+                "app": {"type": "STRING", "description": "create: только в этой программе («chrome.exe»), обычно пусто"},
+                "confirm": {"type": "BOOLEAN", "description": "create: переспрашивать перед запуском"},
+                "steps": {
+                    "type": "ARRAY",
+                    "description": "create: шаги по порядку",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "do": {"type": "STRING", "enum": ["open_app", "open_url", "keys", "type", "click",
+                                                              "wait", "volume", "media", "say", "tool"]},
+                            "value": {"type": "STRING", "description": (
+                                "open_app — программа; open_url — адрес; keys — «ctrl+shift+s»; type — "
+                                "текст; wait — секунды; volume — 0-100; media — playpause/next/previous; "
+                                "say — фраза; click — left/right/double")},
+                            "x": {"type": "NUMBER"}, "y": {"type": "NUMBER"},
+                            "tool": {"type": "STRING", "description": "do=tool: инструмент (music_player, clock…)"},
+                            "args": {"type": "STRING", "description": "do=tool: аргументы JSON-строкой "
+                                                                      "(«{\"action\": \"play\", \"query\": \"lofi\"}»)"},
+                        },
+                        "required": ["do"],
+                    },
+                },
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "location",
         "description": (
             "Где пользователь: «где я», «какой у меня город» — where; «я живу в Ташкенте», «мой город "
@@ -1457,6 +1508,16 @@ class Jarvis:
             vf.log = self.ui.write_log
         except Exception as exc:
             logger.warning("Самопроверка не подключилась: %s", exc)
+
+        # Свои команды (core/macros.py): шагам нужны голос, журнал и инструменты.
+        try:
+            from core.macros import macros
+            mc = macros()
+            mc.say = self.speak
+            mc.log = self.ui.write_log
+            mc.run_tool = self._run_tool_blocking
+        except Exception as exc:
+            logger.warning("Свои команды не подключились: %s", exc)
 
         # Мгновенные ответы (core/quick.py): готовые фразы озвучить заранее,
         # один раз — дальше «Есть, сэр» звучит без сети и без ожидания.
@@ -2227,6 +2288,16 @@ class Jarvis:
                 from core.eyes import eyes_tool
                 result = await asyncio.to_thread(eyes_tool, args)
 
+            elif name == "macro":
+                if str(args.get("action", "")).lower() == "editor":
+                    opener = getattr(self.ui, "open_macros", None)
+                    if opener:
+                        opener()
+                    result = "Открыл окно «Свои команды»." if opener else "Окна команд тут нет."
+                else:
+                    from core.macros import macro_tool
+                    result = await asyncio.to_thread(macro_tool, args)
+
             elif name == "location":
                 from core.location import location_tool
                 result = await asyncio.to_thread(location_tool, args)
@@ -2838,6 +2909,16 @@ class Jarvis:
         self._remember_turn(heard, text)
         if text:
             await self._speak_fish(text)
+
+    def _run_tool_blocking(self, name: str, args: dict) -> str:
+        """Инструмент Джарвиса из фонового потока (шаг своей команды)."""
+        if not self._loop or not self._loop.is_running():
+            return "Нет связи с Джарвисом."
+        self._quick_seq = getattr(self, "_quick_seq", 0) + 1
+        fc = SimpleNamespace(id=f"macro-{self._quick_seq}", name=name, args=dict(args or {}))
+        fut = asyncio.run_coroutine_threadsafe(self._execute_tool(fc), self._loop)
+        fr = fut.result(timeout=_TOOL_TIMEOUT_SEC + 5)
+        return str((getattr(fr, "response", None) or {}).get("result", ""))
 
     async def _quick_absorb(self, function_calls, why: str):
         """Gemini тоже решил выполнить команду, которую Джарвис уже сделал сам:

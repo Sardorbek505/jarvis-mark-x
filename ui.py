@@ -896,6 +896,7 @@ class MainWindow(QMainWindow):
     # Глобальные хоткеи приходят из потока Win32-сообщений — тоже чужого.
     _mute_sig  = pyqtSignal()
     _front_sig = pyqtSignal()
+    _macros_sig = pyqtSignal()
     # wait_for_api_key зовётся из рабочего потока: оверлей — только сигналом.
     _overlay_sig = pyqtSignal(str)
 
@@ -1130,6 +1131,7 @@ class MainWindow(QMainWindow):
         self._setup_island()
         self._mute_sig.connect(self._toggle_mute)
         self._front_sig.connect(self._bring_to_front)
+        self._macros_sig.connect(self._show_macros)
         self._overlay_sig.connect(self._show_overlay)
 
     # ── Публичный API ──────────────────────────────────────────────────────────
@@ -1221,6 +1223,17 @@ class MainWindow(QMainWindow):
     def hideEvent(self, ev):
         super().hideEvent(ev)
         self._island_wanted(True)                      # спрятали в трей
+
+    def open_macros(self):
+        """Окно «Свои команды» (ui_macros.py). Из любого потока."""
+        self._macros_sig.emit()
+
+    def _show_macros(self):
+        try:
+            from ui_macros import open_dialog
+            self._macros_dlg = open_dialog(None)
+        except Exception as exc:
+            _logger.warning("Окно своих команд не открылось: %s", exc)
 
     def lock_on(self, tool: str):
         """Подписать над шаром инструмент, который сейчас выполняется."""

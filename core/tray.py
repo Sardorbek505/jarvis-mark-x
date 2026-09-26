@@ -115,6 +115,11 @@ class JarvisTray(QSystemTrayIcon):
         self.act_settings.triggered.connect(self._open_settings)
         menu.addAction(self.act_settings)
 
+        # Свои команды и паки (ui_macros.py)
+        self.act_macros = QAction("🧩 Свои команды", menu)
+        self.act_macros.triggered.connect(self._open_macros)
+        menu.addAction(self.act_macros)
+
         menu.addSeparator()
 
         # Автозапуск
@@ -158,6 +163,14 @@ class JarvisTray(QSystemTrayIcon):
             from ui_setup import SetupWizardDialog
             dialog = SetupWizardDialog(parent=self.main_window)
             dialog.exec()
+
+    def _open_macros(self):
+        opener = getattr(self.main_window, "open_macros", None)
+        if opener:
+            opener()
+        else:
+            from ui_macros import open_dialog
+            self._macros_dlg = open_dialog(None)
 
     def _quit(self):
         self.hide()

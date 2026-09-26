@@ -174,6 +174,18 @@ def match(text: str) -> Quick | None:
     t = normalize(text)
     if not t:
         return None
+    # Свои команды и паки (core/macros.py) — первыми: их выбрал сам владелец.
+    try:
+        from core.macros import macros
+        hit = macros().match(text)
+    except Exception as exc:
+        logger.debug("Свои команды: %s", exc)
+        hit = None
+    if hit:
+        cmd, _slots = hit
+        if cmd.confirm:
+            return None                           # переспросит Gemini
+        return Quick("macro", {"action": "run", "phrase": text}, "ack", t)
     for rx, tool, args, reply in _COMPILED:
         m = rx.fullmatch(t)
         if not m:

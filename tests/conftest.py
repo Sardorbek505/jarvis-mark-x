@@ -55,6 +55,10 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     import core.quick as quick
     monkeypatch.setattr(quick, "_cache", quick.VoiceCache(d / "voice_cache"))
     monkeypatch.setenv("JARVIS_QUICK_PREWARM", "0")
+    # Свои команды — из временного файла, не из настоящей папки данных.
+    import core.macros as macros_mod
+    monkeypatch.setenv("JARVIS_MACROS", str(d / "macros.json"))
+    monkeypatch.setattr(macros_mod, "_macros", None)
     monkeypatch.setattr(mm, "_MEMORY_FILE", d / "data.json")
     monkeypatch.setattr(conv, "DIALOG_FILE", d / "dialog.jsonl")
     monkeypatch.setattr(conv, "EPISODES_FILE", d / "episodes.jsonl")
