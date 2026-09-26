@@ -14,7 +14,7 @@ from PyQt6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QP
 NAMES = ("play", "pause", "backward", "forward", "expand", "timer", "note", "film",
          "close", "send", "back", "next", "reload", "check", "checks", "eye",
          "app", "globe", "keyboard", "text", "cursor", "volume", "speak", "bolt", "spark", "plus",
-         "trash", "up", "down", "grid", "mic")
+         "trash", "up", "down", "grid", "mic", "key", "lock", "phone", "link", "copy", "plane")
 
 
 def _tri(pts) -> QPolygonF:
@@ -230,6 +230,47 @@ def draw_icon(p: QPainter, name: str, c: QPointF, s: float, color: QColor):
         p.drawRoundedRect(QRectF(x - s * 0.13, y - s * 0.42, s * 0.26, s * 0.50), s * 0.13, s * 0.13)
         p.drawArc(QRectF(x - s * 0.26, y - s * 0.22, s * 0.52, s * 0.46), 180 * 16, 180 * 16)
         p.drawLine(QPointF(x, y + s * 0.24), QPointF(x, y + s * 0.40))
+    elif name == "key":
+        p.setPen(line)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(x - s * 0.20, y - s * 0.14), s * 0.20, s * 0.20)
+        p.drawLine(QPointF(x - s * 0.06, y), QPointF(x + s * 0.38, y + s * 0.38))
+        p.drawLine(QPointF(x + s * 0.20, y + s * 0.20), QPointF(x + s * 0.10, y + s * 0.30))
+        p.drawLine(QPointF(x + s * 0.30, y + s * 0.30), QPointF(x + s * 0.20, y + s * 0.40))
+    elif name == "lock":
+        p.setPen(line)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawArc(QRectF(x - s * 0.20, y - s * 0.42, s * 0.40, s * 0.44), 0, 180 * 16)
+        p.drawLine(QPointF(x - s * 0.20, y - s * 0.20), QPointF(x - s * 0.20, y - s * 0.06))
+        p.drawLine(QPointF(x + s * 0.20, y - s * 0.20), QPointF(x + s * 0.20, y - s * 0.06))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        p.drawRoundedRect(QRectF(x - s * 0.32, y - s * 0.08, s * 0.64, s * 0.48), s * 0.08, s * 0.08)
+    elif name == "phone":
+        p.setPen(line)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(QRectF(x - s * 0.22, y - s * 0.42, s * 0.44, s * 0.84), s * 0.10, s * 0.10)
+        p.drawLine(QPointF(x - s * 0.06, y + s * 0.30), QPointF(x + s * 0.06, y + s * 0.30))
+    elif name == "link":
+        p.setPen(line)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for dx, dy in ((-1, 1), (1, -1)):
+            p.save()
+            p.translate(x + dx * s * 0.13, y + dy * s * 0.13)
+            p.rotate(-45)
+            p.drawRoundedRect(QRectF(-s * 0.26, -s * 0.12, s * 0.52, s * 0.24), s * 0.12, s * 0.12)
+            p.restore()
+    elif name == "copy":
+        p.setPen(line)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(QRectF(x - s * 0.34, y - s * 0.20, s * 0.50, s * 0.56), s * 0.08, s * 0.08)
+        p.drawRoundedRect(QRectF(x - s * 0.14, y - s * 0.40, s * 0.50, s * 0.56), s * 0.08, s * 0.08)
+    elif name == "plane":                         # бумажный самолётик (Telegram)
+        p.setPen(line)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPolygon(_tri([(x - s * 0.42, y - s * 0.02), (x + s * 0.42, y - s * 0.34), (x + s * 0.18, y + s * 0.38),
+                            (x - s * 0.02, y + s * 0.10)]))
+        p.drawLine(QPointF(x - s * 0.02, y + s * 0.10), QPointF(x + s * 0.42, y - s * 0.34))
     p.restore()
 
 

@@ -1319,6 +1319,18 @@ TOOLS = [
         }
     },
     {
+        "name": "app_window",
+        "description": (
+            "Открыть окно Джарвиса: keys — «открой ключи», «где ввести ключ», «проверь ключи», "
+            "«подключи Spotify/звонки» (там же вход кнопкой); commands — «открой редактор команд»."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {"window": {"type": "STRING", "enum": ["keys", "commands"]}},
+            "required": ["window"]
+        }
+    },
+    {
         "name": "location",
         "description": (
             "Где пользователь: «где я», «какой у меня город» — where; «я живу в Ташкенте», «мой город "
@@ -1508,6 +1520,19 @@ class Jarvis:
             vf.log = self.ui.write_log
         except Exception as exc:
             logger.warning("Самопроверка не подключилась: %s", exc)
+
+        # Ключи: сломанный или закончившийся ключ — сразу видно (журнал и
+        # капсула), а не догадываться по странному поведению. В фоне.
+        def _check_keys():
+            try:
+                from core import keys
+                for sid, (state, text) in keys.check_all().items():
+                    if state in ("bad", "warn") and sid != "gemini":
+                        self.ui.write_log(f"SYS: 🔑 {keys.BY_ID[sid].title}: {text}")
+            except Exception as exc:
+                logger.debug("Проверка ключей: %s", exc)
+        if os.getenv("JARVIS_KEYS_CHECK", "1") != "0":
+            threading.Thread(target=_check_keys, daemon=True, name="keys-check").start()
 
         # Свои команды (core/macros.py): шагам нужны голос, журнал и инструменты.
         try:
@@ -2287,6 +2312,16 @@ class Jarvis:
             elif name == "eyes":
                 from core.eyes import eyes_tool
                 result = await asyncio.to_thread(eyes_tool, args)
+
+            elif name == "app_window":
+                which = str(args.get("window", "")).lower()
+                opener = getattr(self.ui, "open_keys" if which == "keys" else "open_macros", None)
+                if opener:
+                    opener()
+                    result = ("Открыл окно «Ключи и подключения»." if which == "keys"
+                              else "Открыл окно «Свои команды».")
+                else:
+                    result = "Окна тут нет — запущен без интерфейса."
 
             elif name == "macro":
                 if str(args.get("action", "")).lower() == "editor":

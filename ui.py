@@ -897,6 +897,7 @@ class MainWindow(QMainWindow):
     _mute_sig  = pyqtSignal()
     _front_sig = pyqtSignal()
     _macros_sig = pyqtSignal()
+    _keys_sig = pyqtSignal()
     # wait_for_api_key зовётся из рабочего потока: оверлей — только сигналом.
     _overlay_sig = pyqtSignal(str)
 
@@ -1132,6 +1133,7 @@ class MainWindow(QMainWindow):
         self._mute_sig.connect(self._toggle_mute)
         self._front_sig.connect(self._bring_to_front)
         self._macros_sig.connect(self._show_macros)
+        self._keys_sig.connect(self._show_keys)
         self._overlay_sig.connect(self._show_overlay)
 
     # ── Публичный API ──────────────────────────────────────────────────────────
@@ -1143,6 +1145,9 @@ class MainWindow(QMainWindow):
                 island.reply(text.split(":", 1)[1])
             elif text.startswith("SYS: 📞"):
                 island.notify("ЗВОНОК", text[len("SYS: 📞"):].strip())
+            elif text.startswith("SYS: 🔑") and ":" in text[7:]:
+                title, _, body = text[len("SYS: 🔑"):].strip().partition(":")
+                island.notify(title.strip().upper(), body.strip())
             elif text.startswith("SYS: 👁"):
                 island.set_eyes("закрыты" not in text)
                 island.notify("ГЛАЗА", text[len("SYS: 👁"):].strip().capitalize())
@@ -1227,6 +1232,17 @@ class MainWindow(QMainWindow):
     def open_macros(self):
         """Окно «Свои команды» (ui_macros.py). Из любого потока."""
         self._macros_sig.emit()
+
+    def open_keys(self):
+        """Окно «Ключи и подключения» (ui_keys.py). Из любого потока."""
+        self._keys_sig.emit()
+
+    def _show_keys(self):
+        try:
+            from ui_keys import open_dialog
+            self._keys_dlg = open_dialog(None)
+        except Exception as exc:
+            _logger.warning("Окно ключей не открылось: %s", exc)
 
     def _show_macros(self):
         try:

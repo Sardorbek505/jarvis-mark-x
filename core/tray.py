@@ -115,6 +115,11 @@ class JarvisTray(QSystemTrayIcon):
         self.act_settings.triggered.connect(self._open_settings)
         menu.addAction(self.act_settings)
 
+        # Ключи и подключения (ui_keys.py)
+        self.act_keys = QAction("🔑 Ключи и подключения", menu)
+        self.act_keys.triggered.connect(self._open_keys)
+        menu.addAction(self.act_keys)
+
         # Свои команды и паки (ui_macros.py)
         self.act_macros = QAction("🧩 Свои команды", menu)
         self.act_macros.triggered.connect(self._open_macros)
@@ -163,6 +168,14 @@ class JarvisTray(QSystemTrayIcon):
             from ui_setup import SetupWizardDialog
             dialog = SetupWizardDialog(parent=self.main_window)
             dialog.exec()
+
+    def _open_keys(self):
+        opener = getattr(self.main_window, "open_keys", None)
+        if opener:
+            opener()
+        else:
+            from ui_keys import open_dialog
+            self._keys_dlg = open_dialog(None)
 
     def _open_macros(self):
         opener = getattr(self.main_window, "open_macros", None)
