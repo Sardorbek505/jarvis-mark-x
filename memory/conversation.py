@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime
@@ -245,6 +246,26 @@ def _gemini_json(prompt: str) -> dict:
     return json.loads(resp.text or "{}")
 
 
+_QUOTA_PAUSE_SEC = 60.0          # если Gemini не назвал свой срок
+
+
+def _quota_pause(exc: Exception) -> float:
+    """Сколько ждать после отказа по квоте. 0 — отказ не про квоту.
+
+    Gemini присылает свой срок («Please retry in 24.57893355s»), его и берём:
+    ждать меньше бессмысленно, больше — терять факты."""
+    text = str(exc)
+    if "RESOURCE_EXHAUSTED" not in text and "429" not in text:
+        return 0.0
+    match = re.search(r"retry in ([\d.]+)s", text, re.IGNORECASE)
+    if match:
+        try:
+            return max(1.0, float(match.group(1)))
+        except ValueError:
+            pass
+    return _QUOTA_PAUSE_SEC
+
+
 class Collector:
     """Ждёт конца разговора и отдаёт его модели памяти. Место, до которого
     разобрано, хранится на диске: что не успели до выхода — разберём при
@@ -254,6 +275,7 @@ class Collector:
         self.llm, self.clock, self.state_file = llm, clock, state_file or STATE_FILE
         self.done_ts = float(self._state().get("done_ts", 0.0))
         self._busy = threading.Lock()
+        self._retry_at = 0.0        # до этого времени квота исчерпана, не дёргаем
 
     def _state(self) -> dict:
         try:
@@ -279,6 +301,9 @@ class Collector:
     def run_once(self, force: bool = False) -> str:
         if not self._busy.acquire(blocking=False):
             return "занят"
+        if self.clock() < self._retry_at:
+            self._busy.release()
+            return "ждём квоту"
         try:
             turns = turns_since(self.done_ts) if force else self.due()
             if not turns:
@@ -295,7 +320,15 @@ class Collector:
             logger.info("Память: +%d фактов, −%d, итог: %s", added, removed, (data or {}).get("summary", "")[:80])
             return f"+{added} −{removed}"
         except Exception as exc:
-            logger.warning("Память: разбор разговора не удался: %s", exc)
+            pause = _quota_pause(exc)
+            if pause:
+                # Реплики остаются неразобранными, поэтому без паузы сборщик
+                # каждый тик бил бы в ту же исчерпанную квоту: в живом логе
+                # это дало 111 одинаковых предупреждений подряд.
+                self._retry_at = self.clock() + pause
+                logger.warning("Память: квота Gemini исчерпана, следующая попытка через %.0f с", pause)
+            else:
+                logger.warning("Память: разбор разговора не удался: %s", exc)
             return f"ошибка: {exc}"
         finally:
             self._busy.release()
