@@ -345,6 +345,7 @@ class _QR:
         self.url = "tg://login?token=t0"
 
     async def wait(self, timeout=None):
+        self.timeouts = getattr(self, "timeouts", []) + [timeout]
         await asyncio.sleep(0.01)
         out = self.outcomes.pop(0)
         if isinstance(out, BaseException):
@@ -374,6 +375,7 @@ def test_qr_login_refreshes_expired_code_then_signs_in():
     view = _View()
     assert asyncio.run(tc._qr_sign_in(_Client(qr), view, lambda t, s: "")) is True
     assert view.shown == ["tg://login?token=t0", "tg://login?token=t1"] and view.closed
+    assert qr.timeouts == [tc._QR_REFRESH_SEC] * 2        # срок — свой, не по часам ПК
 
 
 def test_qr_login_asks_two_step_password():

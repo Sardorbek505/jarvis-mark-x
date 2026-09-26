@@ -454,6 +454,9 @@ def qr_matrix(url: str) -> list[list[bool]]:
     return q.get_matrix()
 
 
+_QR_REFRESH_SEC = 25.0
+
+
 async def _qr_sign_in(client, view, ask: Callable[[str, bool], str], total_sec: float = 300) -> bool:
     """Вход без кода: QR сканируется в Telegram аккаунта Джарвиса
     (Настройки → Устройства → Подключить устройство).
@@ -468,7 +471,10 @@ async def _qr_sign_in(client, view, ask: Callable[[str, bool], str], total_sec: 
     try:
         while time.monotonic() < end:
             view.show(qr.url)
-            task = asyncio.ensure_future(qr.wait())
+            # Не ждём до qr.expires: его Telethon сравнивает с часами ПК, и при
+            # сбитых часах на экране висел просроченный код («Неверный QR-код»).
+            # Telegram даёт ~30 с — меняем код каждые 25 с сами.
+            task = asyncio.ensure_future(qr.wait(timeout=_QR_REFRESH_SEC))
             while not task.done():
                 if view.cancelled():
                     task.cancel()
