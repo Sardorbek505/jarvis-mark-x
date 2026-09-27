@@ -58,7 +58,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install vosk and edge-tts
-        run: pip install vosk edge-tts imageio-ffmpeg sherpa-onnx numpy soundfile
+        # feedparser, requests, google-genai — их тянет core/__init__.py (нужно scripts/football_check.py)
+        run: pip install vosk edge-tts imageio-ffmpeg sherpa-onnx numpy soundfile feedparser requests google-genai
       - name: Download Vosk model
         run: |
           curl -sSL -o model.zip https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
