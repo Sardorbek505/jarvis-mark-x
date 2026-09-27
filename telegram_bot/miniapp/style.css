@@ -389,3 +389,50 @@ header {
 .row .streak { display: inline-flex; align-items: center; gap: 3px; }
 .streak .ico { width: 13px; height: 13px; }
 .empty .empty-ico { width: 34px; height: 34px; color: var(--text-dim); opacity: .6; margin-bottom: 4px; }
+
+/* ─── Учёба (с ПК) ─────────────────────────────────────── */
+.study-add #study-due { flex: 0 0 34%; }
+.now-next { display: flex; align-items: center; gap: 10px; color: var(--white); font-size: 14px; border-color: rgba(63,208,189,.35); background: var(--pri-soft); }
+.now-next .ico { width: 18px; height: 18px; color: var(--pri); flex-shrink: 0; }
+.week-chips { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+.day-chip { position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 7px 0 6px;
+  border-radius: var(--r-sm); background: var(--panel); border: 1px solid var(--line); color: var(--text-med); }
+.day-chip b { font-size: 12px; font-weight: 700; }
+.day-chip span { font-size: 10px; color: var(--text-dim); }
+.day-chip i { position: absolute; top: 3px; right: 4px; font-style: normal; font-size: 9px; color: var(--pri); font-weight: 700; }
+.day-chip.today b { color: var(--pri); }
+.day-chip.on { border-color: var(--pri); background: var(--pri-soft); color: var(--white); }
+.row.lesson { align-items: center; }
+.lesson-time { flex: 0 0 48px; display: flex; flex-direction: column; font: 700 14px/1.2 Consolas, monospace; color: var(--pri); }
+.lesson-time span { font-size: 11px; color: var(--text-dim); font-weight: 400; }
+.section-label.warn { color: var(--red); }
+.sub.pad { padding: 8px 2px; }
+.sub.small { font-size: 12px; margin-top: 6px; }
+
+/* ─── Обо мне, звонки, что умею (сводка) ───────────────── */
+.me-group { font-size: 10px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--text-dim); font-weight: 700; margin: 12px 0 2px; }
+.me-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 0; border-top: 1px solid var(--line); text-align: left; }
+.me-label { flex: 0 0 38%; font-size: 13px; color: var(--text-med); }
+.me-value { flex: 1; min-width: 0; font-size: 14px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.me-value.unset { color: var(--text-dim); font-style: italic; }
+.me-input { flex: 1; min-width: 0; height: 32px; padding: 0 10px; font-size: 14px; background: var(--panel-2);
+  border: 1px solid rgba(63,208,189,.55); border-radius: 8px; outline: none; color: var(--white); }
+.call { border-top: 1px solid var(--line); padding: 8px 0; }
+.call:first-of-type { border-top: 0; }
+.call summary { list-style: none; display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 14px; }
+.call summary::-webkit-details-marker { display: none; }
+.call summary .ico { width: 16px; height: 16px; color: var(--pri); flex-shrink: 0; }
+.call-who { flex: 1; color: var(--white); }
+.call-when { font-size: 11px; color: var(--text-dim); }
+.call-line { font-size: 13.5px; line-height: 1.45; padding: 6px 10px; margin-top: 6px; border-radius: 10px; background: var(--panel-2); }
+.call-line b { display: block; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--acc); margin-bottom: 1px; }
+.call-line.j b { color: var(--pri); }
+.ability-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+
+/* Шесть вкладок на узком экране: вкладка может сжиматься, подпись — меньше. */
+.tab { min-width: 0; }
+.tab span { font-size: 9.5px; letter-spacing: .1px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.week-chips { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.study-add input { padding: 0 12px; font-size: 14px; }
+.me-row { justify-content: flex-start; color: inherit; background: none; }
+.me-row .me-value { text-align: right; }

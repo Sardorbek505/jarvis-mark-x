@@ -250,7 +250,13 @@ async def _build_view(user_id: int, view: str) -> dict:
             ],
         }
 
+    if view == "study":
+        from telegram_bot import pc_views
+        return {**pc_views.study_view(await pc_views.load(_memory, user_id, "study"), now.replace(tzinfo=None)),
+                "pc_online": bool(_bridge and _bridge.connected)}
+
     if view == "dashboard":
+        from telegram_bot import pc_views
         tasks = await _memory.get_tasks(user_id)
         today = [t for t in tasks if t.get("due") and agenda.is_today(t["due"], now)]
         habits = await _memory.get_habits(user_id, _today_iso(user_id))
@@ -295,6 +301,11 @@ async def _build_view(user_id: int, view: str) -> dict:
             "pc_episodes": episodes,
             "journal_last": journal_last,
             "mem": mem,
+            # С ПК (core/pc_snapshot.py): анкета «Обо мне», звонки с расшифровкой; «Что умею».
+            "me": pc_views.about_view(await pc_views.load(_memory, user_id, "about")),
+            "calls": pc_views.calls_view(await pc_views.load(_memory, user_id, "calls")),
+            "abilities": pc_views.abilities(),
+            "pc_online": bool(_bridge and _bridge.connected),
         }
 
     return {"error": f"unknown view {view}"}
@@ -358,6 +369,29 @@ def _spawn(coro):
     task = asyncio.create_task(coro)
     _BG_TASKS.add(task)
     task.add_done_callback(_BG_TASKS.discard)
+
+
+async def _pc_edit(ws: WebSocket, user_id: int, msg: dict):
+    """Правка учёбы / «Обо мне» с телефона — на ПК (там главная копия), потом
+    свежий снимок — в хранилище и заново на экран."""
+    from telegram_bot import pc_views
+    mtype = msg["type"]
+    view = "study" if mtype.startswith("study") else "dashboard"
+    fields = {k: msg.get(k) for k in ("title", "subject", "due", "id", "key", "value") if msg.get(k) is not None}
+    try:
+        if not (_bridge and _bridge.connected):
+            res = {"ok": False, "text": "ПК офлайн — изменить можно, когда компьютер включён."}
+        else:
+            res = await _bridge.send_action(mtype, user_id, timeout=15.0, **fields) or \
+                {"ok": False, "text": "ПК не ответил."}
+        data = res.get("data") or {}
+        if res.get("ok") and data.get("part") in pc_views.PARTS and _memory:
+            await pc_views.store_snapshots(_memory, user_id, {data["part"]: data.get("snapshot") or {}})
+        await ws.send_text(json.dumps({"type": "pc_edit_result", "ok": bool(res.get("ok")),
+                                       "text": res.get("text") or ""}, ensure_ascii=False))
+        await _send_view(ws, user_id, view)
+    except Exception as exc:
+        logger.warning("Правка с телефона: %s", exc)
 
 
 async def _pc_macros(ws: WebSocket, user_id: int, msg: dict):
@@ -432,6 +466,10 @@ async def ws_endpoint(ws: WebSocket):
 
             if mtype == "get_data":
                 await _send_view(ws, user_id, msg.get("view", "dashboard"))
+                continue
+
+            if mtype in ("study_add", "study_done", "about_answer"):
+                _spawn(_pc_edit(ws, user_id, msg))
                 continue
 
             if mtype in ("pc_macros", "pc_macro"):

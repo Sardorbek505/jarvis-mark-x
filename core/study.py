@@ -177,10 +177,26 @@ class Study:
         self._stop = threading.Event()
         self.say: Callable[[str], None] = lambda text: None
         self.notify: Callable[[str, str], None] = lambda title, text: None
+        self._mtime: tuple = (0, 0)
         self.load()
 
     # ── файл ──
+    def _stat(self) -> tuple:
+        try:
+            st = self.path.stat()
+            return st.st_mtime_ns, st.st_size
+        except OSError:
+            return (0, 0)
+
+    def refresh(self):
+        """Файл поменял другой процесс (pc_server — правка с телефона) —
+        перечитать, иначе наше сохранение затёрло бы его правку."""
+        if self._stat() != self._mtime:
+            with self._lock:
+                self.load()
+
     def load(self):
+        self._mtime = self._stat()
         try:
             d = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -188,6 +204,16 @@ class Study:
         except Exception as exc:
             logger.warning("Учёба не прочиталась: %s", exc)
             return
+        self._apply(d)
+
+    @classmethod
+    def from_data(cls, d: dict, now: Callable[[], datetime] = datetime.now) -> "Study":
+        """Учёба из снимка (сервер бота: telegram_bot/pc_views.py) — без файла."""
+        s = cls(Path("/nonexistent/jarvis-study.json"), now)
+        s._apply(d or {})
+        return s
+
+    def _apply(self, d: dict):
         self.lessons = [Lesson(**{k: v for k, v in x.items() if k in Lesson.__dataclass_fields__})
                         for x in d.get("lessons", [])]
         self.tasks = [Task(**{k: v for k, v in x.items() if k in Task.__dataclass_fields__})
@@ -206,6 +232,7 @@ class Study:
                                        "tasks": [asdict(x) for x in self.tasks]},
                                       ensure_ascii=False, indent=1), encoding="utf-8")
             tmp.replace(self.path)
+            self._mtime = self._stat()
 
     # ── неделя ──
     def week_parity(self, d: date) -> str:
@@ -309,6 +336,7 @@ class Study:
         return sorted((t for t in self.tasks if not t.done), key=lambda t: (t.due or "9999", t.title))
 
     def add_task(self, title: str, subject: str = "", due: str = "", kind: str = "домашка", note: str = "") -> Task:
+        self.refresh()
         today = self.now().date()
         d = parse_due(due, today) if due else None
         t = Task(title=title.strip() or kind, subject=self.match_subject(subject), due=d.isoformat() if d else "",
@@ -328,6 +356,7 @@ class Study:
         return hits
 
     def done(self, text: str) -> str:
+        self.refresh()
         hits = self.find_task(text)
         if not hits:
             return "Не нашёл такую задачу среди открытых."
@@ -365,6 +394,7 @@ class Study:
 
     # ── напоминания ──
     def tick(self) -> None:
+        self.refresh()
         now = self.now()
         today = now.date()
         for x in self.lessons_on(today):
@@ -449,6 +479,7 @@ def study_tool(p: dict) -> str:
     p = p or {}
     a = str(p.get("action") or "today").lower()
     s = study()
+    s.refresh()
     today = s.now().date()
     if a in ("today", "tomorrow", "day"):
         d = today if a == "today" else today + timedelta(days=1)
