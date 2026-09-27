@@ -57,6 +57,8 @@ QUESTIONS: list[Q] = [
       "Не отвлекать в это время", "Распорядок дня", "будни 9–18"),
     Q("music", "preferences", "Музыка", "Какую музыку любите?", "«Включи что-нибудь» — угадает", "Что вам нравится",
       "рэп, lo-fi, Macan"),
+    Q("club", "preferences", "Любимый клуб", "За какой футбольный клуб болеете? Если ни за какой — скажите.",
+      "Напомню о матчах, скажу счёт и важные новости", "Что вам нравится", "Реал Мадрид"),
     Q("news", "preferences", "Новости", "Какие новости вам интересны?", "Утренний брифинг — только нужное",
       "Что вам нравится", "технологии, футбол"),
     Q("talk_style", "preferences", "Как говорить", "Как мне с вами говорить — коротко или подробно, с юмором или "
@@ -96,7 +98,7 @@ def category_title(cat: str) -> str:
     return getattr(_mem(), "_CAT_RU", {}).get(cat, cat)
 
 
-def answer(key: str, value: str) -> str:
+def answer(key: str, value: str, sync_now: bool = True) -> str:
     q = BY_KEY.get(key)
     value = " ".join(str(value or "").split())
     if not q:
@@ -108,7 +110,8 @@ def answer(key: str, value: str) -> str:
     if key in st["skipped"]:
         st["skipped"].remove(key)
         _save_state(st)
-    sync(key, value)
+    if sync_now:
+        sync(key, value)
     logger.info("Обо мне: %s сохранено", key)
     return "Запомнил."
 
@@ -117,6 +120,9 @@ def forget(key: str) -> str:
     q = BY_KEY.get(key)
     if q:
         _mem().forget(q.category, q.key)
+    if key == "club":
+        from core.football import football
+        football().set_club("")
     return "Забыл."
 
 
@@ -139,6 +145,13 @@ def sync(key: str, value: str) -> None:
                 location._cache.update(at=0.0, place=None)
             except Exception:
                 pass
+        elif key == "club":
+            # Поиск клуба в расписании — сеть; окно «Обо мне» не ждёт.
+            import threading
+            from core.football import football
+            none = value.strip().lower() in ("нет", "ни за какой", "никакой", "не болею", "-")
+            threading.Thread(target=football().set_club, args=("" if none else value,), daemon=True,
+                             name="football-club").start()
         elif key in ("address_as", "name"):
             cur = answers()
             addr = cur.get("address_as") or ""

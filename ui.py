@@ -1233,6 +1233,9 @@ class MainWindow(QMainWindow):
             elif text.startswith("SYS: 👁"):
                 island.set_eyes("закрыты" not in text)
                 island.notify("ГЛАЗА", text[len("SYS: 👁"):].strip().capitalize())
+            elif text.startswith("SYS: ⚽") and ":" in text[7:]:
+                title, _, body = text[len("SYS: ⚽"):].strip().partition(":")
+                island.notify(title.strip(), body.strip())
             elif text.startswith("SYS: ⏰") and ":" in text[7:]:
                 title, _, body = text[len("SYS: ⏰"):].strip().partition(":")
                 island.notify(title.strip(), body.strip())

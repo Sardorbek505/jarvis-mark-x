@@ -1379,6 +1379,24 @@ TOOLS = [
         }
     },
     {
+        "name": "football",
+        "description": (
+            "Любимый футбольный клуб пользователя: next — «когда играет Реал», «когда следующий матч»; "
+            "last — «как сыграли», «с каким счётом закончили»; score — «какой счёт»; news — «новости Барсы»; "
+            "set_club — «я болею за Реал» (club — как сказал); goals_off / goals_on — не сообщать / сообщать о голах; "
+            "news_off / news_on — о новостях клуба. Включать трансляции матчей НЕ умеет — только расписание, счёт, новости."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["next", "last", "score", "news", "set_club", "goals_off",
+                                                      "goals_on", "news_off", "news_on"]},
+                "club": {"type": "STRING", "description": "set_club: клуб, как назвал («Реал», «Барселона»)"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "study",
         "description": (
             "УЧЁБА пользователя: расписание пар и задачи. today / tomorrow — «какие пары сегодня/завтра», "
@@ -1695,6 +1713,17 @@ class Jarvis:
             stu.start()
         except Exception as exc:
             logger.warning("Учёба не запустилась: %s", exc)
+
+        # Любимый клуб (core/football.py): напоминания о матчах, голы, важные новости.
+        if os.getenv("JARVIS_FOOTBALL_WATCH", "1") != "0":
+            try:
+                from core.football import football
+                fb = football()
+                fb.say = self.speak
+                fb.notify = lambda title, text: self.ui.write_log(f"SYS: ⚽ {title}: {text}")
+                fb.start()
+            except Exception as exc:
+                logger.warning("Футбол не запустился: %s", exc)
 
         # «Обо мне»: кнопка «Познакомиться голосом» в окне зовёт сюда.
         def _voice_intro():
@@ -2533,6 +2562,10 @@ class Jarvis:
             elif name == "remember_screen":
                 from core.remember import remember_screen
                 result = await asyncio.to_thread(remember_screen, args)
+
+            elif name == "football":
+                from core.football import football_tool
+                result = await asyncio.to_thread(football_tool, args)
 
             elif name == "study":
                 from core.study import study_tool
