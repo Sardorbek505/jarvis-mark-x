@@ -16,9 +16,20 @@ from core import football as F  # noqa: E402
 def probe() -> None:
     """Что отвечает ESPN как есть: код, начало ответа или ошибка (разбор ниже молчит об ошибках)."""
     import urllib.request
-    for url in (f"{F.ESPN}/esp.1/teams", f"{F.ESPN}/esp.1/teams/86/schedule", F.LOGO.format(id=86)):
+    chrome = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/140.0.0.0 Safari/537.36")
+    tries = [(f"{F.ESPN}/esp.1/teams", "Mozilla/5.0 Jarvis/1.0"), (f"{F.ESPN}/esp.1/teams", chrome),
+             (f"{F.ESPN}/esp.1/teams", ""),
+             ("https://site.web.api.espn.com/apis/site/v2/sports/soccer/esp.1/teams", chrome),
+             ("https://site.api.espn.com/apis/site/v2/sports/soccer/esp.1/scoreboard", chrome),
+             (f"{F.ESPN}/esp.1/teams/86/schedule", chrome), (F.LOGO.format(id=86), "Mozilla/5.0 Jarvis/1.0"),
+             ("https://www.thesportsdb.com/api/v1/json/123/searchteams.php?t=Real%20Madrid", chrome),
+             ("https://www.thesportsdb.com/api/v1/json/123/eventsnext.php?id=133738", chrome),
+             ("https://www.thesportsdb.com/api/v1/json/123/eventslast.php?id=133738", chrome)]
+    for url, ua in tries:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 Jarvis/1.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": ua} if ua else {})
+            print(f"   (UA: {ua[:40] or 'python'})")
             with urllib.request.urlopen(req, timeout=15) as r:
                 body = r.read()
             print(f"-- {url}\n   {r.status} {r.headers.get('Content-Type')} {len(body)} байт: {body[:300]!r}")
