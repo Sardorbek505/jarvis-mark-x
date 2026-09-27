@@ -127,6 +127,10 @@ class FakeWS {
   send(s) {
     const m = JSON.parse(s); window.__sent.push(m);
     if (m.type === 'text') { this._emit({ type: 'thinking' }); setTimeout(() => { this._emit({ type: 'text', text: 'В Ташкенте +18' }); this._emit({ type: 'tts_failed' }); }, 50); }
+    if (m.type === 'pc_macros') this._emit({ type: 'pc_macros', items: [{ name: 'Режим стрима', phrase: 'включи стрим', confirm: false }, { name: 'Выключить всё', phrase: '', when: 'по будням в 23:00', confirm: true }] });
+    if (m.type === 'pc_macro') this._emit(m.name === 'Выключить всё' && !m.confirmed
+      ? { type: 'pc_macro_result', name: m.name, need_confirm: true, ok: false, text: 'Выполнить «Выключить всё»?' }
+      : { type: 'pc_macro_result', name: m.name, ok: true, text: '✅ «' + m.name + '» — выполнено' });
     if (m.type === 'get_data') this._emit({ type: 'data', view: m.view, payload: { name: 'Сардор', about: { facts: ['брат: Азиз'] }, tasks: [], reminders: [], habits: [] } });
   }
   close() { this.readyState = 3; }
@@ -208,6 +212,19 @@ def test_tabs_open_and_memory_card_shows(page):
         t.eval(f"switchTab('{tab}')")
         assert t.eval(f"document.getElementById('view-{tab}').classList.contains('active')")
     assert t.eval("!document.getElementById('view-pc').classList.contains('offline')")   # ПК онлайн
+    assert json.loads(_js(t, "window.__errors")) == []
+
+
+def test_pc_tab_shows_own_commands_and_confirms_locked_ones(page):
+    t = page
+    t.eval("switchTab('pc')")
+    assert t.wait("document.querySelectorAll('#pc-macros .macro').length === 2", timeout=5)
+    assert t.eval("document.querySelector('#pc-macros .macro small').textContent") == "«включи стрим»"
+    t.eval("document.querySelectorAll('#pc-macros .macro')[0].click()")
+    assert t.wait("[...document.querySelectorAll('#messages .msg.bot')].some(m => m.textContent.includes('Режим стрима» — выполнено'))", timeout=5)
+    # команда с замком — сначала вопрос; «да» → тот же запуск с confirmed
+    t.eval("window.confirm = () => true; document.querySelectorAll('#pc-macros .macro')[1].click()")
+    assert t.wait("window.__sent.some(m => m.type === 'pc_macro' && m.name === 'Выключить всё' && m.confirmed)", timeout=5)
     assert json.loads(_js(t, "window.__errors")) == []
 
 

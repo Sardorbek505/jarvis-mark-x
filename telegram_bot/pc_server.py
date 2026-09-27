@@ -228,6 +228,15 @@ async def _execute(text: str) -> dict:
         if tl.startswith("позвони мне"):
             return await asyncio.to_thread(_call_owner, text.strip()[len("позвони мне"):].strip(" :—-"))
 
+        # Свои команды (core/macros.py): фраза — как на ПК голосом; раньше
+        # ключевых слов — «включи режим стрима» иначе ушло бы в музыку.
+        from telegram_bot import pc_macros
+        if tl.strip(" ?!.") in ("мои команды", "свои команды", "какие у меня команды"):
+            return _r(await asyncio.to_thread(pc_macros.list_text))
+        own = await asyncio.to_thread(pc_macros.match_text, text)
+        if own:
+            return own
+
         # System volume via media keys (reliable, independent of the music player).
         if tl in ("громче", "погромче", "сделай громче", "сделай погромче",
                   "прибавь громкость", "volume up"):
@@ -690,13 +699,30 @@ async def _handle_userbot(msg: dict) -> dict:
     return {"ok": False, "text": f"❌ Не отправлено: {res.get('error')}"}
 
 
+def _handle_action(action: str, msg: dict) -> dict:
+    """Свои команды и контакты ПК для пульта (telegram_bot/pc_macros.py)."""
+    from telegram_bot import pc_macros
+    if action == "list_macros":
+        return {"ok": True, "text": pc_macros.list_text(), "data": {"items": pc_macros.list_items()}}
+    if action == "run_macro":
+        res = pc_macros.run(str(msg.get("name") or ""), bool(msg.get("confirmed")))
+        return {"ok": res["ok"], "text": res["text"],
+                "data": {"need_confirm": bool(res.get("need_confirm")), "name": res.get("name", "")}}
+    res = pc_macros.resolve_contact(str(msg.get("alias") or ""))
+    return {"ok": res["ok"], "text": res["text"],
+            "data": {k: res[k] for k in ("target", "name") if k in res}}
+
+
 async def _handle(ws, msg: dict):
     # Ошибка внутри (нет данных Telethon, сбой подключения, импорт) раньше
     # вылетала без ответа: сервер ждал 30 с, а письмо из очереди уходило
     # заново при каждом переподключении ПК.
     try:
-        if msg.get("action") == "send_telegram":
+        action = msg.get("action")
+        if action == "send_telegram":
             result = await _handle_userbot(msg)
+        elif action in ("list_macros", "run_macro", "resolve_contact"):
+            result = await asyncio.to_thread(_handle_action, action, msg)
         else:
             result = await _execute(msg.get("text", ""))
     except Exception as e:
@@ -709,6 +735,7 @@ async def _handle(ws, msg: dict):
             "text": result.get("text", ""),
             "image_b64": result.get("image_b64"),
             **({"ok": result["ok"]} if "ok" in result else {}),
+            **({"data": result["data"]} if "data" in result else {}),
             "user_id": msg.get("user_id"),
         }))
     except Exception as e:
