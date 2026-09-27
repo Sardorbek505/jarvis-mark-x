@@ -6,7 +6,9 @@
   3. Ниже — команда как рецепт: название, фразы-чипсы («включи режим
      стрима» ×), шаги лентой сверху вниз — у каждого номер, иконка и одно
      понятное поле. Сложные действия выбираются из списка, без JSON.
-  4. Внизу — «Проверить» и «Сохранить».
+  4. «Когда запускать сам» — по времени и дням, при открытии программы,
+     при запуске Джарвиса (необязательно).
+  5. Внизу — «Проверить» и «Сохранить».
 
 Стиль — Джарвиса (палитра ui.C): почти чёрные панели, тонкие рамки,
 бирюзовый акцент, подписи капсом, векторные иконки ui_icons.
@@ -24,6 +26,7 @@ from PyQt6.QtWidgets import (QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayou
                              QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton, QScrollArea,
                              QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
+from core import macro_triggers as mt
 from core import macros as mc
 from core.macro_packs import PACKS
 from ui import C
@@ -212,6 +215,72 @@ class StepRow(QWidget):
         return {"do": self.kind, "value": self.value.text().strip()}
 
 
+# Условия запуска без фразы: (иконка, название, подсказка)
+WHEN_META = {
+    "time": ("timer", "В определённое время", "Раз в день, в выбранные дни"),
+    "app": ("app", "Когда открываю программу", "Имя процесса — obs, steam, chrome.exe"),
+    "start": ("bolt", "При запуске Джарвиса", "Через несколько секунд после запуска"),
+}
+
+
+class WhenRow(QFrame):
+    """Условие: иконка, название и поля — время с днями или программа."""
+
+    removed = pyqtSignal(object)
+
+    def __init__(self, when: dict, parent=None):
+        super().__init__(parent)
+        self.kind = when["on"]
+        self.setObjectName("step")
+        icon, title, hint = WHEN_META[self.kind]
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 10, 6, 10)
+        lay.setSpacing(12)
+        lay.addWidget(IconBadge(icon), 0, Qt.AlignmentFlag.AlignTop)
+        body = QVBoxLayout()
+        body.setSpacing(6)
+        body.addWidget(_label(title, "stepTitle"))
+        fields = QHBoxLayout()
+        fields.setSpacing(6)
+        self.at = self.app = None
+        self.days: list[QPushButton] = []
+        if self.kind == "time":
+            self.at = QLineEdit(when.get("at") or "09:00")
+            self.at.setPlaceholderText("09:00")
+            self.at.setFixedWidth(72)
+            fields.addWidget(self.at)
+            fields.addSpacing(6)
+            on = set(when.get("days") or range(7))
+            for i, name in enumerate(mt.DAY_NAMES):
+                b = QPushButton(name)
+                b.setObjectName("day")
+                b.setCheckable(True)
+                b.setChecked(i in on)
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.days.append(b)
+                fields.addWidget(b)
+            fields.addStretch(1)
+        elif self.kind == "app":
+            self.app = QLineEdit(when.get("app") or "")
+            self.app.setPlaceholderText(hint)
+            fields.addWidget(self.app, 1)
+        else:
+            fields.addWidget(_label(hint, "hint"), 1)
+        body.addLayout(fields)
+        lay.addLayout(body, 1)
+        rm = _icon_btn("trash", "Убрать условие", 14, C.TEXT_DIM)
+        rm.clicked.connect(lambda: self.removed.emit(self))
+        lay.addWidget(rm, 0, Qt.AlignmentFlag.AlignTop)
+
+    def read(self) -> dict:
+        if self.kind == "time":
+            return {"on": "time", "at": self.at.text().strip(),
+                    "days": [i for i, b in enumerate(self.days) if b.isChecked()]}
+        if self.kind == "app":
+            return {"on": "app", "app": self.app.text().strip()}
+        return {"on": "start"}
+
+
 class _Rail(QWidget):
     """Лента слева от шагов: кружок с номером и линия к соседям."""
 
@@ -250,6 +319,7 @@ class MacrosDialog(QDialog):
         self.build = build or mc.build_with_ai
         self.current: mc.Command | None = None
         self.step_rows: list[StepRow] = []
+        self.when_rows: list[WhenRow] = []
         self._phrases: list[str] = []
         self.setWindowTitle("ДЖАРВИС — свои команды")
         self.setStyleSheet(STYLE)
@@ -395,7 +465,22 @@ class MacrosDialog(QDialog):
         self.body.addWidget(add)
 
         self.body.addSpacing(12)
-        self.body.addWidget(self._section("check", "Условия", ""))
+        self.body.addWidget(self._section("timer", "Когда запускать сам",
+                                          "необязательно: по расписанию или при открытии программы"))
+        when = QWidget()
+        self.when_box = QVBoxLayout(when)
+        self.when_box.setContentsMargins(0, 0, 0, 0)
+        self.when_box.setSpacing(8)
+        self.body.addWidget(when)
+        add_when = QPushButton("  Добавить условие")
+        add_when.setObjectName("add")
+        add_when.setIcon(qicon("plus", 14, C.TEXT_MED))
+        add_when.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_when.clicked.connect(lambda: self._when_menu(add_when))
+        self.body.addWidget(add_when)
+
+        self.body.addSpacing(12)
+        self.body.addWidget(self._section("check", "Настройки", ""))
         self.body.addWidget(self._options_card())
         self.body.addStretch(1)
         scroll.setWidget(body)
@@ -517,7 +602,10 @@ class MacrosDialog(QDialog):
             if q and q not in mc._norm(c.name + " " + phrase):
                 continue
             n = len(c.steps)
-            item = QListWidgetItem(f"{c.name}\n«{phrase}» · {n} {plural(n)}")
+            start = f"«{phrase}»" if phrase else (mt.describe_when(c.when[0]) if c.when else "—")
+            if phrase and c.when:
+                start += " · ⏰"
+            item = QListWidgetItem(f"{c.name}\n{start} · {n} {plural(n)}")
             item.setData(Qt.ItemDataRole.UserRole, c.id)
             item.setIcon(qicon("bolt", 16, C.PRI if c.enabled else C.TEXT_DIM))
             if not c.enabled:
@@ -554,6 +642,12 @@ class MacrosDialog(QDialog):
         self.step_rows = []
         for s in c.steps:
             self.add_step(s)
+        for r in self.when_rows:
+            r.setParent(None)
+            r.deleteLater()
+        self.when_rows = []
+        for w in c.when:
+            self.add_when(w)
 
     def new_command(self):
         self.cmd_list.clearSelection()
@@ -585,6 +679,25 @@ class MacrosDialog(QDialog):
     def phrases(self) -> list[str]:
         extra = " ".join(self.phrase_in.text().split())
         return self._phrases + ([extra] if extra and extra not in self._phrases else [])
+
+    def _when_menu(self, anchor: QPushButton):
+        menu = QMenu(self)
+        for kind, (icon, title, _h) in WHEN_META.items():
+            act = menu.addAction(qicon(icon, 16, C.PRI), "  " + title)
+            act.triggered.connect(lambda _=False, k=kind: self.add_when({"on": k}))
+        menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+
+    def add_when(self, when: dict) -> WhenRow:
+        row = WhenRow(when)
+        row.removed.connect(self._remove_when)
+        self.when_rows.append(row)
+        self.when_box.addWidget(row)
+        return row
+
+    def _remove_when(self, row: WhenRow):
+        self.when_rows.remove(row)
+        row.setParent(None)
+        row.deleteLater()
 
     def _step_menu(self, anchor: QPushButton):
         menu = QMenu(self)
@@ -634,7 +747,8 @@ class MacrosDialog(QDialog):
         return mc.Command(name=self.name.text().strip() or "Без названия", phrases=self.phrases(),
                           steps=self.read_steps(), app=self.app.text().strip() if self.only_app.isChecked() else "",
                           confirm=self.confirm.isChecked(), enabled=self.enabled.isChecked(),
-                          pack=cur.pack if cur else "", id=cur.id if cur else mc.Command("", [], []).id)
+                          pack=cur.pack if cur else "", id=cur.id if cur else mc.Command("", [], []).id,
+                          when=mt.clean_when([r.read() for r in self.when_rows]))
 
     def _say(self, text: str, ok: bool = True):
         self.status.setStyleSheet(f"color: {C.PRI if ok else C.ACC};")
@@ -642,8 +756,14 @@ class MacrosDialog(QDialog):
 
     def save_command(self) -> bool:
         c = self.form()
-        if not c.phrases:
-            self._say("Добавьте фразу, которой будете запускать команду.", False)
+        if len(c.when) < len(self.when_rows):
+            self._say("Время — в виде 09:00, программа — её имя (obs, steam).", False)
+            return False
+        if any(r.kind == "time" and not any(b.isChecked() for b in r.days) for r in self.when_rows):
+            self._say("Отметьте хотя бы один день недели.", False)
+            return False
+        if not c.phrases and not c.when:
+            self._say("Добавьте фразу или условие «Когда запускать сам».", False)
             self.phrase_in.setFocus()
             return False
         if not c.steps:
@@ -656,7 +776,9 @@ class MacrosDialog(QDialog):
         self._render_chips()
         self.reload()
         self.del_btn.setVisible(True)
-        self._say(f"✓  Сохранено. Скажите: «Джарвис, {c.phrases[0]}».")
+        how = [f"скажите «Джарвис, {c.phrases[0]}»"] if c.phrases else []
+        how += [mt.describe_when(w) for w in c.when]
+        self._say("✓  Сохранено: " + ", ".join(how) + ".")
         return True
 
     def delete_command(self):

@@ -11,6 +11,8 @@
   вкладка» — в браузере, а «закрой чат» — в Telegram.
 - confirm — сначала переспросить (для всего, что жалко сделать случайно).
 - Шаги идут в фоне; шаг не вышел — Джарвис говорит, какой и почему.
+- when — запускать и без фразы: по времени («по будням в 9:00»), когда
+  открывается программа, при запуске Джарвиса (core/macro_triggers.py).
 
 Хранится в macros.json в папке данных.
 """
@@ -56,6 +58,7 @@ class Command:
     enabled: bool = True
     pack: str = ""
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
+    when: list[dict] = field(default_factory=list)     # core/macro_triggers.py
 
     @classmethod
     def from_dict(cls, d: dict) -> "Command":
@@ -64,7 +67,12 @@ class Command:
                    steps=clean_steps(d.get("steps") or []),
                    app=str(d.get("app") or "").strip(), confirm=bool(d.get("confirm")),
                    enabled=d.get("enabled", True) is not False, pack=str(d.get("pack") or ""),
-                   id=str(d.get("id") or uuid.uuid4().hex[:10]))
+                   id=str(d.get("id") or uuid.uuid4().hex[:10]), when=_clean_when(d.get("when")))
+
+
+def _clean_when(when) -> list[dict]:
+    from core.macro_triggers import clean_when
+    return clean_when(when)
 
 
 def clean_steps(steps) -> list[dict]:
@@ -289,12 +297,13 @@ class Macros:
                 data = json.loads(self.path.read_text(encoding="utf-8"))
                 self.commands = [Command.from_dict(d) for d in data.get("commands", [])]
                 self.installed = set(data.get("packs") or [])
+                self.fired = {str(k): str(v) for k, v in (data.get("fired") or {}).items()}
             except FileNotFoundError:
-                self.commands, self.installed = [], set()
+                self.commands, self.installed, self.fired = [], set(), {}
                 self._install_defaults()
             except Exception as exc:
                 logger.warning("Свои команды не прочитались (%s) — начинаю с пустых", exc)
-                self.commands, self.installed = [], set()
+                self.commands, self.installed, self.fired = [], set(), {}
             self._compile()
 
     def save(self):
@@ -303,7 +312,8 @@ class Macros:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps({"version": 1, "packs": sorted(self.installed),
-                                       "commands": [asdict(c) for c in self.commands]},
+                                       "commands": [asdict(c) for c in self.commands],
+                                       "fired": self.fired},
                                       ensure_ascii=False, indent=1), encoding="utf-8")
             tmp.replace(self.path)
 
@@ -402,7 +412,7 @@ class Macros:
     def list_text(self) -> str:
         own = [c for c in self.commands if not c.pack]
         packs = sorted({c.pack for c in self.commands if c.pack})
-        lines = [f"«{c.name}» — скажите «{c.phrases[0] if c.phrases else '?'}»: "
+        lines = [f"«{c.name}» — " + _how_to_start(c) + ": "
                  + ", ".join(describe_step(s) for s in c.steps[:4]) for c in own]
         head = f"Своих команд: {len(own)}." + (f" Паки: {', '.join(packs)}." if packs else "")
         return head + ("\n" + "\n".join(lines) if lines else "")
@@ -470,6 +480,13 @@ class Macros:
         return f"Выполняю «{cmd.name}»."
 
 
+def _how_to_start(c: Command) -> str:
+    from core.macro_triggers import describe_when
+    parts = [f"скажите «{c.phrases[0]}»"] if c.phrases else []
+    parts += [describe_when(w) for w in c.when]
+    return ", ".join(parts) or "не запускается (нет ни фразы, ни расписания)"
+
+
 def _failed(text: str) -> bool:
     from core.quick import failed
     return failed(text)
@@ -480,7 +497,7 @@ def _failed(text: str) -> bool:
 AI_MODEL = "gemini-2.5-flash"
 AI_PROMPT = """Ты собираешь команду для голосового ассистента Windows из описания пользователя.
 Верни ТОЛЬКО JSON: {"name": "короткое название", "phrases": ["фраза запуска", "ещё вариант"],
-"app": "" , "steps": [шаги]}.
+"app": "" , "steps": [шаги], "when": []}.
 Шаг — {"do": тип, "value": строка}. Типы:
 open_app (value: программа как её зовут люди: «OBS Studio», «Telegram»), open_url (value: адрес),
 keys (value: «ctrl+shift+s», «f5», «alt+tab»; несколько нажатий подряд через пробел),
@@ -492,6 +509,9 @@ window_control (action=minimize_all/show_desktop), computer_control (action=volu
 Музыку включай через tool music_player, а не медиаклавишами. Фразы — как человек скажет вслух,
 по-русски, без имени ассистента. {слово} во фразе — переменная часть, её можно подставить в value.
 app — только если команда имеет смысл лишь в одной программе («chrome.exe»).
+when — только если в описании сказано, КОГДА запускать самой: {"on": "time", "at": "09:00",
+"days": "будни"|"выходные"|"каждый день"|"пн,ср,пт"}; {"on": "app", "app": "obs64.exe"} — когда
+открывается программа; {"on": "start"} — при запуске ассистента. Иначе "when": [].
 Описание: """
 
 
@@ -501,7 +521,7 @@ def parse_ai(text: str) -> dict:
     cmd = Command.from_dict(d)
     if not cmd.steps:
         raise ValueError("ИИ не собрал ни одного шага")
-    if not cmd.phrases:
+    if not cmd.phrases and not cmd.when:
         cmd.phrases = [cmd.name.lower()]
     return asdict(cmd)
 
@@ -562,13 +582,13 @@ def macro_tool(p: dict) -> str:
     if a == "create":
         cmd = Command.from_dict({"name": p.get("name"), "phrases": p.get("phrases") or [],
                                  "steps": p.get("steps") or [], "app": p.get("app") or "",
-                                 "confirm": bool(p.get("confirm"))})
+                                 "confirm": bool(p.get("confirm")), "when": p.get("when") or []})
         if not cmd.steps:
             return "Не понял шаги команды — перечисли, что именно делать."
-        if not cmd.phrases:
+        if not cmd.phrases and not cmd.when:
             cmd.phrases = [cmd.name.lower()]
         m.upsert(cmd)
-        return (f"Команда «{cmd.name}» сохранена: скажите «{cmd.phrases[0]}». Шаги: "
+        return (f"Команда «{cmd.name}» сохранена: {_how_to_start(cmd)}. Шаги: "
                 + "; ".join(describe_step(s) for s in cmd.steps) + ".")
     if a == "delete":
         return "Удалил." if m.delete(str(p.get("name") or "")) else "Такой команды нет."
@@ -576,7 +596,7 @@ def macro_tool(p: dict) -> str:
         c = m.find(str(p.get("name") or ""))
         if not c:
             return "Такой команды нет."
-        return (f"«{c.name}»: фразы — " + ", ".join(f"«{x}»" for x in c.phrases) + ". Шаги: "
+        return (f"«{c.name}»: {_how_to_start(c)}. Шаги: "
                 + "; ".join(describe_step(s) for s in c.steps) + (f". Только в {c.app}." if c.app else "."))
     if a == "packs":
         return m.packs_text()

@@ -56,6 +56,9 @@ QPushButton#danger:hover {{ color: {C.RED}; border-color: {C.RED}; background: #
 QPushButton#seg {{ border: none; border-radius: 8px; padding: 7px 16px; color: {C.TEXT_MED}; }}
 QPushButton#seg:hover {{ color: {C.WHITE}; background: transparent; }}
 QPushButton#seg:checked {{ background: {C.PANEL2}; color: {C.PRI}; }}
+QPushButton#day {{ border: 1px solid {C.BORDER_B}; border-radius: 8px; padding: 5px 0; min-width: 34px;
+  color: {C.TEXT_DIM}; font-size: 12px; }}
+QPushButton#day:checked {{ background: {C.PRI_GHO}; border-color: {C.PRI_DIM}; color: {C.PRI}; }}
 QPushButton#add {{ border: 1px dashed {C.BORDER_B}; color: {C.TEXT_MED}; padding: 11px; border-radius: 12px; }}
 QPushButton#add:hover {{ border-color: {C.PRI_DIM}; color: {C.PRI}; }}
 QMenu {{ background: {C.PANEL2}; border: 1px solid {C.BORDER_B}; border-radius: 10px; padding: 6px; }}

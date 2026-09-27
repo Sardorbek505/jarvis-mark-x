@@ -1308,7 +1308,9 @@ TOOLS = [
             "переменная часть). run — выполнить по названию, list — какие есть, show — что делает, "
             "delete — удалить. packs — готовые паки для программ (браузер, Windows, Telegram, VS Code, "
             "Photoshop, Discord, Spotify), install_pack / remove_pack (name — пак). editor — открыть "
-            "окно «Свои команды». Сказанная фраза своей команды обычно выполняется сама мгновенно."
+            "окно «Свои команды». Сказанная фраза своей команды обычно выполняется сама мгновенно. "
+            "when — запускать и без фразы: «каждый будний день в 9 открывай почту», «когда открываю "
+            "OBS — включи музыку», «при запуске»; тогда phrases можно не давать."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -1320,6 +1322,21 @@ TOOLS = [
                             "description": "create: фразы запуска («включи режим стрима»)"},
                 "app": {"type": "STRING", "description": "create: только в этой программе («chrome.exe»), обычно пусто"},
                 "confirm": {"type": "BOOLEAN", "description": "create: переспрашивать перед запуском"},
+                "when": {
+                    "type": "ARRAY",
+                    "description": "create: когда запускать самой (обычно пусто)",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "on": {"type": "STRING", "enum": ["time", "app", "start"]},
+                            "at": {"type": "STRING", "description": "on=time: «09:00»"},
+                            "days": {"type": "STRING", "description": "on=time: будни / выходные / каждый день "
+                                                                      "/ «пн,ср,пт»"},
+                            "app": {"type": "STRING", "description": "on=app: процесс или имя («obs», «steam»)"},
+                        },
+                        "required": ["on"],
+                    },
+                },
                 "steps": {
                     "type": "ARRAY",
                     "description": "create: шаги по порядку",
@@ -1680,6 +1697,10 @@ class Jarvis:
             mc.say = self.speak
             mc.log = self.ui.write_log
             mc.run_tool = self._run_tool_blocking
+            if os.getenv("JARVIS_MACRO_TRIGGERS", "1") != "0":
+                from core.macro_triggers import Scheduler
+                self._macro_triggers = Scheduler(mc)
+                self._macro_triggers.start()
         except Exception as exc:
             logger.warning("Свои команды не подключились: %s", exc)
 
