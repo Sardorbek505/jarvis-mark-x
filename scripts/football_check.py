@@ -13,7 +13,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core import football as F  # noqa: E402
 
 
+def probe() -> None:
+    """Что отвечает ESPN как есть: код, начало ответа или ошибка (разбор ниже молчит об ошибках)."""
+    import urllib.request
+    for url in (f"{F.ESPN}/esp.1/teams", f"{F.ESPN}/esp.1/teams/86/schedule", F.LOGO.format(id=86)):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 Jarvis/1.0"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                body = r.read()
+            print(f"-- {url}\n   {r.status} {r.headers.get('Content-Type')} {len(body)} байт: {body[:300]!r}")
+        except Exception as exc:
+            print(f"-- {url}\n   ОШИБКА {type(exc).__name__}: {exc}")
+    try:
+        data = F._json(f"{F.ESPN}/esp.1/teams")
+        lg = (data.get("sports") or [{}])[0].get("leagues", [{}])[0]
+        teams = [t.get("team", t) for t in lg.get("teams", [])]
+        print(f"   команд в лиге: {len(teams)}; первые: {[t.get('displayName') for t in teams[:4]]}")
+        print(f"   ключи команды: {sorted(teams[0])[:20] if teams else '—'}")
+    except Exception as exc:
+        print(f"   разбор: {type(exc).__name__}: {exc}")
+
+
 def main() -> int:
+    import logging
+    logging.basicConfig(level=logging.DEBUG, format="   [%(name)s] %(message)s")
+    probe()
     ok = True
     for club in ("Реал", "Ливерпуль", "Зенит"):
         with tempfile.TemporaryDirectory() as tmp:
