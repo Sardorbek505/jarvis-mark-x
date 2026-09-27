@@ -179,9 +179,12 @@ class VoiceID:
                     "text": "Мало речи в записях — говорите громче и ближе к микрофону, и повторите."}
         m = mean(vecs)
         sims = [cosine(v, m) for v in vecs]
-        threshold = max(0.35, min(0.65, min(sims) - 0.12))
-        self.profile = {"version": 1, "mean": m, "n": len(vecs), "self_sim": round(sum(sims) / len(sims), 3),
-                        "threshold": round(threshold, 3)}
+        # CI на настоящих моделях (scripts/voice_id_check.py): свои длинные фразы
+        # 0.77–0.80, своё короткое «да, отправляй» — 0.55, чужой голос 0.13–0.30.
+        # Порог — заметно ниже своих записей, но выше чужих.
+        threshold = max(0.42, min(0.55, min(sims) - 0.3))
+        self.profile = {"version": 2, "mean": m, "n": len(vecs), "self_sim": round(sum(sims) / len(sims), 3),
+                        "self_min": round(min(sims), 3), "threshold": round(threshold, 3)}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self.profile), encoding="utf-8")
         logger.info("Голос записан: %d фраз, сходство своих %.2f, порог %.2f", len(vecs),
@@ -202,7 +205,13 @@ class VoiceID:
         if not vec:
             return None, 0.0
         score = cosine(vec, self.profile["mean"])
-        return score >= self.threshold, round(score, 3)
+        return score >= self.threshold_for(len(pcm)), round(score, 3)
+
+    def threshold_for(self, nbytes: int) -> float:
+        """На коротких фразах отпечаток слабее — порог чуть мягче (до 0.08
+        при 1 с речи, без скидки от 4 с)."""
+        sec = nbytes / (SAMPLE_RATE * 2)
+        return self.threshold - 0.08 * max(0.0, min(1.0, (4.0 - sec) / 3.0))
 
     def reset(self):
         self.profile = {}

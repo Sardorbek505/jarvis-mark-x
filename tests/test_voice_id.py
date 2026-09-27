@@ -36,7 +36,9 @@ def vid(tmp_path):
 def test_enroll_then_verify(vid, tmp_path):
     assert not vid.enrolled() and vid.verify(speech(1)) == (None, 0.0)
     res = vid.enroll([speech(1, 4, s) for s in range(5)])
-    assert res["ok"] and res["n"] == 5 and 0.35 <= vid.threshold <= 0.65
+    assert res["ok"] and res["n"] == 5 and 0.42 <= vid.threshold <= 0.55
+    assert vid.threshold_for(1 * SEC) == pytest.approx(vid.threshold - 0.08)               # коротко — мягче
+    assert vid.threshold_for(5 * SEC) == vid.threshold
     ok, score = vid.verify(speech(1, 3, seed=99))
     assert ok is True and score > 0.9
     assert vid.verify(speech(2, 3))[0] is False and vid.verify(speech(3, 3))[0] is False

@@ -30,9 +30,14 @@ V = _load("voice_id", "core/voice_id.py")
 W = _load("wake_check_vosk", "scripts/wake_check_vosk.py")          # _say: Edge → PCM 16 кГц
 
 OWNER = "ru-RU-DmitryNeural"
-STRANGERS = ["ru-RU-SvetlanaNeural", "ru-RU-DariyaNeural", "uk-UA-OstapNeural", "kk-KZ-DauletNeural"]
-TESTS = ["Джарвис, напиши маме, что я задержусь", "Да, отправляй",
-         "Позвони брату и скажи, что ужин готов", "Да, выключай компьютер"]
+# Чужие — прежде всего мужские: женский голос отсекается легко (0.13–0.30).
+STRANGERS = ["uk-UA-OstapNeural", "kk-KZ-DauletNeural", "en-GB-RyanNeural", "de-DE-ConradNeural",
+             "pl-PL-MarekNeural", "ru-RU-SvetlanaNeural"]
+# Как в жизни: просьба, потом «да» — Джарвис сверяет речь за последние 30 с.
+TESTS = [("Джарвис, напиши маме, что я задержусь", "Да, отправляй"),
+         ("Позвони брату и скажи, что ужин готов", "Да"),
+         ("Выключи компьютер", "Да, выключай"),
+         ("Удали папку загрузки", "Да, точно")]
 
 
 def main(asr_dir: str, spk_dir: str) -> int:
@@ -43,19 +48,29 @@ def main(asr_dir: str, spk_dir: str) -> int:
         print(f"Запись: {res['text']} порог {vid.threshold:.3f}, сходство своих {vid.profile.get('self_sim')}")
         if not res["ok"]:
             return 1
-        misses, false = [], []
+        misses, false, own_total, strangers_heard = [], [], 0, 0
         for voice, rate, own in [(OWNER, "+0%", True), (OWNER, "+15%", True)] + [(v, "+0%", False) for v in STRANGERS]:
-            for phrase in TESTS:
-                # «да» короткое — как в жизни, проверяется вместе с просьбой перед ним
-                pcm = W._say(phrase, voice, tmp, rate) + W._say("Да, подтверждаю", voice, tmp, rate)
+            for ask, yes in TESTS:
+                try:
+                    pcm = W._say(ask, voice, tmp, rate) + W._say(yes, voice, tmp, rate)
+                except Exception as exc:          # Edge не отдал звук этим голосом — не наша проверка
+                    print(f"--- [{voice}] синтез не удался ({type(exc).__name__}) — пропускаю голос")
+                    break
                 ok, score = vid.verify(pcm)
+                sec = len(pcm) / 32000
                 mark = "OK " if ok == own else "ERR"
-                print(f"{mark} [{voice.split('-')[2]} {rate}] «{phrase}» → сходство {score:.3f} → свой: {ok}")
+                print(f"{mark} [{voice.split('-')[2]} {rate}] «{ask}» + «{yes}» ({sec:.1f} с) → сходство "
+                      f"{score:.3f} (порог {vid.threshold_for(len(pcm)):.3f}) → свой: {ok}")
+                own_total += own
+                strangers_heard += not own
                 if own and not ok:
-                    misses.append((voice, phrase))
+                    misses.append((voice, ask))
                 if ok and not own:
-                    false.append((voice, phrase))
-    print(f"\nСвоих не узнал: {len(misses)} из {2 * len(TESTS)}; чужих принял за своего: {len(false)}")
+                    false.append((voice, ask))
+    print(f"\nСвоих не узнал: {len(misses)} из {own_total}; чужих принял за своего: {len(false)} из {strangers_heard}")
+    if strangers_heard < 8:
+        print("Слишком мало чужих голосов синтезировалось — проверка не состоялась")
+        return 1
     return 1 if false or len(misses) > 1 else 0
 
 
