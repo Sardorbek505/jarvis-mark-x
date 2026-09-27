@@ -179,6 +179,16 @@ class MicLevelWorker(QObject):
             logger.debug("Mic level worker error: %s", e)
 
 
+def _art_banner(layout, rel: str, title: str, text: str):
+    """Иллюстрация шага сверху вкладки (assets/art/setup). Нет картинки — без неё."""
+    try:
+        from ui_kit import ArtBanner, art_path
+        if art_path(rel):
+            layout.addWidget(ArtBanner(rel, title, text, height=118))
+    except Exception as exc:
+        logger.debug("Мастер, картинка %s: %s", rel, exc)
+
+
 # ── Главное диалоговое окно Setup Wizard ───────────────────────────────────────
 class SetupWizardDialog(QDialog):
     # Результаты проверки ключа и пробного голоса приходят из рабочих потоков.
@@ -192,7 +202,7 @@ class SetupWizardDialog(QDialog):
         self._key_checked.connect(self._on_key_checked)
         self._voice_done.connect(self._reset_voice_btn)
         self.setWindowTitle("JARVIS Mark X — Мастер настройки")
-        self.setMinimumSize(620, 560)
+        self.setMinimumSize(640, 680)
         self.cfg = load_config_data()
         self.mic_worker = None
 
@@ -335,6 +345,7 @@ class SetupWizardDialog(QDialog):
             from PyQt6.QtCore import Qt
             from core.paths import get_base_dir, get_app_dir
             for logo_candidate in [
+                get_base_dir() / "assets" / "art" / "icon" / "icon_256.png",
                 get_base_dir() / "assets" / "icon.png",
                 get_base_dir() / "face.png",
                 get_app_dir() / "assets" / "icon.png",
@@ -395,6 +406,7 @@ class SetupWizardDialog(QDialog):
         w = QWidget()
         tab_layout = QVBoxLayout(w)
         tab_layout.setSpacing(12)
+        _art_banner(tab_layout, "setup/setup_keys.jpg", "Мозг Джарвиса", "Бесплатный ключ Google AI Studio — одна минута.")
 
         lbl = QLabel("<b>Ключ Google Gemini API</b> (обязательно для работы ума):")
         tab_layout.addWidget(lbl)
@@ -473,6 +485,7 @@ class SetupWizardDialog(QDialog):
         w = QWidget()
         tab_layout = QVBoxLayout(w)
         tab_layout.setSpacing(12)
+        _art_banner(tab_layout, "setup/setup_microphone.jpg", "Микрофон и звук", "Откуда Джарвис слушает и куда говорит.")
 
         tab_layout.addWidget(QLabel("<b>Микрофон (входное устройство):</b>"))
         self.combo_mic = QComboBox()
@@ -526,6 +539,7 @@ class SetupWizardDialog(QDialog):
         w = QWidget()
         tab_layout = QVBoxLayout(w)
         tab_layout.setSpacing(12)
+        _art_banner(tab_layout, "setup/setup_voice.jpg", "Голос", "Каким голосом отвечает Джарвис.")
 
         tab_layout.addWidget(QLabel("<b>Основной голос Джарвиса:</b>"))
 
@@ -600,6 +614,7 @@ class SetupWizardDialog(QDialog):
         w = QWidget()
         tab_layout = QVBoxLayout(w)
         tab_layout.setSpacing(12)
+        _art_banner(tab_layout, "setup/setup_telegram.jpg", "Telegram", "Пульт с телефона: писать, звонить, управлять ПК.")
 
         tab_layout.addWidget(QLabel("<b>Связь с Telegram (для управления с телефона):</b>"))
 

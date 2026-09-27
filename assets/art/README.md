@@ -37,7 +37,6 @@ minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd
 assets/art/
 ├── manifest.json              # Опись всех файлов с метаданными и промптами
 ├── README.md                  # Руководство по стилю и подключению
-├── icon_preview.png           # Верификационный тест на тёмном и светлом фоне
 │
 ├── icon/                      # Иконки приложения
 │   ├── icon_1024.png          # 1024×1024 PNG (прозрачный фон снаружи скруглённого квадрата)
@@ -46,95 +45,60 @@ assets/art/
 │   ├── tray_32.png            # 32×32 PNG для системного трея Windows (только шар, прозрачный фон)
 │   └── tray_16.png            # 16×16 PNG для трея при стандартном масштабировании
 │
-├── setup/                     # Иллюстрации мастера настройки (1200×720, герой справа)
-│   ├── setup_welcome.png      # Шаг «Добро пожаловать» (шар и орбиты)
-│   ├── setup_keys.png         # Шаг «Ключ Gemini / API» (светящийся ключ)
-│   ├── setup_microphone.png   # Шаг «Микрофон и звук» (микрофон и звуковая волна)
-│   ├── setup_voice.png        # Шаг «Голос и узнавание» (отпечаток-кольцо)
-│   ├── setup_wake.png         # Шаг «Слово Джарвис» (акустический резонанс)
-│   ├── setup_telegram.png     # Шаг «Telegram / телефон» (смартфон и сигналы)
-│   ├── setup_about.png        # Шаг «Познакомиться» (профиль личности)
-│   ├── setup_contacts.png     # Шаг «Контакты» (сеть адресной книги)
-│   ├── setup_study.png        # Шаг «Учёба / расписание» (раскрытая книга)
-│   ├── setup_spotify.png      # Шаг «Spotify / музыка» (нота и эквалайзер)
-│   └── setup_done.png         # Шаг «Готово» (шар на полной яркости + зелёная галочка)
+├── setup/                     # Иллюстрации мастера настройки (1200×720, JPEG, герой справа)
+│   ├── setup_welcome.jpg      # Шаг «Добро пожаловать» (шар и орбиты)
+│   ├── setup_keys.jpg         # Шаг «Ключ Gemini / API» (светящийся ключ)
+│   ├── setup_microphone.jpg   # Шаг «Микрофон и звук» (микрофон и звуковая волна)
+│   ├── setup_voice.jpg        # Шаг «Голос и узнавание» (отпечаток-кольцо)
+│   ├── setup_wake.jpg         # Шаг «Слово Джарвис» (акустический резонанс)
+│   ├── setup_telegram.jpg     # Шаг «Telegram / телефон» (смартфон и сигналы)
+│   ├── setup_about.jpg        # Шаг «Познакомиться» (профиль личности)
+│   ├── setup_contacts.jpg     # Шаг «Контакты» (сеть адресной книги)
+│   ├── setup_study.jpg        # Шаг «Учёба / расписание» (раскрытая книга)
+│   ├── setup_spotify.jpg      # Шаг «Spotify / музыка» (нота и эквалайзер)
+│   └── setup_done.jpg         # Шаг «Готово» (шар на полной яркости + зелёная галочка)
 │
 ├── installer/                 # Графика установщика Inno Setup
 │   ├── wizard_large.bmp       # 164×314, 24-bit BMP (левый вертикальный баннер)
 │   └── wizard_small.bmp       # 55×58, 24-bit BMP (малая иконка заголовка)
 │
 ├── empty/                     # Пустые состояния списков (480×320, прозрачный фон, тусклый бирюзовый)
-│   ├── empty_commands.png     # Команды (>_ терминал) [+ алиас commands.png]
-│   ├── empty_study.png        # Учёба (книга) [+ алиас study.png]
-│   ├── empty_contacts.png     # Контакты (пользователь +) [+ алиас contacts.png]
-│   ├── empty_calls.png        # Звонки (трубка) [+ алиас calls.png]
-│   ├── empty_football.png     # Футбол (мяч из точек) [+ алиас football.png]
-│   ├── empty_backup.png       # Бэкап / замок [+ алиас backup.png]
-│   └── empty_help.png         # Справка (?) [+ алиас help.png]
+│   ├── empty_commands.png     # Команды (>_ терминал)
+│   ├── empty_study.png        # Учёба (книга)
+│   ├── empty_contacts.png     # Контакты (пользователь +)
+│   ├── empty_calls.png        # Звонки (трубка)
+│   ├── empty_football.png     # Футбол (мяч из точек)
+│   ├── empty_backup.png       # Бэкап / замок
+│   └── empty_help.png         # Справка (?)
 │
 ├── football/                  # Модуль «Футбол»
 │   └── hero_bg.png            # 1600×400 PNG (вид сверху на тёмное поле с бирюзовой разметкой)
 │
 └── miniapp/                   # Telegram Mini App & Web
-    ├── splash.png             # 1080×1920 PNG (заставка приложения)
-    └── og.png                 # 1200×630 PNG (OpenGraph мета-баннер)
+    ├── splash.jpg             # 1080×1920 PNG (заставка приложения)
+    └── og.jpg                 # 1200×630 PNG (OpenGraph мета-баннер)
 ```
 
 ---
 
-## 3. Как пересобрать `jarvis.ico` через Pillow
+## 3. Сборка: `python scripts/build_art.py`
 
-Если потребуется внести изменения в мастер-иконку и заново экспортировать `.ico`:
+Из `icon/icon_1024.png` собирает то, что берут программа и установщик:
+- `app.ico` (корень, им подписан exe) и `icon/jarvis.ico` — шар на тёмной скруглённой плашке во всех размерах
+  16…256 (без плашки шар пропадал в светлой теме Windows), `icon/icon_256.png`;
+- `icon/tray_online.png`, `icon/tray_offline.png` — трей (пауза — серый);
+- `installer/wizard_large(_2x).bmp`, `installer/wizard_small(_2x).bmp` — установщик, 1× и 2×;
+- картинки `setup/` и `miniapp/` — в JPEG (в exe было ~10 МБ PNG).
 
-```python
-from PIL import Image
+## 4. Где используются
 
-icon_1024 = Image.open("assets/art/icon/icon_1024.png")
-icon_small = Image.open("assets/art/icon/icon_small.png")
+| Картинка | Где |
+|---|---|
+| `app.ico`, `icon/*` | exe, окно, трей (`core/tray.py`), заголовок мастера |
+| `installer/*` | `scripts/installer.iss` |
+| `setup/setup_keys, _microphone, _voice, _telegram` | вкладки мастера настройки (`ui_setup.py`) |
+| `setup/setup_welcome` и шаги | «Что умеет Джарвис» → «Первые шаги» (`ui_welcome.py`) |
+| `empty/empty_commands`, `empty_contacts` | пустые списки «Свои команды», «Контакты» |
+| `empty/empty_football`, `football/hero_bg` | экран «Футбол» (`ui_football.py`) |
 
-sizes = [16, 24, 32, 48, 64, 128, 256]
-layers = []
-
-for s in sizes:
-    # Для мелких размеров (16, 24) берём упрощённую иконку с крупными точками
-    src = icon_small if s <= 24 else icon_1024
-    layers.append(src.resize((s, s), Image.Resampling.LANCZOS))
-
-# Сохраняем мульти-иконку
-layers[-1].save(
-    "assets/art/icon/jarvis.ico",
-    format="ICO",
-    sizes=[(s, s) for s in sizes],
-    append_images=layers[:-1]
-)
-print("jarvis.ico успешно пересобран!")
-```
-
----
-
-## 4. Подключение в приложении
-
-### В PyQt6:
-```python
-from PyQt6.QtGui import QIcon, QPixmap
-
-# Иконка окна
-app.setWindowIcon(QIcon("assets/art/icon/jarvis.ico"))
-
-# Иконка в системном трее
-tray_icon.setIcon(QIcon("assets/art/icon/tray_32.png"))
-
-# Фоновая иллюстрация экрана мастера
-setup_label.setPixmap(QPixmap("assets/art/setup/setup_welcome.png"))
-
-# Пустое состояние
-empty_label.setPixmap(QPixmap("assets/art/empty/empty_commands.png"))
-```
-
-### В Inno Setup (`scripts/installer.iss`):
-```ini
-[Setup]
-SetupIconFile=..ssetsrt\icon\jarvis.ico
-WizardImageFile=..ssetsrt\installer\wizard_large.bmp
-WizardSmallImageFile=..ssetsrt\installer\wizard_small.bmp
-```
+Помощники: `ui_kit.art_path / art_pixmap / EmptyArt / ArtBanner`.

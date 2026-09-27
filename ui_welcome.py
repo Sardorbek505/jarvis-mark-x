@@ -18,7 +18,11 @@ from PyQt6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLineEdi
 from core import help as H
 from ui import C
 from ui_icons import qicon
-from ui_kit import STYLE, FlowLayout, IconBadge, Progress, _label, _line
+from ui_kit import STYLE, ArtBanner, FlowLayout, IconBadge, Progress, _label, _line, art_pixmap
+
+# Картинка к шагу (assets/art/setup) — та же, что в мастере настройки.
+STEP_ART = {"gemini": "keys", "about": "about", "wake": "wake", "voice": "voice", "telegram": "telegram",
+             "study": "study", "spotify": "spotify"}
 
 logger = logging.getLogger(__name__)
 
@@ -141,19 +145,9 @@ class WelcomeDialog(QDialog):
         lay = QVBoxLayout(inner)
         lay.setContentsMargins(28, 22, 28, 22)
         lay.setSpacing(12)
-        hello = QFrame()
-        hello.setObjectName("ai")
-        hl = QHBoxLayout(hello)
-        hl.setContentsMargins(18, 14, 18, 14)
-        hl.setSpacing(14)
-        hl.addWidget(IconBadge("mic", 36))
-        col = QVBoxLayout()
-        col.setSpacing(2)
-        col.addWidget(_label("Привет! Я Джарвис — ваш голосовой помощник на этом компьютере.", "h2"))
-        col.addWidget(_label("Просто скажите «Джарвис» и что нужно: «Джарвис, включи музыку». "
-                             "Ниже — что стоит настроить, чтобы я помогал лучше. Обязательный шаг один.", "hint"))
-        hl.addLayout(col, 1)
-        lay.addWidget(hello)
+        lay.addWidget(ArtBanner("setup/setup_welcome.jpg", "Привет! Я Джарвис",
+                                "Просто скажите «Джарвис» и что нужно: «Джарвис, включи музыку». Ниже — что "
+                                "стоит настроить, чтобы я помогал лучше. Обязательный шаг один.", height=150))
         self.steps_card = QFrame()
         self.steps_card.setObjectName("card")
         self.steps_box = QVBoxLayout(self.steps_card)
@@ -163,11 +157,37 @@ class WelcomeDialog(QDialog):
         lay.addStretch(1)
         return self._scroll(inner)
 
+    @staticmethod
+    def _thumb(step_id: str, done: bool):
+        """Миниатюра шага: герой картинки мастера (правая часть), сделанный — приглушён."""
+        pm = art_pixmap(f"setup/setup_{STEP_ART.get(step_id, '')}.jpg") if step_id in STEP_ART else None
+        if pm is None:
+            return None
+        from PyQt6.QtCore import QRect
+        from PyQt6.QtWidgets import QLabel
+        w, h = pm.width(), pm.height()
+        crop = pm.copy(QRect(int(w * 0.44), int(h * 0.12), int(w * 0.5), int(h * 0.76)))
+        dpr = 2
+        thumb = crop.scaled(84 * dpr, 64 * dpr, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                            Qt.TransformationMode.SmoothTransformation)
+        thumb.setDevicePixelRatio(dpr)
+        lbl = QLabel()
+        lbl.setPixmap(thumb)
+        lbl.setFixedSize(84, 64)
+        lbl.setStyleSheet(f"border: 1px solid {C.BORDER}; border-radius: 10px;")
+        if done:
+            from PyQt6.QtWidgets import QGraphicsOpacityEffect
+            eff = QGraphicsOpacityEffect(lbl)
+            eff.setOpacity(0.45)
+            lbl.setGraphicsEffect(eff)
+        return lbl
+
     def refresh(self):
         """Галочки — заново (после того как человек что-то настроил)."""
         while self.steps_box.count():
             it = self.steps_box.takeAt(0)
             if it.widget():
+                it.widget().hide()                 # до удаления не рисуется поверх новых строк
                 it.widget().deleteLater()
         items = H.checklist()
         for i, (step, done, detail) in enumerate(items, 1):
@@ -178,6 +198,9 @@ class WelcomeDialog(QDialog):
             num = _label("✓" if done else str(i), "numdone" if done else "num", wrap=False)
             num.setAlignment(Qt.AlignmentFlag.AlignCenter)
             r.addWidget(num)
+            thumb = self._thumb(step.id, done)
+            if thumb is not None:
+                r.addWidget(thumb)
             col = QVBoxLayout()
             col.setSpacing(1)
             top = QHBoxLayout()

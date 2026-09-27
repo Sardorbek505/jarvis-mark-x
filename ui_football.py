@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QP
 from ui import C
 from ui_icons import draw_icon, qicon
 from ui_island import Score, score_from_match
-from ui_kit import STYLE, IconBadge, Toggle, _cap, _label, _line
+from ui_kit import STYLE, IconBadge, Toggle, _cap, _label, _line, art_pixmap
 
 logger = logging.getLogger(__name__)
 CREST = 64                                  # эмблема в карточке матча, точки
@@ -155,10 +155,27 @@ class MatchHero(QWidget):
         path.addRoundedRect(r, 18, 18)
         p.fillPath(path, QColor(C.PANEL))
         m, sc = self.match, self.score
+        field = art_pixmap("football/hero_bg.png")          # поле сверху, бирюзовая разметка
+        if field is not None:
+            p.save()
+            p.setClipPath(path)
+            p.setOpacity(0.42 if m else 0.25)
+            k = max(r.width() / field.width(), r.height() / field.height())
+            fw, fh = field.width() * k, field.height() * k
+            p.drawPixmap(QRectF(r.center().x() - fw / 2, r.center().y() - fh / 2, fw, fh), field,
+                         QRectF(field.rect()))
+            p.restore()
         if not m or not sc:
             p.setPen(QPen(QColor(C.BORDER), 1))
             p.drawPath(path)
-            draw_icon(p, "ball", QPointF(r.center().x(), r.center().y() - 16), 34, QColor(C.TEXT_DIM))
+            empty = art_pixmap("empty/empty_football.png")
+            if empty is not None:
+                ew = 150
+                eh = ew * empty.height() / empty.width()
+                p.drawPixmap(QRectF(r.center().x() - ew / 2, r.center().y() - eh / 2 - 14, ew, eh), empty,
+                             QRectF(empty.rect()))
+            else:
+                draw_icon(p, "ball", QPointF(r.center().x(), r.center().y() - 16), 34, QColor(C.TEXT_DIM))
             self._text(p, QRectF(r.x(), r.center().y() + 8, r.width(), 24),
                        "Ближайших матчей не нашёл" if self.club else "Укажите любимый клуб — сверху справа",
                        10.5, QColor(C.TEXT_MED))

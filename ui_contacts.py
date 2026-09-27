@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QInputDialog, QLineEd
 from core import contacts as CT
 from ui import C
 from ui_icons import qicon
-from ui_kit import STYLE, FlowLayout, IconBadge, Toggle, _cap, _icon_btn, _label, _line, _small_icon
+from ui_kit import STYLE, EmptyArt, FlowLayout, IconBadge, Toggle, _cap, _icon_btn, _label, _line, _small_icon
 
 logger = logging.getLogger(__name__)
 
@@ -190,9 +190,8 @@ class ContactsDialog(QDialog):
         self.people.currentItemChanged.connect(
             lambda cur, _p: cur and self.show_contact(cur.data(Qt.ItemDataRole.UserRole)))
         sl.addWidget(self.people, 1)
-        self.empty = _label("Пока пусто.\n\nПодключите свой Telegram и нажмите\n«Подтянуть из Telegram» — "
-                            "или добавьте человека вручную.", "hint")
-        self.empty.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self.empty = EmptyArt("contacts", "Пока пусто.\n\nПодключите свой Telegram и нажмите\n"
+                                          "«Подтянуть из Telegram» — или добавьте человека вручную.")
         sl.addWidget(self.empty, 1)
         tip = QFrame()
         tip.setObjectName("card")
