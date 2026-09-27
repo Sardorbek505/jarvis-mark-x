@@ -68,8 +68,30 @@ def test_wrong_password_and_tampering(tmp_path):
 def test_short_password_and_bad_paths(tmp_path):
     with pytest.raises(B.BackupError, match="хотя бы"):
         B.create(tmp_path / "c", "123", root=tmp_path, keys={})
-    assert not B._safe("../evil.json") and not B._safe("/etc/passwd") and not B._safe("a.session")
-    assert B._safe("memory/data.json")
+    for bad in ("../evil.json", "/etc/passwd", "a.session", "C:evil.json", "C:\\Windows\\evil.json",
+                "C:/Windows/evil.json", "\\evil.json", "\\\\server\\share\\x", "memory\\..\\..\\x", ""):
+        assert not B._safe(bad), bad
+    assert B._safe("memory/data.json") and B._safe("macros.json")
+
+
+def test_restore_skips_paths_outside_data_folder(tmp_path):
+    """Подложенный архив с путями наружу: верное — восстанавливается, чужое — нет."""
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("manifest.json", "{}")
+        z.writestr("api_keys.json", "{}")
+        z.writestr("data/macros.json", "{}")
+        for evil in ("data/../evil1.json", "data/C:evil2.json", "data/\\evil3.json", "data//abs/evil4.json"):
+            z.writestr(evil, "PWNED")
+    path = tmp_path / "evil.jarvisbak"
+    path.write_bytes(B.encrypt(buf.getvalue(), "пароль123"))
+    root = tmp_path / "data"
+    root.mkdir()
+    out = B.restore(path, "пароль123", root=root, save_keys=lambda k: None, keys_now={})
+    assert out["files"] == 1 and (root / "macros.json").exists()
+    assert not any(p.read_text(errors="ignore") == "PWNED" for p in tmp_path.rglob("*") if p.is_file())
 
 
 def test_window(tmp_path):
