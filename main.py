@@ -1538,6 +1538,10 @@ class Jarvis:
         # вместо вопроса «точно?» — проверялось только правило, не сам вопрос.
         self._pending_destructive: tuple | None = None
         self._pending_args: dict | None = None
+        # Последние ~30 с вашей речи (громкие кадры) — для проверки голоса,
+        # и номер реплики, набранной с клавиатуры (ей доверяем: вы за ПК).
+        self._voice_ring: collections.deque = collections.deque(maxlen=480)
+        self._typed_turn = -1
 
         # Секундомер голосового хода. Пишет в лог задержку от конца речи до
         # первого звука ответа при JARVIS_DEBUG_UI=1.
@@ -1836,6 +1840,7 @@ class Jarvis:
             self.wake()
             self.last_user_text = text
             self._user_turn += 1
+            self._typed_turn = self._user_turn
             self._remember_turn(text, "")
             self._send_text_to_session(text)
 
@@ -2109,6 +2114,12 @@ class Jarvis:
                 )
             if name == "contacts":
                 args = dict(getattr(self, "_pending_args", None) or args)   # ровно то, что подтвердили
+            denied = await self._voice_denied(name, args)
+            if denied:
+                self._pending_destructive = None
+                if not self.ui.muted:
+                    self.ui.set_state("LISTENING")
+                return types.FunctionResponse(id=fc.id, name=name, response={"result": denied})
             self._pending_destructive = None
             logger.warning("Подтверждено, выполняю: %s/%s", name, _action_of(args))
 
@@ -2717,6 +2728,9 @@ class Jarvis:
             self._note_gate(None)
             if self._frame_was_loud:
                 self._latency.mark_voice_frame()
+                # Речь — и в копилку для проверки голоса (core/voice_id.py):
+                # на подтверждении опасного сверяется просьба + «да».
+                self._voice_ring.append((time.monotonic(), pcm_bytes))
 
             # Сбрасываем предбуфер (pre-roll) и плавно приглушаем музыку/кино при начале речи
             if was_silent:
@@ -3052,6 +3066,31 @@ class Jarvis:
         self._remember_turn(heard, text)
         if text:
             await self._speak_fish(text)
+
+    async def _voice_denied(self, name: str, args: dict) -> str:
+        """Опасное подтверждено — но ВАШИМ ли голосом? '' — да (или проверить
+        нечем), иначе — что сказать. Набранное с клавиатуры — доверенное."""
+        try:
+            from core import voice_id
+            if not voice_id.sensitive(name, args) or self._typed_turn == self._user_turn:
+                return ""
+            vid = voice_id.voice_id()
+            if not vid.enrolled():
+                return ""
+            since = time.monotonic() - 30
+            pcm = b"".join(p for t, p in list(self._voice_ring) if t >= since)
+            ok, score = await asyncio.to_thread(vid.verify, pcm)
+        except Exception as exc:
+            logger.warning("Проверка голоса: %s", exc)
+            return ""
+        if ok is None:
+            return ""                          # мало речи или нет модели — не мешаем
+        logger.info("Голос владельца: %s (сходство %.2f, порог %.2f)", "да" if ok else "НЕТ", score, vid.threshold)
+        if ok:
+            return ""
+        self.ui.write_log(f"SYS: 🔒 не узнал голос владельца ({score:.2f}) — {name}/{_action_of(args)} не выполнено")
+        return ("НЕ ВЫПОЛНЕНО — голос не похож на голос владельца. Скажи: «Не узнаю ваш голос, сэр. "
+                "Повторите ближе к микрофону или подтвердите, набрав «да» в окне Джарвиса». Сам не повторяй вызов.")
 
     def _maybe_briefing(self):
         """Первый разговор утром (после подъёма из «Обо мне», до полудня, раз в

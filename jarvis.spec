@@ -36,6 +36,9 @@ if (BASE_DIR / "assets").exists():
 # работает, но имя ищет через Gemini (см. core/wake_vosk.py).
 if (BASE_DIR / "models" / "vosk-small-ru").exists():
     datas.append((str(BASE_DIR / "models" / "vosk-small-ru"), "models/vosk-small-ru"))
+# Отпечатки голоса владельца (core/voice_id.py); нет — докачивается из окна «Обо мне».
+if (BASE_DIR / "models" / "vosk-spk").exists():
+    datas.append((str(BASE_DIR / "models" / "vosk-spk"), "models/vosk-spk"))
 
 if (BASE_DIR / "telegram_bot" / "miniapp").exists():
     datas.append((str(BASE_DIR / "telegram_bot" / "miniapp"), "telegram_bot/miniapp"))
@@ -109,6 +112,7 @@ hidden_imports = [
     "core.contacts",
     "core.about_me",
     "core.briefing",
+    "core.voice_id",
     "ui_about",
     "ui_contacts",
     "qrcode",

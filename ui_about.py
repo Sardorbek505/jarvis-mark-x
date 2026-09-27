@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import logging
 
-from PyQt6.QtCore import Qt
+import threading
+
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from core import about_me as AB
@@ -24,10 +26,118 @@ GROUP_ICON = {"Кто вы": "person", "Распорядок дня": "timer", "
               "Люди и цели": "spark", "Здоровье": "lock"}
 
 
+def _record(sec: float) -> bytes:
+    import sounddevice as sd
+    data = sd.rec(int(sec * 16000), samplerate=16000, channels=1, dtype="int16")
+    sd.wait()
+    return data.tobytes()
+
+
+class VoiceEnrollDialog(QDialog):
+    """Запись голоса: 5 фраз по 4 секунды — читать вслух то, что на экране."""
+    _done = pyqtSignal(dict)
+
+    def __init__(self, parent=None, vid=None, record=None):
+        super().__init__(parent)
+        from core import voice_id as V
+        self.V = V
+        self.vid = vid or V.voice_id()
+        self.record = record or _record
+        self.takes: list[bytes] = []
+        self.setWindowTitle("ДЖАРВИС — ваш голос")
+        self.setStyleSheet(STYLE)
+        self.resize(560, 330)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(26, 22, 26, 22)
+        lay.setSpacing(12)
+        head = QHBoxLayout()
+        head.addWidget(IconBadge("mic", 34))
+        self.step = _label("", "h2")
+        head.addWidget(self.step, 1)
+        lay.addLayout(head)
+        lay.addWidget(_label("Прочитайте вслух фразу ниже обычным голосом, как говорите с Джарвисом. "
+                             "Запись — 4 секунды.", "hint"))
+        self.phrase = _label("", "h1")
+        self.phrase.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.phrase.setMinimumHeight(90)
+        lay.addWidget(self.phrase)
+        self.bar = Progress()
+        lay.addWidget(self.bar)
+        self.status = _label("", "status")
+        lay.addWidget(self.status)
+        self.btn = QPushButton("  Записать")
+        self.btn.setObjectName("primary")
+        self.btn.setIcon(qicon("mic", 14, C.BG))
+        self.btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn.clicked.connect(self.take)
+        lay.addWidget(self.btn)
+        self._done.connect(self._finished)
+        self._show_step()
+
+    def _show_step(self):
+        i = len(self.takes)
+        n = len(self.V.ENROLL_PHRASES)
+        self.step.setText(f"Фраза {min(i + 1, n)} из {n}")
+        self.phrase.setText(f"«{self.V.ENROLL_PHRASES[min(i, n - 1)]}»")
+        self.bar.value = i / n
+        self.bar.update()
+
+    def take(self):
+        self.btn.setEnabled(False)
+        self.btn.setText("  Говорите…")
+        self.status.setText("")
+
+        def work():
+            try:
+                pcm = self.record(self.V.ENROLL_SEC)
+            except Exception as exc:
+                self._done.emit({"error": f"Микрофон не записал: {exc}"})
+                return
+            self._done.emit({"take": pcm})
+        threading.Thread(target=work, daemon=True, name="voice-take").start()
+
+    def _finished(self, r: dict):
+        if "error" in r:
+            self.status.setText(r["error"])
+            self.btn.setEnabled(True)
+            self.btn.setText("  Записать")
+            return
+        if "take" in r:
+            self.takes.append(r["take"])
+            if len(self.takes) < len(self.V.ENROLL_PHRASES):
+                self._show_step()
+                self.btn.setEnabled(True)
+                self.btn.setText("  Записать")
+                return
+            self.phrase.setText("Считаю отпечаток голоса…")
+            self.bar.value = 1.0
+            self.bar.update()
+            threading.Thread(target=lambda: self._done.emit({"result": self.vid.enroll(self.takes)}),
+                             daemon=True, name="voice-enroll").start()
+            return
+        res = r["result"]
+        self.phrase.setText("✓  Готово" if res["ok"] else "Не получилось")
+        self.status.setText(res["text"])
+        self.btn.setEnabled(True)
+        if res["ok"]:
+            self.btn.setText("Закрыть")
+            self.btn.clicked.disconnect()
+            self.btn.clicked.connect(self.accept)
+        else:
+            self.takes = []
+            self.btn.setText("  Записать заново")
+            self._show_step()
+
+
 class AboutDialog(QDialog):
-    def __init__(self, parent=None, start_voice=None):
+    _voice_sig = pyqtSignal(str)
+
+    def __init__(self, parent=None, start_voice=None, vid=None):
         super().__init__(parent)
         self.start_voice = start_voice
+        from core import voice_id as V
+        self.V = V
+        self.vid = vid or V.voice_id()
         self.setWindowTitle("ДЖАРВИС — обо мне")
         self.setStyleSheet(STYLE)
         self.resize(880, 760)
@@ -59,6 +169,9 @@ class AboutDialog(QDialog):
             self.col.addWidget(self._section(GROUP_ICON.get(group, "person"), group,
                                              "по желанию" if all(q.sensitive for q in qs) else ""))
             self.col.addWidget(self._group_card(qs, have))
+        self.col.addSpacing(6)
+        self.col.addWidget(self._section("mic", "Ваш голос", "опасное — только по вашему «да»"))
+        self.col.addWidget(self._voice_card())
         self.col.addSpacing(10)
         self.col.addWidget(self._section("spark", "Джарвис запомнил сам", "из разговоров — лишнее можно удалить"))
         self.facts_box = QVBoxLayout()
@@ -184,6 +297,70 @@ class AboutDialog(QDialog):
         AB.answer(key, text) if text else AB.forget(key)
         self._say(f"✓  {AB.BY_KEY[key].label}: " + (f"запомнил «{text}»" if text else "забыл"))
         self.update_summary()
+
+    # ── ваш голос ────────────────────────────────────────────────────────────
+    def _voice_card(self) -> QWidget:
+        card = QFrame()
+        card.setObjectName("card")
+        lay = QHBoxLayout(card)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(14)
+        lay.addWidget(IconBadge("lock", 34))
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        self.voice_title = _label("", "stepTitle")
+        col.addWidget(self.voice_title)
+        col.addWidget(_label("Сообщения и звонки людям, выключение ПК, удаление файлов — только если «да» "
+                             "сказали вы. Набранное с клавиатуры — всегда ваше.", "hint"))
+        lay.addLayout(col, 1)
+        self.voice_btn2 = QPushButton()
+        self.voice_btn2.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.voice_btn2.clicked.connect(self.voice_action)
+        lay.addWidget(self.voice_btn2)
+        self.voice_reset = _icon_btn("trash", "Удалить отпечаток голоса", 13, C.TEXT_DIM)
+        self.voice_reset.clicked.connect(self.voice_forget)
+        lay.addWidget(self.voice_reset)
+        self._voice_sig.connect(self._voice_msg)
+        self.paint_voice()
+        return card
+
+    def paint_voice(self):
+        on, have_model = self.vid.enrolled(), self.vid.available()
+        self.voice_title.setText("●  Голос записан — проверка включена" if on else
+                                 ("●  Голос не записан" if have_model else "●  Нет модели голоса (16 МБ)"))
+        self.voice_title.setStyleSheet(f"color: {C.PRI if on else C.ACC2};")
+        self.voice_btn2.setText("Перезаписать" if on else ("Записать голос" if have_model else "Скачать модель"))
+        self.voice_btn2.setObjectName("" if on else "primary")
+        self.voice_btn2.style().unpolish(self.voice_btn2)
+        self.voice_btn2.style().polish(self.voice_btn2)
+        self.voice_reset.setVisible(on)
+
+    def voice_action(self):
+        if not self.vid.available():
+            self.voice_btn2.setEnabled(False)
+            self._say("Скачиваю модель голоса (16 МБ)…")
+
+            def work():
+                try:
+                    self.V.download_spk()
+                    self._voice_sig.emit("✓  Модель скачана — запишите голос.")
+                except Exception as exc:
+                    self._voice_sig.emit(f"Не скачалась: {exc}")
+            threading.Thread(target=work, daemon=True, name="spk-download").start()
+            return
+        dlg = VoiceEnrollDialog(self, self.vid)
+        dlg.exec()
+        self.paint_voice()
+
+    def _voice_msg(self, text: str):
+        self.voice_btn2.setEnabled(True)
+        self._say(text)
+        self.paint_voice()
+
+    def voice_forget(self):
+        self.vid.reset()
+        self.paint_voice()
+        self._say("Отпечаток голоса удалён — проверка выключена.")
 
     # ── запомнил сам ─────────────────────────────────────────────────────────
     def render_facts(self):

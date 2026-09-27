@@ -42,22 +42,31 @@ def clean_previous_builds():
 _VOSK_URL = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
 
 
-def ensure_vosk_model():
-    """Словарь слова «Джарвис» (~45 МБ) в models/vosk-small-ru.
+_SPK_URL = "https://alphacephei.com/vosk/models/vosk-model-spk-0.4.zip"
 
-    В репозитории его нет — он большой и не наш. Без него сборка всё равно
-    работает (имя слушается через Gemini), но в CI это ошибка: пользователь
-    получил бы установщик без главного."""
-    print("[2b] Модель слова «Джарвис» (Vosk)...")
-    dst = _BASE_DIR / "models" / "vosk-small-ru"
-    if (dst / "am").exists():
+
+def ensure_vosk_model():
+    """Модели Vosk: словарь слова «Джарвис» (~45 МБ, models/vosk-small-ru) и
+    отпечатки голоса владельца (~16 МБ, models/vosk-spk, core/voice_id.py).
+
+    В репозитории их нет — они большие и не наши. Без них сборка всё равно
+    работает (имя слушается через Gemini, голос не проверяется, модель
+    докачивается из окна «Обо мне»), но в CI это ошибка."""
+    _fetch_model("[2b] Модель слова «Джарвис» (Vosk)...", _VOSK_URL, "vosk-small-ru", "am")
+    _fetch_model("[2c] Модель голоса владельца (Vosk spk)...", _SPK_URL, "vosk-spk", "final.ext.raw")
+
+
+def _fetch_model(title: str, url: str, dirname: str, marker: str):
+    print(title)
+    dst = _BASE_DIR / "models" / dirname
+    if (dst / marker).exists():
         print("  [OK] уже на месте")
         return
     import io
     import urllib.request
     import zipfile
     try:
-        with urllib.request.urlopen(_VOSK_URL, timeout=120) as resp:
+        with urllib.request.urlopen(url, timeout=120) as resp:
             data = resp.read()
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             root = z.namelist()[0].split("/")[0]
