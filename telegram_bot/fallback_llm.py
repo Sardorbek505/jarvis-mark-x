@@ -17,7 +17,6 @@
 <ИМЯ>_MODEL: бесплатные линейки у провайдеров меняются чаще, чем код.
 """
 
-import json
 import logging
 import os
 import time
@@ -51,10 +50,8 @@ _KNOWN = (
 
 @lru_cache(maxsize=1)
 def _from_config() -> dict:
-    try:
-        return json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    from telegram_bot.local_keys import read           # и %APPDATA%/JARVIS (JARVIS.exe)
+    return read(_CONFIG_FILE)
 
 
 def providers() -> list[Provider]:

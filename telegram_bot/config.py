@@ -1,5 +1,4 @@
 """Load bot configuration from config/api_keys.json and environment variables."""
-import json
 import os
 import sys
 from pathlib import Path
@@ -43,10 +42,8 @@ def load(require_bot: bool = True) -> Config:
     require_bot=True  → bot/server needs gemini key + telegram token (exits if missing).
     require_bot=False → PC client mode; only pc_link_* matter (no hard requirements).
     """
-    raw: dict = {}
-    if _CONFIG_FILE.exists():
-        with open(_CONFIG_FILE, encoding="utf-8") as f:
-            raw = json.load(f)
+    from telegram_bot.local_keys import read           # и %APPDATA%/JARVIS (JARVIS.exe)
+    raw = read(_CONFIG_FILE)
 
     gemini_key = os.getenv("GEMINI_API_KEY") or raw.get("gemini_api_key", "")
     gemini_model = os.getenv("GEMINI_MODEL") or raw.get("gemini_model", "gemini-2.5-flash")

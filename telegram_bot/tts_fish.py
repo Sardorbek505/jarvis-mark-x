@@ -18,7 +18,6 @@ import logging
 import os
 import urllib.error
 import urllib.request
-from functools import lru_cache
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -41,14 +40,23 @@ _LATENCY = (os.getenv("FISH_LATENCY") or "normal").strip()
 _CONFIG_FILE = Path(__file__).resolve().parent.parent / "config" / "api_keys.json"
 
 
-@lru_cache(maxsize=1)
+_cfg_cache: tuple[float, dict] = (0.0, {})
+
+
 def _from_config() -> dict:
-    """В облаке ключи приходят env-секретами, на ПК — из api_keys.json.
-    Тот же порядок, что и у остального конфига проекта."""
-    try:
-        return json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    """В облаке ключи приходят env-секретами, на ПК — из api_keys.json: и
+    рядом с программой, и в %APPDATA%/JARVIS (туда пишет окно «Ключи» и
+    читает JARVIS.exe). Раньше читался только первый — в exe ключа Fish
+    «не было», и Джарвис говорил встроенным голосом Gemini. Перечитываем
+    раз в 10 с: ключ, вписанный в окне, подхватывается без перезапуска."""
+    global _cfg_cache
+    import time
+    at, data = _cfg_cache
+    if time.monotonic() - at > 10 or not at:
+        from telegram_bot.local_keys import read
+        data = read(_CONFIG_FILE)
+        _cfg_cache = (time.monotonic(), data)
+    return data
 
 
 def _key() -> str:

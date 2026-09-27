@@ -611,3 +611,36 @@ def test_contact_call_goes_through_your_telegram(monkeypatch):
     monkeypatch.setattr(tc, "_gemini_live", FakeLive([Msg(end=True)]))
     tc.call_contact("id:22", "Азиз", "ещё", via=me)
     assert len(made) == 1                                   # py-tgcalls не создаётся заново
+
+
+def test_call_waits_short_pause_before_answering(monkeypatch):
+    """Звонок: «договорил» — после 450 мс тишины, с высокой чувствительностью
+    к концу речи (как голосовой Джарвис на ПК), а не по умолчанию ~секунду."""
+    captured = {}
+
+    class Live:
+        def connect(self, model, config):
+            captured["config"] = config
+
+    class Client:
+        def __init__(self, **kw):
+            self.aio = type("A", (), {"live": Live()})()
+    import core.onboarding as onboarding
+    from google import genai
+    monkeypatch.setattr(genai, "Client", Client)
+    monkeypatch.setattr(onboarding, "ensure_gemini_key", lambda interactive=False: "k")
+    tc._gemini_live("x")
+    vad = captured["config"].realtime_input_config.automatic_activity_detection
+    assert vad.silence_duration_ms == tc.CALL_VAD_SILENCE_MS == 450
+    assert vad.end_of_speech_sensitivity.name == "END_SENSITIVITY_HIGH"
+
+
+def test_call_logs_reply_delay_and_send_lateness():
+    tg = FakeTg()
+    speech = sine(24000, 0.2).tobytes()
+    live = FakeLive([_said("Привет, как дела?"), Msg(speech), Msg(end=True)])
+    sess = tc.CallSession(tg, live, 42, "x", max_sec=5)
+    asyncio.run(sess.run())
+    assert len(sess.reply_delays) == 1 and 0 <= sess.reply_delays[0] < 1
+    stats = sess.audio_stats()
+    assert "ответ через: медиана" in stats and "опоздание отправки звука" in stats
