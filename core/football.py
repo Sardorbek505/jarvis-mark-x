@@ -24,6 +24,7 @@ import os
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -93,14 +94,30 @@ class Match:
         return f"{self.home} — {self.away}"
 
 
-def _get(url: str, timeout: float = 10.0) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 Jarvis/1.0"})
+def _get(url: str, timeout: float = 10.0, ua: str | None = "Mozilla/5.0 Jarvis/1.0") -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": ua} if ua else {})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 
 
+# ESPN отвечает 403 на «браузерный» User-Agent (Mozilla…) — защита от ботов;
+# обычный запрос проходит. Если основной адрес всё же откажет — запасной
+# site.web.api.espn.com (проверено в CI: scripts/football_check.py).
+ESPN_WEB = "https://site.web.api.espn.com/apis/site/v2/sports/soccer"
+CHROME_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+             "Chrome/140.0.0.0 Safari/537.36")
+
+
 def _json(url: str) -> dict:
-    return json.loads(_get(url).decode("utf-8"))
+    if not url.startswith(ESPN):
+        return json.loads(_get(url).decode("utf-8"))
+    try:
+        return json.loads(_get(url, ua=None).decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (401, 403, 429):
+            raise
+        logger.debug("ESPN %s: %s — запасной адрес", url, exc)
+        return json.loads(_get(ESPN_WEB + url[len(ESPN):], ua=CHROME_UA).decode("utf-8"))
 
 
 def _norm(s: str) -> str:

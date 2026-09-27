@@ -237,3 +237,21 @@ def test_browser_prefers_chrome_and_yandex(monkeypatch):
     assert cdp.browser_exe() == "browser.exe"
     have["chrome"] = "chrome.exe"
     assert cdp.browser_exe() == "chrome.exe"
+
+
+def test_espn_request_without_browser_ua_then_fallback(monkeypatch):
+    """ESPN режет «браузерный» User-Agent (403) — сначала без него, отказ — запасной адрес."""
+    import urllib.error
+    asked = []
+
+    def get(url, timeout=10.0, ua="Mozilla/5.0 Jarvis/1.0"):
+        asked.append((url, ua))
+        if url.startswith(F.ESPN):
+            raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
+        return b'{"ok": 1}'
+    monkeypatch.setattr(F, "_get", get)
+    assert F._json(f"{F.ESPN}/esp.1/teams") == {"ok": 1}
+    assert asked[0] == (f"{F.ESPN}/esp.1/teams", None)                          # без «Mozilla»
+    assert asked[1] == (f"{F.ESPN_WEB}/esp.1/teams", F.CHROME_UA)
+    asked.clear()
+    assert F._json("https://news.example/rss") == {"ok": 1} and asked[0][1].startswith("Mozilla")

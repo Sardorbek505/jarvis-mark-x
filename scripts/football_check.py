@@ -21,8 +21,8 @@ def probe() -> None:
     tries = [(f"{F.ESPN}/esp.1/teams", "Mozilla/5.0 Jarvis/1.0"), (f"{F.ESPN}/esp.1/teams", chrome),
              (f"{F.ESPN}/esp.1/teams", ""),
              ("https://site.web.api.espn.com/apis/site/v2/sports/soccer/esp.1/teams", chrome),
-             ("https://site.api.espn.com/apis/site/v2/sports/soccer/esp.1/scoreboard", chrome),
-             (f"{F.ESPN}/esp.1/teams/86/schedule", chrome), (F.LOGO.format(id=86), "Mozilla/5.0 Jarvis/1.0"),
+             (f"{F.ESPN}/esp.1/scoreboard", ""), (f"{F.ESPN}/esp.1/teams/86/schedule", ""),
+             (f"{F.ESPN_WEB}/esp.1/teams/86/schedule", chrome), (f"{F.ESPN_WEB}/esp.1/scoreboard", chrome), (F.LOGO.format(id=86), "Mozilla/5.0 Jarvis/1.0"),
              ("https://www.thesportsdb.com/api/v1/json/123/searchteams.php?t=Real%20Madrid", chrome),
              ("https://www.thesportsdb.com/api/v1/json/123/eventsnext.php?id=133738", chrome),
              ("https://www.thesportsdb.com/api/v1/json/123/eventslast.php?id=133738", chrome)]
