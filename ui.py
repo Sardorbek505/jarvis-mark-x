@@ -901,6 +901,7 @@ class MainWindow(QMainWindow):
     _contacts_sig = pyqtSignal()
     _about_sig = pyqtSignal()
     _study_sig = pyqtSignal()
+    _welcome_sig = pyqtSignal(bool)
     # wait_for_api_key зовётся из рабочего потока: оверлей — только сигналом.
     _overlay_sig = pyqtSignal(str)
 
@@ -1133,6 +1134,8 @@ class MainWindow(QMainWindow):
             _logger.warning("Панель браузера недоступна: %s", exc)
         self._browser_sig.connect(self._reveal_browser)
         self._setup_island()
+        # Первый запуск — окно «Добро пожаловать»: что умеет и что настроить.
+        QTimer.singleShot(2500, self._first_run_welcome)
         self._mute_sig.connect(self._toggle_mute)
         self._front_sig.connect(self._bring_to_front)
         self._macros_sig.connect(self._show_macros)
@@ -1140,6 +1143,7 @@ class MainWindow(QMainWindow):
         self._contacts_sig.connect(self._show_contacts)
         self._about_sig.connect(self._show_about)
         self._study_sig.connect(self._show_study)
+        self._welcome_sig.connect(self._show_welcome)
         self._overlay_sig.connect(self._show_overlay)
 
     # ── Публичный API ──────────────────────────────────────────────────────────
@@ -1244,6 +1248,39 @@ class MainWindow(QMainWindow):
     def open_macros(self):
         """Окно «Свои команды» (ui_macros.py). Из любого потока."""
         self._macros_sig.emit()
+
+    def open_welcome(self, first_run: bool = False):
+        """Окно «Что умеет Джарвис» (ui_welcome.py). Из любого потока."""
+        self._welcome_sig.emit(bool(first_run))
+
+    def _first_run_welcome(self):
+        import os
+        try:
+            from core import help as H
+            if not H.seen() and not os.getenv("JARVIS_NO_WELCOME"):
+                self._show_welcome(True)
+        except Exception as exc:
+            _logger.debug("Подсказки: %s", exc)
+
+    def _show_welcome(self, first_run: bool = False):
+        def calibrate():
+            try:
+                from core.wake_calibrate import run_gui
+                run_gui()
+            except Exception as exc:
+                _logger.warning("Обучение слову: %s", exc)
+
+        def try_phrase(text: str):
+            handler = getattr(self, "on_text_command", None)
+            if handler:
+                handler(text)
+        actions = {"keys": self._show_keys, "about": self._show_about, "voice": self._show_about,
+                   "contacts": self._show_contacts, "study": self._show_study, "wake": calibrate}
+        try:
+            from ui_welcome import open_dialog
+            self._welcome_dlg = open_dialog(None, actions=actions, try_phrase=try_phrase, first_run=first_run)
+        except Exception as exc:
+            _logger.warning("Окно подсказок не открылось: %s", exc)
 
     def open_study(self):
         """Окно «Учёба» (ui_study.py). Из любого потока."""

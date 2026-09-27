@@ -115,6 +115,8 @@ hidden_imports = [
     "core.voice_id",
     "core.study",
     "ui_study",
+    "core.help",
+    "ui_welcome",
     "ui_about",
     "ui_contacts",
     "qrcode",
