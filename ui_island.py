@@ -5,7 +5,9 @@
 Капсула сама раскрывается на события и сворачивается обратно:
   • ответ Джарвиса — субтитром;
   • что играет (Spotify, медиа-сессии Windows, видео Джарвиса) — с эквалайзером;
-  • таймер сна, ближайший звонок по расписанию.
+  • таймер сна, ближайший звонок по расписанию;
+  • матч любимого клуба: живой счёт с минутой, на гол — вспышка цветом
+    команды, конфетти, катящийся мяч и «подпрыгнувшая» цифра счёта.
 Наведи мышь — откроется панель: плеер с кнопками, таймер, последний ответ.
 Клик по капсуле возвращает окно Джарвиса. В полноэкранной игре или фильме
 капсула прячется. В покое (ничего не играет, никто не зовёт, таймер не
@@ -24,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import sys
 import threading
 import time
@@ -42,7 +45,9 @@ _STATE_FROM_UI = {"IDLE": "idle", "LISTENING": "listening", "THINKING": "thinkin
 
 # Размеры видов (ширина, высота) в точках экрана.
 SIZES = {"compact": (168, 34), "activity": (292, 34), "listening": (312, 48), "banner": (420, 66),
-         "expanded": (440, 196)}
+         "expanded": (440, 196), "match": (300, 34), "goal": (420, 84)}
+EXPANDED_MATCH_EXTRA = 40      # строка матча в развёрнутой панели
+GOAL_SEC = 7.0                 # сколько висит «ГОЛ!»
 LISTEN_RGB = (70, 232, 128)
 BANNER_SEC = 5.5
 IDLE_HIDE_SEC = 8.0            # в покое капсула уходит через столько секунд
@@ -59,11 +64,76 @@ class Media:
 
 
 @dataclass
+class Score:
+    """Матч любимого клуба — то, что рисует капсула."""
+    home: str
+    away: str
+    home_score: str = ""
+    away_score: str = ""
+    detail: str = ""               # «67'», «HT»
+    home_abbr: str = ""
+    away_abbr: str = ""
+    home_color: str = ""           # «00529f» с ESPN
+    away_color: str = ""
+
+    def abbr(self, side: str) -> str:
+        a = self.home_abbr if side == "home" else self.away_abbr
+        name = self.home if side == "home" else self.away
+        return (a or re.sub(r"[^A-Za-zА-Яа-яЁё]", "", name)[:3]).upper()
+
+    def rgb(self, side: str) -> tuple[int, int, int]:
+        """Цвет формы; слишком тёмный на чёрной капсуле — осветлён; нет цвета — свой по названию."""
+        h = (self.home_color if side == "home" else self.away_color).lstrip("#")
+        try:
+            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        except (ValueError, IndexError):
+            name = self.home if side == "home" else self.away
+            r, g, b = _PALETTE[sum(map(ord, name)) % len(_PALETTE)]
+        lum = 0.3 * r + 0.59 * g + 0.11 * b
+        if lum < 90:                                   # тёмно-синий «Барсы» не пропадает на чёрном
+            k = (90 - lum) / 255 + 0.25
+            r, g, b = (int(c + (255 - c) * k) for c in (r, g, b))
+        return r, g, b
+
+    def same_game(self, other: "Score | None") -> bool:
+        return bool(other) and (self.home, self.away) == (other.home, other.away)
+
+    def scorer(self, before: "Score | None") -> str:
+        """Кто забил по сравнению с прошлым счётом: home / away / ""."""
+        if not self.same_game(before):
+            return ""
+        for side, now, was in (("home", self.home_score, before.home_score),
+                               ("away", self.away_score, before.away_score)):
+            if now.isdigit() and was.isdigit() and int(now) > int(was):
+                return side
+        return ""
+
+
+_PALETTE = [(63, 208, 189), (255, 138, 52), (120, 170, 255), (236, 90, 120), (217, 226, 90), (180, 130, 255)]
+_SCORE_RE = re.compile(r"^(.+?) (\d+):(\d+) (.+?)(?: \((.*)\))?$")
+
+
+def parse_score(text: str) -> Score | None:
+    """«Real Madrid 1:0 Barcelona (23')» (так пишет core/football.py) → Score."""
+    m = _SCORE_RE.match(" ".join((text or "").split()))
+    if not m:
+        return None
+    return Score(m.group(1), m.group(4), m.group(2), m.group(3), m.group(5) or "")
+
+
+def score_from_match(m) -> Score:
+    """core.football.Match → Score."""
+    return Score(m.home, m.away, m.home_score or "0", m.away_score or "0", m.detail, m.home_abbr, m.away_abbr,
+                 m.home_color, m.away_color)
+
+
+@dataclass
 class Banner:
-    kind: str                      # "reply" | "event"
+    kind: str                      # "reply" | "event" | "football" | "goal" | "final"
     title: str
     text: str
     until: float
+    score: Score | None = None
 
 
 @dataclass
@@ -77,6 +147,11 @@ class IslandModel:
     banners: list[Banner] = field(default_factory=list)
     listen_since: float = 0.0      # когда позвали «Джарвис» (для вспышки)
     eyes: bool = False             # глаза открыты (core/eyes.py) — видно значок
+    match: Score | None = None     # идёт матч любимого клуба
+    goal_at: float = -1e9          # когда показали «ГОЛ!» (для анимации)
+    goal_side: str = ""            # кто забил: home / away
+    pop_at: float = -1e9           # счёт поменялся — цифра «подпрыгивает»
+    pop_side: str = ""
 
     def set_state(self, ui_state: str, now: float | None = None):
         new = _STATE_FROM_UI.get((ui_state or "").upper(), ui_state if ui_state in STATE_RGB else "idle")
@@ -100,6 +175,40 @@ class IslandModel:
         self.banners.append(Banner(kind, title, text, now + sec))
         del self.banners[:-4]
 
+    def set_match(self, score: Score | None, now: float | None = None):
+        now = time.monotonic() if now is None else now
+        if score:
+            side = score.scorer(self.match)
+            if side:
+                self.pop_at, self.pop_side = now, side
+            # Опрос раз в пару секунд не должен «откатить» счёт, который уже пришёл голом.
+            if self.match and score.same_game(self.match) and self.match.scorer(score):
+                score.home_score, score.away_score = self.match.home_score, self.match.away_score
+        self.match = score
+
+    def football(self, title: str, text: str, now: float | None = None):
+        """Событие матча (core/football.py): гол и итог — своим видом, остальное — баннер с мячом."""
+        now = time.monotonic() if now is None else now
+        text = " ".join((text or "").split())
+        sc = parse_score(text)
+        if title == "ГОЛ" and sc:
+            if self.match and sc.same_game(self.match):          # цвета и сокращения — из живого матча
+                for k in ("home_abbr", "away_abbr", "home_color", "away_color"):
+                    setattr(sc, k, getattr(self.match, k))
+            self.goal_side = sc.scorer(self.match)
+            self.goal_at = now
+            self.set_match(sc, now)
+            self.banners.append(Banner("goal", title, text, now + GOAL_SEC, sc))
+        elif title == "ИТОГ" and sc:
+            if self.match and sc.same_game(self.match):
+                for k in ("home_abbr", "away_abbr", "home_color", "away_color"):
+                    setattr(sc, k, getattr(self.match, k))
+            self.match = None
+            self.banners.append(Banner("final", title, text, now + 8.0, sc))
+        else:
+            self.banners.append(Banner("football", title, text, now + BANNER_SEC))
+        del self.banners[:-4]
+
     def banner(self, now: float | None = None) -> Banner | None:
         now = time.monotonic() if now is None else now
         self.banners = [b for b in self.banners if b.until > now]
@@ -121,16 +230,20 @@ class IslandModel:
         Ближайший будильник или звонок по расписанию — не повод висеть на экране."""
         live_timer = bool(self.timer_end) or self.timer_label.startswith(("Секундомер", "Сон"))
         return (self.state == "idle" and not self.banner(now) and not (self.media and self.media.playing)
-                and not live_timer)
+                and not live_timer and not self.match)
 
     def mode(self, hovered: bool, now: float | None = None) -> str:
         if hovered:
             return "expanded"
-        if self.banner(now):
-            return "banner"
+        b = self.banner(now)
+        if b:
+            return "goal" if b.kind in ("goal", "final") else "banner"
         # Позвали «Джарвис» — капсула раскрывается: «Слушаю…» и волна голоса.
         if self.state == "listening":
             return "listening"
+        # Идёт матч клуба — живой счёт важнее музыки (как Live Activity на iPhone).
+        if self.match:
+            return "match"
         if self.media and self.media.playing:
             return "activity"
         return "compact"
@@ -199,6 +312,18 @@ def poll_timer() -> tuple[str, float]:
     except Exception as exc:
         logger.debug("Капсула, звонки: %s", exc)
     return "", 0.0
+
+
+def poll_match() -> Score | None:
+    """Идущий матч любимого клуба — если футбол вообще запущен (сеть здесь не трогаем)."""
+    try:
+        from core import football as F
+        fb = F._fb
+        m = fb.current if fb else None
+        return score_from_match(m) if m else None
+    except Exception as exc:
+        logger.debug("Капсула, матч: %s", exc)
+        return None
 
 
 def media_command(media: Media | None, action: str):
@@ -274,8 +399,10 @@ class Island(QWidget):
     _event_sig = pyqtSignal(str, str)
     _media_sig = pyqtSignal(object, str, float)
     _eyes_sig = pyqtSignal(bool)
+    _match_sig = pyqtSignal(object)
+    _football_sig = pyqtSignal(str, str)
 
-    W, H = 460, 212                 # окно с запасом под самый большой вид
+    W, H = 460, 252                 # окно с запасом под самый большой вид
     TOP = 16                        # отступ от верхнего края экрана
     DROP_SPREAD = 0.97              # капля выросла — начинает растекаться
 
@@ -318,7 +445,10 @@ class Island(QWidget):
         self._event_sig.connect(lambda title, text: self.model.notify(title, text, "event"))
         self._media_sig.connect(self._set_media)
         self._eyes_sig.connect(lambda on: setattr(self.model, "eyes", on))
-        for sig in (self._state_sig, self._reply_sig, self._event_sig, self._media_sig):
+        self._match_sig.connect(self.model.set_match)
+        self._football_sig.connect(self.model.football)
+        for sig in (self._state_sig, self._reply_sig, self._event_sig, self._media_sig, self._match_sig,
+                    self._football_sig):
             sig.connect(self._maybe_wake)
 
         self._tmr = QTimer(self)
@@ -347,6 +477,13 @@ class Island(QWidget):
 
     def set_eyes(self, on: bool):
         self._eyes_sig.emit(bool(on))
+
+    def football(self, title: str, text: str):
+        """Событие матча: «ГОЛ», «ИТОГ», «МАТЧ», «МАТЧ НАЧАЛСЯ», «НОВОСТЬ КЛУБА»."""
+        self._football_sig.emit(str(title), str(text))
+
+    def set_match(self, score: Score | None):
+        self._match_sig.emit(score)
 
     # ── показ ───────────────────────────────────────────────────────────────
     def _place(self):
@@ -404,6 +541,9 @@ class Island(QWidget):
             media = poll_media()
             label, end = poll_timer()
             self._media_sig.emit(media, label, end)
+            match = poll_match()
+            if match or self.model.match:
+                self._match_sig.emit(match)
 
     def _set_media(self, media, label: str, end: float):
         was = self.model.media
@@ -459,6 +599,8 @@ class Island(QWidget):
         tw, th = SIZES[target]
         if target == "compact":
             tw = self._compact_width()
+        elif target == "expanded" and m.match:
+            th += EXPANDED_MATCH_EXTRA
         # Пружина с лёгким перелётом — капсула «пружинит», как на iPhone.
         k, c = 260.0, 24.0
         self._vw += (k * (tw - self._w) - c * self._vw) * dt
@@ -615,9 +757,20 @@ class Island(QWidget):
         if mode == "listening" and h > 40:
             self._paint_listening(p, cap, white)
             return
+        if mode == "goal" and h > 60:
+            b = m.banner()
+            if b and b.score:
+                self._paint_goal(p, cap, white, dim, b)
+            return
+        if mode == "match" and m.match:
+            self._paint_match(p, cap, white, dim)
+            return
         if mode == "banner" and h > 46:
             b = m.banner()
-            self._mini_orb(p, x0 + 30, cap.center().y(), 13)
+            if b and b.kind == "football":
+                self._ball(p, x0 + 30, cap.center().y(), 24, QColor(238, 243, 246), self._clock * 40)
+            else:
+                self._mini_orb(p, x0 + 30, cap.center().y(), 13)
             if b:
                 self._text(p, QRectF(x0 + 56, 9, w - 70, 16), b.title, 7.5, self._col(235, 0.2), bold=True, spacing=1.5)
                 self._text(p, QRectF(x0 + 56, 25, w - 70, h - 30), b.text, 9.5, white, wrap=True,
@@ -638,6 +791,149 @@ class Island(QWidget):
                        bold=True, spacing=1.6)
             if m.eyes:
                 self._eye(p, x0 + w - 20, h / 2)
+
+    # ── футбол ──────────────────────────────────────────────────────────────
+    def _ball(self, p: QPainter, cx: float, cy: float, size: float, color: QColor, angle: float = 0.0):
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(angle)
+        draw_icon(p, "ball", QPointF(0, 0), size, color)
+        p.restore()
+
+    def _live_dot(self, p: QPainter, cx: float, cy: float):
+        """Красная точка «в эфире»: пульсирует, от неё расходится кольцо."""
+        t = (self._clock * 1.1) % 1.0
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 70, 96, int(110 * (1 - t))))
+        p.drawEllipse(QPointF(cx, cy), 3.2 + 6 * t, 3.2 + 6 * t)
+        p.setBrush(QColor(255, 70, 96))
+        p.drawEllipse(QPointF(cx, cy), 3.2, 3.2)
+
+    def _pop(self, side: str, since: float) -> float:
+        """Цифра счёта после гола: подпрыгивает и успокаивается (пружина)."""
+        t = time.monotonic() - since
+        if side == "" or t > 1.6:
+            return 1.0
+        return 1.0 + 0.7 * math.exp(-t * 4.5) * math.cos(t * 13)
+
+    def _scoreline(self, p: QPainter, rect: QRectF, sc: Score, size: float, white: QColor,
+                   pop_side: str = "", pop_since: float = -1e9):
+        """«● RMA  1 : 0  BAR ●» по центру rect; забившая сторона — крупнее и цвета команды."""
+        cx, cy, h = rect.center().x(), rect.center().y(), rect.height()
+        dw = size * 1.25                                    # ширина цифры
+        colon = QRectF(cx - size * 0.4, rect.y(), size * 0.8, h)
+        self._text(p, colon, ":", size, QColor(170, 180, 190), bold=True, align=Qt.AlignmentFlag.AlignCenter)
+        for side, num, sx in (("home", sc.home_score, cx - size * 0.4 - dw), ("away", sc.away_score, cx + size * 0.4)):
+            k = self._pop(pop_side if pop_side == side else "", pop_since)
+            fresh = k != 1.0
+            p.save()
+            p.translate(sx + dw / 2, cy)
+            p.scale(k, k)
+            r, g, b = sc.rgb(side)
+            col = QColor(r, g, b) if fresh else white
+            self._text(p, QRectF(-dw, -h / 2, dw * 2, h), num or "0", size * 1.05, col, bold=True,
+                       align=Qt.AlignmentFlag.AlignCenter)
+            p.restore()
+        gap = size * 0.4 + dw + 8
+        for side, x, align in (("home", cx - gap - 56, Qt.AlignmentFlag.AlignRight),
+                               ("away", cx + gap, Qt.AlignmentFlag.AlignLeft)):
+            self._text(p, QRectF(x, rect.y(), 56, h), sc.abbr(side), size * 0.78, QColor(215, 222, 228), bold=True,
+                       align=align | Qt.AlignmentFlag.AlignVCenter, spacing=0.8)
+            r, g, b = sc.rgb(side)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(r, g, b))
+            fm_w = self._abbr_w(sc.abbr(side), size * 0.78)
+            dot_x = (x + 56 - fm_w - 9) if side == "home" else (x + fm_w + 9)
+            p.drawEllipse(QPointF(dot_x, cy), 3.6, 3.6)
+
+    def _abbr_w(self, text: str, size: float) -> float:
+        from PyQt6.QtGui import QFontMetricsF
+        f = QFont("Segoe UI", 1)
+        f.setPointSizeF(size)
+        f.setBold(True)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
+        return QFontMetricsF(f).horizontalAdvance(text)
+
+    def _paint_match(self, p: QPainter, cap: QRectF, white: QColor, dim: QColor):
+        """Живой счёт в капсуле: ● RMA 1 : 0 BAR · 67'."""
+        m = self.model
+        x0, w, h = cap.x(), cap.width(), cap.height()
+        self._live_dot(p, x0 + 18, h / 2)
+        self._scoreline(p, QRectF(x0 + 30, 0, w - 90, h), m.match, 9.5, white, m.pop_side, m.pop_at)
+        self._text(p, QRectF(x0 + w - 56, 0, 42, h), m.match.detail or "LIVE", 8, QColor(255, 130, 140),
+                   bold=True, align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+    def _paint_goal(self, p: QPainter, cap: QRectF, white: QColor, dim: QColor, b: Banner):
+        """«ГОЛ!»: вспышка цветом забившей команды, конфетти, мяч катится по капсуле,
+        цифра счёта подпрыгивает. «ИТОГ» — то же табло, спокойно, без салюта."""
+        m, sc = self.model, b.score
+        x0, w, h = cap.x(), cap.width(), cap.height()
+        goal = b.kind == "goal"
+        t = time.monotonic() - m.goal_at if goal else 99.0
+        side = m.goal_side if goal else ""
+        r, g, bl = sc.rgb(side) if side else self._rgb_int()
+        if goal:
+            flash = max(0.0, 1.0 - t / 1.4)
+            grad = QLinearGradient(QPointF(x0, 0), QPointF(x0 + w, 0))
+            # Вспышка не выше 45 %: белая форма «Реала» не должна съедать белый «ГОЛ!».
+            grad.setColorAt(0, QColor(r, g, bl, int(115 * flash * flash + 30)))
+            grad.setColorAt(0.6, QColor(r, g, bl, int(45 * flash + 8)))
+            grad.setColorAt(1, QColor(r, g, bl, 0))
+            p.fillRect(cap, QBrush(grad))
+            self._confetti(p, cap, t, sc)
+            # «ГОЛ!» выпрыгивает и покачивается
+            k = max(0.2, min(1.0, t / 0.18)) * (1.0 + 0.35 * math.exp(-t * 3.5) * math.cos(t * 11))
+            p.save()
+            p.translate(x0 + 84, h / 2 - 4)
+            p.scale(k, k)
+            self._text(p, QRectF(-69, -22.5, 140, 48), "ГОЛ!", 24, QColor(0, 0, 0, 150), bold=True,
+                       align=Qt.AlignmentFlag.AlignCenter, spacing=1.0)            # тень
+            self._text(p, QRectF(-70, -24, 140, 48), "ГОЛ!", 24, QColor(255, 255, 255), bold=True,
+                       align=Qt.AlignmentFlag.AlignCenter, spacing=1.0)
+            p.restore()
+            # мяч прокатывается по низу капсулы, подскакивая
+            u = min(1.0, t / 1.5)
+            ease = 1 - (1 - u) ** 3
+            bx = x0 + 18 + (w - 36) * ease
+            by = h - 13 - abs(math.sin(t * 8)) * 12 * math.exp(-t * 2.2)
+            alpha = int(255 * max(0.0, min(1.0, (2.3 - t) / 0.8)))
+            if alpha > 0:
+                self._ball(p, bx, by, 15, QColor(255, 255, 255, alpha), math.degrees((bx - x0) / 7.5))
+        else:
+            self._text(p, QRectF(x0 + 22, 14, 150, 18), "ФИНАЛ", 8, self._col(235, 0.25), bold=True, spacing=2.0)
+            self._text(p, QRectF(x0 + 22, 34, 150, 30), "Матч окончен", 12, white, bold=True)
+        board = QRectF(x0 + w - 236, 12, 220, 36)
+        self._scoreline(p, board, sc, 14, white, side, m.goal_at)
+        names = f"{sc.home} — {sc.away}" + (f"  ·  {sc.detail}" if sc.detail else "")
+        self._text(p, QRectF(board.x(), board.bottom() + 2, board.width(), 16), names, 8, dim,
+                   align=Qt.AlignmentFlag.AlignCenter)
+
+    def _rgb_int(self) -> tuple[int, int, int]:
+        return tuple(int(c) for c in self._rgb)
+
+    def _confetti(self, p: QPainter, cap: QRectF, t: float, sc: Score):
+        """Конфетти цветами обеих команд: вылетает из-под «ГОЛ!» и оседает за 2,5 с."""
+        if t > 2.6:
+            return
+        cols = [sc.rgb("home"), sc.rgb("away"), (255, 255, 255)]
+        fade = max(0.0, min(1.0, (2.6 - t) / 0.9))
+        p.setPen(Qt.PenStyle.NoPen)
+        for i in range(34):
+            ang = (i * 137.5) % 360
+            speed = 70 + (i * 53) % 110
+            vx = math.cos(math.radians(ang)) * speed * 1.6
+            vy = math.sin(math.radians(ang)) * speed * 0.6 - 40
+            x = cap.x() + 84 + vx * t
+            y = cap.height() / 2 + vy * t + 90 * t * t
+            if not (cap.x() - 6 < x < cap.right() + 6 and -6 < y < cap.height() + 6):
+                continue
+            r, g, b = cols[i % 3]
+            p.save()
+            p.translate(x, y)
+            p.rotate(ang + t * (200 + i * 17))
+            p.setBrush(QColor(r, g, b, int(230 * fade)))
+            p.drawRect(QRectF(-2.2, -1.2, 4.4, 2.4))
+            p.restore()
 
     def _eye(self, p: QPainter, cx: float, cy: float):
         """Глаза открыты — Джарвис видит экран или камеру. Мягко пульсирует."""
@@ -696,6 +992,18 @@ class Island(QWidget):
         draw_icon(p, "expand", open_r.center(), 12, white)
         self._buttons["open"] = open_r
         y = y0 + 38
+        if m.match:
+            row = QRectF(x0, y, w, 32)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 14))
+            p.drawRoundedRect(row, 10, 10)
+            self._scoreline(p, row.adjusted(34, 0, -60, 0), m.match, 10.5, white)
+            self._ball(p, row.x() + 17, row.center().y(), 16, QColor(238, 243, 246), self._clock * 30)
+            self._live_dot(p, row.right() - 50, row.center().y())
+            self._text(p, QRectF(row.right() - 42, row.y(), 34, row.height()), m.match.detail or "LIVE", 8.5,
+                       QColor(255, 130, 140), bold=True,
+                       align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            y += EXPANDED_MATCH_EXTRA
         media = m.media
         if media:
             # «Обложка»: скруглённый квадрат цвета состояния с нотой / экраном.

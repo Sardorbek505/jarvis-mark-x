@@ -1477,7 +1477,7 @@ TOOLS = [
             "Открыть окно Джарвиса: keys — «открой ключи», «где ввести ключ», «проверь ключи», "
             "«подключи Spotify/звонки» (там же вход кнопкой); commands — «открой редактор команд»; "
             "contacts — «открой контакты», «подключи мой телеграм»; about — «открой обо мне», «что ты обо мне знаешь» "
-            "(окно); study — «открой расписание», «открой учёбу»; help — «что ты умеешь», «помощь», «подсказки», "
+            "(окно); study — «открой расписание», «открой учёбу»; football — «открой футбол», «покажи матчи Реала»; help — «что ты умеешь», «помощь», «подсказки», "
             "«с чего начать»; backup — «сделай резервную копию», «перенеси на новый ПК», «восстанови из копии» "
             "(пароль — только в окне, не голосом)."
         ),
@@ -1485,7 +1485,7 @@ TOOLS = [
             "type": "OBJECT",
             "properties": {"window": {"type": "STRING",
                                       "enum": ["keys", "commands", "contacts", "about", "study", "help",
-                                               "backup"]}},
+                                               "backup", "football"]}},
             "required": ["window"]
         }
     },
@@ -2552,7 +2552,8 @@ class Jarvis:
                 titles = {"keys": ("open_keys", "Ключи и подключения"), "commands": ("open_macros", "Свои команды"),
                           "contacts": ("open_contacts", "Контакты"), "about": ("open_about", "Обо мне"),
                           "study": ("open_study", "Учёба"), "help": ("open_welcome", "Что умеет Джарвис"),
-                          "backup": ("open_backup", "Резервная копия")}
+                          "backup": ("open_backup", "Резервная копия"),
+                          "football": ("open_football", "Футбол")}
                 method, title = titles.get(which, titles["commands"])
                 opener = getattr(self.ui, method, None)
                 if opener:

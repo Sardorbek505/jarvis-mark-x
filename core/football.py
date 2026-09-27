@@ -77,6 +77,10 @@ class Match:
     state: str = "pre"                   # pre | in | post
     detail: str = ""                     # «45'», «FT», «Перерыв»
     league: str = ""
+    home_abbr: str = ""                  # «RMA» — для капсулы и карточки
+    away_abbr: str = ""
+    home_color: str = ""                 # цвет формы с ESPN, «00529f»
+    away_color: str = ""
 
     def score(self) -> str:
         return f"{self.home} {self.home_score}:{self.away_score} {self.away}"
@@ -108,7 +112,7 @@ def club_names(query: str) -> tuple[str, str]:
         if q == kk or (len(kk) >= 4 and " " not in kk and q[:len(kk) - 1] == kk[:-1] and len(q) - len(kk) <= 2):
             return v
     for k, v in CLUBS.items():
-        if _norm(k) in q or q in _norm(v[1]):
+        if _norm(k) in q or q in _norm(v[1]) or q == _norm(v[0]):    # и «Real Madrid» с ESPN
             return v
     return query.strip(), query.strip()
 
@@ -132,12 +136,13 @@ def parse_event(e: dict) -> Match | None:
         st = (comp.get("status") or e.get("status") or {}).get("type", {})
         league = ((e.get("league") or {}).get("name") or (e.get("season") or {}).get("name")
                   or (comp.get("league") or {}).get("name") or "")
+        ht, at = home.get("team") or {}, away.get("team") or {}
         return Match(id=str(e.get("id")), when=when.replace(tzinfo=None),
-                     home=(home.get("team") or {}).get("displayName", ""),
-                     away=(away.get("team") or {}).get("displayName", ""),
+                     home=ht.get("displayName", ""), away=at.get("displayName", ""),
                      home_score=_score(home), away_score=_score(away),
                      state=st.get("state", "pre"), detail=st.get("shortDetail") or st.get("detail") or "",
-                     league=league)
+                     league=league, home_abbr=ht.get("abbreviation", ""), away_abbr=at.get("abbreviation", ""),
+                     home_color=str(ht.get("color") or ""), away_color=str(at.get("color") or ""))
     except (KeyError, ValueError, TypeError, IndexError) as exc:
         logger.debug("Футбол, событие: %s", exc)
         return None
@@ -184,6 +189,7 @@ class Football:
         self._fixtures: list[Match] = []
         self._fixtures_at = 0.0
         self._mtime = (0, 0)
+        self.current: Match | None = None           # идущий матч — капсула и экран «Футбол»
         self.load()
 
     # ── файл ──
@@ -335,6 +341,22 @@ class Football:
             items = [n for n in items if IMPORTANT.search(n.title)]
         return items[:limit]
 
+    def overview(self, news: int = 6) -> dict:
+        """Всё для экрана «Футбол» одним вызовом (сеть — зовите не из потока окна)."""
+        if not self.state["club"]:
+            return {"club": ""}
+        ms, now = self.fixtures(), self.now()
+        nxt = self.next_match()
+        if nxt and nxt.when - LIVE_BEFORE <= now:
+            nxt = self.live(nxt)
+            self.current = nxt if nxt.state == "in" else self.current
+        done = [m for m in ms if m.state == "post" or m.when + LIVE_AFTER < now]
+        ahead = [m for m in ms if m not in done and m is not nxt and (not nxt or m.id != nxt.id)]
+        return {"club": self.state["club"], "name": club_names(self.state["club"])[1],
+                "team": self.state["team"].get("name", ""), "next": nxt, "results": done[-5:][::-1],
+                "upcoming": ahead[:5], "news": self.news(limit=news), "goals": self.state["goals"],
+                "news_on": self.state["news"], "now": now}
+
     # ── словами ──
     @staticmethod
     def when_text(m: Match, now: datetime) -> str:
@@ -401,6 +423,10 @@ class Football:
                 self.say(f"[СИСТЕМА: коротко напомни пользователю, что скоро матч его клуба: {text}.]")
             if m.when - LIVE_BEFORE <= now <= m.when + LIVE_AFTER:
                 changed |= self._follow(m)
+            else:
+                self.current = None
+        else:
+            self.current = None
         if self.state["news"] and time.time() - float(self.state["news_at"]) > NEWS_EVERY:
             self.state["news_at"] = time.time()
             changed = True
@@ -415,6 +441,7 @@ class Football:
 
     def _follow(self, m: Match) -> bool:
         live = self.live(m)
+        self.current = live if live.state == "in" else None
         score = f"{live.home_score}:{live.away_score}"
         prev = self.state["scores"].get(m.id)
         changed = False
