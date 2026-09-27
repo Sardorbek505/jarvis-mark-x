@@ -1,8 +1,8 @@
 """Окно «Контакты».
 
 Слева — люди (с аватаром-инициалами), сверху справа — два подключения:
-ВАШ Telegram (сообщения от вашего имени и входящие) и аккаунт Джарвиса
-(звонки). Ниже — карточка человека: имя, как вы его называете (чипсы
+ВАШ Telegram (сообщения и звонки от вашего имени, входящие) и аккаунт
+Джарвиса (звонки вам самому; людям — если ваш Telegram не подключён). Ниже — карточка человека: имя, как вы его называете (чипсы
 «мама», «мамочка»), Telegram и три переключателя — что Джарвису можно:
 писать, звонить, читать вам его сообщения.
 
@@ -228,9 +228,9 @@ class ContactsDialog(QDialog):
         self.form.addWidget(self._section("plane", "Подключения"))
         row = QHBoxLayout()
         row.setSpacing(12)
-        t1, self.me_state, self.me_btn = self._tile("plane", "Ваш Telegram", "Пишет от вас, читает входящие")
+        t1, self.me_state, self.me_btn = self._tile("plane", "Ваш Telegram", "Пишет и звонит от вас, читает входящие")
         self.me_btn.clicked.connect(self.link_me)
-        t2, self.caller_state, self.caller_btn = self._tile("phone", "Аккаунт Джарвиса", "Звонит людям голосом")
+        t2, self.caller_state, self.caller_btn = self._tile("phone", "Аккаунт Джарвиса", "Звонит вам; людям — если ваш не подключён")
         self.caller_btn.setText("Настроить")
         self.caller_btn.clicked.connect(self.open_keys)
         row.addWidget(t1, 1)
@@ -337,7 +337,7 @@ class ContactsDialog(QDialog):
                 cl.addWidget(_line())
             return t
         self.can_message = row("Писать сообщения", "От вашего имени, всегда с вашим «да»")
-        self.can_call = row("Звонить", "Аккаунт Джарвиса звонит и передаёт ваши слова")
+        self.can_call = row("Звонить", "Джарвис звонит с вашего Telegram и передаёт ваши слова")
         self.read_aloud = row("Читать мне его сообщения", "Новое — в капсуле, «что мне написали?» — вслух",
                               sep=False)
         self.form.addWidget(card)

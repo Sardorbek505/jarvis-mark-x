@@ -2,7 +2,9 @@
 
 «Напиши маме, что задержусь на 20 минут» — сообщение уходит от ВАШЕГО
 Telegram (как будто вы написали сами). «Позвони брату и скажи, что ужин
-готов» — звонит аккаунт Джарвиса, говорит сам и пересказывает ответ.
+готов» — звонок тоже с вашего Telegram (ваших людей он знает, приватность
+не мешает), Джарвис говорит сам и пересказывает ответ. Ваш Telegram не
+подключён — звонит аккаунт Джарвиса (ему нужен @username или номер).
 
 Правила — потому что это пишется и звонится живым людям от вашего имени:
 - только людям из книжки, и только если у контакта включено «писать» /
@@ -306,7 +308,8 @@ class Contacts:
             return problem
         if action == "message":
             return f"Отправить {c.label()} от вашего имени: «{text}»?"
-        return f"Позвонить {c.label()} с аккаунта Джарвиса и сказать: «{text or 'просто позвонить'}»?"
+        who_calls = "с вашего Telegram" if self.me.linked() else "с аккаунта Джарвиса"
+        return f"Позвонить {c.label()} {who_calls} и сказать: «{text or 'просто позвонить'}»?"
 
     def message(self, who: str, text: str, as_voice: bool = False) -> str:
         c, problem = self.precheck("message", who, text)
@@ -351,10 +354,18 @@ class Contacts:
             return problem
         if not self.call_fn:
             return "Звонки не подключены."
-        target = c.telegram or str(c.tg_id)
+        # Ваш Telegram подключён — звоним с него (ваших людей он знает, по id);
+        # иначе — с аккаунта Джарвиса, ему нужен @username или номер.
+        via = self.me if self.me.linked() else None
+        target = f"id:{c.tg_id}" if c.tg_id and (via or not c.telegram) else c.telegram
 
         def run():
-            result = self.call_fn(target, c.name, text)
+            try:
+                result = (self.call_fn(target, c.name, text, via=via) if via
+                          else self.call_fn(target, c.name, text))
+            except Exception as exc:
+                logger.warning("Звонок %s: %s", c.name, exc)
+                result = f"Звонок не удался: {exc}"
             self.log(f"SYS: 📞 {c.name}: {result}")
             if done:
                 done(result)

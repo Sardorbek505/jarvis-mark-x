@@ -511,8 +511,26 @@ class TgCall:
 
 
 async def resolve_peer(client, target: str) -> int:
-    """@username, ссылка t.me или номер телефона → id пользователя."""
+    """@username, ссылка t.me, номер телефона или «id:123» → id пользователя.
+
+    «id:…» — внутренний номер аккаунта (контакт, подтянутый из вашего
+    Telegram). Раньше он шёл голыми цифрами и принимался за номер телефона:
+    «+123456789» не находился, и звонок контакту не проходил."""
     t = (target or "").strip()
+    if t.startswith("id:"):
+        uid = int(t[3:])
+        try:
+            await client.get_input_entity(uid)
+        except (ValueError, TypeError):
+            # Нет в кэше сессии — подтянуть контакты аккаунта и попробовать ещё раз.
+            from telethon.tl.functions.contacts import GetContactsRequest
+            await client(GetContactsRequest(hash=0))
+            try:
+                await client.get_input_entity(uid)
+            except (ValueError, TypeError):
+                raise RuntimeError("этот аккаунт Telegram не знает этого человека — впишите в «Контактах» "
+                                   "его @username или номер") from None
+        return uid
     t = re.sub(r"^(https?://)?t\.me/", "@", t)
     digits = re.sub(r"[^\d+]", "", t)
     if digits.lstrip("+").isdigit() and len(digits.lstrip("+")) >= 9 and not t.startswith("@"):
@@ -558,21 +576,38 @@ async def _call_async(topic: str, context: str, log, target: str = "", prompt: s
         tg = TgCall(client)
         await tg.start()
         name = (_keys().get("user_name") or "сэр")
-        sess = CallSession(tg, _gemini_live, peer, prompt or instruction(topic, context, name), log=log)
-        started, result = time.time(), "Звонок оборвался."
-        try:
-            result = await sess.run()
-            return result
-        finally:
-            if transcript is not None:
-                transcript.extend(sess.transcript)
-            try:
-                from core.call_log import call_log
-                call_log().add(who, topic, result, sess.transcript, started)
-            except Exception as exc:
-                logger.warning("История звонков: %s", exc)
+        return await _talk(tg, peer, prompt or instruction(topic, context, name), log, transcript, who, topic)
     finally:
         await client.disconnect()
+
+
+async def _talk(tg, peer, prompt: str, log, transcript: list | None, who: str, topic: str) -> str:
+    """Сам разговор — и запись в историю звонков, чем бы он ни кончился."""
+    sess = CallSession(tg, _gemini_live, peer, prompt, log=log)
+    started, result = time.time(), "Звонок оборвался."
+    try:
+        result = await sess.run()
+        return result
+    finally:
+        if transcript is not None:
+            transcript.extend(sess.transcript)
+        try:
+            from core.call_log import call_log
+            call_log().add(who, topic, result, sess.transcript, started)
+        except Exception as exc:
+            logger.warning("История звонков: %s", exc)
+
+
+async def _call_via(client, holder, target: str, prompt: str, log, transcript: list, who: str, topic: str) -> str:
+    """Звонок с ВАШЕГО аккаунта (core/contacts.Me): ваши люди вас знают —
+    приватность Telegram не мешает, и видно, что звоните вы."""
+    peer = await resolve_peer(client, target)
+    tg = getattr(holder, "_tgcall", None)
+    if tg is None or tg.client is not client:              # один py-tgcalls на клиента
+        tg = TgCall(client)
+        await tg.start()
+        holder._tgcall = tg
+    return await _talk(tg, peer, prompt, log, transcript, who, topic)
 
 
 def call(topic: str = "просто позвонить", context: str = "", log=None) -> str:
@@ -598,19 +633,32 @@ def _what_they_said(transcript: list[str], limit: int = 400) -> str:
     return said if len(said) <= limit else said[:limit - 1] + "…"
 
 
-def call_contact(target: str, contact: str, message: str, log=None) -> str:
-    """Позвонить контакту хозяина, передать сообщение, вернуть пересказ ответа."""
-    problem = ready()
-    if problem and "Не знаю, кому звонить" not in problem:
-        return problem
+def call_contact(target: str, contact: str, message: str, log=None, via=None) -> str:
+    """Позвонить контакту хозяина, передать сообщение, вернуть пересказ ответа.
+    via — ваш Telegram (core/contacts.Me): звонок с вашего аккаунта; иначе —
+    с аккаунта Джарвиса."""
+    if via is None:
+        problem = ready()
+        if problem and "Не знаю, кому звонить" not in problem:
+            return problem
+    else:
+        try:
+            _credentials()
+        except RuntimeError as exc:
+            return str(exc).capitalize() + "."
     if not _call_lock.acquire(blocking=False):
         return "Я уже на звонке — позвоню после."
     heard: list[str] = []
     try:
         owner = (_keys().get("user_name") or "моего владельца")
-        result = asyncio.run(_call_async(message, "", log or (lambda s: logger.info("Звонок %s: %s", contact, s)),
-                                         target=target, prompt=instruction_contact(owner, contact, message),
-                                         transcript=heard, who=contact))
+        log = log or (lambda s: logger.info("Звонок %s: %s", contact, s))
+        prompt = instruction_contact(owner, contact, message)
+        if via is not None:
+            result = via.run(lambda client: _call_via(client, via, target, prompt, log, heard, contact, message),
+                             timeout=MAX_CALL_SEC + ANSWER_TIMEOUT + 60)
+        else:
+            result = asyncio.run(_call_async(message, "", log, target=target, prompt=prompt,
+                                             transcript=heard, who=contact))
     except Exception as exc:
         logger.exception("Звонок контакту")
         return f"Звонок не удался: {type(exc).__name__}: {exc}"
