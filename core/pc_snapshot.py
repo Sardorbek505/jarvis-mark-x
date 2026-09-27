@@ -1,4 +1,4 @@
-"""Снимок данных ПК для телефона: учёба, «Обо мне», последние звонки.
+"""Снимок данных ПК для телефона: учёба, «Обо мне», последние звонки, футбол.
 
 Mini App живёт на сервере бота, а эти данные — на ПК. Раз в минуту ПК и
 так ходит на сервер (memory/shared.py) — снимок едет с той же
@@ -19,7 +19,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-PARTS = ("study", "about", "calls")
+PARTS = ("study", "about", "calls", "football")
 _sent_hash: dict[str, str] = {}
 
 
@@ -41,6 +41,11 @@ def part(name: str) -> dict:
         log = call_log()
         log.load()
         return {"calls": log.recent(10)}
+    if name == "football":
+        from core.football import football
+        fb = football()
+        fb.refresh()
+        return fb.phone_snapshot()
     raise KeyError(name)
 
 
@@ -98,6 +103,13 @@ def apply(action: str, msg: dict) -> dict:
             return {"ok": False, "text": "Нет такого вопроса."}
         text = A.answer(key, str(msg.get("value") or ""))
         name = "about"
+    elif action == "football_watch":
+        # «Смотреть на ПК» с телефона — тот же поиск на Кинопоиске, что голосом.
+        from core import football as F
+        nxt = F.football().next_match()
+        if not nxt:
+            return {"ok": False, "text": "Нет матча, который можно включить."}
+        return {"ok": True, "text": F.watch_match(f"{nxt.home} против {nxt.away}")}
     else:
         return {"ok": False, "text": f"Не знаю действие {action}."}
     snap = part(name)

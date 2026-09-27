@@ -1,0 +1,330 @@
+[
+  {
+    "file": "icon/icon_1024.png",
+    "use": "основная иконка приложения в высоком разрешении (macOS/Windows/Web), шар из точек в скруглённом чёрном квадрате (радиус ~22%)",
+    "size": [
+      1024,
+      1024
+    ],
+    "transparent": true,
+    "prompt": "app icon, sphere made of ~200 glowing teal dots inside a black rounded square, subtle inner glow, centered, flat, crisp, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "icon/icon_small.png",
+    "use": "упрощённая иконка для мелких разрешений (16-32 px) с 28 контрастными крупными точками",
+    "size": [
+      256,
+      256
+    ],
+    "transparent": true,
+    "prompt": "app icon simplified for small sizes, sphere made of 28 distinct large glowing teal dots inside a black rounded square, high legibility, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "icon/tray_32.png",
+    "use": "иконка системного трея Windows (32×32), только светящийся шар из точек без квадрата",
+    "size": [
+      32,
+      32
+    ],
+    "transparent": true,
+    "prompt": "tray icon, isolated glowing teal dot-particle sphere, transparent background, crisp, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "icon/tray_16.png",
+    "use": "иконка системного трея Windows (16×16), только светящийся шар из точек повышенной чёткости",
+    "size": [
+      16,
+      16
+    ],
+    "transparent": true,
+    "prompt": "tray icon 16px, isolated glowing teal dot-particle sphere with high contrast dots, transparent background, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "icon/jarvis.ico",
+    "use": "мульти-размерный Windows ICO файл (размеры: 16, 24, 32, 48, 64, 128, 256) для exe и ярлыков",
+    "size": [
+      256,
+      256
+    ],
+    "transparent": true,
+    "prompt": "multi-resolution Windows ICO containing 16, 24, 32, 48, 64, 128, 256 layers, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people",
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "setup/setup_welcome.jpg",
+    "use": "мастер настройки, шаг «Добро пожаловать» — шар из точек и расширяющиеся орбитальные кольца",
+    "size": [
+      1200,
+      720
+    ],
+    "transparent": false,
+    "prompt": "wide UI background illustration, composition heavily weighted to the right side with a large glowing teal dot-particle sphere and delicate concentric orbital rings expanding outward, left two-thirds is vast empty dark negative space, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "setup/setup_keys.jpg",
+    "use": "мастер настройки, шаг «Ключи API / Gemini» — светящийся цифровой ключ из точек, соединённый линией с шаром",
+    "size": [
+      1200,
+      720
+    ],
+    "transparent": false,
+    "prompt": "wide UI background illustration, composition with glowing digital key outline made of luminous teal dots and thin HUD lines on the right, connected by a data pulse line to a glowing dot-particle sphere, left side is dark empty negative space, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "setup/setup_microphone.jpg",
+    "use": "мастер настройки, шаг «Микрофон и звук» — линейный микрофон со звуковой волной из светящихся точек к шару",
+    "size": [
+      1200,
+      720
+    ],
+    "transparent": false,
+    "prompt": "wide UI background illustration, composition on the right side featuring a minimalist linear microphone icon with rounded caps emitting dot-particle soundwaves toward a glowing teal dot sphere, left side is clean empty dark space, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "setup/setup_voice.jpg",
+    "use": "мастер настройки, шаг «Голос / Распознавание» — биометрическая волна голоса, сходящаяся в отпечаток-кольцо у сферы",
+    "size": [
+      1200,
+      720
+    ],
+    "transparent": false,
+    "prompt": "wide UI background illustration, composition on the right side featuring voice biometric soundwaves converging into concentric circular fingerprint rings around a glowing teal dot-particle sphere, left side is empty dark space, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "setup/setup_wake.jpg",
+    "use": "мастер настройки, шаг «Слово Джарвис / Wake word» — акустические звуковые импульсы и резонансные кольца у шара",
+    "size": [
+      1200,
+      720
+    ],
+    "transparent": false,
+    "prompt": "wide UI background illustration, composition on the right side featuring acoustic sound pulse waves and concentric signal rings radiating towards a responsive glowing teal dot-particle sphere, left side is completely empty dark space, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "setup/setup_telegram.jpg",
+    "use": "мастер настройки, шаг «Telegram / Телефон» — линейный смартфон, от шара к нему бегут импульсы-точки",
+    "size": [
+      1200,
+      720
+    ],
+    "transparent": false,
+    "prompt": "wide UI background illustration, composition on the right side featuring a sleek minimalist linear smartphone outline with glowing dot-signal pulses streaming between the phone and a teal dot-particle sphere, left side is dark negative space, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "setup/setup_about.jpg",
+    "use": "мастер настройки, шаг «Познакомиться / О себе» — линейный профиль человека и узел цифровой личности у шара",
+    "size": [
+      1200,
+      720
+    ],
+    "transparent": false,
+    "prompt": "wide UI background illustration, composition on the right side featuring a minimalist linear user profile silhouette with rounded caps and fine glowing node lines connected to a teal dot-particle sphere, left side empty dark space, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "setup/setup_contacts.jpg",
+    "use": "мастер настройки, шаг «Контакты и люди» — адресная книга и сеть узлов контактов из точек у шара",
+    "size": [
+      1200,
+      720
+    ],
+    "transparent": false,
+    "prompt": "wide UI background illustration, composition on the right side featuring a minimalist linear address book rolodex card network of connected contact nodes made of glowing teal dots linked to a dot-particle sphere, left side empty dark space, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "setup/setup_study.jpg",
+    "use": "мастер настройки, шаг «Учёба / Расписание пар» — линейная раскрытая книга и матрица расписания из светящихся точек",
+    "size": [
+      1200,
+      720
+    ],
+    "transparent": false,
+    "prompt": "wide UI background illustration, composition on the right side featuring a minimalist linear open book icon with rounded corners made of glowing teal dots and delicate lines next to a glowing dot-particle sphere, left side empty dark space, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "setup/setup_spotify.jpg",
+    "use": "мастер настройки, шаг «Spotify / Музыка» — изящная нота и эквалайзер аудиочастот из точек у шара",
+    "size": [
+      1200,
+      720
+    ],
+    "transparent": false,
+    "prompt": "wide UI background illustration, composition on the right side featuring a delicate linear musical note and glowing audio frequency equalizer bars made of teal dots interacting with a dot-particle sphere, left side empty dark space, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "setup/setup_done.jpg",
+    "use": "мастер настройки, шаг «Готово» — шар из точек в полной яркости с мягко светящейся тонкой зелёной галочкой",
+    "size": [
+      1200,
+      720
+    ],
+    "transparent": false,
+    "prompt": "wide UI background illustration, composition on the right side featuring a brilliantly luminescent teal dot-particle sphere with a subtle glowing green #46e880 thin checkmark badge hovering beside it, radiating complete readiness, left side is dark empty negative space, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "installer/wizard_large.bmp",
+    "use": "вертикальный левый баннер мастера установки Inno Setup (164×314, 24-bit BMP)",
+    "size": [
+      164,
+      314
+    ],
+    "transparent": false,
+    "prompt": "Inno Setup vertical wizard banner, dark minimalist HUD, glowing teal dot sphere, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people",
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "installer/wizard_small.bmp",
+    "use": "верхняя малая иконка заголовка мастера установки Inno Setup (55×58, 24-bit BMP)",
+    "size": [
+      55,
+      58
+    ],
+    "transparent": false,
+    "prompt": "Inno Setup small header icon, glowing teal dot sphere, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people",
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "empty/empty_commands.png",
+    "use": "пустое состояние экрана: терминал и скобки команд >_ из светящихся точек",
+    "size": [
+      480,
+      320
+    ],
+    "transparent": true,
+    "prompt": "empty state placeholder icon, терминал и скобки команд >_ из светящихся точек, dimmer teal #2a8a7e with subtle glow, transparent background, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "empty/empty_study.png",
+    "use": "пустое состояние экрана: раскрытая книга из точек и тонких линий",
+    "size": [
+      480,
+      320
+    ],
+    "transparent": true,
+    "prompt": "empty state placeholder icon, раскрытая книга из точек и тонких линий, dimmer teal #2a8a7e with subtle glow, transparent background, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "empty/empty_contacts.png",
+    "use": "пустое состояние экрана: силуэт пользователя с плюсом из точек",
+    "size": [
+      480,
+      320
+    ],
+    "transparent": true,
+    "prompt": "empty state placeholder icon, силуэт пользователя с плюсом из точек, dimmer teal #2a8a7e with subtle glow, transparent background, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "empty/empty_calls.png",
+    "use": "пустое состояние экрана: линейная телефонная трубка с точечными волнами",
+    "size": [
+      480,
+      320
+    ],
+    "transparent": true,
+    "prompt": "empty state placeholder icon, линейная телефонная трубка с точечными волнами, dimmer teal #2a8a7e with subtle glow, transparent background, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "empty/empty_football.png",
+    "use": "пустое состояние экрана: геометрический футбольный мяч-сфера из светящихся точек",
+    "size": [
+      480,
+      320
+    ],
+    "transparent": true,
+    "prompt": "empty state placeholder icon, геометрический футбольный мяч-сфера из светящихся точек, dimmer teal #2a8a7e with subtle glow, transparent background, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "empty/empty_backup.png",
+    "use": "пустое состояние экрана: линейный замок / хранилище из точек и HUD линий",
+    "size": [
+      480,
+      320
+    ],
+    "transparent": true,
+    "prompt": "empty state placeholder icon, линейный замок / хранилище из точек и HUD линий, dimmer teal #2a8a7e with subtle glow, transparent background, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "empty/empty_help.png",
+    "use": "пустое состояние экрана: знак вопроса внутри кругового HUD узла из точек",
+    "size": [
+      480,
+      320
+    ],
+    "transparent": true,
+    "prompt": "empty state placeholder icon, знак вопроса внутри кругового HUD узла из точек, dimmer teal #2a8a7e with subtle glow, transparent background, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "football/hero_bg.png",
+    "use": "широкий баннер футбольного модуля — тёмное поле сверху, тонкие бирюзовые линии разметки, центральное свечение",
+    "size": [
+      1600,
+      400
+    ],
+    "transparent": false,
+    "prompt": "ultra wide panoramic banner, overhead top-down view of a dark minimalist soccer football pitch field, pitch black background #030609, thin 1px luminous teal #3fd0bd field line markings, penalty box, center circle, soft atmospheric glow in the center, clean architectural blueprint style, no grass texture, no players, no ball, no logos, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "miniapp/splash.jpg",
+    "use": "заставка мобильного Mini App / splash screen (1080×1920), шар из точек по центру с орбитальными кольцами",
+    "size": [
+      1080,
+      1920
+    ],
+    "transparent": false,
+    "prompt": "vertical mobile splash screen, centered luminous teal dot-particle sphere made of 200 glowing dots with faint concentric orbital HUD rings, vast deep near-black background #030609, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "miniapp/og.jpg",
+    "use": "превью-баннер OpenGraph для соцсетей и мессенджеров (1200×630)",
+    "size": [
+      1200,
+      630
+    ],
+    "transparent": false,
+    "prompt": "social preview open graph banner, centered glowing teal dot-particle sphere with subtle horizontal horizon line and delicate orbital HUD rings, vast negative space, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
+  },
+  {
+    "file": "icon/icon_256.png",
+    "use": "иконка на тёмной плашке, 256 px (заголовок мастера настройки)",
+    "size": [
+      256,
+      256
+    ],
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "icon/tray_online.png",
+    "use": "трей: Джарвис работает",
+    "size": [
+      64,
+      64
+    ],
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "icon/tray_offline.png",
+    "use": "трей: пауза (серый)",
+    "size": [
+      64,
+      64
+    ],
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "installer/wizard_large_2x.bmp",
+    "use": "баннер установщика для экранов 150–200 %",
+    "size": [
+      328,
+      628
+    ],
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "installer/wizard_small_2x.bmp",
+    "use": "малая иконка установщика для экранов 150–200 %",
+    "size": [
+      110,
+      116
+    ],
+    "generated": "scripts/build_art.py"
+  }
+]

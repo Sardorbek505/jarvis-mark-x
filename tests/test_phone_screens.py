@@ -25,7 +25,8 @@ def test_snapshot_sends_only_what_changed():
     s.lessons.append(S.Lesson("Матан", 0, "08:30", "10:00", room="301"))
     s.save()
     first = pc_snapshot.collect()
-    assert set(first) == {"study", "about", "calls"}
+    assert set(first) == {"study", "about", "calls", "football"}
+    assert first["football"][1]["club"] == ""                   # клуб не указан — без сети, пусто
     assert first["study"][1]["lessons"][0]["subject"] == "Матан"
     pc_snapshot.mark_sent(first)
     assert pc_snapshot.collect() == {}                         # ничего не поменялось — ничего не шлём

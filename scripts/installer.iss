@@ -24,8 +24,9 @@ DisableProgramGroupPage=yes
 OutputDir=..\dist
 OutputBaseFilename=JARVIS_Setup_v{#MyAppVersion}
 SetupIconFile=..\app.ico
-WizardImageFile=..\assets\wizard.bmp
-WizardSmallImageFile=..\assets\wizard_small.bmp
+; Шар из точек, 1× и 2× (экраны 150–200 %) — scripts/build_art.py
+WizardImageFile=..\assets\art\installer\wizard_large.bmp,..\assets\art\installer\wizard_large_2x.bmp
+WizardSmallImageFile=..\assets\art\installer\wizard_small.bmp,..\assets\art\installer\wizard_small_2x.bmp
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

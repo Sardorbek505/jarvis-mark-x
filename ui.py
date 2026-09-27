@@ -890,7 +890,7 @@ class SetupOverlay(QWidget):
 # (ключ, подпись, иконка ui_icons). «home» — шар и разговор.
 PAGES = [
     ("home", "Джарвис", "spark"), ("commands", "Команды", "bolt"), ("study", "Учёба", "book"),
-    ("contacts", "Контакты", "phone"), ("about", "Обо мне", "person"), ("keys", "Ключи", "key"),
+    ("football", "Футбол", "ball"), ("contacts", "Контакты", "phone"), ("about", "Обо мне", "person"), ("keys", "Ключи", "key"),
     ("backup", "Копия", "lock"), ("help", "Что умею", "grid"),
 ]
 
@@ -1233,6 +1233,9 @@ class MainWindow(QMainWindow):
             elif text.startswith("SYS: 👁"):
                 island.set_eyes("закрыты" not in text)
                 island.notify("ГЛАЗА", text[len("SYS: 👁"):].strip().capitalize())
+            elif text.startswith("SYS: ⚽") and ":" in text[7:]:
+                title, _, body = text[len("SYS: ⚽"):].strip().partition(":")
+                island.football(title.strip(), body.strip())
             elif text.startswith("SYS: ⏰") and ":" in text[7:]:
                 title, _, body = text[len("SYS: ⏰"):].strip().partition(":")
                 island.notify(title.strip(), body.strip())
@@ -1321,6 +1324,9 @@ class MainWindow(QMainWindow):
         elif key == "study":
             from ui_study import StudyDialog
             w = StudyDialog(None)
+        elif key == "football":
+            from ui_football import FootballDialog
+            w = FootballDialog(None)
         elif key == "contacts":
             from ui_contacts import ContactsDialog
             w = ContactsDialog(None, open_keys=lambda: self.show_page("keys"))
@@ -1406,6 +1412,9 @@ class MainWindow(QMainWindow):
 
     def open_study(self):
         self.open_page("study")
+
+    def open_football(self):
+        self.open_page("football")
 
     def open_backup(self):
         self.open_page("backup")

@@ -685,6 +685,8 @@ const ICON_PATHS = {
   moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
   leaf: '<path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.5 19 2c1 2 2 4.2 2 8 0 5.5-4.8 10-10 10z"/><path d="M2 21c0-3 1.9-5.4 5.1-6C9.5 14.5 12 13 13 12"/>',
   phone: '<path d="M21.5 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 1.6 4.2 2 2 0 0 1 3.6 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L7.6 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.8 2z"/>',
+  ball: '<circle cx="12" cy="12" r="9.5"/><polygon points="12 7.6 15.6 10.2 14.2 14.4 9.8 14.4 8.4 10.2" fill="currentColor"/><path d="M12 7.6V2.6M15.6 10.2l4.6-1.6M14.2 14.4l2.9 4.1M9.8 14.4l-2.9 4.1M8.4 10.2 3.8 8.6"/>',
+  play: '<polygon points="7 4.5 19 12 7 19.5" fill="currentColor"/>',
   tray: '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1z"/>',
 };
 function icon(name, cls = '') {
@@ -727,6 +729,7 @@ function renderDashboard(p) {
         <div><div class="stat-num">${p.open_tasks ?? 0}</div><div class="stat-lbl">задач открыто</div></div>
       </button>
     </div>
+    ${renderFootball(p.football || {}, p.pc_online)}
     <div class="card"><h3>На сегодня</h3>
       ${today.length ? `<div class="list">${today.map(t => `<div>${esc(t)}</div>`).join('')}</div>`
                      : `<div class="sub">Планов нет — добавь в «Дела» или скажи Джарвису</div>`}
@@ -738,6 +741,108 @@ function renderDashboard(p) {
     ${renderCalls(p.calls || {})}
     ${renderMemory(p)}
     ${renderAbilities(p.abilities || [])}`;
+}
+
+// ── Футбол: карточка любимого клуба (снимок с ПК, эмблемы — картинки ESPN) ─────
+const FB_PALETTE = ['63,208,189', '255,138,52', '120,170,255', '236,90,120', '217,226,90', '180,130,255'];
+let fbLastScore = {};                                  // счёт прошлой отрисовки — цифра «подпрыгивает» на гол
+let fbLive = false;
+
+function fbRgb(hex, name) {
+  let r, g, b;
+  if (/^#?[0-9a-f]{6}$/i.test(hex || '')) {
+    const h = hex.replace('#', '');
+    [r, g, b] = [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16));
+  } else {
+    let n = 0; for (const ch of name || '') n += ch.charCodeAt(0);
+    [r, g, b] = FB_PALETTE[n % FB_PALETTE.length].split(',').map(Number);
+  }
+  const lum = 0.3 * r + 0.59 * g + 0.11 * b;             // тёмно-синий не пропадает на чёрном
+  if (lum < 90) { const k = (90 - lum) / 255 + 0.25; [r, g, b] = [r, g, b].map(c => Math.round(c + (255 - c) * k)); }
+  return `${r},${g},${b}`;
+}
+function fbAbbr(abbr, name) { return (abbr || (name || '').replace(/[^A-Za-zА-Яа-яЁё]/g, '').slice(0, 3)).toUpperCase(); }
+function fbCrest(url, abbr, name, rgb, big) {
+  return `<span class="fb-crest ${big ? 'big' : ''}" style="--c:${rgb}">`
+    + (url ? `<img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : '')
+    + `<b>${esc(fbAbbr(abbr, name))}</b></span>`;
+}
+function fbDay(d) {
+  const t = new Date(); t.setHours(0, 0, 0, 0);
+  const x = new Date(d); x.setHours(0, 0, 0, 0);
+  const days = Math.round((x - t) / 86400000);
+  return days === 0 ? 'Сегодня' : days === 1 ? 'Завтра' : days === -1 ? 'Вчера'
+    : d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+}
+function fbHM(d) { return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }); }
+function fbCountdown(iso) {
+  let s = Math.floor((new Date(iso) - Date.now()) / 1000);
+  if (!(s > 0)) return 'вот-вот начнётся';
+  const d = Math.floor(s / 86400); s -= d * 86400;
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60); s -= m * 60;
+  if (d) return `через ${d} д ${h} ч`;
+  if (h) return `через ${h} ч ${String(m).padStart(2, '0')} мин`;
+  return `через ${m}:${String(s).padStart(2, '0')}`;
+}
+setInterval(() => document.querySelectorAll('.fb-count[data-when]').forEach(el => { el.textContent = fbCountdown(el.dataset.when); }), 1000);
+// Идёт матч — сводка обновляется сама раз в 30 с (счёт с ПК приходит раз в минуту).
+setInterval(() => { if (fbLive && activeTab === 'dashboard' && !document.hidden) send({ type: 'get_data', view: 'dashboard' }); }, 30000);
+
+function renderFootball(f, online) {
+  fbLive = false;
+  if (!f.has) return `<div class="card fb"><h3>${icon('ball')}Футбол</h3>
+    <div class="sub">Скажи Джарвису «я болею за Реал» или укажи клуб в «Обо мне» — здесь будут матчи, счёт и новости.</div></div>`;
+  const m = f.next;
+  let match = '<div class="sub">Ближайших матчей не нашёл</div>', goal = false;
+  if (m) {
+    const live = m.state === 'in', done = m.state === 'post';
+    fbLive = live;
+    const when = new Date(m.when);
+    const hc = fbRgb(m.home_color, m.home), ac = fbRgb(m.away_color, m.away);
+    const prev = fbLastScore[m.id];
+    // Гол — только когда число выросло: начало матча («» → 0) не салютует.
+    const popped = side => (live && prev && /^\d+$/.test(prev[side] || '') && Number(m[side]) > Number(prev[side])) ? 'pop' : '';
+    goal = !!(popped('hs') || popped('as'));
+    fbLastScore = { [m.id]: { hs: m.hs, as: m.as } };
+    const center = (live || done)
+      ? `<div class="fb-score"><span class="${popped('hs')}" style="--p:${hc}">${esc(m.hs || '0')}</span><i>:</i>`
+        + `<span class="${popped('as')}" style="--p:${ac}">${esc(m.as || '0')}</span></div>`
+        + (live ? `<div class="fb-live"><i></i>${esc(m.detail || 'LIVE')}</div>` : `<div class="fb-when">ФИНАЛ</div>`)
+      : `<div class="fb-time">${fbHM(when)}</div><div class="fb-when">${fbDay(when)}</div>`
+        + `<div class="fb-count" data-when="${esc(m.when)}">${fbCountdown(m.when)}</div>`;
+    const soon = live || (!done && when - Date.now() < 3600e3);
+    const confetti = goal ? `<div class="fb-confetti">${Array.from({ length: 18 }, (_, i) =>
+      `<i style="--x:${Math.round(Math.cos(i * 2.4) * (60 + (i * 37) % 70))}px;--y:${Math.round(Math.sin(i * 2.4) * 50 - 30)}px;`
+      + `--r:${(i * 97) % 360}deg;--c:${[hc, ac, '255,255,255'][i % 3]}"></i>`).join('')}</div>` : '';
+    match = `<div class="fb-match ${live ? 'live' : ''} ${goal ? 'goal' : ''}" style="--h:${hc};--a:${ac}">
+      ${goal ? '<div class="fb-league fb-goal">ГОЛ!</div>' : m.league ? `<div class="fb-league">${esc(m.league)}</div>` : ''}
+      <div class="fb-row">
+        <div class="fb-team">${fbCrest(m.home_logo, m.home_abbr, m.home, hc, true)}<span class="fb-name">${esc(m.home)}</span></div>
+        <div class="fb-mid">${center}</div>
+        <div class="fb-team">${fbCrest(m.away_logo, m.away_abbr, m.away, ac, true)}<span class="fb-name">${esc(m.away)}</span></div>
+      </div>${confetti}
+    </div>
+    ${soon ? `<button class="fb-watch" data-fbwatch ${online ? '' : 'data-off="1"'}>${icon('play')}Смотреть на ПК · Кинопоиск</button>` : ''}`;
+    if (goal) notifyHaptic('success');
+  }
+  const res = f.results || [];
+  const form = res.length ? `<div class="me-group">Форма</div><div class="fb-form">${res.slice().reverse().map(r =>
+      `<span class="fb-res r${r.res === 'В' ? 'w' : r.res === 'П' ? 'l' : 'd'}" title="${esc(r.home)} ${esc(r.hs)}:${esc(r.as)} ${esc(r.away)}">${esc(r.res || '–')}</span>`).join('')}
+      <span class="sub small fb-lastres">${esc(res[0].home)} ${esc(res[0].hs)}:${esc(res[0].as)} ${esc(res[0].away)}</span></div>` : '';
+  const ups = (f.upcoming || []).map(u => {
+    const d = new Date(u.when);
+    return `<div class="fb-up"><span class="fb-up-when">${fbDay(d)} ${fbHM(d)}</span>`
+      + `${fbCrest(u.home_logo, u.home_abbr, u.home, fbRgb(u.home_color, u.home))}<span class="fb-up-t">${esc(u.home)} — ${esc(u.away)}</span>`
+      + `${fbCrest(u.away_logo, u.away_abbr, u.away, fbRgb(u.away_color, u.away))}</div>`;
+  }).join('');
+  const news = (f.news || []).map(n => `<button class="fb-news" data-link="${esc(n.link || '')}">
+      <span>${esc(n.title)}</span><small>${esc(n.source || '')}</small></button>`).join('');
+  return `<div class="card fb"><h3>${icon('ball')}${esc(f.name || 'Футбол')}${m && m.state === 'in' ? '<span class="fb-badge">LIVE</span>' : ''}</h3>
+    ${match}${form}
+    ${ups ? `<div class="me-group">Дальше</div>${ups}` : ''}
+    ${news ? `<div class="me-group">Новости</div>${news}` : ''}
+    ${f.updated ? `<div class="sub small">Обновлено с ПК: ${esc(f.updated)}</div>` : ''}</div>`;
 }
 
 // ── С ПК: «Обо мне», звонки, «Что умею» ──────────────────────────────────────
@@ -781,6 +886,18 @@ function renderAbilities(list) {
 $('dash-body').addEventListener('click', (e) => {
   const tryBtn = e.target.closest('[data-try]');
   if (tryBtn) { switchTab('chat'); say(tryBtn.dataset.try); return; }
+  const watch = e.target.closest('[data-fbwatch]');
+  if (watch) {
+    if (watch.dataset.off) { showToast('ПК офлайн — включи компьютер с Джарвисом', 'error'); return; }
+    haptic('medium');
+    if (send({ type: 'football_watch' })) showToast('Включаю матч на ПК…', 'info');
+    return;
+  }
+  const link = e.target.closest('[data-link]');
+  if (link) {
+    if (link.dataset.link) { haptic(); if (tg?.openLink) tg.openLink(link.dataset.link); else window.open(link.dataset.link, '_blank'); }
+    return;
+  }
   const row = e.target.closest('[data-me]');
   if (!row || row.querySelector('input')) return;
   if (row.dataset.off) { showToast('ПК офлайн — изменить можно, когда он включён', 'error'); return; }

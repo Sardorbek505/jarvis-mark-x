@@ -116,6 +116,11 @@ def _news(about: dict) -> str:
     return " | ".join(titles)
 
 
+def _football() -> str:
+    from core.football import football
+    return football().briefing()
+
+
 def gather(now: datetime | None = None, sources: dict[str, Callable] | None = None,
            timeout: float = 12.0) -> dict[str, str]:
     """Собрать факты параллельно; что не успело — пропускаем."""
@@ -128,6 +133,7 @@ def gather(now: datetime | None = None, sources: dict[str, Callable] | None = No
         "учёба": _study,
         "сообщения": _messages,
         "новости": lambda: _news(about),
+        "футбол": _football,
     }
     out: dict[str, str] = {}
     threads = []
@@ -148,7 +154,8 @@ def gather(now: datetime | None = None, sources: dict[str, Callable] | None = No
     bd = _birthday(about, now.date())
     if bd:
         out["праздник"] = bd
-    return {k: out[k] for k in ("праздник", "погода", "учёба", "часы", "дела", "сообщения", "новости") if k in out}
+    return {k: out[k] for k in ("праздник", "погода", "учёба", "часы", "дела", "сообщения", "футбол", "новости")
+            if k in out}
 
 
 def instruction(facts: dict[str, str], now: datetime | None = None, asked: bool = False) -> str:

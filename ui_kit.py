@@ -239,3 +239,100 @@ class Progress(QWidget):
         p.drawRoundedRect(QRectF(self.rect()), 2, 2)
         p.setBrush(QColor(C.PRI))
         p.drawRoundedRect(QRectF(0, 0, self.width() * self.value, self.height()), 2, 2)
+
+
+# ── графика (assets/art, scripts/build_art.py) ───────────────────────────────
+def art_path(rel: str):
+    """Путь к картинке из assets/art (в exe — рядом с программой); нет файла — None."""
+    from core.paths import get_base_dir
+    p = get_base_dir() / "assets" / "art" / rel
+    return p if p.is_file() else None
+
+
+_ART_CACHE: dict = {}
+
+
+def art_pixmap(rel: str):
+    from PyQt6.QtGui import QPixmap
+    if rel not in _ART_CACHE:
+        p = art_path(rel)
+        pm = QPixmap(str(p)) if p else QPixmap()
+        _ART_CACHE[rel] = None if pm.isNull() else pm
+    return _ART_CACHE[rel]
+
+
+class EmptyArt(QWidget):
+    """Пустой список: тусклая картинка (assets/art/empty) и подсказка под ней."""
+
+    def __init__(self, name: str, text: str, parent=None, width: int = 200):
+        super().__init__(parent)
+        from PyQt6.QtWidgets import QVBoxLayout
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 8, 0, 0)
+        lay.setSpacing(4)
+        pm = art_pixmap(f"empty/empty_{name}.png")
+        if pm is not None:
+            img = QLabel()
+            dpr = 2
+            scaled = pm.scaledToWidth(width * dpr, Qt.TransformationMode.SmoothTransformation)
+            scaled.setDevicePixelRatio(dpr)
+            img.setPixmap(scaled)
+            img.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            lay.addWidget(img)
+        self.text = _label(text, "hint")
+        self.text.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        lay.addWidget(self.text)
+        lay.addStretch(1)
+
+
+class ArtBanner(QWidget):
+    """Иллюстрация шага (assets/art/setup, 1200×720, герой справа): кадрируется
+    по ширине, слева затемняется под заголовок и подпись."""
+
+    def __init__(self, rel: str, title: str = "", text: str = "", height: int = 132, parent=None):
+        super().__init__(parent)
+        self.pm = art_pixmap(rel)
+        self.title, self.body = title, text
+        self.setFixedHeight(height)
+
+    def paintEvent(self, _):
+        from PyQt6.QtGui import QLinearGradient, QPainterPath
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        path = QPainterPath()
+        path.addRoundedRect(r, 14, 14)
+        p.setClipPath(path)
+        p.fillRect(r, QColor(C.BG))
+        if self.pm is not None:
+            # Высота картинки = высота баннера × 1.6: герой крупнее, центр по вертикали.
+            h = r.height() * 1.6
+            w = h * self.pm.width() / self.pm.height()
+            x = max(r.width() - w, r.width() * 0.55 - w * 0.5)
+            p.drawPixmap(QRectF(x, (r.height() - h) / 2, w, h), self.pm, QRectF(self.pm.rect()))
+            g = QLinearGradient(r.topLeft(), r.topRight())
+            g.setColorAt(0.0, QColor(3, 6, 9, 255))
+            g.setColorAt(0.42, QColor(3, 6, 9, 200))
+            g.setColorAt(0.75, QColor(3, 6, 9, 0))
+            p.fillRect(r, g)
+        p.setClipping(False)
+        p.setPen(QPen(QColor(C.BORDER_B), 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+        if self.title:
+            f = QFont("Segoe UI", 1)
+            f.setPointSizeF(15)
+            f.setBold(True)
+            p.setFont(f)
+            p.setPen(QColor(C.WHITE))
+            p.drawText(QRectF(22, 0, r.width() * 0.56, r.height() / 2 + 4),
+                       int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom), self.title)
+        if self.body:
+            f = QFont("Segoe UI", 1)
+            f.setPointSizeF(9.5)
+            p.setFont(f)
+            p.setPen(QColor(C.TEXT_MED))
+            p.drawText(QRectF(22, r.height() / 2 + 8, r.width() * 0.56, r.height() / 2 - 12),
+                       int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap),
+                       self.body)

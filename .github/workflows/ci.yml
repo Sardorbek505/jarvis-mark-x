@@ -58,7 +58,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install vosk and edge-tts
-        run: pip install vosk edge-tts imageio-ffmpeg sherpa-onnx numpy soundfile
+        # feedparser, requests, google-genai — их тянет core/__init__.py (нужно scripts/football_check.py)
+        run: pip install vosk edge-tts imageio-ffmpeg sherpa-onnx numpy soundfile feedparser requests google-genai
       - name: Download Vosk model
         run: |
           curl -sSL -o model.zip https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
@@ -79,5 +80,10 @@ jobs:
         run: |
           curl -sSL -o libri.tar.gz https://www.openslr.org/resources/31/dev-clean-2.tar.gz
           tar -xzf libri.tar.gz
+      # Футбол на настоящих данных ESPN и Google Новостей (core/football.py).
+      # Сайты чужие и могут быть недоступны — не валит сборку, но печатает итог.
+      - name: Check football data sources
+        continue-on-error: true
+        run: python scripts/football_check.py
       - name: Check owner voice recognition on real speakers
         run: python scripts/voice_id_check.py LibriSpeech models/vosk-small-ru models/vosk-spk models/voice-id/wespeaker_en_voxceleb_resnet34.onnx

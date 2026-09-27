@@ -67,7 +67,11 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     monkeypatch.setattr(voice_id_mod, "_vid", None)
     monkeypatch.setenv("JARVIS_WELCOME_STATE", str(d / "welcome_state.json"))
     monkeypatch.setenv("JARVIS_NO_WELCOME", "1")
-    monkeypatch.setenv("JARVIS_MACRO_TRIGGERS", "0")      # свои команды по расписанию — не посреди тестов
+    monkeypatch.setenv("JARVIS_MACRO_TRIGGERS", "0")
+    import core.football as football_mod
+    monkeypatch.setenv("JARVIS_FOOTBALL", str(d / "football.json"))
+    monkeypatch.setenv("JARVIS_FOOTBALL_WATCH", "0")
+    monkeypatch.setattr(football_mod, "_fb", None)      # свои команды по расписанию — не посреди тестов
     import core.study as study_mod
     monkeypatch.setenv("JARVIS_STUDY", str(d / "study.json"))
     import core.call_log as call_log_mod

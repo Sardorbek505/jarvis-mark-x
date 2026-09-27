@@ -14,7 +14,22 @@ logger = logging.getLogger("jarvis-tray")
 
 
 def create_reactor_icon(online: bool = True) -> QIcon:
-    """Генерирует программную векторную иконку реактора Тони Старка в трей."""
+    """Иконка трея: шар из точек (assets/art/icon, scripts/build_art.py), на паузе — серый.
+    Нет картинки — рисуется прежний значок."""
+    try:
+        from core.paths import get_base_dir
+        p = get_base_dir() / "assets" / "art" / "icon" / ("tray_online.png" if online else "tray_offline.png")
+        if p.is_file():
+            icon = QIcon(str(p))
+            if not icon.isNull():
+                return icon
+    except Exception:
+        pass
+    return _drawn_icon(online)
+
+
+def _drawn_icon(online: bool = True) -> QIcon:
+    """Прежняя векторная иконка — запасная."""
     size = 64
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)

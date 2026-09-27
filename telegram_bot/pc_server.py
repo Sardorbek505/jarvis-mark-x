@@ -723,7 +723,7 @@ async def _handle(ws, msg: dict):
             result = await _handle_userbot(msg)
         elif action in ("list_macros", "run_macro", "resolve_contact"):
             result = await asyncio.to_thread(_handle_action, action, msg)
-        elif action in ("study_add", "study_done", "about_answer"):
+        elif action in ("study_add", "study_done", "about_answer", "football_watch"):
             from core import pc_snapshot
             result = await asyncio.to_thread(pc_snapshot.apply, action, msg)
         else:

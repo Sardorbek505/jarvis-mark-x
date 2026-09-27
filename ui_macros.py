@@ -31,7 +31,7 @@ from core import macros as mc
 from core.macro_packs import PACKS
 from ui import C
 from ui_icons import qicon
-from ui_kit import STYLE, FlowLayout, IconBadge, Toggle, _cap, _icon_btn, _label, _line, _small_icon, plural
+from ui_kit import STYLE, EmptyArt, FlowLayout, IconBadge, Toggle, _cap, _icon_btn, _label, _line, _small_icon, plural
 
 logger = logging.getLogger(__name__)
 
@@ -411,9 +411,8 @@ class MacrosDialog(QDialog):
         self.cmd_list.currentItemChanged.connect(
             lambda cur, _p: cur and self.show_command(cur.data(Qt.ItemDataRole.UserRole)))
         sl.addWidget(self.cmd_list, 1)
-        self.empty = _label("Пока пусто.\n\nОпишите справа словами, что должна\nделать команда, — ИИ соберёт шаги.",
-                            "hint")
-        self.empty.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self.empty = EmptyArt("commands", "Пока пусто.\n\nОпишите справа словами, что должна\n"
+                                          "делать команда, — ИИ соберёт шаги.")
         sl.addWidget(self.empty, 1)
         tip = QFrame()
         tip.setObjectName("card")

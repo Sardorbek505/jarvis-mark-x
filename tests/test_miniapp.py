@@ -7,12 +7,15 @@
 Приложение — в настоящем Chrome/Chromium (если есть) с подменённым
 WebSocket: грузится без ошибок, шар рисуется, фигура меняется по теме,
 вкладки открываются, без связи сообщение ждёт в очереди."""
+import base64
 import http.server
 import json
 import os
 import shutil
 import subprocess
 import threading
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -140,7 +143,8 @@ class FakeWS {
     else if (m.type === 'get_data') this._emit({ type: 'data', view: m.view, payload: { name: 'Сардор', about: { facts: ['брат: Азиз'] }, tasks: [], reminders: [], habits: [],
       me: { has: true, known: 1, total: 2, groups: [{ title: 'Кто вы', questions: [{ key: 'name', label: 'Имя', value: 'Сардор' }, { key: 'city', label: 'Город', value: '' }] }] },
       calls: { has: true, calls: [{ who: 'Азиз', when: '2026-09-28 18:02', min: 1, result: 'Поговорили 1 мин.', lines: [{ who: 'Джарвис', text: 'Ужин готов' }, { who: 'Азиз', text: 'Иду, буду через 10 минут' }] }] },
-      abilities: [{ title: 'Учёба', phrases: ['какие пары завтра'] }], pc_online: true } });
+      abilities: [{ title: 'Учёба', phrases: ['какие пары завтра'] }], football: window.__fb || { has: false }, pc_online: true } });
+    if (m.type === 'football_watch') this._emit({ type: 'pc_edit_result', ok: true, text: 'Включил матч на Кинопоиске.' });
     if (m.type === 'study_done' || m.type === 'study_add' || m.type === 'about_answer') this._emit({ type: 'pc_edit_result', ok: true, text: 'Отметил' });
   }
   close() { this.readyState = 3; }
@@ -279,3 +283,58 @@ def test_offline_message_waits_in_queue(page):
     t.eval("window.__online = true; connect()")                        # вернулась
     assert t.wait("window.__sent.some(m => m.text === 'Напомни купить хлеб')", timeout=5)
     assert t.eval("document.querySelector('#messages .msg.user.pending') === null")
+
+
+_CREST = ("data:image/svg+xml," + "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E"
+          "%3Ccircle cx='5' cy='5' r='5' fill='%23ffcc00'/%3E%3C/svg%3E")
+
+
+def _fb_payload(state="pre", hs="", as_="", detail="", minutes=95):
+    when = (datetime.now().astimezone() + timedelta(minutes=minutes)).isoformat(timespec="minutes")
+    m = {"id": "2", "when": when, "home": "Real Madrid", "away": "Barcelona", "hs": hs, "as": as_, "state": state,
+         "detail": detail, "league": "LaLiga", "home_abbr": "RMA", "away_abbr": "BAR", "home_color": "ffffff",
+         "away_color": "004d98", "home_logo": _CREST, "away_logo": "http://127.0.0.1:9/нет.png"}
+    return {"has": True, "updated": "2026-09-28 20:55", "name": "Реал Мадрид", "team": "Real Madrid", "next": m,
+            "results": [dict(m, id="1", away="Sevilla", hs="3", state="post", res="В", **{"as": "1"}),
+                        dict(m, id="0", home="Getafe", away="Real Madrid", hs="1", state="post", res="Н", **{"as": "1"})],
+            "upcoming": [dict(m, id="3", home="Liverpool", away="Real Madrid", league="UEFA Champions League")],
+            "news": [{"title": "Реал подписал контракт с защитником", "link": "https://example.com/n1", "source": "Sports.ru"}]}
+
+
+def test_football_card_on_phone(page):
+    """Карточка клуба в «Сводке»: эмблемы (сломанная — буквами), отсчёт до
+    матча, живой счёт с точкой LIVE, на гол — цифра подпрыгивает и салют,
+    «Смотреть на ПК», форма В/Н/П, новости открываются."""
+    t = page
+    t.eval(f"window.__fb = {json.dumps(_fb_payload())}")
+    t.eval("switchTab('dashboard')")
+    assert t.wait("document.querySelector('.fb-match') !== null", timeout=5)
+    assert t.eval("document.querySelector('.fb-count').textContent").startswith("через 1 ч 3")
+    assert t.eval("document.querySelectorAll('.fb-res').length") == 2
+    assert t.eval("[...document.querySelectorAll('.fb-res')].map(e => e.textContent).join('')") == "НВ"   # по порядку
+    assert t.wait("document.querySelectorAll('.fb-row .fb-crest img').length === 1", timeout=5)          # сломанная ушла
+    assert t.eval("getComputedStyle(document.querySelectorAll('.fb-row .fb-crest b')[1]).display") != "none"
+    assert t.eval("document.querySelector('[data-fbwatch]')") is None      # до матча больше часа — кнопки нет
+    shot = os.getenv("JARVIS_SHOT_DIR")
+    if shot:
+        Path(shot, "phone_pre.png").write_bytes(base64.b64decode(t.call("Page.captureScreenshot")["data"]))
+    # матч идёт
+    t.eval(f"window.__fb = {json.dumps(_fb_payload('in', '0', '0', '12' + chr(39), -12))}; "
+           "send({type: 'get_data', view: 'dashboard'})")
+    assert t.wait("document.querySelector('.fb-live') !== null", timeout=5)
+    assert t.eval("document.querySelector('.fb-badge').textContent") == "LIVE"
+    assert t.eval("document.querySelector('.fb-score span.pop')") is None
+    # гол
+    t.eval(f"window.__fb = {json.dumps(_fb_payload('in', '1', '0', '23' + chr(39), -23))}; "
+           "send({type: 'get_data', view: 'dashboard'})")
+    assert t.wait("document.querySelector('.fb-score span.pop') !== null", timeout=5)
+    assert t.eval("document.querySelectorAll('.fb-confetti i').length") == 18
+    assert t.eval("document.querySelector('.fb-goal').textContent") == "ГОЛ!"
+    if shot:
+        time.sleep(0.35)
+        Path(shot, "phone_goal.png").write_bytes(base64.b64decode(t.call("Page.captureScreenshot")["data"]))
+    t.eval("document.querySelector('[data-fbwatch]').click()")
+    assert t.wait("window.__sent.some(m => m.type === 'football_watch')", timeout=5)
+    t.eval("window.__opened = []; window.open = u => window.__opened.push(u); document.querySelector('[data-link]').click()")
+    assert json.loads(_js(t, "window.__opened")) == ["https://example.com/n1"]
+    assert json.loads(_js(t, "window.__errors")) == []

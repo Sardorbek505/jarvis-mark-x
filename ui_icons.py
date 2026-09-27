@@ -14,7 +14,7 @@ from PyQt6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QP
 NAMES = ("play", "pause", "backward", "forward", "expand", "timer", "note", "film",
          "close", "send", "back", "next", "reload", "check", "checks", "eye",
          "app", "globe", "keyboard", "text", "cursor", "volume", "speak", "bolt", "spark", "plus",
-         "trash", "up", "down", "grid", "mic", "key", "lock", "phone", "link", "copy", "plane", "person", "moon", "book")
+         "trash", "up", "down", "grid", "mic", "key", "lock", "phone", "link", "copy", "plane", "person", "moon", "book", "ball")
 
 
 def _tri(pts) -> QPolygonF:
@@ -294,6 +294,19 @@ def draw_icon(p: QPainter, name: str, c: QPointF, s: float, color: QColor):
             path.quadTo(QPointF(x + k * s * 0.20, y + s * 0.22), QPointF(x, y + s * 0.34))
             p.drawPath(path)
         p.drawLine(QPointF(x, y - s * 0.26), QPointF(x, y + s * 0.34))
+    elif name == "ball":                          # футбольный мяч: пятиугольник в центре и швы
+        import math
+        r = s * 0.44
+        p.setPen(line)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(x, y), r, r)
+        pent = [QPointF(x + r * 0.42 * math.cos(math.radians(-90 + 72 * i)),
+                        y + r * 0.42 * math.sin(math.radians(-90 + 72 * i))) for i in range(5)]
+        p.setBrush(color)
+        p.drawPolygon(QPolygonF(pent))
+        for i, v in enumerate(pent):
+            a = math.radians(-90 + 72 * i)
+            p.drawLine(v, QPointF(x + r * 0.92 * math.cos(a), y + r * 0.92 * math.sin(a)))
     p.restore()
 
 

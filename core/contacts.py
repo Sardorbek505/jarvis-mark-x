@@ -234,7 +234,9 @@ class Me:
                 await client.disconnect()
                 raise RuntimeError("ваш Telegram не подключён к Джарвису — окно «Контакты» → «Подключить»")
 
-            @client.on(events.NewMessage(incoming=True))
+            # Только личные: сообщения групп и каналов вашего аккаунта не нужны,
+            # а их разбор идёт в том же потоке, что звук звонка с вашего Telegram.
+            @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
             async def _incoming(ev):
                 try:
                     if ev.is_private and ev.sender_id in self.watch_ids():

@@ -35,6 +35,11 @@ ANSWER_TIMEOUT = 45
 MAX_CALL_SEC = 10 * 60
 BYE_SILENCE_SEC = 6.0           # попрощались и тишина — кладём трубку сами
 IDLE_SEC = 90.0                 # никто ничего не говорит — тоже
+# Когда считать, что собеседник договорил. По умолчанию Gemini ждёт ~секунду
+# тишины, а шум телефонной линии растягивает это ещё — отсюда долгие паузы
+# перед ответом. Как в голосовом Джарвисе на ПК (main._build_config), но чуть
+# длиннее: в трубке люди делают паузы внутри фразы.
+CALL_VAD_SILENCE_MS = int(os.getenv("CALL_VAD_SILENCE_MS", "450"))
 _BYE = re.compile(r"(?<!\w)(пока|до свидания|до встречи|до связи|спокойной ночи|доброй ночи|всего доброго|"
                   r"всего хорошего|хорошего дня|хорошего вечера|бывай|прощай|отключ\w*|клад\w* трубку|"
                   r"полож\w* трубку|bye|goodbye)(?!\w)", re.I)
@@ -207,6 +212,10 @@ class CallSession:
         self._jarvis_said = ""             # текущая реплика Джарвиса
         self._user_bye_at = 0.0
         self._last_voice = time.monotonic()
+        # Замеры для журнала: где тормозит, если звонок «лагает».
+        self._user_spoke_at = 0.0          # последняя реплика собеседника без ответа
+        self.reply_delays: list[float] = []   # от его слов до первого звука Джарвиса
+        self.late_ms = 0.0                 # на сколько максимум опаздывала отправка кадра
         # Что реально пришло из трубки. Жалоба «говорит, но не отвечает»
         # неотличима по поведению для «звук не приходит», «приходит тишина»
         # и «приходит, но Gemini не слышит речь» — журнал их различает.
@@ -215,8 +224,11 @@ class CallSession:
     def audio_stats(self) -> str:
         rms = (self._sq / self._samples) ** 0.5 if self._samples else 0.0
         heard = sum(1 for t in self.transcript if t.startswith("Вы:"))
+        d = sorted(self.reply_delays)
+        delays = (f", ответ через: медиана {d[len(d) // 2]:.1f} с, макс {d[-1]:.1f} с" if d else "")
         return (f"из трубки кадров: {self.frames_in}, размеры: {sorted(self.sizes)[:4]}, "
-                f"громкость RMS: {rms:.0f}, реплик собеседника в расшифровке: {heard}")
+                f"громкость RMS: {rms:.0f}, реплик собеседника в расшифровке: {heard}{delays}, "
+                f"опоздание отправки звука: макс {self.late_ms:.0f} мс")
 
     # колбэки из py-tgcalls (его цикл — тот же, что у нас)
     def _on_audio(self, pcm48: bytes):
@@ -329,6 +341,9 @@ class CallSession:
                     self.out.clear()                      # перебили — замолкаем сразу
                     self.up.reset()
                 if getattr(msg, "data", None):
+                    if self._user_spoke_at:
+                        self.reply_delays.append(time.monotonic() - self._user_spoke_at)
+                        self._user_spoke_at = 0.0
                     self.out.push(self.up(msg.data))
                     self._last_voice = time.monotonic()
                 if sc is not None:
@@ -361,6 +376,7 @@ class CallSession:
             self._user_said = ""
             return
         self._user_said += text
+        self._user_spoke_at = time.monotonic()
         # Прощание — если реплика им КОНЧАЕТСЯ: «пока не знаю» — не прощание.
         words = re.findall(r"[a-zа-яё]+", self._user_said.lower())
         while words and words[-1] in ("сэр", "джарвис", "спасибо", "тебе", "вам", "тоже", "и", "ну"):
@@ -386,6 +402,7 @@ class CallSession:
         idle_after_end = 0
         while True:
             now = time.monotonic()
+            self.late_ms = max(self.late_ms, (now - next_t) * 1000)
             if now - next_t > 0.2:                        # долго стояли — не догоняем прошлое
                 next_t = now
             while next_t <= now:
@@ -556,6 +573,11 @@ def _gemini_live(prompt: str):
         system_instruction=prompt,
         tools=[{"function_declarations": [END_CALL]}],
         input_audio_transcription={}, output_audio_transcription={},
+        realtime_input_config=types.RealtimeInputConfig(
+            automatic_activity_detection=types.AutomaticActivityDetection(
+                silence_duration_ms=CALL_VAD_SILENCE_MS, prefix_padding_ms=200,
+                end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW)),
         speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Charon"))),
     )

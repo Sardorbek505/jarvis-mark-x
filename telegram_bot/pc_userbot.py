@@ -10,7 +10,6 @@ Desktop userbot (Telethon) — отправляет сообщения Telegram 
     python -m telegram_bot.pc_userbot login
 """
 import asyncio
-import json
 import logging
 from telegram_bot import voice
 import os
@@ -32,9 +31,8 @@ _lock = asyncio.Lock()
 
 
 def _credentials() -> tuple[int, str]:
-    raw: dict = {}
-    if _CONFIG_FILE.exists():
-        raw = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+    from telegram_bot.local_keys import read           # и %APPDATA%/JARVIS (JARVIS.exe)
+    raw = read(_CONFIG_FILE)
     api_id = os.getenv("TELETHON_API_ID") or raw.get("telethon_api_id")
     api_hash = os.getenv("TELETHON_API_HASH") or raw.get("telethon_api_hash")
     if not api_id or not api_hash:
