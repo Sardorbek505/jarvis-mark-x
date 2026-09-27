@@ -40,6 +40,18 @@ VK_PAGE = """<!doctype html><meta charset="utf-8"><title>VK</title><body style="
   if (!document.fullscreenElement) window.byButton = false; });</script>"""
 
 
+# Упрямый плеер: сбрасывает любой полный экран, даже от своей кнопки, и
+# лежит в блоке с transform (position: fixed внутри него не на всё окно).
+STUBBORN_PAGE = """<!doctype html><meta charset="utf-8"><title>Упрямый</title><body style="margin:0">
+<div style="transform:translateZ(0);width:700px;margin:40px">
+<div class="vp-player" style="position:relative;width:640px;height:360px;background:#000">
+<video style="width:640px;height:360px"></video>
+<button aria-label="Полноэкранный режим" style="position:absolute;right:8px;bottom:8px;width:32px;height:32px"
+        onclick="this.parentNode.requestFullscreen()"></button></div></div>
+<script>document.addEventListener('fullscreenchange', () => {
+  if (document.fullscreenElement) document.exitFullscreen(); });</script>"""
+
+
 def test_address_bar_understands_sites_and_queries():
     assert bp.normalize_url("youtube.com") == "https://youtube.com"
     assert bp.normalize_url("vk.com/video") == "https://vk.com/video"
@@ -64,6 +76,7 @@ def chrome(tmp_path, monkeypatch):
     (tmp_path / "site").mkdir()
     (tmp_path / "site" / "index.html").write_text(PAGE, encoding="utf-8")
     (tmp_path / "site" / "vk.html").write_text(VK_PAGE, encoding="utf-8")
+    (tmp_path / "site" / "stubborn.html").write_text(STUBBORN_PAGE, encoding="utf-8")
     (tmp_path / "site" / "second.html").write_text('<meta charset="utf-8"><title>Вторая</title>вторая',
                                                    encoding="utf-8")
     http.server.SimpleHTTPRequestHandler.log_message = lambda *a: None
@@ -177,6 +190,26 @@ def test_film_goes_fullscreen_on_player_that_resets_foreign_fullscreen(chrome):
     assert _until(lambda: t.eval("document.title") == "VK")
     assert cdp.fullscreen(True, t)
     assert t.eval("document.fullscreenElement && document.fullscreenElement.id") == "player"
+
+
+def test_film_fills_screen_even_when_site_refuses_fullscreen(chrome):
+    """Живой случай (фото владельца): фильм в обычном окне. Сайт сбрасывает
+    полный экран всегда — Джарвис растягивает плеер на всё окно сам, а окно
+    браузера — во весь экран; «выйди из полного экрана» всё возвращает."""
+    t = cdp.tab()
+    t.navigate(chrome + "/stubborn.html")
+    assert _until(lambda: t.eval("document.title") == "Упрямый")
+    assert cdp.fullscreen(True, t, settle_sec=3.0)
+    wid = t.call("Browser.getWindowForTarget")["windowId"]
+    state = lambda: t.call("Browser.getWindowBounds", windowId=wid)["bounds"]["windowState"]  # noqa: E731
+    assert _until(lambda: state() == "fullscreen")
+    size = t.eval(f"(v => [v.getBoundingClientRect().width, innerWidth])({cdp._VIDEO})")
+    assert size[0] >= size[1] * 0.97                            # видео на всё окно
+    assert cdp.video_state(t)["fs"]
+    assert cdp.fullscreen(False, t)
+    assert not t.eval("document.documentElement.hasAttribute('data-jarvis-fs')")
+    assert t.eval(f"({cdp._VIDEO}).parentNode.className") == "vp-player"   # видео вернулось на место
+    assert _until(lambda: state() != "fullscreen")
 
 
 # ── виджет ───────────────────────────────────────────────────────────────────

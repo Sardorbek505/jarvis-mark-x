@@ -742,3 +742,93 @@ def test_какие_микрофоны_не_слышат_динамики(monkey
     assert jarvis_main._mic_hears_speakers(1) is False
     assert jarvis_main._mic_hears_speakers(3) is False
     assert jarvis_main._mic_hears_speakers(2) is True
+
+
+# ─── Мгновенные ответы (core/quick.py) ────────────────────────────────────────
+
+async def _мгновенно(стенд, script, monkeypatch, result="Пауза.", wait=0.6):
+    выполнено = []
+
+    async def поддельный_инструмент(self, fc):
+        выполнено.append((fc.name, dict(fc.args)))
+        return jarvis_main.types.FunctionResponse(id=fc.id, name=fc.name, response={"result": result})
+    monkeypatch.setattr(jarvis_main.Jarvis, "_execute_tool", поддельный_инструмент)
+
+    j = стенд.jarvis
+    session = _ToolSession(script)
+    j.session = session
+    j.audio_in_queue = asyncio.Queue()
+    j._turn_done_event = asyncio.Event()
+    task = asyncio.create_task(j._receive_audio())
+    await asyncio.sleep(wait)
+    task.cancel()
+    await asyncio.sleep(0)
+    return выполнено, session
+
+
+@pytest.mark.asyncio
+async def test_частая_команда_выполняется_сразу_и_gemini_не_дублирует(стенд, поддельный_fish, monkeypatch):
+    """«Пауза»: Джарвис ставит паузу сам и отвечает готовой фразой; вызов и
+    речь Gemini на ту же команду глушатся — пауза не ставится дважды."""
+    выполнено, session = await _мгновенно(стенд, [
+        _resp(heard="пауза"),
+        _resp(data=b"\x01\x02" * 100),
+        _resp(said="Ставлю на паузу, сэр."),
+        _tool_resp("video_control", {"action": "pause"}),
+        _resp(turn_complete=True),
+        # продолжение после ответа на вызов — тоже в мусор
+        _resp(data=b"\x03\x04" * 100),
+        _resp(said="Готово, сэр.", turn_complete=True),
+    ], monkeypatch)
+
+    assert выполнено == [("video_control", {"action": "pause"})], "команда выполнена не ровно один раз"
+    assert поддельный_fish and поддельный_fish[0] in jarvis_main.quick.PHRASES["pause"]
+    assert "Ставлю на паузу, сэр." not in поддельный_fish and "Готово, сэр." not in поддельный_fish
+    assert "Уже выполнено" in str(session.tool_responses[0].response)
+    assert "Вы: пауза" in стенд.ui.logs
+
+
+@pytest.mark.asyncio
+async def test_фраза_шире_команды_уходит_в_gemini(стенд, поддельный_fish, monkeypatch):
+    выполнено, _ = await _мгновенно(стенд, [
+        _resp(heard="громче"),
+        _resp(heard=" и открой хром"),
+        _resp(said="Секунду, сэр. ", turn_complete=True),
+    ], monkeypatch)
+    assert выполнено == []
+    assert поддельный_fish == ["Секунду, сэр."]
+
+
+@pytest.mark.asyncio
+async def test_не_вышло_говорит_ответ_инструмента(стенд, поддельный_fish, monkeypatch):
+    fail = "Spotify сейчас не играет на компьютере — громкость музыки менять не у чего."
+    выполнено, _ = await _мгновенно(стенд, [_resp(heard="сделай музыку громче")], monkeypatch,
+                                   result=fail)
+    assert выполнено == [("music_player", {"action": "volume_up"})]
+    assert поддельный_fish == [fail]
+
+
+@pytest.mark.asyncio
+async def test_gemini_промолчал_а_спасибо_услышано(стенд, поддельный_fish, monkeypatch):
+    выполнено, _ = await _мгновенно(стенд, [_resp(heard="спасибо"), _resp(turn_complete=True)],
+                                   monkeypatch)
+    assert выполнено == []
+    assert поддельный_fish and поддельный_fish[0] in jarvis_main.quick.PHRASES["thanks"]
+
+
+@pytest.mark.asyncio
+async def test_без_имени_мгновенно_не_срабатывает(по_имени, поддельный_fish, monkeypatch):
+    выполнено, _ = await _мгновенно(по_имени, [_resp(heard="пауза"), _resp(turn_complete=True)],
+                                   monkeypatch)
+    assert выполнено == [] and поддельный_fish == []
+
+
+@pytest.mark.asyncio
+async def test_готовая_фраза_звучит_из_кэша(стенд, поддельный_fish):
+    """Второй раз «Есть, сэр.» не синтезируется — берётся готовый звук."""
+    j = стенд.jarvis
+    j.audio_in_queue = asyncio.Queue()
+    await j._speak_fish("Есть, сэр.")
+    await j._speak_fish("Есть, сэр.")
+    assert поддельный_fish == ["Есть, сэр."]
+    assert j.audio_in_queue.qsize() >= 2

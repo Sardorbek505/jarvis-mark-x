@@ -110,6 +110,8 @@ class PCBridge:
                 # поля иначе выглядел бы как «не доставлено» (см. delivered).
                 if msg.get("ok") is not None:
                     result["ok"] = msg["ok"]
+                if isinstance(msg.get("data"), dict):
+                    result["data"] = msg["data"]
                 fut.set_result(result)
         elif mtype == "notification" and self._notify_cb:
             await self._notify_cb(msg.get("text", ""), msg.get("user_id"))
@@ -157,6 +159,26 @@ class PCBridge:
         if "ok" in res:
             return bool(res["ok"])
         return "Отправлено" in (res.get("text") or "")
+
+    async def send_action(self, action: str, user_id: int, timeout: float = 25.0,
+                          **fields) -> Optional[dict]:
+        """Именованное действие на ПК (list_macros, run_macro, resolve_contact —
+        см. telegram_bot/pc_macros.py). Ответ ПК целиком ({"text", "ok", "data"})
+        или None: ПК нет / не ответил. Старый клиент ответит «не понял» без data."""
+        if not await self._await_client(timeout):
+            return None
+        ws = next(reversed(self._clients.values()))
+        req_id = f"act_{user_id}_{int(time.monotonic() * 1000)}"
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending[req_id] = fut
+        try:
+            await ws.send_text(json.dumps({"type": "command", "action": action, "user_id": user_id,
+                                           "req_id": req_id, "text": "", **fields}))
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except Exception as e:
+            logger.debug(f"send_action {action}: {e}")
+            self._pending.pop(req_id, None)
+            return None
 
     async def send_userbot(self, target: str, text: str, as_voice: bool,
                            user_id: int, timeout: float = 30.0) -> Optional[dict]:

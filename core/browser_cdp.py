@@ -253,7 +253,8 @@ _VIDEO = ("(() => { const vs = [...document.querySelectorAll('video')]"
           " return vs[0] || null; })()")
 
 _STATE = ("(v => v ? {paused: v.paused, t: v.currentTime, d: v.duration || 0,"
-          " vol: v.volume, muted: v.muted, fs: !!document.fullscreenElement,"
+          " vol: v.volume, muted: v.muted,"
+          " fs: !!document.fullscreenElement || document.documentElement.hasAttribute('data-jarvis-fs'),"
           " ready: v.readyState} : null)")
 
 
@@ -313,14 +314,23 @@ def fullscreen(on: bool = True, t: Tab | None = None, settle_sec: float = 5.0) -
         return False
     if on:
         show_window(t)
-        if _request_and_hold(t, settle_sec / 2):
+        if _request_and_hold(t, settle_sec * 0.4):
             return True
         # Плееры вроде VK Видео сами сбрасывают полный экран, включённый не их
         # кнопкой: фильм играл в окне. Жмём их собственную кнопку — как человек.
-        if not _is_fullscreen(t) and _click_fullscreen_button(t):
-            return _holds(lambda: _is_fullscreen(t), settle_sec / 2)
-        return _is_fullscreen(t)
-    return _fullscreen_once(t, False)
+        if not _is_fullscreen(t) and _click_fullscreen_button(t) \
+                and _holds(lambda: _is_fullscreen(t), settle_sec * 0.3):
+            return True
+        # Сайт не даёт ни так, ни так — полный экран делаем сами: окно браузера
+        # во весь экран (как F11), плеер растянут на всё окно. Это не Fullscreen
+        # API страницы, сбросить его сайт не может.
+        if _is_fullscreen(t):
+            return True
+        logger.info("Полный экран: сайт не дал — растягиваю плеер сам")
+        return _fill_window(t) and _holds(lambda: _filled(t), settle_sec * 0.3)
+    ok = _fullscreen_once(t, False)
+    _unfill_window(t)
+    return ok
 
 
 def _request_and_hold(t: Tab, sec: float) -> bool:
@@ -355,6 +365,86 @@ def _is_fullscreen(t: Tab) -> bool:
         return bool(t.eval("!!document.fullscreenElement"))
     except Exception:
         return False
+
+
+# Плеер на всё окно без Fullscreen API: сначала весь плеер (с его кнопками),
+# не вышло (предок с transform ломает position: fixed) — само видео, не
+# вышло и так — видео переносится в <body>. Всё помечено data-jarvis-fs и
+# снимается _UNFILL.
+_FILL = ("(() => { const v = " + _VIDEO + "; if (!v) return false;"
+         " const d = document.documentElement;"
+         " if (!document.getElementById('jarvis-fs')) { const st = document.createElement('style');"
+         "   st.id = 'jarvis-fs'; st.textContent ="
+         "   '[data-jarvis-fs=box]{position:fixed!important;left:0!important;top:0!important;right:0!important;"
+         "bottom:0!important;width:100vw!important;height:100vh!important;max-width:none!important;"
+         "max-height:none!important;margin:0!important;transform:none!important;"
+         "z-index:2147483647!important;background:#000!important}'"
+         "   + '[data-jarvis-fs=box] video{width:100%!important;height:100%!important;object-fit:contain!important}'"
+         "   + 'html[data-jarvis-fs]{overflow:hidden!important}';"
+         "   document.head.appendChild(st); }"
+         " const fills = el => { const r = el.getBoundingClientRect();"
+         "   return r.left <= 2 && r.top <= 2 && r.width >= innerWidth * 0.97 && r.height >= innerHeight * 0.97; };"
+         " d.setAttribute('data-jarvis-fs', '1');"
+         " const box = v.closest('.html5-video-player, [class*=\"player\" i], [class*=\"Player\"]');"
+         " for (const el of [box, v]) { if (!el) continue;"
+         "   document.querySelectorAll('[data-jarvis-fs=box]').forEach(x => x.removeAttribute('data-jarvis-fs'));"
+         "   el.setAttribute('data-jarvis-fs', 'box');"
+         "   if (fills(v)) return true; }"
+         " if (!window.__jarvisFsHome) window.__jarvisFsHome = {parent: v.parentNode, next: v.nextSibling};"
+         " const playing = !v.paused; document.body.appendChild(v); if (playing) v.play().catch(() => {});"
+         " return fills(v); })()")
+
+_UNFILL = ("(() => { document.querySelectorAll('[data-jarvis-fs]').forEach(x => x.removeAttribute('data-jarvis-fs'));"
+           " const st = document.getElementById('jarvis-fs'); if (st) st.remove();"
+           " const h = window.__jarvisFsHome; window.__jarvisFsHome = null;"
+           " const v = " + _VIDEO + ";"
+           " if (h && v && h.parent && h.parent.isConnected) { const playing = !v.paused;"
+           "   h.parent.insertBefore(v, h.next && h.next.parentNode === h.parent ? h.next : null);"
+           "   if (playing) v.play().catch(() => {}); }"
+           " return true; })()")
+
+
+def _window_state(t: Tab, state: str) -> bool:
+    try:
+        wid = t.call("Browser.getWindowForTarget").get("windowId")
+        cur = t.call("Browser.getWindowBounds", windowId=wid).get("bounds", {}).get("windowState")
+        if cur == state:
+            return True
+        if cur not in ("normal", None) and state != "normal":
+            t.call("Browser.setWindowBounds", windowId=wid, bounds={"windowState": "normal"})
+        t.call("Browser.setWindowBounds", windowId=wid, bounds={"windowState": state})
+        return True
+    except Exception as exc:
+        logger.debug("Окно браузера → %s: %s", state, exc)
+        return False
+
+
+def _fill_window(t: Tab) -> bool:
+    _window_state(t, "fullscreen")
+    time.sleep(0.4)                          # окно меняет размер — меряем после
+    try:
+        return bool(t.eval(_FILL))
+    except Exception as exc:
+        logger.debug("Плеер на всё окно: %s", exc)
+        return False
+
+
+def _filled(t: Tab) -> bool:
+    try:
+        return bool(t.eval("(v => !!v && document.documentElement.hasAttribute('data-jarvis-fs')"
+                           " && v.getBoundingClientRect().width >= innerWidth * 0.97)(" + _VIDEO + ")"))
+    except Exception:
+        return False
+
+
+def _unfill_window(t: Tab) -> None:
+    try:
+        was = t.eval("document.documentElement.hasAttribute('data-jarvis-fs')")
+        t.eval(_UNFILL)
+    except Exception:
+        return
+    if was:
+        _window_state(t, "maximized")
 
 
 _FS_BUTTON = ("(() => { const re = /полноэкран|полный экран|весь экран|fullscreen|full screen/i;"

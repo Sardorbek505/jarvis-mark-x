@@ -86,9 +86,11 @@ def _start(url: str, fullscreen: bool = True, wait_sec: float = 15.0) -> dict | 
         st = cdp.video_state(t)
         if st and not st["paused"]:
             break
+    # Сначала окно вперёд, потом полный экран: вывод вперёд после него
+    # (фокус, Alt для SetForegroundWindow) сбрасывал полный экран плеера.
+    cdp.bring_to_front()
     if fullscreen:
         cdp.fullscreen(True, t)
-    cdp.bring_to_front()
     return cdp.video_state(t) or st
 
 
@@ -342,8 +344,8 @@ def control(action: str, value=None) -> str:
             browser_panel.release_for_video()
         except Exception as exc:
             logger.debug("Панель браузера: %s", exc)
-        ok = cdp.fullscreen(True)
         cdp.bring_to_front()
+        ok = cdp.fullscreen(True)
         return "Полный экран." if ok else "Не получилось развернуть на весь экран."
     if a == "exit_fullscreen":
         cdp.fullscreen(False)

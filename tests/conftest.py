@@ -51,6 +51,32 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     d = tmp_path / "voice_memory"
     # Выученное на голосе владельца слово — не из настоящей папки данных.
     monkeypatch.setenv("JARVIS_WAKE_ALIASES", str(d / "wake_aliases.json"))
+    # Готовые фразы — не в настоящий кэш голоса и без озвучки по сети.
+    import core.quick as quick
+    monkeypatch.setattr(quick, "_cache", quick.VoiceCache(d / "voice_cache"))
+    monkeypatch.setenv("JARVIS_QUICK_PREWARM", "0")
+    monkeypatch.setenv("JARVIS_KEYS_CHECK", "0")          # проверка ключей при запуске ходит в сеть
+    import core.contacts as contacts_mod
+    monkeypatch.setenv("JARVIS_CONTACTS", str(d / "contacts.json"))
+    monkeypatch.setenv("JARVIS_CONTACTS_LISTEN", "0")
+    monkeypatch.setenv("JARVIS_ABOUT_STATE", str(d / "about_me_state.json"))
+    monkeypatch.setenv("JARVIS_BRIEFING_STATE", str(d / "briefing_state.json"))
+    monkeypatch.setenv("JARVIS_BRIEFING", "0")            # утром сам не срабатывает посреди чужих тестов
+    import core.voice_id as voice_id_mod
+    monkeypatch.setenv("JARVIS_VOICE_ID", str(d / "voice_id.json"))
+    monkeypatch.setattr(voice_id_mod, "_vid", None)
+    monkeypatch.setenv("JARVIS_WELCOME_STATE", str(d / "welcome_state.json"))
+    monkeypatch.setenv("JARVIS_NO_WELCOME", "1")
+    monkeypatch.setenv("JARVIS_MACRO_TRIGGERS", "0")      # свои команды по расписанию — не посреди тестов
+    import core.study as study_mod
+    monkeypatch.setenv("JARVIS_STUDY", str(d / "study.json"))
+    monkeypatch.setattr(study_mod, "_study", None)
+    for attr in ("_book", "_me", "_contacts"):
+        monkeypatch.setattr(contacts_mod, attr, None)
+    # Свои команды — из временного файла, не из настоящей папки данных.
+    import core.macros as macros_mod
+    monkeypatch.setenv("JARVIS_MACROS", str(d / "macros.json"))
+    monkeypatch.setattr(macros_mod, "_macros", None)
     monkeypatch.setattr(mm, "_MEMORY_FILE", d / "data.json")
     monkeypatch.setattr(conv, "DIALOG_FILE", d / "dialog.jsonl")
     monkeypatch.setattr(conv, "EPISODES_FILE", d / "episodes.jsonl")

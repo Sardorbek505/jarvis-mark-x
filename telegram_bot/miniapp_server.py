@@ -351,6 +351,43 @@ async def _handle_action(ws: WebSocket, user_id: int, msg: dict):
 
 # ── Mini App clients (browser / Telegram) ─────────────────────────────────────
 
+_BG_TASKS: set = set()
+
+
+def _spawn(coro):
+    task = asyncio.create_task(coro)
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+
+
+async def _pc_macros(ws: WebSocket, user_id: int, msg: dict):
+    """Свои команды ПК в пульте: список и запуск (telegram_bot/pc_macros.py на ПК)."""
+    online = bool(_bridge and _bridge.connected)
+    try:
+        if msg["type"] == "pc_macros":
+            res = await _bridge.send_action("list_macros", user_id, timeout=10.0) if online else None
+            items = ((res or {}).get("data") or {}).get("items")
+            await ws.send_text(json.dumps({
+                "type": "pc_macros", "items": items or [],
+                "error": "" if items is not None else ("ПК офлайн" if not online else "ПК не ответил"),
+            }, ensure_ascii=False))
+            return
+        name = str(msg.get("name") or "")
+        if not online:
+            out = {"ok": False, "text": "ПК офлайн — команда не дойдёт"}
+        else:
+            res = await _bridge.send_action("run_macro", user_id, timeout=90.0, name=name,
+                                            confirmed=bool(msg.get("confirmed")))
+            out = res or {"ok": False, "text": "ПК не ответил"}
+        data = out.get("data") or {}
+        await ws.send_text(json.dumps({
+            "type": "pc_macro_result", "name": name, "ok": bool(out.get("ok")),
+            "need_confirm": bool(data.get("need_confirm")), "text": out.get("text") or "",
+        }, ensure_ascii=False))
+    except Exception as exc:
+        logger.warning("Свои команды в пульте: %s", exc)
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     cfg = _cfg()
@@ -395,6 +432,11 @@ async def ws_endpoint(ws: WebSocket):
 
             if mtype == "get_data":
                 await _send_view(ws, user_id, msg.get("view", "dashboard"))
+                continue
+
+            if mtype in ("pc_macros", "pc_macro"):
+                # Долгая команда не должна держать остальной чат — отдельной задачей.
+                _spawn(_pc_macros(ws, user_id, msg))
                 continue
 
             if mtype in ("habit_add", "habit_toggle", "habit_delete",

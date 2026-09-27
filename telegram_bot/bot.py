@@ -90,6 +90,7 @@ _BOT_COMMANDS = [
     BotCommand("app",        "Открыть Mini App"),
     BotCommand("status",     "Статус ПК"),
     BotCommand("pc",         "Команда на ПК"),
+    BotCommand("macros",     "Мои команды с ПК — кнопками"),
     BotCommand("screenshot", "Скриншот рабочего стола"),
     BotCommand("camera",     "Снимок с веб-камеры"),
     BotCommand("vol",        "Громкость ПК: /vol 70"),
@@ -315,9 +316,15 @@ async def _apply_send_directives(update: Update, user_id: int, reply: str) -> st
         if not message:
             continue
         target = await memory.resolve_contact(user_id, alias_raw)
+        if not target and bridge.connected:
+            # Нет в белом списке бота — может, человек есть в «Контактах» на ПК.
+            pc = await bridge.send_action("resolve_contact", user_id, timeout=10.0, alias=alias_raw)
+            if pc and pc.get("ok"):
+                target = (pc.get("data") or {}).get("target")
         if not target:
             await update.effective_message.reply_text(
-                f"⚠️ «{alias_raw}» не в белом списке. Добавь: /addcontact {alias_raw.lower()} @username"
+                f"⚠️ «{alias_raw}» нет ни в белом списке, ни в «Контактах» на ПК. "
+                f"Добавь: /addcontact {alias_raw.lower()} @username"
             )
             failed += 1
             continue
@@ -512,6 +519,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"📋 *Команды JARVIS*\n\n"
         f"*ПК* ({pc})\n"
         f"`/pc <команда>` — любая команда\n"
+        f"`/macros` — ваши команды с ПК кнопками\n"
         f"`/screenshot` — скриншот рабочего стола\n"
         f"`/camera` — снимок с веб-камеры\n"
         f"`/vol 70` — установить громкость 70%\n"
@@ -778,6 +786,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await q.edit_message_text("✖ Отменено — ничего не отправлено.")
             else:
                 await q.answer("Уже отправлено")
+            return
+        if data.startswith(("macro:", "macrook:")):
+            await _on_macro_button(q, uid, data)
             return
         if data.startswith("mode:"):
             mid = data.split(":", 1)[1]
@@ -1299,6 +1310,67 @@ async def cmd_pc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _run_pc(update.effective_message, command, update.effective_user.id)
 
 
+# ── свои команды ПК кнопками (telegram_bot/pc_macros.py на ПК) ──────────────
+# В callback_data влезает 64 байта — названия храним здесь, в кнопке — номер.
+_macro_names: dict[str, str] = {}
+
+
+def _macro_key(name: str) -> str:
+    key = str(abs(hash(name)) % 10**8)
+    _macro_names[key] = name
+    return key
+
+
+def _macros_keyboard(items: list[dict]) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(("🔒 " if i.get("confirm") else "▶ ") + i["name"],
+                                  callback_data=f"macro:{_macro_key(i['name'])}")] for i in items[:40]]
+    return InlineKeyboardMarkup(rows)
+
+
+async def cmd_macros(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
+    msg = update.effective_message
+    if not bridge.connected:
+        await msg.reply_text(_PC_OFFLINE, parse_mode="Markdown")
+        return
+    res = await bridge.send_action("list_macros", update.effective_user.id)
+    items = ((res or {}).get("data") or {}).get("items")
+    if items is None:
+        await msg.reply_text("ПК не ответил — возможно, там старая версия. Обновите Джарвиса на ПК.")
+        return
+    if not items:
+        await msg.reply_text(res.get("text") or "Своих команд пока нет.")
+        return
+    await msg.reply_text("🧩 Свои команды на ПК — нажмите, чтобы выполнить:", reply_markup=_macros_keyboard(items))
+
+
+async def _on_macro_button(q, uid: int, data: str):
+    kind, key = data.split(":", 1)
+    name = _macro_names.get(key)
+    if not name:
+        await q.answer("Список устарел — откройте /macros заново", show_alert=True)
+        return
+    if not bridge.connected:
+        await q.answer("ПК офлайн", show_alert=True)
+        return
+    await q.answer("Выполняю…")
+    res = await bridge.send_action("run_macro", uid, timeout=90.0, name=name, confirmed=kind == "macrook")
+    if res is None:
+        await q.message.reply_text("⚠️ ПК не ответил.")
+        return
+    if (res.get("data") or {}).get("need_confirm"):
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Да, выполнить", callback_data=f"macrook:{key}")]])
+        await q.message.reply_text(res.get("text") or f"Выполнить «{name}»?", reply_markup=kb)
+        return
+    if kind == "macrook":
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception as exc:
+            logger.debug("Кнопку подтверждения не убрать: %s", exc)
+    await q.message.reply_text(res.get("text") or "Готово.")
+
+
 async def cmd_screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
@@ -1780,6 +1852,7 @@ def main():
     app.add_handler(CommandHandler("help",       cmd_help))
     app.add_handler(CommandHandler("app",        cmd_app))
     app.add_handler(CommandHandler("status",     cmd_status))
+    app.add_handler(CommandHandler("macros",     cmd_macros))
     app.add_handler(CommandHandler("clear",      cmd_clear))
     app.add_handler(CommandHandler("mode",       cmd_mode))
     app.add_handler(CommandHandler("profile",    cmd_profile))

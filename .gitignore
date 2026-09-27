@@ -80,3 +80,24 @@ models/
 # память голосового Джарвиса (в режиме разработки)
 memory/*.jsonl
 memory/collector.json
+
+# Озвученные заранее фразы Джарвиса (core/quick.py)
+voice_cache/
+
+# Личные данные Джарвиса (в режиме разработки папка данных — сам репозиторий).
+# Сессии Telegram дают полный доступ к аккаунту — никогда в git.
+*.session
+*.session-journal
+contacts.json
+voice_id.json
+about_me_state.json
+briefing_state.json
+macros.json
+clock.json
+wake_aliases.json
+ducked_sessions.json
+study.json
+welcome_state.json
+# Резервные копии Джарвиса (core/backup.py) — зашифрованы, но всё равно личные
+*.jarvisbak
+*.jarvisbak.part

@@ -115,6 +115,41 @@ class JarvisTray(QSystemTrayIcon):
         self.act_settings.triggered.connect(self._open_settings)
         menu.addAction(self.act_settings)
 
+        # Что умеет Джарвис (ui_welcome.py)
+        self.act_help = QAction("❔ Что умеет Джарвис", menu)
+        self.act_help.triggered.connect(self._open_help)
+        menu.addAction(self.act_help)
+
+        # Учёба (ui_study.py)
+        self.act_study = QAction("📚 Учёба", menu)
+        self.act_study.triggered.connect(self._open_study)
+        menu.addAction(self.act_study)
+
+        # Обо мне (ui_about.py)
+        self.act_about = QAction("🙂 Обо мне", menu)
+        self.act_about.triggered.connect(self._open_about)
+        menu.addAction(self.act_about)
+
+        # Контакты (ui_contacts.py)
+        self.act_contacts = QAction("👥 Контакты", menu)
+        self.act_contacts.triggered.connect(self._open_contacts)
+        menu.addAction(self.act_contacts)
+
+        # Ключи и подключения (ui_keys.py)
+        self.act_keys = QAction("🔑 Ключи и подключения", menu)
+        self.act_keys.triggered.connect(self._open_keys)
+        menu.addAction(self.act_keys)
+
+        # Свои команды и паки (ui_macros.py)
+        self.act_macros = QAction("🧩 Свои команды", menu)
+        self.act_macros.triggered.connect(self._open_macros)
+        menu.addAction(self.act_macros)
+
+        # Резервная копия (ui_backup.py)
+        self.act_backup = QAction("💾 Резервная копия", menu)
+        self.act_backup.triggered.connect(self._open_backup)
+        menu.addAction(self.act_backup)
+
         menu.addSeparator()
 
         # Автозапуск
@@ -158,6 +193,62 @@ class JarvisTray(QSystemTrayIcon):
             from ui_setup import SetupWizardDialog
             dialog = SetupWizardDialog(parent=self.main_window)
             dialog.exec()
+
+    def _open_help(self):
+        opener = getattr(self.main_window, "open_welcome", None)
+        if opener:
+            opener()
+        else:
+            from ui_welcome import open_dialog
+            self._help_dlg = open_dialog(None)
+
+    def _open_study(self):
+        opener = getattr(self.main_window, "open_study", None)
+        if opener:
+            opener()
+        else:
+            from ui_study import open_dialog
+            self._study_dlg = open_dialog(None)
+
+    def _open_about(self):
+        opener = getattr(self.main_window, "open_about", None)
+        if opener:
+            opener()
+        else:
+            from ui_about import open_dialog
+            self._about_dlg = open_dialog(None)
+
+    def _open_contacts(self):
+        opener = getattr(self.main_window, "open_contacts", None)
+        if opener:
+            opener()
+        else:
+            from ui_contacts import open_dialog
+            self._contacts_dlg = open_dialog(None)
+
+    def _open_keys(self):
+        opener = getattr(self.main_window, "open_keys", None)
+        if opener:
+            opener()
+        else:
+            from ui_keys import open_dialog
+            self._keys_dlg = open_dialog(None)
+
+    def _open_macros(self):
+        opener = getattr(self.main_window, "open_macros", None)
+        if opener:
+            opener()
+        else:
+            from ui_macros import open_dialog
+            self._macros_dlg = open_dialog(None)
+
+    def _open_backup(self):
+        opener = getattr(self.main_window, "open_backup", None)
+        if opener:
+            opener()
+        else:
+            from ui_backup import open_dialog
+            self._backup_dlg = open_dialog(None)
 
     def _quit(self):
         self.hide()

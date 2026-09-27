@@ -32,7 +32,7 @@ _TITLES = {
     "obsidian": "Заметки", "morning_briefing": "Брифинг", "look_at_screen": "Экран",
     "look_at_camera": "Камера", "send_to_telegram": "Telegram",
     "computer_control": "Компьютер", "window_control": "Окна",
-    "save_to_memory": "Память", "sleep_timer": "Таймер",
+    "save_to_memory": "Память", "sleep_timer": "Таймер", "remember_screen": "Запомнил",
 }
 # Служебное — карточка тут только мешала бы.
 _SKIP = {"set_mode", "shutdown_jarvis", "switch_voice", "team_collaboration"}

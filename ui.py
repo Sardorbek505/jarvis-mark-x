@@ -160,7 +160,7 @@ _TOOL_SHAPE = {
     "translation": "globe", "morning_briefing": "globe",
     "music_player": "music", "switch_voice": "music",
     "movie_player": "film", "youtube_player": "screen",
-    "look_at_screen": "screen", "look_at_camera": "screen",
+    "look_at_screen": "screen", "look_at_camera": "screen", "remember_screen": "screen",
     "computer_control": "reactor", "window_control": "reactor", "files": "reactor",
     "sleep_timer": "reactor", "set_mode": "reactor",
 }
@@ -896,6 +896,13 @@ class MainWindow(QMainWindow):
     # Глобальные хоткеи приходят из потока Win32-сообщений — тоже чужого.
     _mute_sig  = pyqtSignal()
     _front_sig = pyqtSignal()
+    _macros_sig = pyqtSignal()
+    _keys_sig = pyqtSignal()
+    _contacts_sig = pyqtSignal()
+    _about_sig = pyqtSignal()
+    _study_sig = pyqtSignal()
+    _backup_sig = pyqtSignal()
+    _welcome_sig = pyqtSignal(bool)
     # wait_for_api_key зовётся из рабочего потока: оверлей — только сигналом.
     _overlay_sig = pyqtSignal(str)
 
@@ -1128,8 +1135,17 @@ class MainWindow(QMainWindow):
             _logger.warning("Панель браузера недоступна: %s", exc)
         self._browser_sig.connect(self._reveal_browser)
         self._setup_island()
+        # Первый запуск — окно «Добро пожаловать»: что умеет и что настроить.
+        QTimer.singleShot(2500, self._first_run_welcome)
         self._mute_sig.connect(self._toggle_mute)
         self._front_sig.connect(self._bring_to_front)
+        self._macros_sig.connect(self._show_macros)
+        self._keys_sig.connect(self._show_keys)
+        self._contacts_sig.connect(self._show_contacts)
+        self._about_sig.connect(self._show_about)
+        self._study_sig.connect(self._show_study)
+        self._backup_sig.connect(self._show_backup)
+        self._welcome_sig.connect(self._show_welcome)
         self._overlay_sig.connect(self._show_overlay)
 
     # ── Публичный API ──────────────────────────────────────────────────────────
@@ -1141,6 +1157,15 @@ class MainWindow(QMainWindow):
                 island.reply(text.split(":", 1)[1])
             elif text.startswith("SYS: 📞"):
                 island.notify("ЗВОНОК", text[len("SYS: 📞"):].strip())
+            elif text.startswith("SYS: 💬") and ":" in text[7:] and "→" not in text[:10]:
+                title, _, body = text[len("SYS: 💬"):].strip().partition(":")
+                island.notify(title.strip().upper(), body.strip())
+            elif text.startswith("SYS: 📚") and ":" in text[7:]:
+                title, _, body = text[len("SYS: 📚"):].strip().partition(":")
+                island.notify(title.strip(), body.strip())
+            elif text.startswith("SYS: 🔑") and ":" in text[7:]:
+                title, _, body = text[len("SYS: 🔑"):].strip().partition(":")
+                island.notify(title.strip().upper(), body.strip())
             elif text.startswith("SYS: 👁"):
                 island.set_eyes("закрыты" not in text)
                 island.notify("ГЛАЗА", text[len("SYS: 👁"):].strip().capitalize())
@@ -1183,6 +1208,19 @@ class MainWindow(QMainWindow):
             self._island = Island(on_open=self._restore_from_island)
         except Exception as exc:
             _logger.warning("Капсула недоступна: %s", exc)
+            return
+        # Капсула нужна не только когда окно свёрнуто: переключились в другую
+        # программу, и она закрыла Джарвиса, — капсула тоже выходит. Раньше она
+        # ждала именно «свернуть», и владелец её почти не видел.
+        if sys.platform == "win32":
+            self._island_tmr = QTimer(self)
+            self._island_tmr.timeout.connect(lambda: self._island_wanted(self._out_of_sight()))
+            self._island_tmr.start(700)
+
+    def _out_of_sight(self) -> bool:
+        if not self.isVisible() or self.isMinimized():
+            return True
+        return _covered_by_other_app(self)
 
     def _restore_from_island(self):
         self.showNormal()
@@ -1190,8 +1228,9 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def _island_wanted(self, on: bool):
-        if getattr(self, "_island", None) is not None:
-            self._island.set_wanted(on)
+        isl = getattr(self, "_island", None)
+        if isl is not None and isl.wanted != on:
+            isl.set_wanted(on)
 
     def changeEvent(self, ev):
         from PyQt6.QtCore import QEvent
@@ -1207,6 +1246,105 @@ class MainWindow(QMainWindow):
     def hideEvent(self, ev):
         super().hideEvent(ev)
         self._island_wanted(True)                      # спрятали в трей
+
+    def open_macros(self):
+        """Окно «Свои команды» (ui_macros.py). Из любого потока."""
+        self._macros_sig.emit()
+
+    def open_welcome(self, first_run: bool = False):
+        """Окно «Что умеет Джарвис» (ui_welcome.py). Из любого потока."""
+        self._welcome_sig.emit(bool(first_run))
+
+    def _first_run_welcome(self):
+        import os
+        try:
+            from core import help as H
+            if not H.seen() and not os.getenv("JARVIS_NO_WELCOME"):
+                self._show_welcome(True)
+        except Exception as exc:
+            _logger.debug("Подсказки: %s", exc)
+
+    def _show_welcome(self, first_run: bool = False):
+        def calibrate():
+            try:
+                from core.wake_calibrate import run_gui
+                run_gui()
+            except Exception as exc:
+                _logger.warning("Обучение слову: %s", exc)
+
+        def try_phrase(text: str):
+            handler = getattr(self, "on_text_command", None)
+            if handler:
+                handler(text)
+        actions = {"keys": self._show_keys, "about": self._show_about, "voice": self._show_about,
+                   "contacts": self._show_contacts, "study": self._show_study, "wake": calibrate}
+        try:
+            from ui_welcome import open_dialog
+            self._welcome_dlg = open_dialog(None, actions=actions, try_phrase=try_phrase, first_run=first_run)
+        except Exception as exc:
+            _logger.warning("Окно подсказок не открылось: %s", exc)
+
+    def open_study(self):
+        """Окно «Учёба» (ui_study.py). Из любого потока."""
+        self._study_sig.emit()
+
+    def _show_study(self):
+        try:
+            from ui_study import open_dialog
+            self._study_dlg = open_dialog(None)
+        except Exception as exc:
+            _logger.warning("Окно «Учёба» не открылось: %s", exc)
+
+    def open_backup(self):
+        """Окно «Резервная копия» (ui_backup.py). Из любого потока."""
+        self._backup_sig.emit()
+
+    def _show_backup(self):
+        try:
+            from ui_backup import open_dialog
+            self._backup_dlg = open_dialog(None)
+        except Exception as exc:
+            _logger.warning("Окно резервной копии не открылось: %s", exc)
+
+    def open_about(self):
+        """Окно «Обо мне» (ui_about.py). Из любого потока."""
+        self._about_sig.emit()
+
+    def _show_about(self):
+        try:
+            from ui_about import open_dialog
+            self._about_dlg = open_dialog(None, start_voice=getattr(self, "on_voice_intro", None))
+        except Exception as exc:
+            _logger.warning("Окно «Обо мне» не открылось: %s", exc)
+
+    def open_contacts(self):
+        """Окно «Контакты» (ui_contacts.py). Из любого потока."""
+        self._contacts_sig.emit()
+
+    def _show_contacts(self):
+        try:
+            from ui_contacts import open_dialog
+            self._contacts_dlg = open_dialog(None)
+        except Exception as exc:
+            _logger.warning("Окно контактов не открылось: %s", exc)
+
+    def open_keys(self):
+        """Окно «Ключи и подключения» (ui_keys.py). Из любого потока."""
+        self._keys_sig.emit()
+
+    def _show_keys(self):
+        try:
+            from ui_keys import open_dialog
+            self._keys_dlg = open_dialog(None)
+        except Exception as exc:
+            _logger.warning("Окно ключей не открылось: %s", exc)
+
+    def _show_macros(self):
+        try:
+            from ui_macros import open_dialog
+            self._macros_dlg = open_dialog(None)
+        except Exception as exc:
+            _logger.warning("Окно своих команд не открылось: %s", exc)
 
     def lock_on(self, tool: str):
         """Подписать над шаром инструмент, который сейчас выполняется."""
@@ -1514,6 +1652,32 @@ class MainWindow(QMainWindow):
 
 
 # ─── Публичный класс JarvisUI (совместимость с main.py) ──────────────────────
+def _covered_by_other_app(win) -> bool:
+    """Окно Джарвиса закрыто окнами других программ (Windows): в двух из
+    трёх точек окна сверху лежит чужое окно. Свои окна (карточки, браузер
+    Джарвиса) не в счёт."""
+    try:
+        import ctypes
+        import os
+        from ctypes import wintypes
+        u = ctypes.windll.user32
+        g = win.frameGeometry()
+        ratio = win.devicePixelRatioF() or 1.0
+        pid = os.getpid()
+        covered = 0
+        for fx, fy in ((0.5, 0.5), (0.25, 0.3), (0.75, 0.7)):
+            pt = wintypes.POINT(int((g.x() + g.width() * fx) * ratio), int((g.y() + g.height() * fy) * ratio))
+            h = u.WindowFromPoint(pt)
+            if not h:
+                continue
+            owner = wintypes.DWORD()
+            u.GetWindowThreadProcessId(u.GetAncestor(h, 2), ctypes.byref(owner))
+            covered += owner.value != pid
+        return covered >= 2
+    except Exception:
+        return False
+
+
 class JarvisUI(MainWindow):
     """Обёртка для совместимости с main.py."""
 

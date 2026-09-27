@@ -208,6 +208,15 @@ def fullscreen_app_active() -> bool:
         hwnd = u.GetForegroundWindow()
         if not hwnd or hwnd == u.GetShellWindow() or hwnd == u.GetDesktopWindow():
             return False
+        # Развёрнутое окно — не игра. Со скрытой панелью задач оно покрывает
+        # весь экран, и капсула пряталась за любым браузером на весь экран.
+        if u.IsZoomed(hwnd):
+            return False
+        pid = wintypes.DWORD()
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        import os
+        if pid.value == os.getpid():               # окна самого Джарвиса
+            return False
         r = wintypes.RECT()
         u.GetWindowRect(hwnd, ctypes.byref(r))
         mon = u.MonitorFromWindow(hwnd, 2)
@@ -251,7 +260,7 @@ class Island(QWidget):
 
     W, H = 460, 212                 # окно с запасом под самый большой вид
     TOP = 16                        # отступ от верхнего края экрана
-    SEED_W, SEED_H = 38.0, 8.0      # из такой полоски капсула вырастает
+    DROP_SPREAD = 0.97              # капля выросла — начинает растекаться
 
     def __init__(self, on_open=None, poll: bool = True):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
@@ -266,8 +275,11 @@ class Island(QWidget):
         self.wanted = False                        # окно Джарвиса свёрнуто
         self._w, self._h = SIZES["compact"]
         self._vw, self._vh = 0.0, 0.0             # скорость пружины
-        # Появление и уход, как у MacBook: 0 — полоска у края, 1 — капсула.
-        self._p, self._vp = 0.0, 0.0
+        # Появление жидкой каплей: сначала круг (_r: 0 → 1, диаметр — высота
+        # капсулы), потом он растекается в капсулу (_s: 0 → 1) с перелётом,
+        # как желе. Уход — в обратном порядке.
+        self._r, self._vr = 0.0, 0.0
+        self._s, self._vs = 0.0, 0.0
         self._leaving = False
         self._last = time.monotonic()
         self._clock = 0.0
@@ -330,20 +342,22 @@ class Island(QWidget):
         if show:
             self._leaving = False
             if not self.isVisible():
-                self._p, self._vp = 0.0, 0.0
+                self._r = self._vr = self._s = self._vs = 0.0
                 self._place()
+                logger.info("Капсула: показ")
                 self.show()
                 self._last = time.monotonic()
                 self._tmr.start(16)
         elif self.isVisible():
             if fullscreen:                 # игра на весь экран — сразу, без анимации
+                logger.info("Капсула: спрятана — впереди полноэкранное окно")
                 self._hide_now()
             else:                          # Джарвис развернулся — капсула втягивается
                 self._leaving = True
 
     def _hide_now(self):
         self._leaving = False
-        self._p, self._vp = 0.0, 0.0
+        self._r = self._vr = self._s = self._vs = 0.0
         self.hide()
         self._tmr.stop()
 
@@ -373,10 +387,20 @@ class Island(QWidget):
 
     # ── анимация ────────────────────────────────────────────────────────────
     def capsule_rect(self) -> QRectF:
-        p = max(0.0, self._p)
-        w = self.SEED_W + (self._w - self.SEED_W) * p
-        h = max(self.SEED_H * 0.5, self.SEED_H + (self._h - self.SEED_H) * p)
-        return QRectF((self.W - w) / 2, 0, w, h)
+        r, s = max(0.0, self._r), max(0.0, self._s)
+        d = self._h * r                                   # диаметр капли
+        w = d + (self._w - d) * s
+        # Жидкость: растекаясь быстро, капсула становится тоньше, отскакивая —
+        # толще; так же и при смене вида (ответ, «Слушаю»).
+        squash = max(-0.16, min(0.16, -0.045 * self._vs - 0.0008 * self._vw))
+        h = min(float(self.H), d * (1.0 + squash * min(1.0, r)))
+        return QRectF((self.W - w) / 2, 0, max(0.0, w), max(0.0, h))
+
+    def _radius(self, cap: QRectF) -> float:
+        """Капля — круг; растёкшись, капсула берёт своё скругление."""
+        full = min(cap.width(), cap.height()) / 2
+        s = max(0.0, min(1.0, self._s))
+        return min(full, full * (1 - s) + min(cap.height() / 2, 24) * s)
 
     def _step(self):
         now = time.monotonic()
@@ -392,17 +416,28 @@ class Island(QWidget):
         self._vh += (k * (th - self._h) - c * self._vh) * dt
         self._w += self._vw * dt
         self._h += self._vh * dt
-        # Выход — быстрее и без перелёта (критическое затухание), вход —
-        # с лёгким перелётом: капсула «выпрыгивает» и чуть пружинит.
         if self._leaving:
-            k, c, target = 320.0, 2 * math.sqrt(320.0), 0.0
+            # Уход без перелёта: капсула стягивается в каплю, капля тает.
+            ks = 300.0
+            self._vs += (ks * (0.0 - self._s) - 2 * math.sqrt(ks) * self._vs) * dt
+            self._s += self._vs * dt
+            kr = 260.0
+            rt = 0.0 if self._s < 0.12 else 1.0
+            self._vr += (kr * (rt - self._r) - 2 * math.sqrt(kr) * self._vr) * dt
+            self._r += self._vr * dt
+            if self._s < 0.05 and self._r < 0.04:
+                self._hide_now()
+                return
         else:
-            k, c, target = 170.0, 19.0, 1.0
-        self._vp += (k * (target - self._p) - c * self._vp) * dt
-        self._p += self._vp * dt
-        if self._leaving and self._p < 0.03:
-            self._hide_now()
-            return
+            # Капля выпрыгивает с лёгким перелётом…
+            kr, cr = 200.0, 16.0
+            self._vr += (kr * (1.0 - self._r) - cr * self._vr) * dt
+            self._r += self._vr * dt
+            # …и, почти выросши, растекается в капсулу, покачиваясь, как желе.
+            if self._r > self.DROP_SPREAD or self._s > 0:
+                ks, cs = 150.0, 10.5
+                self._vs += (ks * (1.0 - self._s) - cs * self._vs) * dt
+                self._s += self._vs * dt
         self._wave_t += dt
         if self._wave_t >= 0.04:                   # волна сдвигается 25 раз в секунду
             self._wave_t = 0.0
@@ -476,7 +511,7 @@ class Island(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         cap = self.capsule_rect()
-        radius = min(cap.height() / 2, 24)
+        radius = self._radius(cap)
         path = QPainterPath()
         path.addRoundedRect(cap, radius, radius)
         p.fillPath(path, QColor(0, 0, 0, 250))
@@ -485,11 +520,11 @@ class Island(QWidget):
         if mode == "listening":
             self._paint_listen_glow(p, path, cap)
         else:
-            p.setPen(QPen(self._col(70 * min(1.0, max(0.0, self._p))), 1))
+            p.setPen(QPen(self._col(70 * min(1.0, max(0.0, self._r))), 1))
             p.drawPath(path)
         p.setClipPath(path)
-        # Содержимое проявляется, когда капсула почти выросла, и гаснет первым.
-        p.setOpacity(min(1.0, max(0.0, (self._p - 0.55) / 0.4)))
+        # Содержимое проявляется, когда капля почти растеклась, и гаснет первым.
+        p.setOpacity(min(1.0, max(0.0, (self._s - 0.6) / 0.35)))
         self._buttons = {}
         white, dim = QColor(238, 243, 246), QColor(138, 150, 161)
         x0, w, h = cap.x(), cap.width(), cap.height()

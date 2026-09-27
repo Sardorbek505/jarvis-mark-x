@@ -46,6 +46,7 @@ import threading
 import time
 import subprocess
 import atexit
+from types import SimpleNamespace
 from datetime import datetime
 import logging
 
@@ -117,6 +118,7 @@ from core.team_collaboration import TeamCollaborationEngine
 from core.onboarding import ensure_gemini_key
 from core.latency import LatencyTracker
 from core.result_card import build_card, capture_foreground_png
+from core import quick
 from core.headless_ui import HeadlessUI, headless_requested
 from actions.open_app import open_app
 from actions.weather import weather_action
@@ -336,6 +338,18 @@ _SESSION_HEALTHY_SEC = 10.0
 _MIC_STALL_SEC = 2.0
 # Fish ждёт следующий кусок ответа не дольше этого (см. _fish_worker).
 _FISH_IDLE_SEC = 20.0
+
+# Мгновенные ответы (core/quick.py): сколько после своего ответа глушить
+# запоздалую речь Gemini на ту же команду, если пользователь молчит.
+_QUICK_HOLD_SEC = 8.0
+
+
+def _quick_allowed() -> bool:
+    """Готовые фразы — голосом Джарвиса (Fish). С голосом Gemini они звучали
+    бы чужим голосом посреди разговора, поэтому там — только по JARVIS_QUICK=1."""
+    if not quick.enabled():
+        return False
+    return get_voice_provider() == "fish" or os.getenv("JARVIS_QUICK", "").strip() == "1"
 # Сколько ждать ответа инструмента, прежде чем сказать «не успело».
 _TOOL_TIMEOUT_SEC = float(os.getenv("JARVIS_TOOL_TIMEOUT_SEC", "45"))
 # Сколько ждать расшифровку с именем, если вызов инструмента пришёл раньше.
@@ -455,9 +469,26 @@ def _action_of(args: dict) -> str:
 
 def _args_key(name: str, args: dict) -> str:
     """Подтверждение действует на ЭТОТ вызов целиком: «да» на удаление
-    a.txt не должно открывать удаление всего рабочего стола."""
+    a.txt не должно открывать удаление всего рабочего стола.
+
+    Сообщение и звонок контакту — по «кому и что сделать»: модель на втором
+    вызове может пересказать текст иначе, а уйдёт всё равно ровно тот текст,
+    который пользователь услышал и подтвердил (см. _execute_tool)."""
     import json as _json
+    if name == "contacts":
+        return f"contacts:{_action_of(args)}:{str(args.get('name', '')).strip().lower()}"
     return name + ":" + _json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _confirm_question(name: str, args: dict) -> str:
+    """Что именно переспросить — дословно (для сообщений и звонков людям)."""
+    if name != "contacts":
+        return ""
+    try:
+        from core.contacts import contacts
+        return contacts().confirm_text(_action_of(args), str(args.get("name", "")), str(args.get("text", "")))
+    except Exception:
+        return ""
 
 
 _YES_RE = re.compile(
@@ -471,6 +502,23 @@ def _is_affirmative(text: str) -> bool:
 
 
 def _is_destructive(name: str, args: dict) -> bool:
+    if name == "contacts" and _action_of(args) in ("message", "call"):
+        # Человеку от вашего имени — только после «да». Но если такого
+        # контакта нет или писать ему нельзя, спрашивать нечего: инструмент
+        # сам скажет, что не так.
+        try:
+            from core.contacts import contacts
+            c, _problem = contacts().precheck(_action_of(args), str(args.get("name", "")),
+                                              str(args.get("text", "")) or "…", urgent=True)
+            return c is not None
+        except Exception:
+            return True
+    if name == "macro" and _action_of(args) == "run":
+        try:
+            from core.macros import macros
+            return macros().needs_confirm(str(args.get("name") or args.get("phrase") or ""))
+        except Exception:
+            return False
     keys = _DESTRUCTIVE.get(name)
     if not keys:
         return False
@@ -1146,6 +1194,23 @@ TOOLS = [
         }
     },
     {
+        "name": "remember_screen",
+        "description": (
+            "«Запомни это», «сохрани, что на экране», «запомни эту статью / номер заказа / ошибку». "
+            "Делает снимок окна, выписывает главное (суть, номера, даты, ссылки) и кладёт заметку "
+            "в Obsidian (папка «Запомнил») вместе с картинкой. Найти потом — obsidian search. "
+            "Не путай с save_to_memory: тот — факт о пользователе словами, этот — то, что на экране."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "focus": {"type": "STRING", "description": "Что именно важно, если уточнил («номер заказа»)"},
+                "source": {"type": "STRING", "enum": ["window", "screen"],
+                           "description": "window — активное окно (обычно), screen — весь экран"},
+            },
+        }
+    },
+    {
         "name": "look_at_camera",
         "description": (
             "Посмотреть через веб-камеру: «что у меня в руке», «как я выгляжу», «посмотри на меня», "
@@ -1183,12 +1248,10 @@ TOOLS = [
     {
         "name": "morning_briefing",
         "description": (
-            "Дневной брифинг — погода, события на сегодня, главные новости. "
-            "Приветствие зависит от времени суток: доброе утро (6-12), добрый день (12-18), "
-            "добрый вечер (18-22), доброй ночи (22-6). "
-            "Вызывай когда пользователь говорит 'брифинг', 'что сегодня', "
-            "'доброе утро', 'добрый день', 'введи в курс дня'. "
-            "Также вызывай автоматически при старте сессии если сейчас утро (6-10)."
+            "Брифинг — факты на сегодня: погода в его городе, будильники и таймеры, дела из календаря, "
+            "новые сообщения от близких, новости по его темам, день рождения. Вернёт факты — расскажи "
+            "своими словами, коротко. Вызывай на «брифинг», «что сегодня», «доброе утро», «введи в курс "
+            "дня». Утром система запускает его сама, один раз — сам повторно не вызывай."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -1251,6 +1314,159 @@ TOOLS = [
                 "minutes": {"type": "NUMBER", "description": "Для watch: сколько минут следить (по умолчанию 30)"}
             },
             "required": ["action"]
+        }
+    },
+    {
+        "name": "macro",
+        "description": (
+            "СВОИ КОМАНДЫ пользователя: фраза → цепочка действий. create — «создай команду режим "
+            "стрима: открой OBS, подожди 2 секунды, нажми ctrl+shift+s и включи музыку» (разложи на "
+            "steps сам; phrases — как он будет её говорить, 1-3 варианта; {слово} во фразе — "
+            "переменная часть). run — выполнить по названию, list — какие есть, show — что делает, "
+            "delete — удалить. packs — готовые паки для программ (браузер, Windows, Telegram, VS Code, "
+            "Photoshop, Discord, Spotify), install_pack / remove_pack (name — пак). editor — открыть "
+            "окно «Свои команды». Сказанная фраза своей команды обычно выполняется сама мгновенно. "
+            "when — запускать и без фразы: «каждый будний день в 9 открывай почту», «когда открываю "
+            "OBS — включи музыку», «при запуске»; тогда phrases можно не давать."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["create", "run", "list", "show", "delete", "packs",
+                                                      "install_pack", "remove_pack", "editor"]},
+                "name": {"type": "STRING", "description": "Название команды или пака"},
+                "phrases": {"type": "ARRAY", "items": {"type": "STRING"},
+                            "description": "create: фразы запуска («включи режим стрима»)"},
+                "app": {"type": "STRING", "description": "create: только в этой программе («chrome.exe»), обычно пусто"},
+                "confirm": {"type": "BOOLEAN", "description": "create: переспрашивать перед запуском"},
+                "when": {
+                    "type": "ARRAY",
+                    "description": "create: когда запускать самой (обычно пусто)",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "on": {"type": "STRING", "enum": ["time", "app", "start"]},
+                            "at": {"type": "STRING", "description": "on=time: «09:00»"},
+                            "days": {"type": "STRING", "description": "on=time: будни / выходные / каждый день "
+                                                                      "/ «пн,ср,пт»"},
+                            "app": {"type": "STRING", "description": "on=app: процесс или имя («obs», «steam»)"},
+                        },
+                        "required": ["on"],
+                    },
+                },
+                "steps": {
+                    "type": "ARRAY",
+                    "description": "create: шаги по порядку",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "do": {"type": "STRING", "enum": ["open_app", "open_url", "keys", "type", "click",
+                                                              "wait", "volume", "media", "say", "tool"]},
+                            "value": {"type": "STRING", "description": (
+                                "open_app — программа; open_url — адрес; keys — «ctrl+shift+s»; type — "
+                                "текст; wait — секунды; volume — 0-100; media — playpause/next/previous; "
+                                "say — фраза; click — left/right/double")},
+                            "x": {"type": "NUMBER"}, "y": {"type": "NUMBER"},
+                            "tool": {"type": "STRING", "description": "do=tool: инструмент (music_player, clock…)"},
+                            "args": {"type": "STRING", "description": "do=tool: аргументы JSON-строкой "
+                                                                      "(«{\"action\": \"play\", \"query\": \"lofi\"}»)"},
+                        },
+                        "required": ["do"],
+                    },
+                },
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "study",
+        "description": (
+            "УЧЁБА пользователя: расписание пар и задачи. today / tomorrow — «какие пары сегодня/завтра», "
+            "day (when — «в четверг») , week — вся неделя, now — «какая сейчас/следующая пара», deadlines — "
+            "«какие дедлайны / что задали», add_task — «задали решить задачи 5-10 по матану до пятницы» "
+            "(title, subject, due словами, kind: домашка/контрольная/экзамен/проект), done — «сделал эссе», "
+            "delete_task, add_lesson (subject, weekday, start, end, room, kind, weeks all/odd/even), "
+            "focus — «режим учёбы», «давай позанимаемся 25 минут» (minutes, subject). Окно — app_window "
+            "window=study. Объяснить тему, проверить решение — сам, это не сюда."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["today", "tomorrow", "day", "week", "now", "deadlines",
+                                                      "add_task", "done", "delete_task", "add_lesson", "focus"]},
+                "when": {"type": "STRING", "description": "day: день словами"},
+                "title": {"type": "STRING", "description": "Задача: что сделать"},
+                "subject": {"type": "STRING", "description": "Предмет, как сказал (можно «матан»)"},
+                "due": {"type": "STRING", "description": "Срок словами: «в пятницу», «до 5 октября», «завтра»"},
+                "kind": {"type": "STRING", "description": "домашка/контрольная/экзамен/проект; для пары — лекция/практика/семинар/лабораторная"},
+                "weekday": {"type": "STRING"}, "start": {"type": "STRING"}, "end": {"type": "STRING"},
+                "room": {"type": "STRING"}, "weeks": {"type": "STRING", "enum": ["all", "odd", "even"]},
+                "minutes": {"type": "NUMBER"}, "days": {"type": "NUMBER"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "about_me",
+        "description": (
+            "Знакомство с пользователем — анкета «Обо мне» (имя, как обращаться, город, подъём/отбой, "
+            "музыка, новости, близкие, цели…). next — какой вопрос задать следующим; answer (key, value) — "
+            "сохранить ответ, вернёт следующий вопрос; skip (key) — пропустить; later — «потом»/«хватит»; "
+            "restart — «давай познакомимся», «спроси меня обо мне»; status — «что ты обо мне знаешь по "
+            "анкете». Окно — app_window window=about. Отдельные факты вне анкеты — save_to_memory."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["next", "answer", "skip", "later", "restart", "status"]},
+                "key": {"type": "STRING", "description": "Ключ вопроса из next (name, city, wake_time…)"},
+                "value": {"type": "STRING", "description": "answer: ответ кратко, как сказал пользователь"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "contacts",
+        "description": (
+            "ЛЮДИ из записной книжки пользователя. message — «напиши маме, что задержусь на 20 минут» "
+            "(от ЕГО Telegram; text — само сообщение от первого лица, как написал бы он: «Задержусь на "
+            "20 минут»; as_voice — голосовым); call — «позвони брату и скажи, что ужин готов» (звонит "
+            "аккаунт Джарвиса, text — что передать; urgent — если сказал «срочно»); read — «что мне "
+            "написали?», «что написала мама?»; add — «добавь контакт Азиз — @aziz» (aliases — как ещё "
+            "его называет); delete; find; list. Перед отправкой и звонком система попросит "
+            "подтверждение — переспроси ДОСЛОВНО и вызови снова только после «да». Себе в Telegram — "
+            "send_to_telegram, позвонить самому пользователю — phone_call."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["message", "call", "read", "add", "delete", "find", "list"]},
+                "name": {"type": "STRING", "description": "Кому — как назвал пользователь: «мама», «брат», «Азиз»"},
+                "text": {"type": "STRING", "description": "message: текст сообщения; call: что передать"},
+                "as_voice": {"type": "BOOLEAN"},
+                "urgent": {"type": "BOOLEAN", "description": "call: сказал «срочно» — можно и ночью"},
+                "telegram": {"type": "STRING", "description": "add: @username или номер"},
+                "aliases": {"type": "STRING", "description": "add: как ещё называет, через запятую"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "app_window",
+        "description": (
+            "Открыть окно Джарвиса: keys — «открой ключи», «где ввести ключ», «проверь ключи», "
+            "«подключи Spotify/звонки» (там же вход кнопкой); commands — «открой редактор команд»; "
+            "contacts — «открой контакты», «подключи мой телеграм»; about — «открой обо мне», «что ты обо мне знаешь» "
+            "(окно); study — «открой расписание», «открой учёбу»; help — «что ты умеешь», «помощь», «подсказки», "
+            "«с чего начать»; backup — «сделай резервную копию», «перенеси на новый ПК», «восстанови из копии» "
+            "(пароль — только в окне, не голосом)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {"window": {"type": "STRING",
+                                      "enum": ["keys", "commands", "contacts", "about", "study", "help",
+                                               "backup"]}},
+            "required": ["window"]
         }
     },
     {
@@ -1372,6 +1588,7 @@ class Jarvis:
         self._followups_left = 0      # сколько реплик без имени ещё продолжат разговор
         self._rearm_after_speech = False
         self._fish_task: asyncio.Task | None = None
+        self._quick_lift = False     # system-реплика: снять глушение мгновенного хода
         self._echo_guard_until = 0.0  # см. _ECHO_TAIL_SEC
         self._resume_handle: str | None = None  # возобновление сессии после разрыва
 
@@ -1382,6 +1599,15 @@ class Jarvis:
         self.team_engine = TeamCollaborationEngine(DATA_DIR)
         self.last_user_text = ""
         self._user_turn = 0      # номер последней реплики пользователя (для подтверждений)
+        # Ждёт «да»: (ключ, когда спросили, номер реплики) и сами аргументы.
+        # Без этого первое же «выключи компьютер» падало AttributeError
+        # вместо вопроса «точно?» — проверялось только правило, не сам вопрос.
+        self._pending_destructive: tuple | None = None
+        self._pending_args: dict | None = None
+        # Последние ~30 с вашей речи (громкие кадры) — для проверки голоса,
+        # и номер реплики, набранной с клавиатуры (ей доверяем: вы за ПК).
+        self._voice_ring: collections.deque = collections.deque(maxlen=480)
+        self._typed_turn = -1
 
         # Секундомер голосового хода. Пишет в лог задержку от конца речи до
         # первого звука ответа при JARVIS_DEBUG_UI=1.
@@ -1442,6 +1668,76 @@ class Jarvis:
             vf.log = self.ui.write_log
         except Exception as exc:
             logger.warning("Самопроверка не подключилась: %s", exc)
+
+        # Ключи: сломанный или закончившийся ключ — сразу видно (журнал и
+        # капсула), а не догадываться по странному поведению. В фоне.
+        def _check_keys():
+            try:
+                from core import keys
+                for sid, (state, text) in keys.check_all().items():
+                    if state in ("bad", "warn") and sid != "gemini":
+                        self.ui.write_log(f"SYS: 🔑 {keys.BY_ID[sid].title}: {text}")
+            except Exception as exc:
+                logger.debug("Проверка ключей: %s", exc)
+        if os.getenv("JARVIS_KEYS_CHECK", "1") != "0":
+            threading.Thread(target=_check_keys, daemon=True, name="keys-check").start()
+
+        # Учёба (core/study.py): напоминания о парах и дедлайнах.
+        try:
+            from core.study import study
+            stu = study()
+            stu.say = self.speak
+            stu.notify = lambda title, text: self.ui.write_log(f"SYS: 📚 {title}: {text}")
+            stu.start()
+        except Exception as exc:
+            logger.warning("Учёба не запустилась: %s", exc)
+
+        # «Обо мне»: кнопка «Познакомиться голосом» в окне зовёт сюда.
+        def _voice_intro():
+            from core import about_me
+            self.speak(about_me.intro_instruction(restart=True))
+        self.ui.on_voice_intro = _voice_intro
+
+        # Контакты (core/contacts.py): новые сообщения близких — в капсулу.
+        try:
+            from core.contacts import contacts
+            ct = contacts()
+            ct.log = self.ui.write_log
+            ct.say = self.speak
+            if os.getenv("JARVIS_CONTACTS_LISTEN", "1") != "0":
+                ct.me.start_listening()
+        except Exception as exc:
+            logger.warning("Контакты не подключились: %s", exc)
+
+        # Свои команды (core/macros.py): шагам нужны голос, журнал и инструменты.
+        try:
+            from core.macros import macros
+            mc = macros()
+            mc.say = self.speak
+            mc.log = self.ui.write_log
+            mc.run_tool = self._run_tool_blocking
+            if os.getenv("JARVIS_MACRO_TRIGGERS", "1") != "0":
+                from core.macro_triggers import Scheduler
+                self._macro_triggers = Scheduler(mc)
+                self._macro_triggers.start()
+        except Exception as exc:
+            logger.warning("Свои команды не подключились: %s", exc)
+
+        # Мгновенные ответы (core/quick.py): готовые фразы озвучить заранее,
+        # один раз — дальше «Есть, сэр» звучит без сети и без ожидания.
+        if _quick_allowed() and os.getenv("JARVIS_QUICK_PREWARM", "1") != "0":
+            def _prewarm():
+                from telegram_bot import tts_edge, tts_fish
+
+                async def synth(text):
+                    if tts_fish.is_configured():
+                        return await tts_fish.speak_pcm(text, sample_rate=RECV_SAMPLE_RATE)
+                    return await tts_edge.speak_pcm(text, sample_rate=RECV_SAMPLE_RATE)
+                try:
+                    asyncio.run(quick.prewarm(synth, RECV_SAMPLE_RATE))
+                except Exception as exc:
+                    logger.warning("Готовые фразы не озвучены: %s", exc)
+            threading.Thread(target=_prewarm, daemon=True, name="quick-prewarm").start()
 
         # Часы: таймеры, секундомер, будильники (core/clock.py). Сработало —
         # звук, голос Джарвиса и событие в журнале и капсуле.
@@ -1624,6 +1920,7 @@ class Jarvis:
             self.wake()
             self.last_user_text = text
             self._user_turn += 1
+            self._typed_turn = self._user_turn
             self._remember_turn(text, "")
             self._send_text_to_session(text)
 
@@ -1729,6 +2026,7 @@ class Jarvis:
             return
         if not text.lstrip().startswith("["):
             text = f"[СИСТЕМА: произнеси пользователю, своими словами не дополняй: «{text}»]"
+        self._quick_lift = True     # это Джарвис должен сказать — не глушить
         self.wake()
         self._send_text_to_session(text)
 
@@ -1880,18 +2178,28 @@ class Jarvis:
             )
             if not fresh:
                 self._pending_destructive = (key, time.time(), self._user_turn)
+                self._pending_args = dict(args)
+                question = _confirm_question(name, args)
                 logger.warning("Требую подтверждения: %s/%s", name, _action_of(args))
-                self.ui.write_log(f"SYS: жду подтверждения — {name}/{_action_of(args)}")
+                self.ui.write_log(f"SYS: жду подтверждения — {question or name + '/' + _action_of(args)}")
                 if not self.ui.muted:
                     self.ui.set_state("LISTENING")
                 return types.FunctionResponse(
                     id=fc.id, name=name,
                     response={"result": (
-                        "НЕ ВЫПОЛНЕНО — нужно подтверждение. Переспроси пользователя вслух, "
-                        "точно ли он хочет это сделать, и вызови инструмент повторно "
-                        "ТОЛЬКО если он ответит утвердительно."
+                        "НЕ ВЫПОЛНЕНО — нужно подтверждение. Переспроси пользователя вслух"
+                        + (f" дословно: «{question}»" if question else ", точно ли он хочет это сделать")
+                        + ", и вызови инструмент повторно ТОЛЬКО если он ответит утвердительно."
                     )},
                 )
+            if name == "contacts":
+                args = dict(getattr(self, "_pending_args", None) or args)   # ровно то, что подтвердили
+            denied = await self._voice_denied(name, args)
+            if denied:
+                self._pending_destructive = None
+                if not self.ui.muted:
+                    self.ui.set_state("LISTENING")
+                return types.FunctionResponse(id=fc.id, name=name, response={"result": denied})
             self._pending_destructive = None
             logger.warning("Подтверждено, выполняю: %s/%s", name, _action_of(args))
 
@@ -2180,11 +2488,8 @@ class Jarvis:
 
             # ── Инструмент: утренний брифинг ─────────────────────────────
             elif name == "morning_briefing":
-                from actions.morning_briefing import morning_briefing
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None, lambda: morning_briefing(args, player=self.ui)
-                )
+                from core.briefing import briefing_tool
+                result = await asyncio.to_thread(briefing_tool, args)
 
             # ── Инструмент: умный таймер сна ──────────────────────────────
             elif name == "clock":
@@ -2194,6 +2499,48 @@ class Jarvis:
             elif name == "eyes":
                 from core.eyes import eyes_tool
                 result = await asyncio.to_thread(eyes_tool, args)
+
+            elif name == "app_window":
+                which = str(args.get("window", "")).lower()
+                titles = {"keys": ("open_keys", "Ключи и подключения"), "commands": ("open_macros", "Свои команды"),
+                          "contacts": ("open_contacts", "Контакты"), "about": ("open_about", "Обо мне"),
+                          "study": ("open_study", "Учёба"), "help": ("open_welcome", "Что умеет Джарвис"),
+                          "backup": ("open_backup", "Резервная копия")}
+                method, title = titles.get(which, titles["commands"])
+                opener = getattr(self.ui, method, None)
+                if opener:
+                    opener()
+                    result = f"Открыл окно «{title}»."
+                else:
+                    result = "Окна тут нет — запущен без интерфейса."
+
+            elif name == "remember_screen":
+                from core.remember import remember_screen
+                result = await asyncio.to_thread(remember_screen, args)
+
+            elif name == "study":
+                from core.study import study_tool
+                result = await asyncio.to_thread(study_tool, args)
+
+            elif name == "about_me":
+                from core.about_me import about_tool
+                result = await asyncio.to_thread(about_tool, args)
+
+            elif name == "contacts":
+                from core.contacts import contacts_tool
+                who = str(args.get("name", ""))
+                result = await asyncio.to_thread(contacts_tool, args, lambda r, w=who: self.speak(
+                    f"[СИСТЕМА: звонок ({w}) закончился: {r} Коротко перескажи пользователю, что ответили.]"))
+
+            elif name == "macro":
+                if str(args.get("action", "")).lower() == "editor":
+                    opener = getattr(self.ui, "open_macros", None)
+                    if opener:
+                        opener()
+                    result = "Открыл окно «Свои команды»." if opener else "Окна команд тут нет."
+                else:
+                    from core.macros import macro_tool
+                    result = await asyncio.to_thread(macro_tool, args)
 
             elif name == "location":
                 from core.location import location_tool
@@ -2471,6 +2818,9 @@ class Jarvis:
             self._note_gate(None)
             if self._frame_was_loud:
                 self._latency.mark_voice_frame()
+                # Речь — и в копилку для проверки голоса (core/voice_id.py):
+                # на подтверждении опасного сверяется просьба + «да».
+                self._voice_ring.append((time.monotonic(), pcm_bytes))
 
             # Сбрасываем предбуфер (pre-roll) и плавно приглушаем музыку/кино при начале речи
             if was_silent:
@@ -2564,7 +2914,20 @@ class Jarvis:
             fish_alive = tts_fish.is_configured()
             probe: asyncio.Future | None = None
 
+            cache = quick.voice_cache()
+
             async def synth(fragment: str):
+                # Готовая фраза («Есть, сэр.») уже озвучена — звучит сразу.
+                pcm = cache.get(fragment, RECV_SAMPLE_RATE)
+                if pcm:
+                    return pcm
+                pcm = await synth_fresh(fragment)
+                # Кэш — только своим голосом: Edge вместо Fish туда не пишем.
+                if pcm and cache.wanted(fragment) and (fish_alive or not tts_fish.is_configured()):
+                    cache.put(fragment, RECV_SAMPLE_RATE, pcm)
+                return pcm
+
+            async def synth_fresh(fragment: str):
                 nonlocal fish_alive, probe
                 if fish_alive and probe is not None:
                     await probe
@@ -2769,6 +3132,96 @@ class Jarvis:
                     show(card["title"], card["address"], card["body"], png, card["extra"])
             threading.Thread(target=_shot, daemon=True, name="card-shot").start()
 
+    async def _quick_run(self, q, heard: str):
+        """Мгновенная команда: выполнить на ПК и сразу ответить готовой
+        фразой (или ответом инструмента, если не вышло) — без круга через
+        Gemini (core/quick.py)."""
+        started = time.perf_counter()
+        result = ""
+        if q.tool:
+            self._quick_seq = getattr(self, "_quick_seq", 0) + 1
+            fc = SimpleNamespace(id=f"quick-{self._quick_seq}", name=q.tool, args=dict(q.args))
+            try:
+                fr = await asyncio.wait_for(self._execute_tool(fc), _TOOL_TIMEOUT_SEC)
+                result = str((getattr(fr, "response", None) or {}).get("result", ""))
+                self._show_card(fc, fr)
+            except Exception as exc:
+                logger.warning("Мгновенная команда %s: %s", q.tool, exc)
+                result = f"Не получилось, сэр: {exc}"
+        text = quick.reply_for(q, result)
+        logger.info("⚡ Мгновенно: «%s» → %s %s → «%s» (%d мс)", heard[:80], q.tool or "-",
+                    q.args, text, int((time.perf_counter() - started) * 1000))
+        self.ui.write_log(f"Вы: {heard}")
+        self.ui.write_log(f"Джарвис: {text}")
+        self._remember_turn(heard, text)
+        if text:
+            await self._speak_fish(text)
+
+    async def _voice_denied(self, name: str, args: dict) -> str:
+        """Опасное подтверждено — но ВАШИМ ли голосом? '' — да (или проверить
+        нечем), иначе — что сказать. Набранное с клавиатуры — доверенное."""
+        try:
+            from core import voice_id
+            if not voice_id.sensitive(name, args) or self._typed_turn == self._user_turn:
+                return ""
+            vid = voice_id.voice_id()
+            if not vid.enrolled():
+                return ""
+            since = time.monotonic() - 30
+            pcm = b"".join(p for t, p in list(self._voice_ring) if t >= since)
+            ok, score = await asyncio.to_thread(vid.verify, pcm)
+        except Exception as exc:
+            logger.warning("Проверка голоса: %s", exc)
+            return ""
+        if ok is None:
+            return ""                          # мало речи или нет модели — не мешаем
+        logger.info("Голос владельца: %s (сходство %.2f, порог %.2f)", "да" if ok else "НЕТ", score, vid.threshold)
+        if ok:
+            return ""
+        self.ui.write_log(f"SYS: 🔒 не узнал голос владельца ({score:.2f}) — {name}/{_action_of(args)} не выполнено")
+        return ("НЕ ВЫПОЛНЕНО — голос не похож на голос владельца. Скажи: «Не узнаю ваш голос, сэр. "
+                "Повторите ближе к микрофону или подтвердите, набрав «да» в окне Джарвиса». Сам не повторяй вызов.")
+
+    def _maybe_briefing(self):
+        """Первый разговор утром (после подъёма из «Обо мне», до полудня, раз в
+        день) — после ответа на просьбу коротко рассказать, что сегодня."""
+        if getattr(self, "_intro_offered", False):
+            return                                      # сегодня знакомимся — хватит монологов
+        try:
+            from core import briefing
+            if not briefing.due():
+                return
+            briefing.mark_done()
+        except Exception as exc:
+            logger.debug("Брифинг: %s", exc)
+            return
+
+        def run():
+            try:
+                facts = briefing.gather()
+                logger.info("Утренний брифинг: %s", ", ".join(facts) or "фактов нет")
+                self.speak(briefing.instruction(facts))
+            except Exception as exc:
+                logger.warning("Утренний брифинг: %s", exc)
+        threading.Thread(target=run, daemon=True, name="briefing").start()
+
+    def _run_tool_blocking(self, name: str, args: dict) -> str:
+        """Инструмент Джарвиса из фонового потока (шаг своей команды)."""
+        if not self._loop or not self._loop.is_running():
+            return "Нет связи с Джарвисом."
+        self._quick_seq = getattr(self, "_quick_seq", 0) + 1
+        fc = SimpleNamespace(id=f"macro-{self._quick_seq}", name=name, args=dict(args or {}))
+        fut = asyncio.run_coroutine_threadsafe(self._execute_tool(fc), self._loop)
+        fr = fut.result(timeout=_TOOL_TIMEOUT_SEC + 5)
+        return str((getattr(fr, "response", None) or {}).get("result", ""))
+
+    async def _quick_absorb(self, function_calls, why: str):
+        """Gemini тоже решил выполнить команду, которую Джарвис уже сделал сам:
+        ответить ему «уже сделано», не выполняя второй раз."""
+        await self.session.send_tool_response(function_responses=[
+            types.FunctionResponse(id=fc.id, name=fc.name, response={"result": why})
+            for fc in function_calls])
+
     async def _deferred_tool_calls(self, function_calls, named: asyncio.Event):
         """Вызов пришёл раньше расшифровки с именем — ждём её немного.
         Раньше такой вызов отклонялся сразу: «Джарвис, открой хром» при
@@ -2818,9 +3271,52 @@ class Jarvis:
         def decide() -> bool:
             return self.is_awake() or named.is_set()
 
+        # Мгновенный ответ (core/quick.py): частую команду Джарвис выполнил и
+        # озвучил сам — речь и вызовы Gemini на неё глушатся, пока человек не
+        # заговорит снова (или _QUICK_HOLD_SEC после конца хода).
+        quick_on = False
+        quick_q = None              # что выполнили
+        quick_after = False         # ход с мгновенным ответом уже завершён
+        quick_until = 0.0
+        quick_skip = None           # досказал фразу — глушение снято, но повтор той же команды не делать
+        quick_timer: asyncio.Task | None = None
+        answered = False            # Gemini уже отвечает на этот ход — не перебивать
+
+        def quick_try() -> bool:
+            """Если фраза целиком — частая команда, выполнить её сразу."""
+            nonlocal quick_on, quick_q, quick_until, held, fish_text
+            if quick_on:
+                return True
+            if answered or not _quick_allowed() or not decide():
+                return False
+            heard = "".join(in_buf)
+            q = quick.match(heard)
+            if not q:
+                return False
+            quick_on, quick_q = True, q
+            quick_until = time.monotonic() + _QUICK_HOLD_SEC
+            held, fish_text = [], ""
+            fish_close()
+            self._drop_pending_speech()          # начатый ответ Gemini — не доигрывать
+            self._spawn(self._quick_run(q, _clean_dialog_text(heard)))
+            return True
+
+        async def quick_later():
+            await asyncio.sleep(quick.QUIET_SEC)
+            quick_try()
+
+        def quick_lift(why: str):
+            nonlocal quick_on, quick_q, quick_after
+            if quick_on:
+                logger.debug("Мгновенный ход: глушение снято (%s)", why)
+            quick_on, quick_q, quick_after = False, None, False
+
         try:
             while True:
                 async for response in self.session.receive():
+                    if quick_on and (self._quick_lift or (quick_after and time.monotonic() > quick_until)):
+                        quick_lift("system-реплика" if self._quick_lift else "время вышло")
+                    self._quick_lift = False
                     upd = response.session_resumption_update
                     if upd and upd.resumable and upd.new_handle:
                         self._resume_handle = upd.new_handle
@@ -2843,6 +3339,8 @@ class Jarvis:
                     if sc and sc.input_transcription:
                         txt = sc.input_transcription.text
                         if txt:
+                            if quick_after:
+                                quick_lift("новая реплика")
                             in_buf.append(txt)
                             self._latency.mark_transcript()
                             print(f"[ДЖАРВИС] 🎤 Фрагмент: '{txt}'")
@@ -2856,8 +3354,19 @@ class Jarvis:
                                             self._queue_answer_audio(chunk)
                                     held = []
                                     fish_flush()
+                            if quick_on and not quick.match("".join(in_buf)):
+                                # «Громче… и открой хром» — фраза шире команды:
+                                # остальное решает Gemini, громкость второй раз не трогаем.
+                                quick_skip = quick_q
+                                quick_lift("фраза продолжилась")
+                            elif not quick_on and _quick_allowed():
+                                # Конец фразы — тишина в расшифровке (или начало ответа).
+                                if quick_timer:
+                                    quick_timer.cancel()
+                                quick_timer = asyncio.create_task(quick_later())
 
-                    if response.data:
+                    if response.data and not quick_try():
+                        answered = True
                         if self._turn_done_event and self._turn_done_event.is_set():
                             self._turn_done_event.clear()
                         if addressed is None:
@@ -2872,7 +3381,9 @@ class Jarvis:
                             held.append(response.data)
 
                     if sc:
-                        if sc.output_transcription and sc.output_transcription.text:
+                        if (sc.output_transcription and sc.output_transcription.text
+                                and not quick_try()):
+                            answered = True
                             out_buf.append(sc.output_transcription.text)
                             fish_text += sc.output_transcription.text
                             if addressed is None:
@@ -2887,6 +3398,16 @@ class Jarvis:
                         if sc.turn_complete:
                             if addressed is None:
                                 addressed = decide()
+                            if quick_timer:
+                                quick_timer.cancel()
+                                quick_timer = None
+                            # Gemini промолчал, а фраза — частая команда: выполнить.
+                            quick_turn = quick_try()
+                            if quick_turn:
+                                quick_after = True
+                                quick_until = time.monotonic() + _QUICK_HOLD_SEC
+                            quick_skip = None
+                            answered = False
                             fish_flush(final=True)
                             fish_text = ""
                             # С внешним голосом ход закрывает _fish_worker,
@@ -2909,6 +3430,16 @@ class Jarvis:
                                 self._release_ducking()
                                 continue
 
+                            if quick_turn:
+                                # Реплику и ответ уже записал _quick_run.
+                                if full_in:
+                                    self.last_user_text = full_in
+                                    self._user_turn += 1
+                                    if not by_name:
+                                        self._continue_conversation()
+                                    self._maybe_briefing()
+                                continue
+
                             if full_in:
                                 print(f"[ДЖАРВИС] 🎤 Полная фраза: '{full_in}'")
                                 self.ui.write_log(f"Вы: {full_in}")
@@ -2922,6 +3453,7 @@ class Jarvis:
                                 # бы Джарвиса «проснувшимся» бесконечно.
                                 if not by_name:
                                     self._continue_conversation()
+                                self._maybe_briefing()
 
                             if full_out:
                                 self.ui.write_log(f"Джарвис: {full_out}")
@@ -2937,6 +3469,20 @@ class Jarvis:
                         if addressed is None:
                             addressed = decide()
                         calls = response.tool_call.function_calls
+                        if quick_try():
+                            await self._quick_absorb(calls, "Уже выполнено мгновенно, пользователь уже "
+                                                     "услышал ответ. Ничего не говори.")
+                            continue
+                        if quick_skip is not None:
+                            same = [fc for fc in calls if fc.name == quick_skip.tool
+                                    and _action_of(dict(fc.args or {})) == quick_skip.args.get("action")]
+                            if same:
+                                await self._quick_absorb(same, "Это уже выполнено. Про это не говори.")
+                                calls = [fc for fc in calls if fc not in same]
+                            quick_skip = None
+                            if not calls:
+                                continue
+                        answered = True
                         if addressed:
                             await self._run_tool_calls(calls, True)
                         else:
@@ -3126,23 +3672,30 @@ class Jarvis:
                     tg.create_task(self._receive_audio())
                     tg.create_task(self._play_audio())
 
-                    # Авто-триггер утреннего брифинга (6-11 утра, 1 раз в день)
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    if 6 <= datetime.now().hour < 11 and getattr(self, "_last_briefing_date", None) != today_str:
-                        self._last_briefing_date = today_str
-                        async def _run_morning_briefing():
-                            await asyncio.sleep(1.5)
-                            try:
-                                from actions.morning_briefing import morning_briefing
-                                loop = asyncio.get_event_loop()
-                                briefing = await loop.run_in_executor(
-                                    None, lambda: morning_briefing({}, player=self.ui)
-                                )
-                                if briefing:
-                                    self.speak(briefing)
-                            except Exception as e:
-                                logger.warning("Утренний брифинг: %s", e)
-                        tg.create_task(_run_morning_briefing())
+                    # Первое знакомство: пока Джарвис почти ничего о владельце не
+                    # знает — предложить (не чаще раза в день, не больше 3 раз,
+                    # никогда после «не надо»; core/about_me.py). В этот раз —
+                    # без брифинга: два монолога подряд — перебор.
+                    offer_intro = False
+                    if getattr(self, "_intro_checked", False) is False:
+                        self._intro_checked = True
+                        try:
+                            from core import about_me
+                            offer_intro = await asyncio.to_thread(about_me.should_offer)
+                            if offer_intro:
+                                about_me.mark_offered()
+
+                                async def _intro():
+                                    await asyncio.sleep(2.0)
+                                    self.speak(about_me.intro_instruction())
+                                tg.create_task(_intro())
+                        except Exception as exc:
+                            logger.debug("Знакомство: %s", exc)
+
+                    # Утренний брифинг — не здесь (при каждом подключении), а в
+                    # первом разговоре утра: см. _maybe_briefing / core/briefing.py.
+                    if offer_intro:
+                        self._intro_offered = True
 
             except asyncio.CancelledError:
                 raise

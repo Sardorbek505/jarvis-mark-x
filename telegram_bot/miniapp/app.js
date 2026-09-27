@@ -250,6 +250,13 @@ function connect() {
         break;
       case 'pc_status':
         pcOnline(!!msg.online);
+        if (msg.online && activeTab === 'pc') send({ type: 'pc_macros' });
+        break;
+      case 'pc_macros':
+        renderMacros(msg.items || [], msg.error || '');
+        break;
+      case 'pc_macro_result':
+        macroResult(msg);
         break;
       case 'thinking':
         setState('processing');
@@ -365,6 +372,54 @@ document.querySelectorAll('#view-pc [data-cmd], #view-pc [data-say]').forEach(bt
     setState('processing');
   });
 });
+
+// Свои команды ПК: кнопки из macros.json на компьютере. Команда с 🔒 —
+// сначала «точно?», как на ПК голосом.
+const MACRO_ICON = '<svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>';
+const LOCK_ICON = '<svg viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+function renderMacros(items, error) {
+  const box = $('pc-macros');
+  box.replaceChildren();
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'macros-empty';
+    empty.textContent = error ? `${error} — свои команды покажутся, когда он будет на связи`
+      : 'Пока нет. На ПК: «Джарвис, создай команду…» или окно «Свои команды»';
+    box.append(empty);
+    return;
+  }
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.className = 'pc-tile wide macro';
+    b.innerHTML = it.confirm ? LOCK_ICON : MACRO_ICON;
+    const t = document.createElement('span');
+    t.className = 'macro-text';
+    const n = document.createElement('b');
+    n.textContent = it.name;
+    const sub = document.createElement('small');
+    sub.textContent = it.phrase ? `«${it.phrase}»` : (it.when || '');
+    t.append(n, sub);
+    b.append(t);
+    b.addEventListener('click', () => runMacro(it.name, false, b));
+    box.append(b);
+  }
+}
+function runMacro(name, confirmed, btn) {
+  if (!pcIsOnline) { showToast('ПК офлайн — команда не дойдёт', 'error'); notifyHaptic('warning'); return; }
+  haptic('medium');
+  if (btn) { btn.classList.add('sent'); setTimeout(() => btn.classList.remove('sent'), 700); }
+  if (send({ type: 'pc_macro', name, confirmed })) showToast(`Выполняю «${name}»`);
+}
+function macroResult(msg) {
+  if (msg.need_confirm) {
+    const go = ok => ok && runMacro(msg.name, true);
+    if (tg?.showConfirm) tg.showConfirm(msg.text, go); else go(window.confirm(msg.text));
+    return;
+  }
+  notifyHaptic(msg.ok ? 'success' : 'error');
+  addMsg('bot', msg.text, { rich: false });
+  showToast(msg.text.split('\n')[0], msg.ok ? 'info' : 'error');
+}
 
 // ── Голос: зажми — говори, тап — диалог без рук ───────────────────────────────
 let recCtx = null, playCtx = null, analyser = null, workletNode = null, micStream = null, spNode = null;
@@ -602,6 +657,7 @@ function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   $('screen-title').textContent = TAB_TITLES[name] || 'J.A.R.V.I.S';
   if (['dashboard', 'tasks', 'habits'].includes(name)) send({ type: 'get_data', view: name });
+  if (name === 'pc') send({ type: 'pc_macros' });
 }
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 window.switchTab = switchTab;
