@@ -14,7 +14,7 @@ from PyQt6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QP
 NAMES = ("play", "pause", "backward", "forward", "expand", "timer", "note", "film",
          "close", "send", "back", "next", "reload", "check", "checks", "eye",
          "app", "globe", "keyboard", "text", "cursor", "volume", "speak", "bolt", "spark", "plus",
-         "trash", "up", "down", "grid", "mic", "key", "lock", "phone", "link", "copy", "plane", "person", "moon")
+         "trash", "up", "down", "grid", "mic", "key", "lock", "phone", "link", "copy", "plane", "person", "moon", "book")
 
 
 def _tri(pts) -> QPolygonF:
@@ -284,6 +284,16 @@ def draw_icon(p: QPainter, name: str, c: QPointF, s: float, color: QColor):
         cut = QPainterPath()
         cut.addEllipse(QPointF(x + s * 0.18, y - s * 0.14), s * 0.30, s * 0.30)
         p.drawPath(path.subtracted(cut))
+    elif name == "book":                          # открытая книга
+        p.setPen(line)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for k in (-1, 1):
+            path = QPainterPath(QPointF(x, y - s * 0.26))
+            path.quadTo(QPointF(x + k * s * 0.20, y - s * 0.38), QPointF(x + k * s * 0.44, y - s * 0.30))
+            path.lineTo(QPointF(x + k * s * 0.44, y + s * 0.30))
+            path.quadTo(QPointF(x + k * s * 0.20, y + s * 0.22), QPointF(x, y + s * 0.34))
+            p.drawPath(path)
+        p.drawLine(QPointF(x, y - s * 0.26), QPointF(x, y + s * 0.34))
     p.restore()
 
 

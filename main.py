@@ -1345,6 +1345,34 @@ TOOLS = [
         }
     },
     {
+        "name": "study",
+        "description": (
+            "УЧЁБА пользователя: расписание пар и задачи. today / tomorrow — «какие пары сегодня/завтра», "
+            "day (when — «в четверг») , week — вся неделя, now — «какая сейчас/следующая пара», deadlines — "
+            "«какие дедлайны / что задали», add_task — «задали решить задачи 5-10 по матану до пятницы» "
+            "(title, subject, due словами, kind: домашка/контрольная/экзамен/проект), done — «сделал эссе», "
+            "delete_task, add_lesson (subject, weekday, start, end, room, kind, weeks all/odd/even), "
+            "focus — «режим учёбы», «давай позанимаемся 25 минут» (minutes, subject). Окно — app_window "
+            "window=study. Объяснить тему, проверить решение — сам, это не сюда."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "enum": ["today", "tomorrow", "day", "week", "now", "deadlines",
+                                                      "add_task", "done", "delete_task", "add_lesson", "focus"]},
+                "when": {"type": "STRING", "description": "day: день словами"},
+                "title": {"type": "STRING", "description": "Задача: что сделать"},
+                "subject": {"type": "STRING", "description": "Предмет, как сказал (можно «матан»)"},
+                "due": {"type": "STRING", "description": "Срок словами: «в пятницу», «до 5 октября», «завтра»"},
+                "kind": {"type": "STRING", "description": "домашка/контрольная/экзамен/проект; для пары — лекция/практика/семинар/лабораторная"},
+                "weekday": {"type": "STRING"}, "start": {"type": "STRING"}, "end": {"type": "STRING"},
+                "room": {"type": "STRING"}, "weeks": {"type": "STRING", "enum": ["all", "odd", "even"]},
+                "minutes": {"type": "NUMBER"}, "days": {"type": "NUMBER"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "about_me",
         "description": (
             "Знакомство с пользователем — анкета «Обо мне» (имя, как обращаться, город, подъём/отбой, "
@@ -1395,11 +1423,11 @@ TOOLS = [
             "Открыть окно Джарвиса: keys — «открой ключи», «где ввести ключ», «проверь ключи», "
             "«подключи Spotify/звонки» (там же вход кнопкой); commands — «открой редактор команд»; "
             "contacts — «открой контакты», «подключи мой телеграм»; about — «открой обо мне», «что ты обо мне знаешь» "
-            "(окно)."
+            "(окно); study — «открой расписание», «открой учёбу»."
         ),
         "parameters": {
             "type": "OBJECT",
-            "properties": {"window": {"type": "STRING", "enum": ["keys", "commands", "contacts", "about"]}},
+            "properties": {"window": {"type": "STRING", "enum": ["keys", "commands", "contacts", "about", "study"]}},
             "required": ["window"]
         }
     },
@@ -1615,6 +1643,16 @@ class Jarvis:
                 logger.debug("Проверка ключей: %s", exc)
         if os.getenv("JARVIS_KEYS_CHECK", "1") != "0":
             threading.Thread(target=_check_keys, daemon=True, name="keys-check").start()
+
+        # Учёба (core/study.py): напоминания о парах и дедлайнах.
+        try:
+            from core.study import study
+            stu = study()
+            stu.say = self.speak
+            stu.notify = lambda title, text: self.ui.write_log(f"SYS: 📚 {title}: {text}")
+            stu.start()
+        except Exception as exc:
+            logger.warning("Учёба не запустилась: %s", exc)
 
         # «Обо мне»: кнопка «Познакомиться голосом» в окне зовёт сюда.
         def _voice_intro():
@@ -2423,7 +2461,8 @@ class Jarvis:
             elif name == "app_window":
                 which = str(args.get("window", "")).lower()
                 titles = {"keys": ("open_keys", "Ключи и подключения"), "commands": ("open_macros", "Свои команды"),
-                          "contacts": ("open_contacts", "Контакты"), "about": ("open_about", "Обо мне")}
+                          "contacts": ("open_contacts", "Контакты"), "about": ("open_about", "Обо мне"),
+                          "study": ("open_study", "Учёба")}
                 method, title = titles.get(which, titles["commands"])
                 opener = getattr(self.ui, method, None)
                 if opener:
@@ -2431,6 +2470,10 @@ class Jarvis:
                     result = f"Открыл окно «{title}»."
                 else:
                     result = "Окна тут нет — запущен без интерфейса."
+
+            elif name == "study":
+                from core.study import study_tool
+                result = await asyncio.to_thread(study_tool, args)
 
             elif name == "about_me":
                 from core.about_me import about_tool

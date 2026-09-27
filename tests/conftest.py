@@ -65,6 +65,9 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     import core.voice_id as voice_id_mod
     monkeypatch.setenv("JARVIS_VOICE_ID", str(d / "voice_id.json"))
     monkeypatch.setattr(voice_id_mod, "_vid", None)
+    import core.study as study_mod
+    monkeypatch.setenv("JARVIS_STUDY", str(d / "study.json"))
+    monkeypatch.setattr(study_mod, "_study", None)
     for attr in ("_book", "_me", "_contacts"):
         monkeypatch.setattr(contacts_mod, attr, None)
     # Свои команды — из временного файла, не из настоящей папки данных.

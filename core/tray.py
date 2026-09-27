@@ -115,6 +115,11 @@ class JarvisTray(QSystemTrayIcon):
         self.act_settings.triggered.connect(self._open_settings)
         menu.addAction(self.act_settings)
 
+        # Учёба (ui_study.py)
+        self.act_study = QAction("📚 Учёба", menu)
+        self.act_study.triggered.connect(self._open_study)
+        menu.addAction(self.act_study)
+
         # Обо мне (ui_about.py)
         self.act_about = QAction("🙂 Обо мне", menu)
         self.act_about.triggered.connect(self._open_about)
@@ -178,6 +183,14 @@ class JarvisTray(QSystemTrayIcon):
             from ui_setup import SetupWizardDialog
             dialog = SetupWizardDialog(parent=self.main_window)
             dialog.exec()
+
+    def _open_study(self):
+        opener = getattr(self.main_window, "open_study", None)
+        if opener:
+            opener()
+        else:
+            from ui_study import open_dialog
+            self._study_dlg = open_dialog(None)
 
     def _open_about(self):
         opener = getattr(self.main_window, "open_about", None)

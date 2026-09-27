@@ -900,6 +900,7 @@ class MainWindow(QMainWindow):
     _keys_sig = pyqtSignal()
     _contacts_sig = pyqtSignal()
     _about_sig = pyqtSignal()
+    _study_sig = pyqtSignal()
     # wait_for_api_key зовётся из рабочего потока: оверлей — только сигналом.
     _overlay_sig = pyqtSignal(str)
 
@@ -1138,6 +1139,7 @@ class MainWindow(QMainWindow):
         self._keys_sig.connect(self._show_keys)
         self._contacts_sig.connect(self._show_contacts)
         self._about_sig.connect(self._show_about)
+        self._study_sig.connect(self._show_study)
         self._overlay_sig.connect(self._show_overlay)
 
     # ── Публичный API ──────────────────────────────────────────────────────────
@@ -1152,6 +1154,9 @@ class MainWindow(QMainWindow):
             elif text.startswith("SYS: 💬") and ":" in text[7:] and "→" not in text[:10]:
                 title, _, body = text[len("SYS: 💬"):].strip().partition(":")
                 island.notify(title.strip().upper(), body.strip())
+            elif text.startswith("SYS: 📚") and ":" in text[7:]:
+                title, _, body = text[len("SYS: 📚"):].strip().partition(":")
+                island.notify(title.strip(), body.strip())
             elif text.startswith("SYS: 🔑") and ":" in text[7:]:
                 title, _, body = text[len("SYS: 🔑"):].strip().partition(":")
                 island.notify(title.strip().upper(), body.strip())
@@ -1239,6 +1244,17 @@ class MainWindow(QMainWindow):
     def open_macros(self):
         """Окно «Свои команды» (ui_macros.py). Из любого потока."""
         self._macros_sig.emit()
+
+    def open_study(self):
+        """Окно «Учёба» (ui_study.py). Из любого потока."""
+        self._study_sig.emit()
+
+    def _show_study(self):
+        try:
+            from ui_study import open_dialog
+            self._study_dlg = open_dialog(None)
+        except Exception as exc:
+            _logger.warning("Окно «Учёба» не открылось: %s", exc)
 
     def open_about(self):
         """Окно «Обо мне» (ui_about.py). Из любого потока."""

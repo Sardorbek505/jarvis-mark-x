@@ -99,6 +99,11 @@ def _birthday(about: dict, today: date) -> str:
     return ""
 
 
+def _study() -> str:
+    from core.study import study
+    return study().briefing()
+
+
 def _news(about: dict) -> str:
     from core.news_manager import NewsManager
     items = NewsManager().get_personalized_news(limit=12) or []
@@ -120,6 +125,7 @@ def gather(now: datetime | None = None, sources: dict[str, Callable] | None = No
         "погода": lambda: _weather(about),
         "часы": lambda: _clock(now),
         "дела": _calendar,
+        "учёба": _study,
         "сообщения": _messages,
         "новости": lambda: _news(about),
     }
@@ -142,7 +148,7 @@ def gather(now: datetime | None = None, sources: dict[str, Callable] | None = No
     bd = _birthday(about, now.date())
     if bd:
         out["праздник"] = bd
-    return {k: out[k] for k in ("праздник", "погода", "часы", "дела", "сообщения", "новости") if k in out}
+    return {k: out[k] for k in ("праздник", "погода", "учёба", "часы", "дела", "сообщения", "новости") if k in out}
 
 
 def instruction(facts: dict[str, str], now: datetime | None = None, asked: bool = False) -> str:
