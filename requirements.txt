@@ -57,6 +57,8 @@ imageio-ffmpeg>=0.4.8
 
 # Слово «Джарвис» офлайн на ПК (core/wake_vosk.py). Модель качает сборка.
 vosk>=0.3.45
+# Узнавание голоса владельца (core/voice_id.py, модель WeSpeaker 26 МБ качает сборка).
+sherpa-onnx>=1.10
 
 # Яркость: ноутбук (WMI) и внешние мониторы (DDC/CI)
 screen_brightness_control>=0.24; sys_platform == "win32"

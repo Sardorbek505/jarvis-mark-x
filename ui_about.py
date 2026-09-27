@@ -326,8 +326,10 @@ class AboutDialog(QDialog):
 
     def paint_voice(self):
         on, have_model = self.vid.enrolled(), self.vid.available()
+        size = getattr(self.vid.embed, "size_mb", 26)
         self.voice_title.setText("●  Голос записан — проверка включена" if on else
-                                 ("●  Голос не записан" if have_model else "●  Нет модели голоса (16 МБ)"))
+                                 ("●  Модель голоса обновилась — перезапишите голос" if self.vid.needs_reenroll()
+                                  else "●  Голос не записан") if have_model else f"●  Нет модели голоса ({size} МБ)")
         self.voice_title.setStyleSheet(f"color: {C.PRI if on else C.ACC2};")
         self.voice_btn2.setText("Перезаписать" if on else ("Записать голос" if have_model else "Скачать модель"))
         self.voice_btn2.setObjectName("" if on else "primary")
@@ -338,11 +340,11 @@ class AboutDialog(QDialog):
     def voice_action(self):
         if not self.vid.available():
             self.voice_btn2.setEnabled(False)
-            self._say("Скачиваю модель голоса (16 МБ)…")
+            self._say(f"Скачиваю модель голоса ({getattr(self.vid.embed, 'size_mb', 26)} МБ)…")
 
             def work():
                 try:
-                    self.V.download_spk()
+                    self.vid.download()
                     self._voice_sig.emit("✓  Модель скачана — запишите голос.")
                 except Exception as exc:
                     self._voice_sig.emit(f"Не скачалась: {exc}")

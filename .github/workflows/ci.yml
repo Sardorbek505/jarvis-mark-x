@@ -58,7 +58,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install vosk and edge-tts
-        run: pip install vosk edge-tts imageio-ffmpeg sherpa-onnx numpy
+        run: pip install vosk edge-tts imageio-ffmpeg sherpa-onnx numpy soundfile
       - name: Download Vosk model
         run: |
           curl -sSL -o model.zip https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
@@ -73,5 +73,11 @@ jobs:
         run: |
           mkdir -p models/voice-id
           curl -sSL -o models/voice-id/wespeaker_en_voxceleb_resnet34.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx
-      - name: Check owner voice recognition on synthesized speech
-        run: python scripts/voice_id_check.py models/vosk-small-ru models/vosk-spk models/voice-id/wespeaker_en_voxceleb_resnet34.onnx
+      # Узнавание голоса — на живых людях (Mini LibriSpeech): синтез для этого
+      # не годится, модель считает разные голоса Edge одним человеком.
+      - name: Download Mini LibriSpeech (real speakers)
+        run: |
+          curl -sSL -o libri.tar.gz https://www.openslr.org/resources/31/dev-clean-2.tar.gz
+          tar -xzf libri.tar.gz
+      - name: Check owner voice recognition on real speakers
+        run: python scripts/voice_id_check.py LibriSpeech models/vosk-small-ru models/vosk-spk models/voice-id/wespeaker_en_voxceleb_resnet34.onnx

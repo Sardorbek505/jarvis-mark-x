@@ -46,6 +46,29 @@ def test_enroll_then_verify(vid, tmp_path):
     assert vid.verify(speech(1, 0.5)) == (None, 0.0)                             # мало речи — нечем проверить
 
 
+class Engine:
+    """Встраиватель с именем модели и своими пределами порога."""
+
+    def __init__(self, name, lo=0.4, hi=0.6):
+        self.name, self.LO, self.HI, self.MARGIN = name, lo, hi, 0.3
+
+    def __call__(self, pcm):
+        return fake_embed(pcm)
+
+
+def test_voice_from_other_model_asks_to_reenroll(tmp_path):
+    """Голос, записанный Vosk, WeSpeaker не сверить: проверка молчит, окно просит перезаписать."""
+    path = tmp_path / "voice_id.json"
+    old = V.VoiceID(path, embed=Engine("vosk", 0.42, 0.55))
+    old.enroll([speech(1, 4, s) for s in range(5)])
+    assert old.enrolled() and old.profile["engine"] == "vosk"
+    new = V.VoiceID(path, embed=Engine("wespeaker"))
+    assert new.needs_reenroll() and not new.enrolled() and new.verify(speech(1, 3)) == (None, 0.0)
+    new.enroll([speech(1, 4, s) for s in range(5)])
+    assert new.enrolled() and not new.needs_reenroll() and 0.4 <= new.threshold <= 0.6
+    assert new.verify(speech(1, 3, seed=7))[0] is True
+
+
 def test_enroll_needs_enough_speech(vid):
     res = vid.enroll([speech(1, 0.3, s) for s in range(5)])
     assert not res["ok"] and "Мало речи" in res["text"] and not vid.enrolled()

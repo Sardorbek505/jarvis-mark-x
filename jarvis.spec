@@ -39,6 +39,8 @@ if (BASE_DIR / "models" / "vosk-small-ru").exists():
 # Отпечатки голоса владельца (core/voice_id.py); нет — докачивается из окна «Обо мне».
 if (BASE_DIR / "models" / "vosk-spk").exists():
     datas.append((str(BASE_DIR / "models" / "vosk-spk"), "models/vosk-spk"))
+if (BASE_DIR / "models" / "voice-id").exists():
+    datas.append((str(BASE_DIR / "models" / "voice-id"), "models/voice-id"))
 
 if (BASE_DIR / "telegram_bot" / "miniapp").exists():
     datas.append((str(BASE_DIR / "telegram_bot" / "miniapp"), "telegram_bot/miniapp"))
@@ -147,7 +149,7 @@ from PyInstaller.utils.hooks import collect_all
 # Каждый пакет — отдельно: раньше первый отсутствующий (openwakeword нет в
 # requirements) обрывал цикл, и pycaw/comtypes в сборку не попадали —
 # приглушение музыки и замер колонок в .exe молча не работали.
-for pkg in ["imageio_ffmpeg", "openwakeword", "pycaw", "comtypes", "pyaudiowpatch", "mss", "vosk", "screen_brightness_control", "winrt", "ddgs", "telethon", "pytgcalls", "ntgcalls", "tzdata"]:
+for pkg in ["imageio_ffmpeg", "openwakeword", "pycaw", "comtypes", "pyaudiowpatch", "mss", "vosk", "screen_brightness_control", "winrt", "ddgs", "telethon", "pytgcalls", "ntgcalls", "tzdata", "sherpa_onnx"]:
     try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
     except Exception as e:

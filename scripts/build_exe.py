@@ -54,6 +54,32 @@ def ensure_vosk_model():
     докачивается из окна «Обо мне»), но в CI это ошибка."""
     _fetch_model("[2b] Модель слова «Джарвис» (Vosk)...", _VOSK_URL, "vosk-small-ru", "am")
     _fetch_model("[2c] Модель голоса владельца (Vosk spk)...", _SPK_URL, "vosk-spk", "final.ext.raw")
+    _fetch_file("[2d] Модель голоса владельца (WeSpeaker)...", _WESPEAKER_URL, "voice-id",
+                "wespeaker_en_voxceleb_resnet34.onnx")
+
+
+_WESPEAKER_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
+                  "wespeaker_en_voxceleb_resnet34.onnx")
+
+
+def _fetch_file(title: str, url: str, dirname: str, name: str):
+    """Модель одним файлом (не архивом)."""
+    print(title)
+    dst = _BASE_DIR / "models" / dirname / name
+    if dst.exists():
+        print("  [OK] уже на месте")
+        return
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url, timeout=120) as resp:
+            data = resp.read()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(data)
+        print(f"  [OK] скачана ({len(data) / 1e6:.0f} МБ)")
+    except Exception as exc:
+        print(f"  [WARN] модель не скачалась: {exc}")
+        if os.getenv("CI"):
+            raise
 
 
 def _fetch_model(title: str, url: str, dirname: str, marker: str):
