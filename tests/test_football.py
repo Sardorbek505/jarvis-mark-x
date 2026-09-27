@@ -175,3 +175,65 @@ def test_club_set_in_other_process_is_picked_up(fb, tmp_path):
     other.set_club("Реал")
     f.tick()
     assert f.state["club"] == "Реал" and f.state["team"]["id"] == "86"
+
+
+# ── «поставь матч …» на Кинопоиске ──────────────────────────────────────────
+
+def test_match_teams_and_pick():
+    teams = F.match_teams("поставь матч Реала против Барсы")
+    assert [t[0] for t in teams] == ["Real Madrid", "Barcelona"]
+    links = [{"href": "https://hd.kinopoisk.ru/sport/competition/37526/", "text": "Ла Лига: Реал Мадрид, Барселона"},
+             {"href": "https://hd.kinopoisk.ru/sport/event/1/", "text": "Севилья — Барселона"},
+             {"href": "https://hd.kinopoisk.ru/sport/event/2/", "text": "Реал Мадрид — Барселона. Эль-Класико"}]
+    assert F.pick_match(links, teams) == "https://hd.kinopoisk.ru/sport/event/2/"     # матч, а не турнир
+    assert F.pick_match(links[:2], teams) == links[0]["href"]                          # турнир — если матча нет
+    assert F.pick_match(links[1:2], teams) is None
+
+
+class Tab:
+    def __init__(self, links, login=False, play="button"):
+        self.links, self.login, self.play, self.opened = links, login, play, []
+
+    def navigate(self, url):
+        self.opened.append(url)
+
+    def wait(self, js, timeout=10):
+        return True
+
+    def eval(self, js):
+        if "querySelectorAll('a[href]')" in js:
+            return __import__("json").dumps(self.links)
+        if "Войти" in js:
+            return self.login
+        if "смотреть" in js:
+            return self.play
+        return None
+
+
+def test_watch_match_opens_and_plays(monkeypatch):
+    from core import browser_cdp as cdp
+    monkeypatch.setattr(cdp, "bring_to_front", lambda: None)
+    monkeypatch.setattr(cdp, "fullscreen", lambda on=True, t=None: True)
+    tab = Tab([{"href": "https://hd.kinopoisk.ru/sport/event/2/", "text": "Реал Мадрид — Барселона"}])
+    res = F.watch_match("Реал против Барселоны", tab=tab, pages=["https://hd.kinopoisk.ru/sport/"], wait=lambda s: 0)
+    assert res.startswith("Включил Реал Мадрид — Барселона")
+    assert tab.opened == ["https://hd.kinopoisk.ru/sport/", "https://hd.kinopoisk.ru/sport/event/2/"]
+
+
+def test_watch_match_not_found_hints_login():
+    tab = Tab([], login=True)
+    res = F.watch_match("Реал против Барсы", tab=tab, pages=["a", "b"], wait=lambda s: 0)
+    assert "не нашёл" in res and "вход" in res and tab.opened == ["a", "b"]
+    assert "Какой матч" in F.watch_match("", tab=tab)
+
+
+def test_browser_prefers_chrome_and_yandex(monkeypatch):
+    from actions import browser_control
+    from core import browser_cdp as cdp
+    have = {"edge": "msedge.exe", "yandex": "browser.exe"}
+    monkeypatch.delenv("JARVIS_BROWSER", raising=False)
+    monkeypatch.setattr(cdp.sys, "platform", "win32")
+    monkeypatch.setattr(browser_control, "_browser_exe", lambda name: have.get(name))
+    assert cdp.browser_exe() == "browser.exe"
+    have["chrome"] = "chrome.exe"
+    assert cdp.browser_exe() == "chrome.exe"

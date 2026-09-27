@@ -483,6 +483,8 @@ def football_tool(p: dict) -> str:
         return fb.last_text() + " " + fb.next_text()
     if a == "news":
         return fb.news_text()
+    if a == "watch":
+        return watch_match(str(p.get("match") or ""))
     if a in ("goals_off", "goals_on", "news_off", "news_on"):
         what, on = a.split("_")
         fb.state[what] = on == "on"
@@ -490,3 +492,94 @@ def football_tool(p: dict) -> str:
         return {"goals": "О голах", "news": "О новостях клуба"}[what] + (" буду сообщать." if on == "on"
                                                                        else " сообщать не буду.")
     return f"Не понял действие «{a}»."
+
+
+# ── включить матч на Кинопоиске ──────────────────────────────────────────────
+# Законная трансляция по подписке: hd.kinopoisk.ru/sport. Страница — живое
+# приложение, вёрстка меняется, поэтому ищем не по классам, а по смыслу: на
+# странице карточка-ссылка, в тексте которой есть обе команды (по-русски в
+# любом падеже или по-английски). Нашли — открываем, жмём «Смотреть»,
+# разворачиваем. Нет матча — честно говорим (на Кинопоиске идут не все игры).
+
+KINOPOISK_SPORT = ["https://hd.kinopoisk.ru/sport/", "https://hd.kinopoisk.ru/sport/competition/37526/"]
+_LINKS_JS = r"""JSON.stringify([...document.querySelectorAll('a[href]')].map(a => ({href: a.href,
+  text: [a.innerText, a.getAttribute('aria-label'), a.title,
+         ...[...a.querySelectorAll('img[alt]')].map(i => i.alt)].filter(Boolean).join(' ')
+         .replace(/\s+/g, ' ').trim().slice(0, 300)})).filter(x => x.text))"""
+_PLAY_JS = r"""(() => { const want = /смотреть|трансляц|продолжить|начать просмотр|watch|play/i;
+  const els = [...document.querySelectorAll('button, a, [role=button]')].filter(e =>
+    want.test((e.innerText || '') + ' ' + (e.getAttribute('aria-label') || '')) && e.offsetParent);
+  if (els.length) { els[0].click(); return 'button'; }
+  const v = document.querySelector('video'); if (v) { v.play(); return 'video'; }
+  return ''; })()"""
+
+
+def match_teams(query: str) -> list[tuple[str, str]]:
+    """«матч Реала против Барсы» → [(Real Madrid, Реал Мадрид), (Barcelona, Барселона)]."""
+    q = re.sub(r"^(поставь|включи|покажи|открой)?\s*(матч|игру)?\s*", "", (query or "").strip(), flags=re.I)
+    parts = [p for p in re.split(r"\s+(?:против|vs\.?|v|—|–|-|и|с)\s+", q, flags=re.I) if p.strip()]
+    return [club_names(p) for p in parts[:2]]
+
+
+def _stems(team: tuple[str, str]) -> list[str]:
+    eng, ru = team
+    words = [w for w in _norm(ru).split() if len(w) > 2]
+    return [w[:max(4, len(w) - 2)] for w in words[:1]] + ([_norm(eng)] if eng else [])
+
+
+def pick_match(links: list[dict], teams: list[tuple[str, str]]) -> str | None:
+    """Ссылка на матч, где есть все названные команды. Страницы турниров — ниже матчей."""
+    best, best_rank = None, None
+    for i, ln in enumerate(links):
+        text = _norm(ln.get("text", ""))
+        hits = sum(any(s and s in text for s in _stems(t)) for t in teams)
+        if not teams or hits < len(teams):
+            continue
+        href = ln.get("href", "")
+        rank = ("/competition/" in href, i)
+        if best_rank is None or rank < best_rank:
+            best, best_rank = href, rank
+    return best
+
+
+def watch_match(query: str, tab=None, pages: list[str] | None = None, wait=time.sleep) -> str:
+    """Открыть матч на Кинопоиске в браузере Джарвиса."""
+    teams = match_teams(query)
+    if not teams:
+        return "Какой матч включить? Скажите, например: «Реал против Барселоны»."
+    from core import browser_cdp as cdp
+    if tab is None:
+        if not cdp.ensure_browser():
+            return "Не получилось открыть браузер."
+        tab = cdp.tab()
+    names = " — ".join(t[1] for t in teams)
+    login = False
+    for page in pages or KINOPOISK_SPORT:
+        tab.navigate(page)
+        tab.wait("document.readyState === 'complete'", timeout=20)
+        for _ in range(5):                                  # карточки подгружаются при прокрутке
+            wait(0.8)
+            tab.eval("window.scrollBy(0, innerHeight * 2)")
+        try:
+            links = json.loads(tab.eval(_LINKS_JS) or "[]")
+        except ValueError:
+            links = []
+        href = pick_match(links, teams)
+        if href:
+            tab.navigate(href)
+            tab.wait("document.readyState === 'complete'", timeout=20)
+            wait(2.0)
+            how = tab.eval(_PLAY_JS) or ""
+            try:
+                cdp.bring_to_front()
+                cdp.fullscreen(True, t=tab)
+            except Exception as exc:
+                logger.debug("Матч, весь экран: %s", exc)
+            return (f"Включил {names} на Кинопоиске." if how else
+                    f"Открыл страницу матча {names} на Кинопоиске — нажмите «Смотреть», если не началось.")
+        login = login or bool(tab.eval("/Войти/.test(document.body.innerText) && "
+                                       "!/Профиль|Выйти/.test(document.body.innerText)"))
+    hint = (" Похоже, в браузере Джарвиса не выполнен вход в Кинопоиск — войдите один раз, "
+            "дальше он запомнит." if login else "")
+    return f"На Кинопоиске матча {names} не нашёл — там показывают не все игры.{hint}"
+

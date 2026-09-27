@@ -1384,13 +1384,15 @@ TOOLS = [
             "Любимый футбольный клуб пользователя: next — «когда играет Реал», «когда следующий матч»; "
             "last — «как сыграли», «с каким счётом закончили»; score — «какой счёт»; news — «новости Барсы»; "
             "set_club — «я болею за Реал» (club — как сказал); goals_off / goals_on — не сообщать / сообщать о голах; "
-            "news_off / news_on — о новостях клуба. Включать трансляции матчей НЕ умеет — только расписание, счёт, новости."
+            "news_off / news_on — о новостях клуба; watch — «поставь матч Реала против Барсы» (match — как сказал): "
+            "открывает трансляцию на Кинопоиске в Chrome/Яндекс.Браузере, если она там есть."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action": {"type": "STRING", "enum": ["next", "last", "score", "news", "set_club", "goals_off",
-                                                      "goals_on", "news_off", "news_on"]},
+                                                      "goals_on", "news_off", "news_on", "watch"]},
+                "match": {"type": "STRING", "description": "watch: какой матч, как сказал («Реал против Барсы»)"},
                 "club": {"type": "STRING", "description": "set_club: клуб, как назвал («Реал», «Барселона»)"},
             },
             "required": ["action"]

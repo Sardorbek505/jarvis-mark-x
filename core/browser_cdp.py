@@ -3,7 +3,7 @@
 Раньше фильм «управлялся» нажатием клавиш в то, что впереди: Space
 прокручивал страницу, стрелки листали, пауза жала не туда, а спросить
 «сколько осталось» было не у кого. Теперь Джарвис открывает Chrome (нет —
-Edge) со своим профилем и портом отладки и говорит с плеером страницы
+Яндекс.Браузер, Edge — в последнюю очередь) со своим профилем и портом отладки и говорит с плеером страницы
 напрямую: play/pause, перемотка на точное время, громкость, mute, полный
 экран, текущее время и длительность — и сразу видит, получилось ли.
 
@@ -57,7 +57,8 @@ def browser_exe() -> str | None:
         return env
     if sys.platform == "win32":
         from actions.browser_control import _browser_exe
-        return _browser_exe("chrome") or _browser_exe("edge")
+        # Владелец просил не Edge: Chrome, потом Яндекс; Edge — только если других нет.
+        return _browser_exe("chrome") or _browser_exe("yandex") or _browser_exe("edge")
     for name in ("google-chrome", "chromium", "chromium-browser", "chrome"):
         path = shutil.which(name)
         if path:
@@ -237,7 +238,7 @@ def bring_to_front():
             from core import win_apps
             title = (t.eval("document.title") or "").strip()
             wins = [w for w in win_apps.list_windows()
-                    if w.exe in ("chrome.exe", "msedge.exe") and title and title[:30] in w.title]
+                    if w.exe in ("chrome.exe", "browser.exe", "msedge.exe") and title and title[:30] in w.title]
             if wins:
                 win_apps.focus(wins[0])
         except Exception as exc:
