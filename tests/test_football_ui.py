@@ -189,3 +189,57 @@ def test_football_page(fb, monkeypatch):
     finally:
         d.hide()
         d.deleteLater()
+
+
+# ── эмблемы и телефон ────────────────────────────────────────────────────────
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+
+
+def test_crest_downloads_once_and_falls_back(tmp_path):
+    calls = []
+
+    def get(url):
+        calls.append(url)
+        return PNG if url.endswith("86.png") else b"<html>404</html>"
+    url = F.LOGO.format(id=86)
+    assert F.logo_url({"id": "86"}) == url and F.logo_url({"logos": [{"href": "https://x/1.png"}]}) == "https://x/1.png"
+    assert F.crest(url, root=tmp_path, download=False) is None and calls == []    # из потока окна — без сети
+    p = F.crest(url, root=tmp_path, get=get)
+    assert p and p.read_bytes() == PNG
+    assert F.crest(url, root=tmp_path, get=get) == p and len(calls) == 1         # второй раз — с диска
+    bad = F.LOGO.format(id=83)
+    assert F.crest(bad, root=tmp_path, get=get) is None
+    assert F.crest(bad, root=tmp_path, get=get) is None and len(calls) == 2      # не картинка — больше не просим
+    assert F.crest("http://insecure/x.png", root=tmp_path, get=get) is None
+
+
+def test_phone_card_data_and_watch_from_phone(fb, monkeypatch):
+    from core import pc_snapshot
+    from telegram_bot import pc_views
+    f, net, clock = fb
+    snap = f.phone_snapshot()
+    v = pc_views.football_view(snap)
+    assert v["has"] and v["name"] == "Реал Мадрид" and v["next"]["home"] == "Real Madrid"
+    assert v["next"]["when"].startswith("2026-09-28T21:20") and v["next"]["home_logo"].endswith("/86.png")
+    assert v["results"][0]["res"] == "В" and len(v["news"]) == 3
+    assert pc_views.football_view({"club": ""}) == {"has": False} and pc_views.football_view(None) == {"has": False}
+    asked = []
+    monkeypatch.setattr(F, "_fb", f)
+    monkeypatch.setattr(F, "watch_match", lambda q: asked.append(q) or "Включил Реал Мадрид — Барселона.")
+    res = pc_snapshot.apply("football_watch", {})
+    assert res["ok"] and asked == ["Real Madrid против Barcelona"]
+
+
+def test_capsule_uses_real_crest(island, tmp_path):
+    from PyQt6.QtGui import QColor, QImage
+    w, _app = island
+    red = QImage(64, 64, QImage.Format.Format_ARGB32)
+    red.fill(QColor(255, 0, 0))
+    red.save(str(tmp_path / "c.png"))
+    sc = ui.Score("Real Madrid", "Barcelona", "1", "0", "12'", "RMA", "BAR", home_crest=str(tmp_path / "c.png"))
+    w.model.set_match(sc)
+    img = _draw(w, "match")
+    reds = sum(1 for x in range(60, 240) for y in range(4, 30)
+               if (c := img.pixelColor(x, y)).red() > 200 and c.green() < 60)
+    assert reds > 40                                                    # эмблема нарисована вместо точки

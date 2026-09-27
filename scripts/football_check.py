@@ -25,6 +25,14 @@ def main() -> int:
             print(f"   матчей: {len(ms)}; прошедших: {sum(m.state == 'post' for m in ms)}")
             for m in ms[-3:]:
                 print(f"   {m.when:%Y-%m-%d %H:%M} {m.score()} [{m.state} {m.detail}] {m.league}")
+            if ms:
+                m = ms[-1]
+                print(f"   сокращения/цвета: {m.home_abbr}/{m.home_color} — {m.away_abbr}/{m.away_color}")
+                print(f"   эмблема: {m.home_logo}")
+                path = F.crest(m.home_logo, root=Path(tmp) / "crests")
+                print(f"   эмблема скачана: {path.stat().st_size if path else 'НЕТ'} байт")
+                if club == "Реал" and not path:
+                    ok = False
             print("  ", f.next_text())
             print("  ", f.last_text())
             news = f.news(limit=3)

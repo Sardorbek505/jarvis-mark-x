@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -43,6 +44,7 @@ LIVE_BEFORE = timedelta(minutes=10)
 LIVE_AFTER = timedelta(hours=2, minutes=40)
 FIXTURES_TTL = 6 * 3600
 NEWS_EVERY = 3 * 3600
+NEWS_CACHE_SEC = 20 * 60                 # новости для экрана и телефона
 
 # Как клуб называют по-русски → как он записан у ESPN, и как искать новости.
 CLUBS = {
@@ -81,6 +83,8 @@ class Match:
     away_abbr: str = ""
     home_color: str = ""                 # цвет формы с ESPN, «00529f»
     away_color: str = ""
+    home_logo: str = ""                  # эмблема клуба (картинка ESPN)
+    away_logo: str = ""
 
     def score(self) -> str:
         return f"{self.home} {self.home_score}:{self.away_score} {self.away}"
@@ -126,6 +130,61 @@ def _score(c: dict) -> str:
     return str(s) if s not in (None, "") else ""
 
 
+LOGO = "https://a.espncdn.com/i/teamlogos/soccer/500/{id}.png"
+
+
+def logo_url(team: dict) -> str:
+    """Эмблема клуба: из ответа ESPN, а нет — по номеру команды (у ESPN адрес постоянный)."""
+    if team.get("logo"):
+        return str(team["logo"])
+    for lg in team.get("logos") or []:
+        if isinstance(lg, dict) and lg.get("href"):
+            return str(lg["href"])
+    return LOGO.format(id=team["id"]) if str(team.get("id") or "").isdigit() else ""
+
+
+def crest(url: str, root: Path | None = None, get=None, download: bool = True) -> Path | None:
+    """Эмблема на диске (папка данных/crests): скачивается один раз. Не вышло — None,
+    и повторно не пробуем до перезапуска (рисуем кружок цвета формы).
+    download=False — только уже скачанная (из потока окна, без сети)."""
+    if not url or not url.startswith("https://") or url in _crest_fail:
+        return None
+    if root is None:
+        from core.paths import get_data_root
+        root = Path(get_data_root()) / "crests"
+    path = root / (hashlib.sha1(url.encode()).hexdigest()[:16] + ".png")
+    if path.is_file() and path.stat().st_size > 0:
+        return path
+    if not download:
+        return None
+    try:
+        data = (get or _get)(url)
+        if not data.startswith(b"\x89PNG") and not data[:3] == b"\xff\xd8\xff":
+            raise ValueError("не картинка")
+        root.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(path)
+        return path
+    except Exception as exc:
+        logger.debug("Эмблема %s: %s", url, exc)
+        _crest_fail.add(url)
+        return None
+
+
+_crest_fail: set[str] = set()
+
+
+def match_dict(m: Match | None) -> dict | None:
+    """Матч для телефона (JSON): время — с поясом ПК, чтобы отсчёт шёл верно."""
+    if not m:
+        return None
+    return {"id": m.id, "when": m.when.astimezone().isoformat(timespec="minutes"), "home": m.home, "away": m.away,
+            "hs": m.home_score, "as": m.away_score, "state": m.state, "detail": m.detail, "league": m.league,
+            "home_abbr": m.home_abbr, "away_abbr": m.away_abbr, "home_color": m.home_color,
+            "away_color": m.away_color, "home_logo": m.home_logo, "away_logo": m.away_logo}
+
+
 def parse_event(e: dict) -> Match | None:
     """Событие ESPN (расписание или табло) → Match."""
     try:
@@ -142,7 +201,8 @@ def parse_event(e: dict) -> Match | None:
                      home_score=_score(home), away_score=_score(away),
                      state=st.get("state", "pre"), detail=st.get("shortDetail") or st.get("detail") or "",
                      league=league, home_abbr=ht.get("abbreviation", ""), away_abbr=at.get("abbreviation", ""),
-                     home_color=str(ht.get("color") or ""), away_color=str(at.get("color") or ""))
+                     home_color=str(ht.get("color") or ""), away_color=str(at.get("color") or ""),
+                     home_logo=logo_url(ht), away_logo=logo_url(at))
     except (KeyError, ValueError, TypeError, IndexError) as exc:
         logger.debug("Футбол, событие: %s", exc)
         return None
@@ -190,6 +250,7 @@ class Football:
         self._fixtures_at = 0.0
         self._mtime = (0, 0)
         self.current: Match | None = None           # идущий матч — капсула и экран «Футбол»
+        self._news_cache: tuple | None = None       # (адрес, когда, новости)
         self.load()
 
     # ── файл ──
@@ -330,11 +391,17 @@ class Football:
             return []
         _eng, ru = club_names(self.state["club"])
         q = urllib.parse.quote(f'"{ru}" футбол')
-        try:
-            items = parse_rss(self.get_raw(f"https://news.google.com/rss/search?q={q}&hl=ru&gl=RU&ceid=RU:ru"))
-        except Exception as exc:
-            logger.debug("Футбол, новости: %s", exc)
-            return []
+        url = f"https://news.google.com/rss/search?q={q}&hl=ru&gl=RU&ceid=RU:ru"
+        cached = self._news_cache
+        if cached and cached[0] == url and time.monotonic() - cached[1] < NEWS_CACHE_SEC:
+            items = list(cached[2])                     # экран и телефон — без лишних запросов
+        else:
+            try:
+                items = parse_rss(self.get_raw(url))
+            except Exception as exc:
+                logger.debug("Футбол, новости: %s", exc)
+                return []
+            self._news_cache = (url, time.monotonic(), list(items))
         day_ago = self.now() - timedelta(days=1)
         items = [n for n in items if not n.when or n.when > day_ago]
         if important_only:
@@ -356,6 +423,17 @@ class Football:
                 "team": self.state["team"].get("name", ""), "next": nxt, "results": done[-5:][::-1],
                 "upcoming": ahead[:5], "news": self.news(limit=news), "goals": self.state["goals"],
                 "news_on": self.state["news"], "now": now}
+
+    def phone_snapshot(self) -> dict:
+        """Для телефона (core/pc_snapshot.py): то же, что экран «Футбол», в JSON."""
+        o = self.overview(news=4)
+        if not o.get("club"):
+            return {"club": ""}
+        return {"club": o["club"], "name": o["name"], "team": o["team"], "next": match_dict(o["next"]),
+                "results": [match_dict(m) for m in o["results"]], "upcoming": [match_dict(m) for m in o["upcoming"][:3]],
+                "news": [{"title": n.title, "link": n.link, "source": n.source,
+                          "when": n.when.isoformat(timespec="minutes") if n.when else ""} for n in o["news"]],
+                "goals": o["goals"], "news_on": o["news_on"]}
 
     # ── словами ──
     @staticmethod

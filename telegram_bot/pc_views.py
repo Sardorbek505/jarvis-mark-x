@@ -1,4 +1,4 @@
-"""Данные ПК в Mini App: учёба, «Обо мне», звонки, «Что умею» (сторона сервера).
+"""Данные ПК в Mini App: учёба, «Обо мне», звонки, футбол, «Что умею» (сторона сервера).
 
 ПК присылает снимок при синхронизации памяти (core/pc_snapshot.py →
 shared_memory.apply_sync); здесь он хранится в meta (pc_snap_<часть>) и
@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-PARTS = ("study", "about", "calls")
+PARTS = ("study", "about", "calls", "football")
 
 
 async def store_snapshots(store, uid: int, snaps) -> int:
@@ -108,6 +108,26 @@ def calls_view(snap: dict | None) -> dict:
                     "min": max(1, round(int(c.get("sec") or 0) / 60)),
                     "lines": [ln for ln in c.get("lines") or [] if isinstance(ln, dict)][:200]})
     return {"has": True, "calls": out}
+
+
+def _letter(m: dict, team: str) -> str:
+    hs, as_ = str(m.get("hs", "")), str(m.get("as", ""))
+    if not (hs.isdigit() and as_.isdigit()):
+        return ""
+    ours, theirs = (int(as_), int(hs)) if team and m.get("away") == team else (int(hs), int(as_))
+    return "В" if ours > theirs else "Н" if ours == theirs else "П"
+
+
+def football_view(snap: dict | None) -> dict:
+    """Карточка клуба: матч (идёт / ближайший), форма В/Н/П, ближайшие, новости."""
+    if not snap or not snap.get("club"):
+        return {"has": False}
+    team = snap.get("team", "")
+    results = [dict(m, res=_letter(m, team)) for m in snap.get("results") or [] if isinstance(m, dict)]
+    return {"has": True, "updated": _updated(snap), "name": snap.get("name") or snap.get("club"), "team": team,
+            "next": snap.get("next") if isinstance(snap.get("next"), dict) else None, "results": results,
+            "upcoming": [m for m in snap.get("upcoming") or [] if isinstance(m, dict)],
+            "news": [n for n in snap.get("news") or [] if isinstance(n, dict) and n.get("title")][:4]}
 
 
 def abilities() -> list[dict]:

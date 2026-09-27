@@ -304,6 +304,7 @@ async def _build_view(user_id: int, view: str) -> dict:
             # С ПК (core/pc_snapshot.py): анкета «Обо мне», звонки с расшифровкой; «Что умею».
             "me": pc_views.about_view(await pc_views.load(_memory, user_id, "about")),
             "calls": pc_views.calls_view(await pc_views.load(_memory, user_id, "calls")),
+            "football": pc_views.football_view(await pc_views.load(_memory, user_id, "football")),
             "abilities": pc_views.abilities(),
             "pc_online": bool(_bridge and _bridge.connected),
         }
@@ -380,9 +381,11 @@ async def _pc_edit(ws: WebSocket, user_id: int, msg: dict):
     fields = {k: msg.get(k) for k in ("title", "subject", "due", "id", "key", "value") if msg.get(k) is not None}
     try:
         if not (_bridge and _bridge.connected):
-            res = {"ok": False, "text": "ПК офлайн — изменить можно, когда компьютер включён."}
+            res = {"ok": False, "text": "ПК офлайн — это можно, когда компьютер включён."}
         else:
-            res = await _bridge.send_action(mtype, user_id, timeout=15.0, **fields) or \
+            # Кинопоиск на ПК: открыть страницу, найти матч, нажать «Смотреть» — дольше правки.
+            wait = 75.0 if mtype == "football_watch" else 15.0
+            res = await _bridge.send_action(mtype, user_id, timeout=wait, **fields) or \
                 {"ok": False, "text": "ПК не ответил."}
         data = res.get("data") or {}
         if res.get("ok") and data.get("part") in pc_views.PARTS and _memory:
@@ -468,7 +471,7 @@ async def ws_endpoint(ws: WebSocket):
                 await _send_view(ws, user_id, msg.get("view", "dashboard"))
                 continue
 
-            if mtype in ("study_add", "study_done", "about_answer"):
+            if mtype in ("study_add", "study_done", "about_answer", "football_watch"):
                 _spawn(_pc_edit(ws, user_id, msg))
                 continue
 

@@ -75,6 +75,8 @@ class Score:
     away_abbr: str = ""
     home_color: str = ""           # «00529f» с ESPN
     away_color: str = ""
+    home_crest: str = ""           # эмблема на диске (core/football.crest) — вместо цветной точки
+    away_crest: str = ""
 
     def abbr(self, side: str) -> str:
         a = self.home_abbr if side == "home" else self.away_abbr
@@ -121,10 +123,19 @@ def parse_score(text: str) -> Score | None:
     return Score(m.group(1), m.group(4), m.group(2), m.group(3), m.group(5) or "")
 
 
-def score_from_match(m) -> Score:
-    """core.football.Match → Score."""
-    return Score(m.home, m.away, m.home_score or "0", m.away_score or "0", m.detail, m.home_abbr, m.away_abbr,
-                 m.home_color, m.away_color)
+def score_from_match(m, crests: bool = False) -> Score:
+    """core.football.Match → Score. crests=True — ещё и скачать эмблемы (сеть: только из фонового потока)."""
+    sc = Score(m.home, m.away, m.home_score or "0", m.away_score or "0", m.detail, m.home_abbr, m.away_abbr,
+               m.home_color, m.away_color)
+    if crests:
+        from core.football import crest
+        for side in ("home", "away"):
+            path = crest(getattr(m, f"{side}_logo", ""))
+            setattr(sc, f"{side}_crest", str(path) if path else "")
+    return sc
+
+
+_CREST_KEYS = ("home_abbr", "away_abbr", "home_color", "away_color", "home_crest", "away_crest")
 
 
 @dataclass
@@ -192,8 +203,8 @@ class IslandModel:
         text = " ".join((text or "").split())
         sc = parse_score(text)
         if title == "ГОЛ" and sc:
-            if self.match and sc.same_game(self.match):          # цвета и сокращения — из живого матча
-                for k in ("home_abbr", "away_abbr", "home_color", "away_color"):
+            if self.match and sc.same_game(self.match):          # цвета, эмблемы — из живого матча
+                for k in _CREST_KEYS:
                     setattr(sc, k, getattr(self.match, k))
             self.goal_side = sc.scorer(self.match)
             self.goal_at = now
@@ -201,7 +212,7 @@ class IslandModel:
             self.banners.append(Banner("goal", title, text, now + GOAL_SEC, sc))
         elif title == "ИТОГ" and sc:
             if self.match and sc.same_game(self.match):
-                for k in ("home_abbr", "away_abbr", "home_color", "away_color"):
+                for k in _CREST_KEYS:
                     setattr(sc, k, getattr(self.match, k))
             self.match = None
             self.banners.append(Banner("final", title, text, now + 8.0, sc))
@@ -320,7 +331,7 @@ def poll_match() -> Score | None:
         from core import football as F
         fb = F._fb
         m = fb.current if fb else None
-        return score_from_match(m) if m else None
+        return score_from_match(m, crests=True) if m else None
     except Exception as exc:
         logger.debug("Капсула, матч: %s", exc)
         return None
@@ -839,12 +850,30 @@ class Island(QWidget):
                                ("away", cx + gap, Qt.AlignmentFlag.AlignLeft)):
             self._text(p, QRectF(x, rect.y(), 56, h), sc.abbr(side), size * 0.78, QColor(215, 222, 228), bold=True,
                        align=align | Qt.AlignmentFlag.AlignVCenter, spacing=0.8)
-            r, g, b = sc.rgb(side)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(r, g, b))
             fm_w = self._abbr_w(sc.abbr(side), size * 0.78)
-            dot_x = (x + 56 - fm_w - 9) if side == "home" else (x + fm_w + 9)
-            p.drawEllipse(QPointF(dot_x, cy), 3.6, 3.6)
+            img = self._crest_img(getattr(sc, f"{side}_crest"))
+            if img is not None:                                  # настоящая эмблема клуба
+                cs = min(h - 6, size * 2.0)
+                cx_ = (x + 56 - fm_w - 5 - cs / 2) if side == "home" else (x + fm_w + 5 + cs / 2)
+                p.drawImage(QRectF(cx_ - cs / 2, cy - cs / 2, cs, cs), img)
+            else:
+                r, g, b = sc.rgb(side)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(r, g, b))
+                dot_x = (x + 56 - fm_w - 9) if side == "home" else (x + fm_w + 9)
+                p.drawEllipse(QPointF(dot_x, cy), 3.6, 3.6)
+
+    def _crest_img(self, path: str):
+        """Эмблема с диска — один раз, дальше из памяти."""
+        if not path:
+            return None
+        cache = self.__dict__.setdefault("_crests", {})
+        if path not in cache:
+            from PyQt6.QtGui import QImage
+            img = QImage(path)
+            cache[path] = None if img.isNull() else img.scaled(
+                96, 96, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        return cache[path]
 
     def _abbr_w(self, text: str, size: float) -> float:
         from PyQt6.QtGui import QFontMetricsF

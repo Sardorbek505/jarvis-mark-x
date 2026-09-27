@@ -29,6 +29,7 @@ from ui_island import Score, score_from_match
 from ui_kit import STYLE, IconBadge, Toggle, _cap, _label, _line
 
 logger = logging.getLogger(__name__)
+CREST = 64                                  # эмблема в карточке матча, точки
 
 EXTRA = f"""
 QFrame#row {{ background: transparent; border: none; border-radius: 10px; }}
@@ -71,6 +72,36 @@ def day_text(when: datetime, now: datetime) -> str:
     return {0: "Сегодня", 1: "Завтра", -1: "Вчера"}.get(d, f"{when:%d.%m}")
 
 
+def _crest_pixmap(url: str, size: int):
+    """Эмблема, уже скачанная в фоне (FootballDialog.refresh), — без сети в потоке окна."""
+    if not url:
+        return None
+    try:
+        from core.football import crest
+        path = crest(url, download=False)
+    except Exception:
+        return None
+    if not path:
+        return None
+    from PyQt6.QtGui import QPixmap
+    pm = QPixmap(str(path))
+    if pm.isNull():
+        return None
+    return pm.scaled(size * 2, size * 2, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+
+def _crest_label(url: str) -> QLabel | None:
+    pm = _crest_pixmap(url, 20)
+    if pm is None:
+        return None
+    pm = pm.scaled(20, 20, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    lbl = QLabel()
+    lbl.setPixmap(pm)
+    lbl.setFixedSize(22, 22)
+    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    return lbl
+
+
 class MatchHero(QWidget):
     """Большая карточка матча — рисуется сама, с анимацией."""
 
@@ -94,6 +125,7 @@ class MatchHero(QWidget):
         elif (m and m.id) != (self.match and self.match.id):
             self._t0 = time.monotonic()
         self.match, self.score, self.club = m, new, club
+        self._pix = {side: _crest_pixmap(getattr(m, f"{side}_logo", ""), CREST) for side in ("home", "away")} if m else {}
         self.update()
 
     def showEvent(self, ev):
@@ -155,10 +187,18 @@ class MatchHero(QWidget):
             x = cx + sign * (off + (1 - ease) * 120)
             cr, cg, cb = sc.rgb(side)
             p.setOpacity(ease)
-            p.setPen(QPen(QColor(cr, cg, cb, 200), 2))
-            p.setBrush(QColor(cr, cg, cb, 40))
-            p.drawEllipse(QPointF(x, cy), 32, 32)
-            self._text(p, QRectF(x - 32, cy - 32, 64, 64), sc.abbr(side), 12, QColor(C.WHITE), bold=True, spacing=0.8)
+            pix = self._pix.get(side)
+            if pix is not None:                                  # настоящая эмблема клуба
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(cr, cg, cb, 26))               # мягкое свечение цветом формы
+                p.drawEllipse(QPointF(x, cy), 40, 40)
+                p.drawPixmap(QRectF(x - 32, cy - 32, 64, 64).toRect(), pix)
+            else:
+                p.setPen(QPen(QColor(cr, cg, cb, 200), 2))
+                p.setBrush(QColor(cr, cg, cb, 40))
+                p.drawEllipse(QPointF(x, cy), 32, 32)
+                self._text(p, QRectF(x - 32, cy - 32, 64, 64), sc.abbr(side), 12, QColor(C.WHITE), bold=True,
+                           spacing=0.8)
             self._text(p, QRectF(x - 90, cy + 38, 180, 22), name, 10.5, QColor(C.TEXT), bold=True)
             p.setOpacity(1.0)
         now = datetime.now()
@@ -331,7 +371,8 @@ class FootballDialog(QDialog):
             if it.widget():
                 it.widget().deleteLater()
 
-    def _row(self, date: str, teams: str, right: str = "", chip: str = "", sub: str = "", on_click=None) -> QFrame:
+    def _row(self, date: str, teams: str, right: str = "", chip: str = "", sub: str = "", on_click=None,
+             logos: tuple = ()) -> QFrame:
         row = QFrame()
         row.setObjectName("row")
         lay = QHBoxLayout(row)
@@ -340,6 +381,10 @@ class FootballDialog(QDialog):
         d = _label(date, "date", wrap=False)
         d.setFixedWidth(84)
         lay.addWidget(d)
+        crests = [c for c in (_crest_label(u) for u in logos) if c]
+        if len(crests) == 2:                                     # эмблемы обеих команд рядом
+            lay.addWidget(crests[0])
+            lay.addWidget(crests[1])
         mid = QVBoxLayout()
         mid.setSpacing(0)
         mid.addWidget(_label(teams, "teams"))
@@ -387,6 +432,9 @@ class FootballDialog(QDialog):
                 if force:
                     self.fb.fixtures(force=True)
                 data = self.fb.overview()
+                for m in [data.get("next"), *(data.get("results") or []), *(data.get("upcoming") or [])]:
+                    for url in (m.home_logo, m.away_logo) if m else ():
+                        self.F.crest(url)                        # эмблемы — здесь, в фоне
             except Exception as exc:
                 logger.warning("Футбол, экран: %s", exc)
                 data = {"club": self.fb.state.get("club", ""), "error": str(exc)}
@@ -415,11 +463,12 @@ class FootballDialog(QDialog):
             return
         for m in self.data.get("results") or []:
             self.results.addWidget(self._row(f"{m.when:%d.%m}", m.title(), f"{m.home_score}:{m.away_score}",
-                                             result_letter(m, team), m.league))
+                                             result_letter(m, team), m.league, logos=(m.home_logo, m.away_logo)))
         if not self.data.get("results"):
             self._empty(self.results, "Пока пусто")
         for m in self.data.get("upcoming") or []:
-            self.upcoming.addWidget(self._row(f"{day_text(m.when, now)} {m.when:%H:%M}", m.title(), sub=m.league))
+            self.upcoming.addWidget(self._row(f"{day_text(m.when, now)} {m.when:%H:%M}", m.title(), sub=m.league,
+                                              logos=(m.home_logo, m.away_logo)))
         if not self.data.get("upcoming"):
             self._empty(self.upcoming, "Дальше в расписании пусто")
         for n in self.data.get("news") or []:
