@@ -135,14 +135,58 @@ def test_call_contact_reports_back(book):
     api = CT.Contacts(book, FakeMe())
     calls, logs, done = [], [], []
     api.log = logs.append
-    api.call_fn = lambda target, name, text: (calls.append((target, name, text)),
-                                              "Поговорили 1 мин, попрощались. Азиз ответил: «Иду».")[1]
+    api.call_fn = lambda target, name, text, via=None: (calls.append((target, name, text, via)),
+                                                        "Поговорили 1 мин, попрощались. Азиз ответил: «Иду».")[1]
     import threading
     finished = threading.Event()
     assert api.call("брату", "Ужин готов", done=lambda r: (done.append(r), finished.set())) == \
         "Звоню Азиз Каримов. Когда поговорю — перескажу."
     assert finished.wait(2)
-    assert calls == [("@aziz_k", "Азиз Каримов", "Ужин готов")] and "Иду" in done[0]
+    # ваш Telegram подключён — звоним с него, по id (его ваш аккаунт знает)
+    assert calls == [("id:22", "Азиз Каримов", "Ужин готов", api.me)] and "Иду" in done[0]
+    assert "с вашего Telegram" in api.confirm_text("call", "брату", "Ужин готов")
+
+
+def test_call_without_your_telegram_goes_from_jarvis_account(book):
+    me = FakeMe()
+    me.linked = lambda: False
+    api = CT.Contacts(book, me)
+    calls = []
+    api.call_fn = lambda target, name, text: calls.append((target, name)) or "ок"
+    import threading
+    finished = threading.Event()
+    api.call("брату", "Ужин готов", done=lambda r: finished.set())
+    assert finished.wait(2) and calls == [("@aziz_k", "Азиз Каримов")]     # аккаунту Джарвиса нужен @username
+    assert "с аккаунта Джарвиса" in api.confirm_text("call", "брату", "x")
+
+
+def test_resolve_peer_by_account_id_not_as_phone():
+    """Контакт из вашего Telegram (только id): раньше id принимался за номер
+    телефона («+123456789») — звонок не проходил."""
+    from core import tg_call
+
+    class Client:
+        def __init__(self, known):
+            self.known, self.asked = set(known), []
+
+        async def get_input_entity(self, uid):
+            if uid not in self.known:
+                raise ValueError("нет в кэше")
+            return uid
+
+        async def __call__(self, req):
+            self.asked.append(type(req).__name__)
+            self.known.add(123456789)                     # контакты подтянулись в кэш
+
+    c = Client([])
+    assert asyncio.run(tg_call.resolve_peer(c, "id:123456789")) == 123456789
+    assert c.asked == ["GetContactsRequest"]               # не ImportContactsRequest (телефон)
+
+    class Nobody(Client):
+        async def __call__(self, req):
+            self.asked.append(type(req).__name__)
+    with pytest.raises(RuntimeError, match="не знает этого человека"):
+        asyncio.run(tg_call.resolve_peer(Nobody([]), "id:555555555"))
 
 
 def test_what_they_said_from_transcript():

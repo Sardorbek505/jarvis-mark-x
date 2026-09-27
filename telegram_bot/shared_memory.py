@@ -48,6 +48,10 @@ async def apply_sync(store, uid: int, body: dict) -> dict:
             await store.add_pc_message(uid, "pc_episode", str(e.get("text", "")), _iso(e.get("ts")))
     if added or removed:
         logger.info("Общая память: с ПК +%d фактов, −%d", added, removed)
+    if body.get("snapshots"):
+        from telegram_bot import pc_views
+        n = await pc_views.store_snapshots(store, uid, body["snapshots"])
+        logger.info("Снимок ПК для телефона: частей %d", n)
 
     since = int(body.get("since_msg_id") or 0)
     msgs = await store.messages_after(uid, since, 30)

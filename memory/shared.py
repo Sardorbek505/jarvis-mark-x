@@ -124,6 +124,15 @@ def sync(post=None) -> str:
     shared = _read(SHARED_FILE, {})
     body = {k: box.get(k, []) for k in _KINDS}
     body["since_msg_id"] = shared.get("last_msg_id", 0)
+    # Учёба, «Обо мне», звонки — для телефона (core/pc_snapshot.py); только изменившееся.
+    snaps = {}
+    try:
+        from core import pc_snapshot
+        snaps = pc_snapshot.collect()
+        if snaps:
+            body["snapshots"] = {name: data for name, (_h, data) in snaps.items()}
+    except Exception as exc:
+        logger.debug("Снимок для телефона: %s", exc)
     sent = {k: len(body[k]) for k in _KINDS}
     try:
         status, data = (post or _post)(url + "/api/memory/sync", body,
@@ -134,6 +143,9 @@ def sync(post=None) -> str:
     if status != 200 or not isinstance(data, dict):
         logger.warning("Общая память: сервер ответил %s", status)
         return f"ответ {status}"
+    if snaps:
+        from core import pc_snapshot
+        pc_snapshot.mark_sent(snaps)
     with _lock:                                  # убрать отправленное, не трогая новое
         box = _read(OUTBOX_FILE, {})
         for k in _KINDS:

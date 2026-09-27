@@ -33,6 +33,30 @@ FRAME_BYTES = int(TG_RATE * FRAME_SEC) * 2           # 10 мс, моно, 16 б�
 IN_RATE, OUT_RATE = 16000, 24000
 ANSWER_TIMEOUT = 45
 MAX_CALL_SEC = 10 * 60
+BYE_SILENCE_SEC = 6.0           # попрощались и тишина — кладём трубку сами
+IDLE_SEC = 90.0                 # никто ничего не говорит — тоже
+_BYE = re.compile(r"(?<!\w)(пока|до свидания|до встречи|до связи|спокойной ночи|доброй ночи|всего доброго|"
+                  r"всего хорошего|хорошего дня|хорошего вечера|бывай|прощай|отключ\w*|клад\w* трубку|"
+                  r"полож\w* трубку|bye|goodbye)(?!\w)", re.I)
+_STOP = re.compile(r"(?<!\w)(стой|подожди|погоди|секунду|ещё вопрос|еще вопрос|не клади)(?!\w)", re.I)
+# Не мешают отбою: вежливость, согласие и обрывки слов из опоздавшей расшифровки.
+_FILLER = {"да", "угу", "ага", "ок", "окей", "ну", "хорошо", "ладно", "спасибо", "благодарю", "и", "тебе",
+           "вам", "тоже", "взаимно", "давай", "давайте", "всё", "все", "понял", "поняла", "ясно", "отлично",
+           "супер", "пока", "до", "свидания", "встречи", "связи", "спокойной", "доброй", "ночи", "всего",
+           "доброго", "хорошего", "дня", "вечера", "бывай", "прощай", "сэр", "джарвис"}
+
+
+def says_bye(text: str) -> bool:
+    return bool(_BYE.search(text or ""))
+
+
+def keeps_talking(text: str) -> bool:
+    """После прощания человек правда продолжил разговор (а не опоздавшее «пока»)?"""
+    if _STOP.search(text or ""):
+        return True
+    words = [w for w in re.findall(r"[a-zа-яё]+", (text or "").lower()) if len(w) > 2 and w not in _FILLER]
+    words = [w for w in words if not _BYE.fullmatch(w)]
+    return len(words) >= 2
 
 _call_lock = threading.Lock()
 
@@ -177,6 +201,12 @@ class CallSession:
         self._mic: asyncio.Queue[bytes] | None = None
         self._hung_up = asyncio.Event()
         self._ending = False
+        self.ended_by = ""                 # end_call | прощание | тишина — для журнала
+        self._after_end = ""               # что собеседник сказал после нашего прощания
+        self._user_said = ""               # текущая реплика собеседника
+        self._jarvis_said = ""             # текущая реплика Джарвиса
+        self._user_bye_at = 0.0
+        self._last_voice = time.monotonic()
         # Что реально пришло из трубки. Жалоба «говорит, но не отвечает»
         # неотличима по поведению для «звук не приходит», «приходит тишина»
         # и «приходит, но Gemini не слышит речь» — журнал их различает.
@@ -224,6 +254,7 @@ class CallSession:
                     turn_complete=True)
                 pace = asyncio.create_task(self._pace())
                 watch = asyncio.create_task(self._watch_audio())
+                guard = asyncio.create_task(self._idle_guard())
                 ended = asyncio.create_task(self._hung_up.wait())
                 pumps = {asyncio.create_task(self._pump_mic(session)),
                          asyncio.create_task(self._pump_gemini(session))}
@@ -240,7 +271,7 @@ class CallSession:
                     if not done or pace in done or ended in done or failed:
                         break
                     waiting -= done
-                for t in pumps | {pace, ended, watch}:
+                for t in pumps | {pace, ended, watch, guard}:
                     t.cancel()
         finally:
             if not self._hung_up.is_set():
@@ -251,6 +282,8 @@ class CallSession:
         logger.info("Звонок: %s", self.audio_stats())
         for line in self.transcript[-40:]:
             logger.info("Звонок | %s", line[:200])
+        if self.ended_by:
+            logger.info("Звонок: отбой — %s", self.ended_by)
         mins = (time.monotonic() - started) / 60
         who = "вы положили трубку" if self._hung_up.is_set() and not self._ending else "попрощались"
         return f"Поговорили {max(1, round(mins))} мин, {who}."
@@ -262,6 +295,21 @@ class CallSession:
                            "Джарвис говорит, но собеседника не слышит", after)
         else:
             logger.info("Звонок: звук из трубки идёт — %s", self.audio_stats())
+
+    def _end(self, why: str):
+        if not self._ending:
+            self._ending, self.ended_by, self._after_end = True, why, ""
+            self.log(f"кладу трубку: {why}")
+
+    async def _idle_guard(self):
+        """Страховка отбоя: вы попрощались и замолчали — или все молчат давно."""
+        while True:
+            await asyncio.sleep(0.5)
+            quiet = time.monotonic() - self._last_voice
+            if self._user_bye_at and quiet > BYE_SILENCE_SEC and not len(self.out):
+                self._end("попрощались и тишина")
+            elif quiet > IDLE_SEC:
+                self._end("долго тишина")
 
     async def _pump_mic(self, session):
         from google.genai import types
@@ -282,24 +330,54 @@ class CallSession:
                     self.up.reset()
                 if getattr(msg, "data", None):
                     self.out.push(self.up(msg.data))
+                    self._last_voice = time.monotonic()
                 if sc is not None:
                     for attr, who in (("input_transcription", "Вы"), ("output_transcription", "Джарвис")):
                         tr = getattr(sc, attr, None)
                         if tr is not None and getattr(tr, "text", None):
-                            self.transcript.append(f"{who}: {tr.text}")
-                            # Попрощался, а собеседник говорит дальше — трубку не кладём.
-                            if who == "Вы" and self._ending and tr.text.strip(" .,!?"):
-                                self._ending = False
-                                self.log("собеседник продолжает говорить — трубку не кладу")
+                            # Кусочек как пришёл (с пробелом или без) — core/call_log склеит слова.
+                            self.transcript.append(f"{who}:{tr.text}")
+                            self._last_voice = time.monotonic()
+                            self._heard(who, tr.text)
+                    # Джарвис договорил реплику: вы попрощались, и он попрощался в ответ —
+                    # кладём трубку, даже если Gemini забыл вызвать end_call.
+                    if getattr(sc, "turn_complete", False):
+                        if self._user_bye_at and says_bye(self._jarvis_said):
+                            self._end("попрощались (без end_call)")
+                        self._jarvis_said = ""
                 tc = getattr(msg, "tool_call", None)
                 if tc is not None:
                     replies = []
                     for fc in tc.function_calls or []:
                         if fc.name == "end_call":
-                            self._ending = True
+                            self._end("end_call")
                         replies.append(types.FunctionResponse(id=fc.id, name=fc.name, response={"ok": True}))
                     if replies:
                         await session.send_tool_response(function_responses=replies)
+
+    def _heard(self, who: str, text: str):
+        if who == "Джарвис":
+            self._jarvis_said += text
+            self._user_said = ""
+            return
+        self._user_said += text
+        # Прощание — если реплика им КОНЧАЕТСЯ: «пока не знаю» — не прощание.
+        words = re.findall(r"[a-zа-яё]+", self._user_said.lower())
+        while words and words[-1] in ("сэр", "джарвис", "спасибо", "тебе", "вам", "тоже", "и", "ну"):
+            words.pop()
+        tail = " ".join(words[-3:])
+        if says_bye(tail):
+            self._user_bye_at = time.monotonic()
+        elif self._user_bye_at and keeps_talking(tail):
+            self._user_bye_at = 0.0
+        # Мы уже прощались, а собеседник говорит. Опоздавшая расшифровка его «пока»
+        # или «спасибо» отбой не отменяет — только настоящее продолжение разговора.
+        if self._ending:
+            self._after_end += " " + text
+            if keeps_talking(self._after_end):
+                self._ending, self.ended_by, self._after_end = False, "", ""
+                self._user_bye_at = 0.0
+                self.log("собеседник продолжает говорить — трубку не кладу")
 
     async def _pace(self):
         """Кадр каждые 10 мс по часам, а не по sleep: на Windows sleep
@@ -433,8 +511,26 @@ class TgCall:
 
 
 async def resolve_peer(client, target: str) -> int:
-    """@username, ссылка t.me или номер телефона → id пользователя."""
+    """@username, ссылка t.me, номер телефона или «id:123» → id пользователя.
+
+    «id:…» — внутренний номер аккаунта (контакт, подтянутый из вашего
+    Telegram). Раньше он шёл голыми цифрами и принимался за номер телефона:
+    «+123456789» не находился, и звонок контакту не проходил."""
     t = (target or "").strip()
+    if t.startswith("id:"):
+        uid = int(t[3:])
+        try:
+            await client.get_input_entity(uid)
+        except (ValueError, TypeError):
+            # Нет в кэше сессии — подтянуть контакты аккаунта и попробовать ещё раз.
+            from telethon.tl.functions.contacts import GetContactsRequest
+            await client(GetContactsRequest(hash=0))
+            try:
+                await client.get_input_entity(uid)
+            except (ValueError, TypeError):
+                raise RuntimeError("этот аккаунт Telegram не знает этого человека — впишите в «Контактах» "
+                                   "его @username или номер") from None
+        return uid
     t = re.sub(r"^(https?://)?t\.me/", "@", t)
     digits = re.sub(r"[^\d+]", "", t)
     if digits.lstrip("+").isdigit() and len(digits.lstrip("+")) >= 9 and not t.startswith("@"):
@@ -468,7 +564,7 @@ def _gemini_live(prompt: str):
 
 
 async def _call_async(topic: str, context: str, log, target: str = "", prompt: str = "",
-                      transcript: list | None = None) -> str:
+                      transcript: list | None = None, who: str = "вам") -> str:
     from telethon import TelegramClient
     api_id, api_hash = _credentials()
     client = TelegramClient(session_path(), api_id, api_hash)
@@ -480,14 +576,38 @@ async def _call_async(topic: str, context: str, log, target: str = "", prompt: s
         tg = TgCall(client)
         await tg.start()
         name = (_keys().get("user_name") or "сэр")
-        sess = CallSession(tg, _gemini_live, peer, prompt or instruction(topic, context, name), log=log)
-        try:
-            return await sess.run()
-        finally:
-            if transcript is not None:
-                transcript.extend(sess.transcript)
+        return await _talk(tg, peer, prompt or instruction(topic, context, name), log, transcript, who, topic)
     finally:
         await client.disconnect()
+
+
+async def _talk(tg, peer, prompt: str, log, transcript: list | None, who: str, topic: str) -> str:
+    """Сам разговор — и запись в историю звонков, чем бы он ни кончился."""
+    sess = CallSession(tg, _gemini_live, peer, prompt, log=log)
+    started, result = time.time(), "Звонок оборвался."
+    try:
+        result = await sess.run()
+        return result
+    finally:
+        if transcript is not None:
+            transcript.extend(sess.transcript)
+        try:
+            from core.call_log import call_log
+            call_log().add(who, topic, result, sess.transcript, started)
+        except Exception as exc:
+            logger.warning("История звонков: %s", exc)
+
+
+async def _call_via(client, holder, target: str, prompt: str, log, transcript: list, who: str, topic: str) -> str:
+    """Звонок с ВАШЕГО аккаунта (core/contacts.Me): ваши люди вас знают —
+    приватность Telegram не мешает, и видно, что звоните вы."""
+    peer = await resolve_peer(client, target)
+    tg = getattr(holder, "_tgcall", None)
+    if tg is None or tg.client is not client:              # один py-tgcalls на клиента
+        tg = TgCall(client)
+        await tg.start()
+        holder._tgcall = tg
+    return await _talk(tg, peer, prompt, log, transcript, who, topic)
 
 
 def call(topic: str = "просто позвонить", context: str = "", log=None) -> str:
@@ -513,19 +633,32 @@ def _what_they_said(transcript: list[str], limit: int = 400) -> str:
     return said if len(said) <= limit else said[:limit - 1] + "…"
 
 
-def call_contact(target: str, contact: str, message: str, log=None) -> str:
-    """Позвонить контакту хозяина, передать сообщение, вернуть пересказ ответа."""
-    problem = ready()
-    if problem and "Не знаю, кому звонить" not in problem:
-        return problem
+def call_contact(target: str, contact: str, message: str, log=None, via=None) -> str:
+    """Позвонить контакту хозяина, передать сообщение, вернуть пересказ ответа.
+    via — ваш Telegram (core/contacts.Me): звонок с вашего аккаунта; иначе —
+    с аккаунта Джарвиса."""
+    if via is None:
+        problem = ready()
+        if problem and "Не знаю, кому звонить" not in problem:
+            return problem
+    else:
+        try:
+            _credentials()
+        except RuntimeError as exc:
+            return str(exc).capitalize() + "."
     if not _call_lock.acquire(blocking=False):
         return "Я уже на звонке — позвоню после."
     heard: list[str] = []
     try:
         owner = (_keys().get("user_name") or "моего владельца")
-        result = asyncio.run(_call_async(message, "", log or (lambda s: logger.info("Звонок %s: %s", contact, s)),
-                                         target=target, prompt=instruction_contact(owner, contact, message),
-                                         transcript=heard))
+        log = log or (lambda s: logger.info("Звонок %s: %s", contact, s))
+        prompt = instruction_contact(owner, contact, message)
+        if via is not None:
+            result = via.run(lambda client: _call_via(client, via, target, prompt, log, heard, contact, message),
+                             timeout=MAX_CALL_SEC + ANSWER_TIMEOUT + 60)
+        else:
+            result = asyncio.run(_call_async(message, "", log, target=target, prompt=prompt,
+                                             transcript=heard, who=contact))
     except Exception as exc:
         logger.exception("Звонок контакту")
         return f"Звонок не удался: {type(exc).__name__}: {exc}"
@@ -880,6 +1013,9 @@ def phone_call(parameters: dict, player=None, done: Callable[[str], None] | None
     p = parameters or {}
     action = (p.get("action") or "call_now").lower()
     topic = (p.get("topic") or "").strip()
+    if action in ("transcript", "history"):
+        from core.call_log import transcript_tool
+        return transcript_tool({**p, "which": "list" if action == "history" else p.get("which", "")})
     if action == "list":
         return schedule().describe()
     if action == "cancel":

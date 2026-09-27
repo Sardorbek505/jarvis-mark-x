@@ -489,7 +489,7 @@ def test_keeps_talking_when_user_answers_after_goodbye():
     sess = tc.CallSession(tg, live, 42, tc.instruction("сказать, что пора спать"), max_sec=5)
     asyncio.run(sess.run())
     assert tg.hung and not live.script                    # дослушал до конца и только потом отбой
-    assert "Вы: привет, как дела?" in sess.transcript
+    assert any(t.startswith("Вы:") and "привет, как дела?" in t for t in sess.transcript)
     voiced = [f for f in tg.sent if any(f)]
     assert len(voiced) == 40                              # оба ответа прозвучали
 
@@ -520,3 +520,94 @@ def test_hangup_falls_back_to_discard_when_leave_call_fails():
     t.app = _App()
     asyncio.run(t.hangup(42))
     assert called == [42]
+
+
+def _said(text, who="input_transcription", done=False):
+    m = Msg()
+    setattr(m.server_content, who, type("T", (), {"text": text})())
+    m.server_content.turn_complete = done
+    return m
+
+
+def test_late_goodbye_transcript_does_not_cancel_hangup():
+    """Живой случай: «пока» → Джарвис «пока» + end_call, а расшифровка «пока»
+    пришла позже — раньше это отменяло отбой, и звонок висел."""
+    tg = FakeTg()
+    speech = sine(24000, 0.2).tobytes()
+    live = FakeLive([Msg(speech), Msg(end=True), _said(" пока"), _said(", спасибо")])
+    sess = tc.CallSession(tg, live, 42, "x", max_sec=5)
+    asyncio.run(sess.run())
+    assert tg.hung and sess.ended_by == "end_call"
+
+
+def test_hangs_up_after_goodbye_even_without_end_call():
+    """Gemini попрощался голосом, но end_call не вызвал — кладём трубку сами."""
+    tg = FakeTg()
+    speech = sine(24000, 0.2).tobytes()
+    live = FakeLive([_said("Ладно, пока!"), Msg(speech), _said("До свидания, сэр.", "output_transcription", done=True)])
+    t0 = time.monotonic()
+    sess = tc.CallSession(tg, live, 42, "x", max_sec=5)
+    asyncio.run(sess.run())
+    assert tg.hung and sess.ended_by == "попрощались (без end_call)" and time.monotonic() - t0 < 3
+
+
+def test_silence_after_goodbye_hangs_up(monkeypatch):
+    monkeypatch.setattr(tc, "BYE_SILENCE_SEC", 0.6)
+    tg = FakeTg()
+    live = FakeLive([_said("всё, пока")])                   # Джарвис молчит, end_call не пришёл
+    sess = tc.CallSession(tg, live, 42, "x", max_sec=5)
+    asyncio.run(sess.run())
+    assert tg.hung and sess.ended_by == "попрощались и тишина"
+
+
+def test_what_counts_as_goodbye_and_continuing():
+    assert tc.says_bye("Ну всё, пока") and tc.says_bye("До свидания!") and tc.says_bye("положи трубку")
+    s = tc.CallSession(tg=None, live=None, peer=1, prompt="")
+    s._heard("Вы", "пока не знаю, подумаю")                       # «пока» не в конце — не прощание
+    assert s._user_bye_at == 0
+    s._heard("Вы", ". Ладно, пока!")
+    assert s._user_bye_at > 0
+    for late in (" пока", "спасибо, пока", "угу", "ладно, давай", "и тебе хорошего вечера", "по", "ка"):
+        assert not tc.keeps_talking(late), late
+    for more in ("привет, как дела?", "стой", "подожди, ещё вопрос", "а завтра во сколько встреча"):
+        assert tc.keeps_talking(more), more
+
+
+def test_contact_call_goes_through_your_telegram(monkeypatch):
+    """Звонок контакту с вашего аккаунта (core/contacts.Me): свой клиент,
+    один py-tgcalls на клиента, разговор записан в историю звонков."""
+    from core.call_log import call_log
+
+    class Me:
+        def __init__(self):
+            self.client = object()
+
+        def run(self, fn, timeout=40):
+            return asyncio.run(fn(self.client))
+
+    made = []
+
+    class Tg(FakeTg):
+        def __init__(self, client):
+            super().__init__()
+            self.client = client
+            made.append(self)
+
+        async def start(self):
+            pass
+
+    async def peer(client, target):
+        assert target == "id:22"
+        return 22
+    speech = sine(24000, 0.2).tobytes()
+    monkeypatch.setattr(tc, "TgCall", Tg)
+    monkeypatch.setattr(tc, "resolve_peer", peer)
+    monkeypatch.setattr(tc, "_credentials", lambda: (1, "h"))
+    monkeypatch.setattr(tc, "_gemini_live", FakeLive([Msg(speech), _said(" Иду!"), Msg(end=True)]))
+    me = Me()
+    res = tc.call_contact("id:22", "Азиз", "Ужин готов", via=me)
+    assert "Азиз ответил: «Иду!»" in res and made and made[0].hung
+    assert call_log().find("Азиз")["lines"][-1] == {"who": "Азиз", "text": "Иду!"}
+    monkeypatch.setattr(tc, "_gemini_live", FakeLive([Msg(end=True)]))
+    tc.call_contact("id:22", "Азиз", "ещё", via=me)
+    assert len(made) == 1                                   # py-tgcalls не создаётся заново

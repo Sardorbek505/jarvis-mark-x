@@ -258,6 +258,10 @@ function connect() {
       case 'pc_macro_result':
         macroResult(msg);
         break;
+      case 'pc_edit_result':
+        notifyHaptic(msg.ok ? 'success' : 'error');
+        showToast(msg.text || (msg.ok ? 'Готово' : 'Не вышло'), msg.ok ? 'info' : 'error');
+        break;
       case 'thinking':
         setState('processing');
         showTyping();
@@ -649,14 +653,14 @@ voiceBtn.addEventListener('click', () => {
 
 // ── Вкладки ───────────────────────────────────────────────────────────────────
 let activeTab = 'chat';
-const TAB_TITLES = { chat: 'J.A.R.V.I.S', dashboard: 'СВОДКА', tasks: 'ДЕЛА', habits: 'ПРИВЫЧКИ', pc: 'ПК-ПУЛЬТ' };
+const TAB_TITLES = { chat: 'J.A.R.V.I.S', dashboard: 'СВОДКА', tasks: 'ДЕЛА', study: 'УЧЁБА', habits: 'ПРИВЫЧКИ', pc: 'ПК-ПУЛЬТ' };
 function switchTab(name) {
   if (name !== activeTab) haptic();
   activeTab = name;
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   $('screen-title').textContent = TAB_TITLES[name] || 'J.A.R.V.I.S';
-  if (['dashboard', 'tasks', 'habits'].includes(name)) send({ type: 'get_data', view: name });
+  if (['dashboard', 'tasks', 'habits', 'study'].includes(name)) send({ type: 'get_data', view: name });
   if (name === 'pc') send({ type: 'pc_macros' });
 }
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
@@ -698,6 +702,7 @@ function renderView(name, p) {
   if (name === 'dashboard') renderDashboard(p);
   else if (name === 'habits') renderHabits(p);
   else if (name === 'tasks') renderTasks(p);
+  else if (name === 'study') renderStudy(p);
 }
 
 let showAllFacts = false;
@@ -729,8 +734,137 @@ function renderDashboard(p) {
     <div class="card"><h3>Ближайшее напоминание</h3>
       <div class="sub">${p.next_reminder ? esc(p.next_reminder) : 'Напоминаний нет'}</div>
     </div>
-    ${renderMemory(p)}`;
+    ${renderMe(p.me || {}, p.pc_online)}
+    ${renderCalls(p.calls || {})}
+    ${renderMemory(p)}
+    ${renderAbilities(p.abilities || [])}`;
 }
+
+// ── С ПК: «Обо мне», звонки, «Что умею» ──────────────────────────────────────
+function renderMe(me, online) {
+  if (!me.has) return `<div class="card"><h3>Обо мне</h3><div class="sub">Анкета приходит с ПК — включи компьютер с Джарвисом.</div></div>`;
+  let html = `<div class="card me"><h3>Обо мне <span class="count">${Number(me.known)}/${Number(me.total)}</span></h3>`;
+  for (const g of me.groups || []) {
+    html += `<div class="me-group">${esc(g.title)}</div>`;
+    html += g.questions.map(q => `
+      <button class="me-row" data-me="${esc(q.key)}" data-label="${esc(q.label)}" data-value="${esc(q.value || '')}"
+              data-ph="${esc(q.placeholder || '')}" ${online ? '' : 'data-off="1"'}>
+        <span class="me-label">${esc(q.label)}</span>
+        <span class="me-value ${q.value ? '' : 'unset'}">${esc(q.value || 'не указано')}</span>
+      </button>`).join('');
+  }
+  return html + `<div class="sub small">Нажми, чтобы изменить — сохранится на ПК.</div></div>`;
+}
+
+function renderCalls(c) {
+  const calls = c.calls || [];
+  if (!calls.length) return '';
+  return `<div class="card"><h3>Звонки <span class="count">${calls.length}</span></h3>` + calls.map(call => `
+    <details class="call">
+      <summary>${icon('phone')}<span class="call-who">${call.who === 'вам' ? 'Звонок вам' : esc(call.who)}</span>
+        <span class="call-when">${esc(call.when)} · ${Number(call.min)} мин</span></summary>
+      ${call.result ? `<div class="sub small">${esc(call.result)}</div>` : ''}
+      ${(call.lines || []).length ? (call.lines || []).map(l => `
+        <div class="call-line ${l.who === 'Джарвис' ? 'j' : ''}"><b>${esc(l.who)}</b>${esc(l.text)}</div>`).join('')
+        : '<div class="sub small">Расшифровки нет — ничего не расслышано.</div>'}
+    </details>`).join('') + `</div>`;
+}
+
+function renderAbilities(list) {
+  if (!list.length) return '';
+  return `<div class="card"><h3>Что я умею</h3><div class="sub small">Нажми — отправлю Джарвису.</div>` +
+    list.map(s => `<div class="me-group">${esc(s.title)}</div><div class="ability-chips">` +
+      s.phrases.map(ph => `<button class="chip" data-try="${esc(ph)}">${esc(ph)}</button>`).join('') + `</div>`).join('') +
+    `</div>`;
+}
+
+$('dash-body').addEventListener('click', (e) => {
+  const tryBtn = e.target.closest('[data-try]');
+  if (tryBtn) { switchTab('chat'); say(tryBtn.dataset.try); return; }
+  const row = e.target.closest('[data-me]');
+  if (!row || row.querySelector('input')) return;
+  if (row.dataset.off) { showToast('ПК офлайн — изменить можно, когда он включён', 'error'); return; }
+  const input = document.createElement('input');
+  input.className = 'me-input';
+  input.value = row.dataset.value;
+  input.placeholder = row.dataset.ph;
+  const val = row.querySelector('.me-value');
+  val.replaceWith(input);
+  input.focus();
+  const done = (save) => {
+    if (save && input.value.trim() !== row.dataset.value) {
+      send({ type: 'about_answer', key: row.dataset.me, value: input.value.trim() });
+      haptic('medium');
+    }
+    input.replaceWith(val);
+  };
+  input.addEventListener('keydown', ev => { if (ev.key === 'Enter') done(true); if (ev.key === 'Escape') done(false); });
+  input.addEventListener('blur', () => done(true));
+});
+
+// ── Учёба ────────────────────────────────────────────────────────────────────
+let studyDay = null;
+const STUDY_GROUPS = [['overdue', 'Просрочено'], ['today', 'Сегодня'], ['tomorrow', 'Завтра'],
+  ['week', 'На неделе'], ['later', 'Позже'], ['nodate', 'Без срока'], ['done', 'Сделано']];
+let lastStudy = null;
+function renderStudy(p) {
+  lastStudy = p;
+  const box = $('study-body');
+  if (!p.has) {
+    box.innerHTML = `<div class="empty">${icon('tray', 'empty-ico')}<br>Расписание — с ПК<br>
+      Открой на компьютере «Учёба», добавь пары — через минуту они будут здесь, даже когда ПК выключен.</div>`;
+    return;
+  }
+  const week = p.week || [];
+  if (studyDay === null) studyDay = Math.max(0, week.findIndex(d => d.today));
+  const day = week[studyDay] || { lessons: [] };
+  let html = '';
+  if (p.now_next) html += `<div class="card now-next">${icon('bell')}<span>${esc(p.now_next)}</span></div>`;
+  if (p.has_lessons) {
+    html += `<div class="week-chips">` + week.map((d, i) => `
+      <button class="day-chip ${i === studyDay ? 'on' : ''} ${d.today ? 'today' : ''}" data-day="${i}">
+        <b>${esc(d.day)}</b><span>${esc(d.date)}</span>${d.lessons.length ? `<i>${d.lessons.length}</i>` : ''}</button>`).join('') + `</div>`;
+    html += `<div class="section-label">${esc(day.day)} · неделя ${esc(p.parity)}</div>`;
+    html += day.lessons.length ? day.lessons.map(l => `
+      <div class="row lesson"><div class="lesson-time">${esc(l.start)}${l.end ? `<span>${esc(l.end)}</span>` : ''}</div>
+        <div class="body"><div class="title">${esc(l.subject)}</div>
+        <div class="meta">${[l.kind, l.room ? 'ауд. ' + l.room : '', l.teacher].filter(Boolean).map(esc).join(' · ')}</div></div></div>`).join('')
+      : `<div class="sub pad">Пар нет — отдыхай.</div>`;
+  }
+  const tasks = p.tasks || [];
+  for (const [g, title] of STUDY_GROUPS) {
+    const items = tasks.filter(t => t.group === g);
+    if (!items.length) continue;
+    html += `<div class="section-label ${g === 'overdue' ? 'warn' : ''}">${title} · ${items.length}</div>` + items.map(t => `
+      <div class="row ${t.done ? 'done' : ''}">
+        <button class="check ${t.done ? 'on' : ''}" data-study-done="${esc(t.id)}" aria-label="Сделано">${t.done ? icon('check') : ''}</button>
+        <div class="body"><div class="title">${esc(t.title)}</div>
+          <div class="meta ${g === 'overdue' ? 'overdue' : ''}">${[t.subject, t.kind !== 'домашка' ? t.kind : '', t.due].filter(Boolean).map(esc).join(' · ')}</div></div>
+      </div>`).join('');
+  }
+  if (!tasks.length) html += `<div class="sub pad">Заданий нет. Добавь сверху: «реферат по матану», срок «в пятницу».</div>`;
+  html += `<div class="sub small pad">С ПК: ${esc(p.updated || '—')}${p.pc_online ? '' : ' · ПК офлайн — правки подождут'}</div>`;
+  box.innerHTML = html;
+}
+$('study-body').addEventListener('click', (e) => {
+  const d = e.target.closest('[data-day]');
+  if (d) { haptic(); studyDay = Number(d.dataset.day); renderStudy(lastStudy); return; }
+  const c = e.target.closest('[data-study-done]');
+  if (c) {
+    haptic('medium');
+    c.classList.toggle('on');
+    c.closest('.row')?.classList.toggle('done');
+    send({ type: 'study_done', id: c.dataset.studyDone });
+  }
+});
+function studyAdd() {
+  const t = $('study-in'), d = $('study-due');
+  const title = t.value.trim();
+  if (!title) { t.focus(); return; }
+  if (!send({ type: 'study_add', title, due: d.value.trim() })) { showToast('Нет связи — попробуй через минуту', 'error'); return; }
+  haptic(); t.value = ''; d.value = '';
+}
+window.studyAdd = studyAdd;
 
 // Общая память с ПК: что Джарвис знает — видно и можно поправить.
 function renderMemory(p) {

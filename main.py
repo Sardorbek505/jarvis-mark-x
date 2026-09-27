@@ -1534,13 +1534,17 @@ TOOLS = [
             "Джарвис САМ звонит пользователю в Telegram и разговаривает голосом. "
             "call_now — «позвони мне»; schedule — «позвони мне в 6 утра» (time \"06:00\"), "
             "«звони каждое утро в 7» (repeat=daily), «позвони через 20 минут» (in_minutes); "
+            "transcript — «что он сказал?», «о чём говорили», «покажи расшифровку звонка» (name — с кем); "
+            "history — «кому ты звонил», «история звонков»; "
             "topic — зачем звонить («утренний отчёт», «напомнить про встречу»): для утреннего звонка "
             "Джарвис зачитает погоду, календарь и новости. cancel — отменить (time — какой), list — какие звонки стоят."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {"type": "STRING", "enum": ["call_now", "schedule", "cancel", "list"]},
+                "action": {"type": "STRING", "enum": ["call_now", "schedule", "cancel", "list", "transcript",
+                                                      "history"]},
+                "name": {"type": "STRING", "description": "transcript: с кем был звонок (пусто — последний)"},
                 "time": {"type": "STRING", "description": "ЧЧ:ММ, 24 часа: «6 утра» → \"06:00\", «в 9 вечера» → \"21:00\""},
                 "in_minutes": {"type": "NUMBER", "description": "позвонить через столько минут"},
                 "repeat": {"type": "STRING", "enum": ["once", "daily"]},
@@ -1697,6 +1701,18 @@ class Jarvis:
             from core import about_me
             self.speak(about_me.intro_instruction(restart=True))
         self.ui.on_voice_intro = _voice_intro
+
+        # Звонки (core/call_log.py): расшифровка — в «Диалог» сразу после звонка.
+        try:
+            from core.call_log import call_log, title as call_title
+
+            def _show_call(entry):
+                self.ui.write_log(f"SYS: 📞 {call_title(entry)}")
+                for ln in entry["lines"]:
+                    self.ui.write_log(f"CALL: {ln['who']}: {ln['text']}")
+            call_log().on_added = _show_call
+        except Exception as exc:
+            logger.warning("История звонков не подключилась: %s", exc)
 
         # Контакты (core/contacts.py): новые сообщения близких — в капсулу.
         try:

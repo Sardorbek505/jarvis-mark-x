@@ -112,6 +112,11 @@ _FAKE_WS = r"""
 window.__errors = [];
 window.addEventListener('error', e => window.__errors.push(String(e.message)));
 window.__sent = [];
+window.__study = { has: true, updated: '2026-09-28 08:00', now_next: 'Следующая — Матан в 08:30 (через 30 мин), ауд. 301.', parity: 'нечётная', has_lessons: true, pc_online: true,
+  week: [0,1,2,3,4,5,6].map(i => ({ day: ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][i], date: (28 + i) + '.09', today: i === 0,
+    lessons: i === 0 ? [{ start: '08:30', end: '10:00', subject: 'Матан', room: '301', kind: 'практика', teacher: '' }] : [] })),
+  tasks: [{ id: 't1', title: 'старое', subject: '', kind: 'домашка', done: false, due: 'просрочено на 8 дней', group: 'overdue' },
+          { id: 't2', title: 'реферат', subject: 'Матан', kind: 'домашка', done: false, due: 'послезавтра', group: 'week' }] };
 window.__online = true;
 class FakeWS {
   constructor() {
@@ -131,7 +136,12 @@ class FakeWS {
     if (m.type === 'pc_macro') this._emit(m.name === 'Выключить всё' && !m.confirmed
       ? { type: 'pc_macro_result', name: m.name, need_confirm: true, ok: false, text: 'Выполнить «Выключить всё»?' }
       : { type: 'pc_macro_result', name: m.name, ok: true, text: '✅ «' + m.name + '» — выполнено' });
-    if (m.type === 'get_data') this._emit({ type: 'data', view: m.view, payload: { name: 'Сардор', about: { facts: ['брат: Азиз'] }, tasks: [], reminders: [], habits: [] } });
+    if (m.type === 'get_data' && m.view === 'study') this._emit({ type: 'data', view: 'study', payload: window.__study });
+    else if (m.type === 'get_data') this._emit({ type: 'data', view: m.view, payload: { name: 'Сардор', about: { facts: ['брат: Азиз'] }, tasks: [], reminders: [], habits: [],
+      me: { has: true, known: 1, total: 2, groups: [{ title: 'Кто вы', questions: [{ key: 'name', label: 'Имя', value: 'Сардор' }, { key: 'city', label: 'Город', value: '' }] }] },
+      calls: { has: true, calls: [{ who: 'Азиз', when: '2026-09-28 18:02', min: 1, result: 'Поговорили 1 мин.', lines: [{ who: 'Джарвис', text: 'Ужин готов' }, { who: 'Азиз', text: 'Иду, буду через 10 минут' }] }] },
+      abilities: [{ title: 'Учёба', phrases: ['какие пары завтра'] }], pc_online: true } });
+    if (m.type === 'study_done' || m.type === 'study_add' || m.type === 'about_answer') this._emit({ type: 'pc_edit_result', ok: true, text: 'Отметил' });
   }
   close() { this.readyState = 3; }
 }
@@ -225,6 +235,37 @@ def test_pc_tab_shows_own_commands_and_confirms_locked_ones(page):
     # команда с замком — сначала вопрос; «да» → тот же запуск с confirmed
     t.eval("window.confirm = () => true; document.querySelectorAll('#pc-macros .macro')[1].click()")
     assert t.wait("window.__sent.some(m => m.type === 'pc_macro' && m.name === 'Выключить всё' && m.confirmed)", timeout=5)
+    assert json.loads(_js(t, "window.__errors")) == []
+
+
+def test_study_tab_and_dashboard_cards_from_pc(page):
+    """Учёба с ПК: «следующая пара», неделя, задачи по срокам с галочками.
+    Сводка: «Обо мне» правится на месте, звонки раскрываются с расшифровкой,
+    «Что умею» отправляет фразу Джарвису."""
+    t = page
+    t.eval("switchTab('study')")
+    assert t.wait("document.querySelector('#study-body .now-next') !== null", timeout=5)
+    assert t.eval("document.querySelectorAll('#study-body .day-chip').length") == 7
+    assert t.eval("document.querySelector('#study-body .lesson .title').textContent") == "Матан"
+    assert t.eval("document.querySelector('#study-body .section-label.warn').textContent").startswith("Просрочено")
+    t.eval("document.querySelector('[data-day=\"1\"]').click()")
+    assert "Пар нет" in t.eval("document.getElementById('study-body').textContent")
+    t.eval("document.querySelector('[data-study-done=\"t2\"]').click()")
+    assert t.wait("window.__sent.some(m => m.type === 'study_done' && m.id === 't2')", timeout=5)
+    t.eval("document.getElementById('study-in').value = 'эссе'; document.getElementById('study-due').value = 'в пятницу'; studyAdd()")
+    assert t.wait("window.__sent.some(m => m.type === 'study_add' && m.title === 'эссе' && m.due === 'в пятницу')", timeout=5)
+
+    t.eval("switchTab('dashboard')")
+    assert t.wait("document.querySelector('.me-row') !== null", timeout=5)
+    t.eval("document.querySelector('[data-me=\"city\"]').click()")
+    t.eval("const i = document.querySelector('.me-input'); i.value = 'Ташкент'; "
+           "i.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter'}))")
+    assert t.wait("window.__sent.some(m => m.type === 'about_answer' && m.key === 'city' && m.value === 'Ташкент')", timeout=5)
+    t.eval("document.querySelector('details.call summary').click()")
+    assert "Иду, буду через 10 минут" in t.eval("document.querySelector('details.call').textContent")
+    assert t.eval("document.querySelector('details.call').open")
+    t.eval("document.querySelector('[data-try]').click()")
+    assert t.wait("window.__sent.some(m => m.type === 'text' && m.text === 'какие пары завтра')", timeout=5)
     assert json.loads(_js(t, "window.__errors")) == []
 
 
