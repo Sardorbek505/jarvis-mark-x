@@ -56,8 +56,8 @@ BASE_DIR = _base_dir()
 CONFIG_DIR = BASE_DIR / "config"
 API_FILE = CONFIG_DIR / "api_keys.json"
 
-_DEFAULT_W, _DEFAULT_H = 980, 700
-_MIN_W, _MIN_H = 820, 580
+_DEFAULT_W, _DEFAULT_H = 1220, 800     # экраны (команды, учёба…) — внутри окна, им нужно место
+_MIN_W, _MIN_H = 960, 620
 _OS = platform.system()
 
 
@@ -882,6 +882,57 @@ class SetupOverlay(QWidget):
 
 
 # ─── Главное окно ─────────────────────────────────────────────────────────────
+# ─── Боковая панель: все экраны Джарвиса — в одном окне ─────────────────────
+# (ключ, подпись, иконка ui_icons). «home» — шар и разговор.
+PAGES = [
+    ("home", "Джарвис", "spark"), ("commands", "Команды", "bolt"), ("study", "Учёба", "book"),
+    ("contacts", "Контакты", "phone"), ("about", "Обо мне", "person"), ("keys", "Ключи", "key"),
+    ("backup", "Копия", "lock"), ("help", "Что умею", "grid"),
+]
+
+
+class NavRail(QFrame):
+    """Узкая колонка слева: иконка + подпись; нажал — экран открылся справа."""
+
+    def __init__(self, on_pick, parent=None):
+        super().__init__(parent)
+        from ui_icons import qicon
+        self.setObjectName("nav")
+        self.setFixedWidth(84)
+        self.setStyleSheet(f"""
+            QFrame#nav {{ background: {C.PANEL}; border: none; border-right: 1px solid {C.BORDER}; }}
+            QToolButton {{ background: transparent; border: none; border-radius: 10px; color: {C.TEXT_DIM};
+                           padding: 6px 0; font-size: 10px; }}
+            QToolButton:hover {{ background: {C.PANEL2}; color: {C.TEXT}; }}
+            QToolButton:checked {{ background: {C.PRI_GHO}; color: {C.PRI}; }}
+        """)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 10, 8, 10)
+        lay.setSpacing(4)
+        self.buttons = {}
+        from PyQt6.QtCore import QSize
+        from PyQt6.QtWidgets import QToolButton
+        for key, title, icon in PAGES:
+            b = QToolButton()
+            b.setText(title)
+            b.setIcon(qicon(icon, 20, C.PRI))
+            b.setIconSize(QSize(20, 20))
+            b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            b.setCheckable(True)
+            b.setFixedSize(70, 54)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: on_pick(k))
+            self.buttons[key] = b
+            lay.addWidget(b, 0, Qt.AlignmentFlag.AlignHCenter)
+            if key == "home":
+                lay.addSpacing(6)
+        lay.addStretch(1)
+
+    def select(self, key: str):
+        for k, b in self.buttons.items():
+            b.setChecked(k == key)
+
+
 class MainWindow(QMainWindow):
     _log_sig   = pyqtSignal(str)
     _state_sig = pyqtSignal(str)
@@ -896,12 +947,7 @@ class MainWindow(QMainWindow):
     # Глобальные хоткеи приходят из потока Win32-сообщений — тоже чужого.
     _mute_sig  = pyqtSignal()
     _front_sig = pyqtSignal()
-    _macros_sig = pyqtSignal()
-    _keys_sig = pyqtSignal()
-    _contacts_sig = pyqtSignal()
-    _about_sig = pyqtSignal()
-    _study_sig = pyqtSignal()
-    _backup_sig = pyqtSignal()
+    _page_sig = pyqtSignal(str)                 # открыть экран (из любого потока)
     _welcome_sig = pyqtSignal(bool)
     # wait_for_api_key зовётся из рабочего потока: оверлей — только сигналом.
     _overlay_sig = pyqtSignal(str)
@@ -929,10 +975,12 @@ class MainWindow(QMainWindow):
             _logger.debug("Window icon setup error: %s", exc)
 
         screen = QApplication.primaryScreen().availableGeometry()
-        self.move(
-            (screen.width()  - _DEFAULT_W) // 2,
-            (screen.height() - _DEFAULT_H) // 2,
-        )
+        # На маленьком экране — не больше 94 % экрана.
+        w0 = min(_DEFAULT_W, int(screen.width() * 0.94))
+        h0 = min(_DEFAULT_H, int(screen.height() * 0.94))
+        self.setMinimumSize(min(_MIN_W, w0), min(_MIN_H, h0))
+        self.resize(w0, h0)
+        self.move(screen.x() + (screen.width() - w0) // 2, screen.y() + (screen.height() - h0) // 2)
 
         self.setStyleSheet(f"""
             QMainWindow, QWidget {{ background: {C.BG}; color: {C.TEXT}; }}
@@ -990,10 +1038,27 @@ class MainWindow(QMainWindow):
         head_wrap.setLayout(head_row)
         outer.addWidget(head_wrap)
 
-        # ── Центральный HUD — на всю ширину, как на видео ────────────
+        # ── Под шапкой: панель экранов слева, справа — открытый экран ──
+        # Шар с разговором — первый экран; команды, учёба, контакты и прочие —
+        # здесь же, а не отдельными окнами (строятся при первом открытии).
+        from PyQt6.QtWidgets import QStackedWidget
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        self._nav = NavRail(self.show_page)
+        body.addWidget(self._nav)
+        self._stack = QStackedWidget()
+        body.addWidget(self._stack, 1)
+        outer.addLayout(body, stretch=1)
+        self._pages: dict[str, QWidget] = {}
+        self._page = "home"
+
+        # ── Центральный HUD ──────────────────────────────────────────
         self._hud = HudCanvas(face_path)
         self._hud.bottom_reserve = 72           # место под поле ввода
-        outer.addWidget(self._hud, stretch=1)
+        self._stack.addWidget(self._hud)
+        self._pages["home"] = self._hud
+        self._nav.select("home")
         self._hud.installEventFilter(self)
 
         # ── История диалога: выезжает справа поверх шара ─────────────
@@ -1139,12 +1204,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(2500, self._first_run_welcome)
         self._mute_sig.connect(self._toggle_mute)
         self._front_sig.connect(self._bring_to_front)
-        self._macros_sig.connect(self._show_macros)
-        self._keys_sig.connect(self._show_keys)
-        self._contacts_sig.connect(self._show_contacts)
-        self._about_sig.connect(self._show_about)
-        self._study_sig.connect(self._show_study)
-        self._backup_sig.connect(self._show_backup)
+        self._page_sig.connect(self._open_page)
         self._welcome_sig.connect(self._show_welcome)
         self._overlay_sig.connect(self._show_overlay)
 
@@ -1247,104 +1307,123 @@ class MainWindow(QMainWindow):
         super().hideEvent(ev)
         self._island_wanted(True)                      # спрятали в трей
 
+    # ── Экраны внутри окна ─────────────────────────────────────────────────
+    def _build_page(self, key: str) -> QWidget:
+        """Экран строится при первом открытии: те же классы, что были окнами,
+        но встроенные (Qt.Widget) — без своей рамки и панели задач."""
+        if key == "commands":
+            from ui_macros import MacrosDialog
+            w = MacrosDialog(None)
+        elif key == "study":
+            from ui_study import StudyDialog
+            w = StudyDialog(None)
+        elif key == "contacts":
+            from ui_contacts import ContactsDialog
+            w = ContactsDialog(None, open_keys=lambda: self.show_page("keys"))
+        elif key == "about":
+            from ui_about import AboutDialog
+            w = AboutDialog(None, start_voice=lambda: (self.show_page("home"),
+                                                       getattr(self, "on_voice_intro", None) and self.on_voice_intro()))
+        elif key == "keys":
+            from ui_keys import KeysDialog
+            w = KeysDialog(None)
+        elif key == "backup":
+            from ui_backup import BackupDialog
+            w = BackupDialog(None)
+        elif key == "help":
+            from ui_welcome import WelcomeDialog
+
+            def calibrate():
+                try:
+                    from core.wake_calibrate import run_gui
+                    run_gui()
+                except Exception as exc:
+                    _logger.warning("Обучение слову: %s", exc)
+
+            def try_phrase(text: str):
+                self.show_page("home")
+                handler = getattr(self, "on_text_command", None)
+                if handler:
+                    handler(text)
+            go = self.show_page
+            w = WelcomeDialog(None, actions={"keys": lambda: go("keys"), "about": lambda: go("about"),
+                                             "voice": lambda: go("about"), "contacts": lambda: go("contacts"),
+                                             "study": lambda: go("study"), "wake": calibrate},
+                              try_phrase=try_phrase, first_run=getattr(self, "_first_run", False))
+        else:
+            raise KeyError(key)
+        w.setWindowFlags(Qt.WindowType.Widget)
+        w.setMinimumSize(0, 0)
+        # «Готово» / «Понятно» у бывших окон закрывали их — здесь это «назад к шару».
+        w.finished.connect(lambda _r, w=w: (w.setVisible(True), self.show_page("home")))
+        return w
+
+    def show_page(self, key: str):
+        """Открыть экран в окне (только из потока Qt; из других — open_page)."""
+        if key not in self._pages:
+            try:
+                page = self._build_page(key)
+            except Exception as exc:
+                _logger.warning("Экран «%s» не открылся: %s", key, exc)
+                self.write_log(f"SYS: ⚠ Экран «{key}» не открылся: {exc}")
+                return
+            self._pages[key] = page
+            self._stack.addWidget(page)
+        page = self._pages[key]
+        self._stack.setCurrentWidget(page)
+        self._nav.select(key)
+        self._page = key
+        refresh = getattr(page, "refresh", None)
+        if key == "help" and callable(refresh):
+            refresh()                                  # галочки — после настройки в других экранах
+        if key == "home":
+            self._place_overlays()
+
+    def open_page(self, key: str):
+        """Открыть экран и показать окно. Из любого потока (трей, голос)."""
+        self._page_sig.emit(str(key))
+
+    def _open_page(self, key: str):
+        self._bring_to_front()
+        self.show_page(key)
+
+    # Старые имена (трей, голос «открой ключи», main.py) — теперь экраны в окне.
     def open_macros(self):
-        """Окно «Свои команды» (ui_macros.py). Из любого потока."""
-        self._macros_sig.emit()
+        self.open_page("commands")
+
+    def open_keys(self):
+        self.open_page("keys")
+
+    def open_contacts(self):
+        self.open_page("contacts")
+
+    def open_about(self):
+        self.open_page("about")
+
+    def open_study(self):
+        self.open_page("study")
+
+    def open_backup(self):
+        self.open_page("backup")
 
     def open_welcome(self, first_run: bool = False):
-        """Окно «Что умеет Джарвис» (ui_welcome.py). Из любого потока."""
+        """«Что умеет Джарвис». Из любого потока."""
         self._welcome_sig.emit(bool(first_run))
+
+    def _show_welcome(self, first_run: bool = False):
+        self._first_run = first_run
+        self._open_page("help")
 
     def _first_run_welcome(self):
         import os
         try:
             from core import help as H
             if not H.seen() and not os.getenv("JARVIS_NO_WELCOME"):
-                self._show_welcome(True)
+                self._first_run = True
+                self.show_page("help")
+                H.mark_seen()                          # показали один раз — дальше из панели
         except Exception as exc:
             _logger.debug("Подсказки: %s", exc)
-
-    def _show_welcome(self, first_run: bool = False):
-        def calibrate():
-            try:
-                from core.wake_calibrate import run_gui
-                run_gui()
-            except Exception as exc:
-                _logger.warning("Обучение слову: %s", exc)
-
-        def try_phrase(text: str):
-            handler = getattr(self, "on_text_command", None)
-            if handler:
-                handler(text)
-        actions = {"keys": self._show_keys, "about": self._show_about, "voice": self._show_about,
-                   "contacts": self._show_contacts, "study": self._show_study, "wake": calibrate}
-        try:
-            from ui_welcome import open_dialog
-            self._welcome_dlg = open_dialog(None, actions=actions, try_phrase=try_phrase, first_run=first_run)
-        except Exception as exc:
-            _logger.warning("Окно подсказок не открылось: %s", exc)
-
-    def open_study(self):
-        """Окно «Учёба» (ui_study.py). Из любого потока."""
-        self._study_sig.emit()
-
-    def _show_study(self):
-        try:
-            from ui_study import open_dialog
-            self._study_dlg = open_dialog(None)
-        except Exception as exc:
-            _logger.warning("Окно «Учёба» не открылось: %s", exc)
-
-    def open_backup(self):
-        """Окно «Резервная копия» (ui_backup.py). Из любого потока."""
-        self._backup_sig.emit()
-
-    def _show_backup(self):
-        try:
-            from ui_backup import open_dialog
-            self._backup_dlg = open_dialog(None)
-        except Exception as exc:
-            _logger.warning("Окно резервной копии не открылось: %s", exc)
-
-    def open_about(self):
-        """Окно «Обо мне» (ui_about.py). Из любого потока."""
-        self._about_sig.emit()
-
-    def _show_about(self):
-        try:
-            from ui_about import open_dialog
-            self._about_dlg = open_dialog(None, start_voice=getattr(self, "on_voice_intro", None))
-        except Exception as exc:
-            _logger.warning("Окно «Обо мне» не открылось: %s", exc)
-
-    def open_contacts(self):
-        """Окно «Контакты» (ui_contacts.py). Из любого потока."""
-        self._contacts_sig.emit()
-
-    def _show_contacts(self):
-        try:
-            from ui_contacts import open_dialog
-            self._contacts_dlg = open_dialog(None)
-        except Exception as exc:
-            _logger.warning("Окно контактов не открылось: %s", exc)
-
-    def open_keys(self):
-        """Окно «Ключи и подключения» (ui_keys.py). Из любого потока."""
-        self._keys_sig.emit()
-
-    def _show_keys(self):
-        try:
-            from ui_keys import open_dialog
-            self._keys_dlg = open_dialog(None)
-        except Exception as exc:
-            _logger.warning("Окно ключей не открылось: %s", exc)
-
-    def _show_macros(self):
-        try:
-            from ui_macros import open_dialog
-            self._macros_dlg = open_dialog(None)
-        except Exception as exc:
-            _logger.warning("Окно своих команд не открылось: %s", exc)
 
     def lock_on(self, tool: str):
         """Подписать над шаром инструмент, который сейчас выполняется."""
@@ -1611,7 +1690,7 @@ class MainWindow(QMainWindow):
     def keyPressEvent(self, e):
         # Начал печатать где угодно — буква уходит в поле ввода.
         txt = e.text()
-        if txt and txt.isprintable() and not self._input.hasFocus() and \
+        if txt and txt.isprintable() and not self._input.hasFocus() and self._page == "home" and \
                 not (e.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)):
             self._input.setFocus()
             self._input.insert(txt)
