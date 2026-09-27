@@ -2,10 +2,17 @@
 
 Джарвис пишет людям от вашего имени, звонит им и может выключить компьютер.
 Такое «да» должно быть ВАШИМ: не гостя, не телевизора. Один раз вы
-записываете 5 коротких фраз (окно «Обо мне» → «Ваш голос»); Vosk считает по
-ним «отпечаток» голоса (x-vector, модель vosk-model-spk, 16 МБ) — и при
-подтверждении опасной команды сверяет с ним вашу речь за последние секунды
-(просьба + «да»).
+записываете 5 коротких фраз (окно «Обо мне» → «Ваш голос»); по ним
+считается «отпечаток» голоса — и при подтверждении опасной команды Джарвис
+сверяет с ним вашу речь за последние секунды (просьба + «да»).
+
+Отпечаток считает одна из двух моделей:
+  • WeSpeaker ResNet34 (sherpa-onnx, 26 МБ) — основная: различает и похожие
+    мужские голоса;
+  • Vosk spk (16 МБ) — запасная, если нет sherpa-onnx: чужой женский голос
+    отсекает, а похожие мужские — плохо (CI: 0.61–0.75 у чужих при 0.73–0.85
+    у своего).
+Голос, записанный одной моделью, другой не сверить — окно попросит перезаписать.
 
 - Не записали голос или нет модели — проверки нет, всё как раньше.
 - Набранное с клавиатуры в окне Джарвиса — доверенное (вы за ПК).
@@ -28,6 +35,10 @@ logger = logging.getLogger(__name__)
 
 SPK_DIRNAME = "vosk-spk"
 SPK_URL = "https://alphacephei.com/vosk/models/vosk-model-spk-0.4.zip"
+WESPEAKER_DIRNAME = "voice-id"
+WESPEAKER_FILE = "wespeaker_en_voxceleb_resnet34.onnx"
+WESPEAKER_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
+                 + WESPEAKER_FILE)
 SAMPLE_RATE = 16000
 MIN_SPEECH_SEC = 1.0              # короче — отпечаток ненадёжный
 DEFAULT_THRESHOLD = 0.5
@@ -53,45 +64,72 @@ def mean(vectors: list[list[float]]) -> list[float]:
     return [sum(v[i] for v in vectors) / n for i in range(len(vectors[0]))]
 
 
-def find_spk_dir() -> Path | None:
-    """Папка модели отпечатков: JARVIS_VOSK_SPK, рядом с .exe, в папке данных, в проекте."""
-    env = os.getenv("JARVIS_VOSK_SPK", "").strip()
-    cands = [Path(env)] if env else []
+def _model_dirs(dirname: str, env: str) -> list[Path]:
+    """Где искать модель: переменная, рядом с .exe, в папке данных, в проекте."""
+    e = os.getenv(env, "").strip()
+    cands = [Path(e)] if e else []
     if getattr(sys, "frozen", False):
-        cands += [Path(getattr(sys, "_MEIPASS", "")) / "models" / SPK_DIRNAME,
-                  Path(sys.executable).parent / "models" / SPK_DIRNAME]
+        cands += [Path(getattr(sys, "_MEIPASS", "")) / "models" / dirname,
+                  Path(sys.executable).parent / "models" / dirname]
     try:
         from core.paths import get_data_root
-        cands.append(Path(get_data_root()) / "models" / SPK_DIRNAME)
+        cands.append(Path(get_data_root()) / "models" / dirname)
     except Exception:
         pass
-    cands.append(Path(__file__).resolve().parent.parent / "models" / SPK_DIRNAME)
-    for c in cands:
+    cands.append(Path(__file__).resolve().parent.parent / "models" / dirname)
+    return cands
+
+
+def find_spk_dir() -> Path | None:
+    for c in _model_dirs(SPK_DIRNAME, "JARVIS_VOSK_SPK"):
         if (c / "final.ext.raw").exists() or (c / "mfcc.conf").exists():
             return c
     return None
 
 
-def download_spk(progress: Callable[[float], None] | None = None) -> Path:
-    """Скачать модель отпечатков (16 МБ) в папку данных."""
-    import tempfile
+def find_wespeaker() -> Path | None:
+    for c in _model_dirs(WESPEAKER_DIRNAME, "JARVIS_WESPEAKER_DIR"):
+        if (c / WESPEAKER_FILE).exists():
+            return c / WESPEAKER_FILE
+    return None
+
+
+def _fetch(url: str, dest, progress: Callable[[float], None] | None) -> None:
     import urllib.request
+    with urllib.request.urlopen(url, timeout=60) as r:
+        total = int(r.headers.get("Content-Length") or 0)
+        got = 0
+        while True:
+            chunk = r.read(1 << 16)
+            if not chunk:
+                break
+            dest.write(chunk)
+            got += len(chunk)
+            if progress and total:
+                progress(got / total)
+
+
+def download_wespeaker(progress: Callable[[float], None] | None = None) -> Path:
+    """Скачать WeSpeaker (26 МБ) в папку данных."""
+    from core.paths import get_data_root
+    dest = Path(get_data_root()) / "models" / WESPEAKER_DIRNAME
+    dest.mkdir(parents=True, exist_ok=True)
+    part = dest / (WESPEAKER_FILE + ".part")
+    with open(part, "wb") as f:
+        _fetch(WESPEAKER_URL, f, progress)
+    part.replace(dest / WESPEAKER_FILE)
+    return dest / WESPEAKER_FILE
+
+
+def download_spk(progress: Callable[[float], None] | None = None) -> Path:
+    """Скачать модель отпечатков Vosk (16 МБ) в папку данных."""
+    import tempfile
 
     from core.paths import get_data_root
     dest = Path(get_data_root()) / "models"
     dest.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-        with urllib.request.urlopen(SPK_URL, timeout=60) as r:
-            total = int(r.headers.get("Content-Length") or 0)
-            got = 0
-            while True:
-                chunk = r.read(1 << 16)
-                if not chunk:
-                    break
-                tmp.write(chunk)
-                got += len(chunk)
-                if progress and total:
-                    progress(got / total)
+        _fetch(SPK_URL, tmp, progress)
     try:
         with zipfile.ZipFile(tmp.name) as z:
             top = z.namelist()[0].split("/")[0]
@@ -108,6 +146,12 @@ def download_spk(progress: Callable[[float], None] | None = None) -> Path:
 
 class VoskEmbedder:
     """Отпечаток голоса из PCM 16 кГц: распознаватель Vosk со SpkModel."""
+
+    name = "vosk"
+    size_mb = 16
+    # Порог = (самая далёкая своя запись − MARGIN), но в пределах [LO, HI].
+    # CI: свои длинные фразы 0.77–0.80, своё короткое «да» 0.55, чужой женский 0.13–0.30.
+    LO, HI, MARGIN = 0.42, 0.55, 0.3
 
     def __init__(self, asr_dir: Path | None = None, spk_dir: Path | None = None):
         self._lock = threading.Lock()
@@ -145,11 +189,66 @@ class VoskEmbedder:
         vec = res.get("spk")
         return [float(x) for x in vec] if vec else None
 
+    @staticmethod
+    def download(progress=None):
+        return download_spk(progress)
+
+
+class SherpaEmbedder:
+    """Отпечаток голоса моделью WeSpeaker ResNet34 через sherpa-onnx."""
+
+    name = "wespeaker"
+    size_mb = 26
+    LO, HI, MARGIN = 0.40, 0.60, 0.3
+
+    def __init__(self, model: Path | None = None):
+        self._lock = threading.Lock()
+        self._model = model
+        self._ex = None
+
+    @staticmethod
+    def installed() -> bool:
+        import importlib.util
+        return importlib.util.find_spec("sherpa_onnx") is not None
+
+    def available(self) -> bool:
+        return self.installed() and bool(self._model or find_wespeaker())
+
+    def _load(self):
+        if self._ex is None:
+            import sherpa_onnx
+            model = self._model or find_wespeaker()
+            if not model:
+                raise FileNotFoundError("нет модели WeSpeaker")
+            cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(model), num_threads=1)
+            self._ex = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
+
+    def __call__(self, pcm: bytes) -> list[float] | None:
+        import numpy as np
+        with self._lock:
+            self._load()
+            st = self._ex.create_stream()
+            st.accept_waveform(SAMPLE_RATE, np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0)
+            st.input_finished()
+            if not self._ex.is_ready(st):
+                return None
+            vec = self._ex.compute(st)
+        return [float(x) for x in vec] if len(vec) else None
+
+    @staticmethod
+    def download(progress=None):
+        return download_wespeaker(progress)
+
+
+def default_embedder():
+    """WeSpeaker, если есть sherpa-onnx (модель докачается из окна), иначе Vosk."""
+    return SherpaEmbedder() if SherpaEmbedder.installed() else VoskEmbedder()
+
 
 class VoiceID:
     def __init__(self, path: Path, embed: Callable[[bytes], list[float] | None] | None = None):
         self.path = Path(path)
-        self.embed = embed or VoskEmbedder()
+        self.embed = embed or default_embedder()
         self.profile: dict = {}
         self.load()
 
@@ -159,8 +258,20 @@ class VoiceID:
         except Exception:
             self.profile = {}
 
+    @property
+    def engine(self) -> str:
+        return getattr(self.embed, "name", "")
+
     def enrolled(self) -> bool:
-        return bool(self.profile.get("mean"))
+        """Записан — и той же моделью, что сейчас считает отпечатки."""
+        return bool(self.profile.get("mean")) and not self.needs_reenroll()
+
+    def needs_reenroll(self) -> bool:
+        """Голос записан другой моделью (старый профиль Vosk, а теперь WeSpeaker)."""
+        return bool(self.profile.get("mean")) and self.profile.get("engine", "vosk") != (self.engine or "vosk")
+
+    def download(self, progress=None):
+        return self.embed.download(progress)
 
     def available(self) -> bool:
         avail = getattr(self.embed, "available", None)
@@ -179,11 +290,11 @@ class VoiceID:
                     "text": "Мало речи в записях — говорите громче и ближе к микрофону, и повторите."}
         m = mean(vecs)
         sims = [cosine(v, m) for v in vecs]
-        # CI на настоящих моделях (scripts/voice_id_check.py): свои длинные фразы
-        # 0.77–0.80, своё короткое «да, отправляй» — 0.55, чужой голос 0.13–0.30.
-        # Порог — заметно ниже своих записей, но выше чужих.
-        threshold = max(0.42, min(0.55, min(sims) - 0.3))
-        self.profile = {"version": 2, "mean": m, "n": len(vecs), "self_sim": round(sum(sims) / len(sims), 3),
+        # Порог — заметно ниже своих записей, но выше чужих; пределы у каждой
+        # модели свои (подобраны в CI: scripts/voice_id_check.py).
+        lo, hi, margin = (getattr(self.embed, k, d) for k, d in (("LO", 0.42), ("HI", 0.55), ("MARGIN", 0.3)))
+        threshold = max(lo, min(hi, min(sims) - margin))
+        self.profile = {"version": 3, "engine": self.engine or "vosk", "mean": m, "n": len(vecs), "self_sim": round(sum(sims) / len(sims), 3),
                         "self_min": round(min(sims), 3), "threshold": round(threshold, 3)}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self.profile), encoding="utf-8")
