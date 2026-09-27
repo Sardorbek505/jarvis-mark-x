@@ -3,7 +3,8 @@
 Модель — без экрана: какой вид показать, баннеры ответа и событий, таймер.
 Окно — в Qt без экрана: появляется при сворачивании, прячется при
 развороте и в полноэкранной игре, клики мимо капсулы проходят насквозь
-(маска), кнопки плеера и «открыть» работают."""
+(вне капсулы окно полностью прозрачно), кнопки плеера и «открыть» работают;
+в покое уходит сама и возвращается на событие; тексты видов не смешиваются."""
 import os
 import time
 
@@ -138,9 +139,13 @@ def test_capsule_springs_to_size_and_mask_lets_clicks_through(island):
     _settle(w, app)
     cw, ch = ui.SIZES["compact"]
     assert abs(w._w - cw) < 1 and abs(w._h - ch) < 1
-    mask = w.mask().boundingRect()
-    assert mask.width() <= cw + 4 and mask.height() <= ch + 4  # вне капсулы окна нет
-    assert mask.center().x() in range(w.W // 2 - 3, w.W // 2 + 4)   # по центру
+    assert w.mask().isEmpty()                                   # маску не трогаем — на Windows она оставляла шлейф
+    img = w.grab().toImage()
+    cap = w.capsule_rect()
+    assert img.pixelColor(int(cap.center().x()), int(cap.center().y())).alpha() > 200   # капсула — есть
+    for x, y in ((2, 2), (w.W - 3, 2), (w.W // 2, w.H - 3), (int(cap.right()) + 6, int(cap.center().y()))):
+        assert img.pixelColor(x, y).alpha() == 0, (x, y)        # вне капсулы — пусто, клик проходит насквозь
+    assert abs(cap.center().x() - w.W / 2) < 1                  # по центру
     w.model.notify("ДЖАРВИС", "Готово, сэр.", "reply")
     _settle(w, app)
     assert abs(w._h - ui.SIZES["banner"][1]) < 1
@@ -159,7 +164,7 @@ def test_click_opens_jarvis_and_player_buttons_work(island, monkeypatch):
     assert opened == [1]                                        # клик по капсуле — окно Джарвиса
 
     w.model.media = ui.Media("Macan — ASPHALT 8", "Macan", "music", True)
-    w.hovered = True
+    w.enterEvent(None)                                          # наведение — с задержкой
     _settle(w, app, 1.4)
     w.repaint()
     assert set(w._buttons) == {"open", "previous", "toggle", "next"}
@@ -255,3 +260,42 @@ def test_listening_capsule_grows_and_wave_follows_voice(island):
     assert abs(w._w - lw) < 2 and abs(w._h - lh) < 2
     assert max(w._wave) > 0.5                          # волна подхватила голос
     w.repaint()                                        # рисуется без ошибок
+
+
+def test_idle_capsule_goes_away_and_returns_on_event(island, monkeypatch):
+    """В покое (ждёт, ничего не играет, таймер не идёт) капсула уходит сама;
+    ближайший будильник — не повод висеть. Позвали — вернулась."""
+    w, app, _ = island
+    monkeypatch.setattr(ui, "IDLE_HIDE_SEC", 0.3)
+    w.model.timer_label = "Будильник 07:00"                     # ближайший будильник, не идущий таймер
+    w.set_wanted(True)
+    _settle(w, app, 1.6)
+    assert not w.isVisible() and w.dormant and w.wanted
+    w.set_state("LISTENING")
+    app.processEvents()
+    assert w.isVisible() and not w.dormant
+    w.model.state = "idle"
+    w.model.timer_label, w.model.timer_end = "Таймер", time.time() + 300   # идущий таймер — не покой
+    _settle(w, app, 1.0)
+    assert w.isVisible()
+
+
+def test_views_do_not_overlap_while_resizing(island):
+    """Наведение: старый текст гаснет до нуля, пока капсула меняет размер, и
+    только потом проявляется развёрнутый вид — на одном кадре нет двух видов."""
+    w, app, _ = island
+    w.model.timer_label, w.model.timer_end = "Таймер", time.time() + 300
+    w.set_wanted(True)
+    _settle(w, app, 1.2)
+    assert w._view == "compact" and w._ca > 0.99
+    w.enterEvent(None)
+    seen, end = [], time.monotonic() + 1.5
+    while time.monotonic() < end:
+        w._step()
+        seen.append((w._view, round(w._ca, 2), round(w._h)))
+        time.sleep(0.01)
+    switch = next(i for i, (v, _a, _h) in enumerate(seen) if v == "expanded")
+    assert seen[switch - 1][1] == 0.0 or seen[switch][1] == 0.0 # вид сменился только погасшим
+    shown = [h for v, a, h in seen if v == "expanded" and a > 0]
+    assert shown and min(shown) > ui.SIZES["expanded"][1] - 8  # развёрнутое проявилось почти на своём размере
+    assert seen[-1][0] == "expanded" and seen[-1][1] == 1.0

@@ -120,8 +120,16 @@ def inspect(src: Path, password: str) -> dict:
 
 
 def _safe(name: str) -> bool:
-    p = Path(name)
-    return not p.is_absolute() and ".." not in p.parts and ".session" not in name
+    """Путь из архива — только внутрь папки данных, на любой ОС.
+    Раньше смотрели через Path текущей системы: на Windows «C:evil» и
+    «\\evil» не считаются абсолютными, а root / «C:evil» уходит мимо root."""
+    from pathlib import PurePosixPath, PureWindowsPath
+    if not name or ".session" in name or ":" in name or name.startswith(("/", "\\")):
+        return False
+    win = PureWindowsPath(name)
+    if win.drive or win.root or PurePosixPath(name).is_absolute():
+        return False
+    return ".." not in win.parts and all(part.strip() for part in win.parts)
 
 
 def restore(src: Path, password: str, root: Path | None = None, save_keys=None,
@@ -137,6 +145,8 @@ def restore(src: Path, password: str, root: Path | None = None, save_keys=None,
         before = create(safety, password, root=root, keys=keys_now)
         for n in names:
             target = root / n[5:]
+            if not target.resolve().is_relative_to(root.resolve()):      # вторая стена
+                continue
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp = target.with_name(target.name + ".restore")
             tmp.write_bytes(z.read(n))
