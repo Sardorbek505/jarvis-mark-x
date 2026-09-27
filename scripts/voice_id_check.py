@@ -49,24 +49,60 @@ def _pcm(path: Path) -> bytes:
     return np.asarray(x, dtype="int16").tobytes()
 
 
-def speakers(root: Path) -> list[tuple[str, str, list[Path]]]:
-    """[(id, пол, файлы)] — по PER_GENDER мужчин и женщин с достаточной речью."""
-    import soundfile as sf
-    gender = {}
-    for line in (root / "SPEAKERS.TXT").read_text(encoding="utf-8", errors="ignore").splitlines():
-        if line.startswith(";") or "|" not in line:
+def pitch(pcm: bytes) -> float:
+    """Медиана основного тона (Гц) по звонким кадрам — автокорреляция."""
+    import numpy as np
+    x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+    n, hop = 640, 320                                  # 40 мс кадр, 20 мс шаг
+    lo, hi = V.SAMPLE_RATE // 300, V.SAMPLE_RATE // 70
+    energy = [float(np.sqrt(np.mean(x[i:i + n] ** 2))) for i in range(0, len(x) - n, hop)]
+    loud = np.percentile(energy, 60) if energy else 0
+    f0 = []
+    for k, i in enumerate(range(0, len(x) - n, hop)):
+        if energy[k] < loud:
             continue
-        parts = [p.strip() for p in line.split("|")]
-        gender[parts[0]] = parts[1]
-    data = next(p for p in root.iterdir() if p.is_dir() and p.name.startswith("dev-clean"))
+        fr = x[i:i + n] - x[i:i + n].mean()
+        ac = np.correlate(fr, fr, "full")[n - 1:]
+        if ac[0] <= 0:
+            continue
+        lag = lo + int(np.argmax(ac[lo:hi]))
+        if ac[lag] / ac[0] > 0.45:
+            f0.append(V.SAMPLE_RATE / lag)
+    return float(np.median(f0)) if f0 else 0.0
+
+
+def _genders(root: Path) -> dict[str, str]:
+    """Пол дикторов из SPEAKERS.TXT, если он есть (в полном LibriSpeech)."""
+    f = next(iter(root.rglob("SPEAKERS.TXT")), None)
+    out = {}
+    if f:
+        for line in f.read_text(encoding="utf-8", errors="ignore").splitlines():
+            parts = [p.strip() for p in line.split("|")]
+            if not line.startswith(";") and len(parts) > 1:
+                out[parts[0]] = parts[1]
+    return out
+
+
+def speakers(root: Path) -> list[tuple[str, str, list[Path]]]:
+    """[(id, пол, файлы)] — по PER_GENDER мужчин и женщин с достаточной речью.
+    В Mini LibriSpeech списка дикторов нет — пол по высоте голоса (< 165 Гц — M)."""
+    import soundfile as sf
+    known = _genders(root)
+    data = next(p for p in root.rglob("*") if p.is_dir() and p.name.startswith("dev-clean"))
     out = {"M": [], "F": []}
     for spk in sorted(p for p in data.iterdir() if p.is_dir()):
-        g = gender.get(spk.name)
-        if g not in out or len(out[g]) >= PER_GENDER:
-            continue
         long = [f for f in sorted(spk.rglob("*.flac")) if sf.info(str(f)).duration >= MIN_SEC]
-        if len(long) >= ENROLL_N + TEST_N:
+        if len(long) < ENROLL_N + TEST_N:
+            continue
+        g = known.get(spk.name)
+        if not g:
+            f0 = pitch(b"".join(_pcm(f) for f in long[:3]))
+            g = "M" if 0 < f0 < 165 else "F" if f0 else ""
+            print(f"  диктор {spk.name}: основной тон {f0:.0f} Гц → {g or '?'}")
+        if g in out and len(out[g]) < PER_GENDER:
             out[g].append((spk.name, g, long))
+        if all(len(v) >= PER_GENDER for v in out.values()):
+            break
     return out["M"] + out["F"]
 
 
@@ -132,6 +168,9 @@ def check(embed, spk, tmp: str) -> tuple[float, float]:
 def main(libri: str, asr_dir: str = "", spk_dir: str = "", wespeaker: str = "") -> int:
     spk = speakers(Path(libri))
     print(f"Дикторы: {sum(g == 'M' for _s, g, _f in spk)} муж., {sum(g == 'F' for _s, g, _f in spk)} жен.")
+    if min(sum(g == x for _s, g, _f in spk) for x in "MF") < 3:
+        print("Мало дикторов одного пола — проверка не состоялась")
+        return 1
     engines = []
     if asr_dir and spk_dir:
         engines.append(V.VoskEmbedder(Path(asr_dir), Path(spk_dir)))
