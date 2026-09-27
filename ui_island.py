@@ -8,7 +8,14 @@
   • таймер сна, ближайший звонок по расписанию.
 Наведи мышь — откроется панель: плеер с кнопками, таймер, последний ответ.
 Клик по капсуле возвращает окно Джарвиса. В полноэкранной игре или фильме
-капсула прячется.
+капсула прячется. В покое (ничего не играет, никто не зовёт, таймер не
+идёт) она через IDLE_HIDE_SEC сама уходит и возвращается на событие.
+
+Рисование: окно прозрачное, клики проходят сквозь пустые пиксели сами —
+маску окна не меняем (на Windows прозрачное окно с меняющейся маской не
+стирало старые кадры: рамки и текст оставляли шлейф). Содержимое при смене
+вида сначала гаснет, капсула меняет размер, новое проявляется, когда размер
+почти готов, — тексты двух видов никогда не рисуются друг на друге.
 
 Модель (IslandModel) отдельно от рисования: что показать — решает она,
 и это проверяется тестами без экрана.
@@ -38,6 +45,9 @@ SIZES = {"compact": (168, 34), "activity": (292, 34), "listening": (312, 48), "b
          "expanded": (440, 196)}
 LISTEN_RGB = (70, 232, 128)
 BANNER_SEC = 5.5
+IDLE_HIDE_SEC = 8.0            # в покое капсула уходит через столько секунд
+HOVER_IN_SEC = 0.22            # раскрытие по наведению — не от случайного пролёта мыши
+HOVER_OUT_SEC = 0.35
 
 
 @dataclass
@@ -105,6 +115,13 @@ class IslandModel:
             clock = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
             return f"{self.timer_label} · {clock}"
         return self.timer_label
+
+    def quiet(self, now: float | None = None) -> bool:
+        """Нечего показывать: ждёт имени, нет ответа, музыки и идущего таймера.
+        Ближайший будильник или звонок по расписанию — не повод висеть на экране."""
+        live_timer = bool(self.timer_end) or self.timer_label.startswith(("Секундомер", "Сон"))
+        return (self.state == "idle" and not self.banner(now) and not (self.media and self.media.playing)
+                and not live_timer)
 
     def mode(self, hovered: bool, now: float | None = None) -> str:
         if hovered:
@@ -241,7 +258,7 @@ def fullscreen_app_active() -> bool:
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal  # noqa: E402
 from PyQt6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QLinearGradient, QPainter,  # noqa: E402
-                         QPainterPath, QPen, QRegion)
+                         QPainterPath, QPen)
 from PyQt6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 
@@ -271,8 +288,12 @@ class Island(QWidget):
         self.setFixedSize(self.W, self.H)
         self.model = IslandModel()
         self.on_open = on_open or (lambda: None)
-        self.hovered = False
+        self.hovered = False                       # наведение с задержкой (HOVER_IN/OUT_SEC)
+        self._hover_raw, self._hover_t = False, 0.0
         self.wanted = False                        # окно Джарвиса свёрнуто
+        self.dormant = False                       # ушла сама в покое — вернётся на событие
+        self._quiet_since = 0.0
+        self._view, self._ca = "compact", 0.0      # какой вид сейчас нарисован и его прозрачность
         self._w, self._h = SIZES["compact"]
         self._vw, self._vh = 0.0, 0.0             # скорость пружины
         # Появление жидкой каплей: сначала круг (_r: 0 → 1, диаметр — высота
@@ -297,6 +318,8 @@ class Island(QWidget):
         self._event_sig.connect(lambda title, text: self.model.notify(title, text, "event"))
         self._media_sig.connect(self._set_media)
         self._eyes_sig.connect(lambda on: setattr(self.model, "eyes", on))
+        for sig in (self._state_sig, self._reply_sig, self._event_sig, self._media_sig):
+            sig.connect(self._maybe_wake)
 
         self._tmr = QTimer(self)
         self._tmr.setTimerType(Qt.TimerType.PreciseTimer)
@@ -334,15 +357,24 @@ class Island(QWidget):
 
     def set_wanted(self, on: bool):
         """Окно Джарвиса свёрнуто (on=True) или развёрнуто."""
+        if on and not self.wanted:
+            self.dormant, self._quiet_since = False, 0.0      # свернули — показаться хотя бы на миг
         self.wanted = on
         self._apply_visibility()
 
+    def _maybe_wake(self, *_):
+        """Событие (позвали, ответ, музыка, таймер) — вернуться из покоя."""
+        if self.dormant and not self.model.quiet():
+            self.dormant, self._quiet_since = False, 0.0
+            self._apply_visibility()
+
     def _apply_visibility(self, fullscreen: bool = False):
-        show = self.wanted and not fullscreen
+        show = self.wanted and not fullscreen and not self.dormant
         if show:
             self._leaving = False
             if not self.isVisible():
                 self._r = self._vr = self._s = self._vs = 0.0
+                self._view, self._ca = self.model.mode(False), 0.0
                 self._place()
                 logger.info("Капсула: показ")
                 self.show()
@@ -409,7 +441,24 @@ class Island(QWidget):
         self._clock += dt
         m = self.model
         m.level *= math.exp(-dt * 8.0)
-        tw, th = SIZES[m.mode(self.hovered)]
+        # Наведение — с задержкой: пролёт мыши у края не дёргает капсулу туда-сюда.
+        if self._hover_raw != self.hovered:
+            self._hover_t += dt
+            if self._hover_t >= (HOVER_IN_SEC if self._hover_raw else HOVER_OUT_SEC):
+                self.hovered, self._hover_t = self._hover_raw, 0.0
+        else:
+            self._hover_t = 0.0
+        # Покой: ничего не происходит — капсула уходит сама (и вернётся на событие).
+        if not self._leaving and not self.hovered and m.quiet():
+            self._quiet_since = self._quiet_since or now
+            if now - self._quiet_since >= IDLE_HIDE_SEC:
+                self.dormant, self._leaving = True, True
+        else:
+            self._quiet_since = 0.0
+        target = m.mode(self.hovered)
+        tw, th = SIZES[target]
+        if target == "compact":
+            tw = self._compact_width()
         # Пружина с лёгким перелётом — капсула «пружинит», как на iPhone.
         k, c = 260.0, 24.0
         self._vw += (k * (tw - self._w) - c * self._vw) * dt
@@ -447,16 +496,35 @@ class Island(QWidget):
             self._rgb[i] += (tgt[i] - self._rgb[i]) * (1 - math.exp(-dt * 6))
         self._orb.step(dt, m.level if m.state != "speaking" else max(m.level, 0.3 + 0.2 * math.sin(self._clock * 9)),
                        active=m.state in ("thinking", "speaking"))
-        r = self.capsule_rect().adjusted(-1, -1, 1, 1).toRect()
-        self.setMask(QRegion(r, QRegion.RegionType.Rectangle))   # клики мимо капсулы — в окна под ней
+        # Содержимое: другой вид — старое гаснет; тот же — проявляется, когда размер почти готов.
+        if target != self._view:
+            self._ca -= dt * 14.0
+            if self._ca <= 0.0:
+                self._ca, self._view = 0.0, target
+        elif abs(self._w - tw) < 10 and abs(self._h - th) < 6:
+            self._ca = min(1.0, self._ca + dt * 7.0)
         self.update()
+
+    def _compact_label(self) -> str:
+        m = self.model
+        return m.timer_text() if (m.timer_label and m.state == "idle") else STATE_LABEL.get(m.state, "")
+
+    def _compact_width(self) -> float:
+        """Компактная капсула — по длине подписи («Будильник 07:00» не обрезается)."""
+        from PyQt6.QtGui import QFontMetricsF
+        f = QFont("Segoe UI", 1)
+        f.setPointSizeF(7.5)
+        f.setBold(True)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.6)
+        text_w = QFontMetricsF(f).horizontalAdvance(self._compact_label())
+        return max(float(SIZES["compact"][0]), min(300.0, 36 + text_w + 18 + (18 if self.model.eyes else 0)))
 
     # ── мышь ────────────────────────────────────────────────────────────────
     def enterEvent(self, _):
-        self.hovered = True
+        self._hover_raw = True
 
     def leaveEvent(self, _):
-        self.hovered = False
+        self._hover_raw = False
 
     def mouseReleaseEvent(self, ev):
         pos = ev.position()
@@ -509,6 +577,10 @@ class Island(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
+        # Кадр — с чистого листа: прозрачное окно не должно помнить прошлые кадры.
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        p.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         cap = self.capsule_rect()
         radius = self._radius(cap)
@@ -516,15 +588,24 @@ class Island(QWidget):
         path.addRoundedRect(cap, radius, radius)
         p.fillPath(path, QColor(0, 0, 0, 250))
         m = self.model
-        mode = m.mode(self.hovered)
-        if mode == "listening":
+        if m.mode(self.hovered) == "listening":
             self._paint_listen_glow(p, path, cap)
-        else:
-            p.setPen(QPen(self._col(70 * min(1.0, max(0.0, self._r))), 1))
-            p.drawPath(path)
+        elif cap.width() > 2:
+            # Тонкая ровная линия ВНУТРИ края (на целом пикселе): не «плывёт» по толщине.
+            edge = cap.adjusted(0.5, 0.5, -0.5, -0.5)
+            inner = QPainterPath()
+            er = max(0.0, radius - 0.5)
+            inner.addRoundedRect(edge, er, er)
+            p.setPen(QPen(QColor(255, 255, 255, int(26 * min(1.0, max(0.0, self._r)))), 1.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(inner)
         p.setClipPath(path)
-        # Содержимое проявляется, когда капля почти растеклась, и гаснет первым.
-        p.setOpacity(min(1.0, max(0.0, (self._s - 0.6) / 0.35)))
+        # Содержимое: проявляется, когда капля почти растеклась, и при смене вида
+        # сначала гаснет старое (self._ca) — два вида друг на друга не ложатся.
+        p.setOpacity(min(1.0, max(0.0, (self._s - 0.6) / 0.35)) * self._ca)
+        if self._ca <= 0.01:
+            return
+        mode = self._view
         self._buttons = {}
         white, dim = QColor(238, 243, 246), QColor(138, 150, 161)
         x0, w, h = cap.x(), cap.width(), cap.height()
@@ -552,7 +633,7 @@ class Island(QWidget):
             if m.eyes:
                 self._eye(p, x0 + w - 46, h / 2)
         else:
-            label = m.timer_text() if (m.timer_label and m.state == "idle") else STATE_LABEL.get(m.state, "")
+            label = self._compact_label()
             self._text(p, QRectF(x0 + 36, 0, w - 50 - eye_w, h), label, 7.5, self._col(235, 0.25),
                        bold=True, spacing=1.6)
             if m.eyes:
