@@ -141,12 +141,14 @@ def check(embed, spk, tmp: str) -> tuple[float, float]:
         profiles[sid] = (g, vid)
         tests[sid] = (g, [_pcm(f) for f in files[ENROLL_N:ENROLL_N + TEST_N]])
     own, strange, misses, fa = [], [], 0, 0
+    raw_own, raw_strange = [], []           # чистое сходство — для таблицы порогов
     for sid, (g, vid) in profiles.items():
         for s2, (g2, pcms) in tests.items():
             if g2 != g:
                 continue
             for pcm in pcms:
                 ok, score = vid.verify(pcm)
+                (raw_own if s2 == sid else raw_strange).append(score)
                 if s2 == sid:
                     own.append(score)
                     misses += not ok
@@ -162,6 +164,9 @@ def check(embed, spk, tmp: str) -> tuple[float, float]:
     print(f"  чужие  ({len(strange)}, тот же пол): медиана {_q(strange, .5):.3f}, 95% {_q(strange, .95):.3f}, "
           f"99% {_q(strange, .99):.3f}, макс {max(strange):.3f}")
     print(f"  своих не узнал {misses} ({miss_r:.1%}); чужих принял за своего {fa} ({fa_r:.1%})")
+    for t in (0.5, 0.6, 0.7, 0.75, 0.78, 0.8, 0.82, 0.84, 0.86, 0.88):
+        print(f"    порог {t:.2f}: промахов {sum(s < t for s in raw_own) / len(raw_own):5.1%}, "
+              f"чужих {sum(s >= t for s in raw_strange) / len(raw_strange):5.1%}")
     return miss_r, fa_r
 
 

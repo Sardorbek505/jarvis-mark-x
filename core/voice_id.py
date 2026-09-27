@@ -152,6 +152,7 @@ class VoskEmbedder:
     # Порог = (самая далёкая своя запись − MARGIN), но в пределах [LO, HI].
     # CI: свои длинные фразы 0.77–0.80, своё короткое «да» 0.55, чужой женский 0.13–0.30.
     LO, HI, MARGIN = 0.42, 0.55, 0.3
+    SHORT_DISCOUNT = 0.08
 
     def __init__(self, asr_dir: Path | None = None, spk_dir: Path | None = None):
         self._lock = threading.Lock()
@@ -199,7 +200,10 @@ class SherpaEmbedder:
 
     name = "wespeaker"
     size_mb = 26
-    LO, HI, MARGIN = 0.40, 0.60, 0.3
+    # CI на живых людях (Mini LibriSpeech, 20 дикторов, чужие того же пола):
+    # свои — 5 % ниже 0.849, мин. 0.74; чужие — 99 % ниже 0.836, макс. 0.854.
+    LO, HI, MARGIN = 0.82, 0.86, 0.08
+    SHORT_DISCOUNT = 0.02
 
     def __init__(self, model: Path | None = None):
         self._lock = threading.Lock()
@@ -319,10 +323,11 @@ class VoiceID:
         return score >= self.threshold_for(len(pcm)), round(score, 3)
 
     def threshold_for(self, nbytes: int) -> float:
-        """На коротких фразах отпечаток слабее — порог чуть мягче (до 0.08
-        при 1 с речи, без скидки от 4 с)."""
+        """На коротких фразах отпечаток слабее — порог чуть мягче (скидка
+        модели при 1 с речи, без скидки от 4 с)."""
         sec = nbytes / (SAMPLE_RATE * 2)
-        return self.threshold - 0.08 * max(0.0, min(1.0, (4.0 - sec) / 3.0))
+        discount = getattr(self.embed, "SHORT_DISCOUNT", 0.08)
+        return self.threshold - discount * max(0.0, min(1.0, (4.0 - sec) / 3.0))
 
     def reset(self):
         self.profile = {}
