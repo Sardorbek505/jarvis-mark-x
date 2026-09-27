@@ -489,7 +489,7 @@ def test_keeps_talking_when_user_answers_after_goodbye():
     sess = tc.CallSession(tg, live, 42, tc.instruction("сказать, что пора спать"), max_sec=5)
     asyncio.run(sess.run())
     assert tg.hung and not live.script                    # дослушал до конца и только потом отбой
-    assert "Вы: привет, как дела?" in sess.transcript
+    assert any(t.startswith("Вы:") and "привет, как дела?" in t for t in sess.transcript)
     voiced = [f for f in tg.sent if any(f)]
     assert len(voiced) == 40                              # оба ответа прозвучали
 

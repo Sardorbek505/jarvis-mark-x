@@ -70,6 +70,9 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     monkeypatch.setenv("JARVIS_MACRO_TRIGGERS", "0")      # свои команды по расписанию — не посреди тестов
     import core.study as study_mod
     monkeypatch.setenv("JARVIS_STUDY", str(d / "study.json"))
+    import core.call_log as call_log_mod
+    monkeypatch.setenv("JARVIS_CALL_LOG", str(d / "calls.json"))
+    monkeypatch.setattr(call_log_mod, "_log", None)
     monkeypatch.setattr(study_mod, "_study", None)
     for attr in ("_book", "_me", "_contacts"):
         monkeypatch.setattr(contacts_mod, attr, None)

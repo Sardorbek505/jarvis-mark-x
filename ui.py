@@ -727,6 +727,10 @@ class LogWidget(QTextEdit):
         elif tl.startswith("джарвис:") or tl.startswith("jarvis:"):
             self._para(12, [("ДЖАРВИС", C.ACC, 8, True, 1.2), ("   " + now_str, C.TEXT_DIM, 8, False, 0)])
             self._para(3, [(body, C.TEXT, 10, False, 0)])
+        elif tl.startswith("call:"):
+            who, _, said = body.partition(":")
+            self._para(6, [("📞 " + who.strip().upper(), C.PRI, 7, True, 1.0)])
+            self._para(1, [(said.strip(), C.TEXT, 9, False, 0)])
         elif tl.startswith("err:") or "ошибка" in tl:
             self._para(6, [("✕  ", C.RED, 8, True, 0), (body, "#d98a96", 8, False, 0)])
         elif tl.startswith("sys:"):

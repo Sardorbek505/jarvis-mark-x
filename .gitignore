@@ -101,3 +101,4 @@ welcome_state.json
 # Резервные копии Джарвиса (core/backup.py) — зашифрованы, но всё равно личные
 *.jarvisbak
 *.jarvisbak.part
+calls.json

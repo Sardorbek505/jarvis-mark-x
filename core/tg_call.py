@@ -286,7 +286,8 @@ class CallSession:
                     for attr, who in (("input_transcription", "Вы"), ("output_transcription", "Джарвис")):
                         tr = getattr(sc, attr, None)
                         if tr is not None and getattr(tr, "text", None):
-                            self.transcript.append(f"{who}: {tr.text}")
+                            # Кусочек как пришёл (с пробелом или без) — core/call_log склеит слова.
+                            self.transcript.append(f"{who}:{tr.text}")
                             # Попрощался, а собеседник говорит дальше — трубку не кладём.
                             if who == "Вы" and self._ending and tr.text.strip(" .,!?"):
                                 self._ending = False
@@ -468,7 +469,7 @@ def _gemini_live(prompt: str):
 
 
 async def _call_async(topic: str, context: str, log, target: str = "", prompt: str = "",
-                      transcript: list | None = None) -> str:
+                      transcript: list | None = None, who: str = "вам") -> str:
     from telethon import TelegramClient
     api_id, api_hash = _credentials()
     client = TelegramClient(session_path(), api_id, api_hash)
@@ -481,11 +482,18 @@ async def _call_async(topic: str, context: str, log, target: str = "", prompt: s
         await tg.start()
         name = (_keys().get("user_name") or "сэр")
         sess = CallSession(tg, _gemini_live, peer, prompt or instruction(topic, context, name), log=log)
+        started, result = time.time(), "Звонок оборвался."
         try:
-            return await sess.run()
+            result = await sess.run()
+            return result
         finally:
             if transcript is not None:
                 transcript.extend(sess.transcript)
+            try:
+                from core.call_log import call_log
+                call_log().add(who, topic, result, sess.transcript, started)
+            except Exception as exc:
+                logger.warning("История звонков: %s", exc)
     finally:
         await client.disconnect()
 
@@ -525,7 +533,7 @@ def call_contact(target: str, contact: str, message: str, log=None) -> str:
         owner = (_keys().get("user_name") or "моего владельца")
         result = asyncio.run(_call_async(message, "", log or (lambda s: logger.info("Звонок %s: %s", contact, s)),
                                          target=target, prompt=instruction_contact(owner, contact, message),
-                                         transcript=heard))
+                                         transcript=heard, who=contact))
     except Exception as exc:
         logger.exception("Звонок контакту")
         return f"Звонок не удался: {type(exc).__name__}: {exc}"
@@ -880,6 +888,9 @@ def phone_call(parameters: dict, player=None, done: Callable[[str], None] | None
     p = parameters or {}
     action = (p.get("action") or "call_now").lower()
     topic = (p.get("topic") or "").strip()
+    if action in ("transcript", "history"):
+        from core.call_log import transcript_tool
+        return transcript_tool({**p, "which": "list" if action == "history" else p.get("which", "")})
     if action == "list":
         return schedule().describe()
     if action == "cancel":
