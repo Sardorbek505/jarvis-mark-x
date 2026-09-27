@@ -1194,6 +1194,23 @@ TOOLS = [
         }
     },
     {
+        "name": "remember_screen",
+        "description": (
+            "«Запомни это», «сохрани, что на экране», «запомни эту статью / номер заказа / ошибку». "
+            "Делает снимок окна, выписывает главное (суть, номера, даты, ссылки) и кладёт заметку "
+            "в Obsidian (папка «Запомнил») вместе с картинкой. Найти потом — obsidian search. "
+            "Не путай с save_to_memory: тот — факт о пользователе словами, этот — то, что на экране."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "focus": {"type": "STRING", "description": "Что именно важно, если уточнил («номер заказа»)"},
+                "source": {"type": "STRING", "enum": ["window", "screen"],
+                           "description": "window — активное окно (обычно), screen — весь экран"},
+            },
+        }
+    },
+    {
         "name": "look_at_camera",
         "description": (
             "Посмотреть через веб-камеру: «что у меня в руке», «как я выгляжу», «посмотри на меня», "
@@ -1441,12 +1458,14 @@ TOOLS = [
             "«подключи Spotify/звонки» (там же вход кнопкой); commands — «открой редактор команд»; "
             "contacts — «открой контакты», «подключи мой телеграм»; about — «открой обо мне», «что ты обо мне знаешь» "
             "(окно); study — «открой расписание», «открой учёбу»; help — «что ты умеешь», «помощь», «подсказки», "
-            "«с чего начать»."
+            "«с чего начать»; backup — «сделай резервную копию», «перенеси на новый ПК», «восстанови из копии» "
+            "(пароль — только в окне, не голосом)."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {"window": {"type": "STRING",
-                                      "enum": ["keys", "commands", "contacts", "about", "study", "help"]}},
+                                      "enum": ["keys", "commands", "contacts", "about", "study", "help",
+                                               "backup"]}},
             "required": ["window"]
         }
     },
@@ -2485,7 +2504,8 @@ class Jarvis:
                 which = str(args.get("window", "")).lower()
                 titles = {"keys": ("open_keys", "Ключи и подключения"), "commands": ("open_macros", "Свои команды"),
                           "contacts": ("open_contacts", "Контакты"), "about": ("open_about", "Обо мне"),
-                          "study": ("open_study", "Учёба"), "help": ("open_welcome", "Что умеет Джарвис")}
+                          "study": ("open_study", "Учёба"), "help": ("open_welcome", "Что умеет Джарвис"),
+                          "backup": ("open_backup", "Резервная копия")}
                 method, title = titles.get(which, titles["commands"])
                 opener = getattr(self.ui, method, None)
                 if opener:
@@ -2493,6 +2513,10 @@ class Jarvis:
                     result = f"Открыл окно «{title}»."
                 else:
                     result = "Окна тут нет — запущен без интерфейса."
+
+            elif name == "remember_screen":
+                from core.remember import remember_screen
+                result = await asyncio.to_thread(remember_screen, args)
 
             elif name == "study":
                 from core.study import study_tool

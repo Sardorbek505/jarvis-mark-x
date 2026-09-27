@@ -145,6 +145,11 @@ class JarvisTray(QSystemTrayIcon):
         self.act_macros.triggered.connect(self._open_macros)
         menu.addAction(self.act_macros)
 
+        # Резервная копия (ui_backup.py)
+        self.act_backup = QAction("💾 Резервная копия", menu)
+        self.act_backup.triggered.connect(self._open_backup)
+        menu.addAction(self.act_backup)
+
         menu.addSeparator()
 
         # Автозапуск
@@ -236,6 +241,14 @@ class JarvisTray(QSystemTrayIcon):
         else:
             from ui_macros import open_dialog
             self._macros_dlg = open_dialog(None)
+
+    def _open_backup(self):
+        opener = getattr(self.main_window, "open_backup", None)
+        if opener:
+            opener()
+        else:
+            from ui_backup import open_dialog
+            self._backup_dlg = open_dialog(None)
 
     def _quit(self):
         self.hide()

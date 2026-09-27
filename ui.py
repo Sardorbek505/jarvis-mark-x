@@ -160,7 +160,7 @@ _TOOL_SHAPE = {
     "translation": "globe", "morning_briefing": "globe",
     "music_player": "music", "switch_voice": "music",
     "movie_player": "film", "youtube_player": "screen",
-    "look_at_screen": "screen", "look_at_camera": "screen",
+    "look_at_screen": "screen", "look_at_camera": "screen", "remember_screen": "screen",
     "computer_control": "reactor", "window_control": "reactor", "files": "reactor",
     "sleep_timer": "reactor", "set_mode": "reactor",
 }
@@ -901,6 +901,7 @@ class MainWindow(QMainWindow):
     _contacts_sig = pyqtSignal()
     _about_sig = pyqtSignal()
     _study_sig = pyqtSignal()
+    _backup_sig = pyqtSignal()
     _welcome_sig = pyqtSignal(bool)
     # wait_for_api_key зовётся из рабочего потока: оверлей — только сигналом.
     _overlay_sig = pyqtSignal(str)
@@ -1143,6 +1144,7 @@ class MainWindow(QMainWindow):
         self._contacts_sig.connect(self._show_contacts)
         self._about_sig.connect(self._show_about)
         self._study_sig.connect(self._show_study)
+        self._backup_sig.connect(self._show_backup)
         self._welcome_sig.connect(self._show_welcome)
         self._overlay_sig.connect(self._show_overlay)
 
@@ -1292,6 +1294,17 @@ class MainWindow(QMainWindow):
             self._study_dlg = open_dialog(None)
         except Exception as exc:
             _logger.warning("Окно «Учёба» не открылось: %s", exc)
+
+    def open_backup(self):
+        """Окно «Резервная копия» (ui_backup.py). Из любого потока."""
+        self._backup_sig.emit()
+
+    def _show_backup(self):
+        try:
+            from ui_backup import open_dialog
+            self._backup_dlg = open_dialog(None)
+        except Exception as exc:
+            _logger.warning("Окно резервной копии не открылось: %s", exc)
 
     def open_about(self):
         """Окно «Обо мне» (ui_about.py). Из любого потока."""
