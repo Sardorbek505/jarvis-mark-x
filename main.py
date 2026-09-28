@@ -3054,9 +3054,11 @@ class Jarvis:
         self.set_speaking(True)
 
         try:
+            from core import speech_pace
             from telegram_bot import tts_fish
             from telegram_bot import tts_edge
 
+            trimmed = [0]                  # сколько тишины срезано за ответ (журнал)
             # Жив ли Fish — решается один раз: после первого отказа остаток
             # ответа договаривает Edge, а не ждёт таймаута на каждом куске.
             # Куски синтезируются параллельно, поэтому первый запрос к Fish —
@@ -3070,12 +3072,17 @@ class Jarvis:
             async def synth(fragment: str):
                 # Готовая фраза («Есть, сэр.») уже озвучена — звучит сразу.
                 pcm = cache.get(fragment, RECV_SAMPLE_RATE)
+                if not pcm:
+                    pcm = await synth_fresh(fragment)
+                    # Кэш — только своим голосом: Edge вместо Fish туда не пишем.
+                    if pcm and cache.wanted(fragment) and (fish_alive or not tts_fish.is_configured()):
+                        cache.put(fragment, RECV_SAMPLE_RATE, pcm)
                 if pcm:
-                    return pcm
-                pcm = await synth_fresh(fragment)
-                # Кэш — только своим голосом: Edge вместо Fish туда не пишем.
-                if pcm and cache.wanted(fragment) and (fish_alive or not tts_fish.is_configured()):
-                    cache.put(fragment, RECV_SAMPLE_RATE, pcm)
+                    # Тишина по краям каждого куска складывалась на стыках — после
+                    # каждой точки Джарвис «задумывался». Срезаем, кладём свою паузу.
+                    before = len(pcm)
+                    pcm = speech_pace.tighten(pcm, RECV_SAMPLE_RATE, speech_pace.ends_sentence(fragment))
+                    trimmed[0] += max(0, before - len(pcm))
                 return pcm
 
             async def synth_fresh(fragment: str):
@@ -3143,7 +3150,8 @@ class Jarvis:
                         leftover.cancel()
 
             if spoken:
-                logger.info("Голос Fish: %.1f с звука", spoken / 2 / RECV_SAMPLE_RATE)
+                logger.info("Голос Fish: %.1f с звука, срезано тишины %.1f с", spoken / 2 / RECV_SAMPLE_RATE,
+                            trimmed[0] / 2 / RECV_SAMPLE_RATE)
             self._latency.mark_turn_complete()
         finally:
             with self._speaking_lock:
