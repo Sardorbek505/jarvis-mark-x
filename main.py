@@ -359,6 +359,9 @@ _SESSION_HEALTHY_SEC = 10.0
 _MIC_STALL_SEC = 2.0
 # Fish ждёт следующий кусок ответа не дольше этого (см. _fish_worker).
 _FISH_IDLE_SEC = 20.0
+# Fish недавно ответил — следующие куски синтезируются сразу, без «пробы»
+# первым куском (иначе второе предложение ждало первое, и между ними — пауза).
+_FISH_TRUST_SEC = 300.0
 
 # Мгновенные ответы (core/quick.py): сколько после своего ответа глушить
 # запоздалую речь Gemini на ту же команду, если пользователь молчит.
@@ -661,7 +664,14 @@ def _split_for_speech(text: str) -> list[str]:
     return chunks
 
 
-def _take_speakable(buf: str, first: bool, final: bool) -> tuple[list[str], str]:
+# Конец предложения в самом конце расшифровки: «…, сэр.» — не цифра («2.» → «2.5»)
+# и не однобуквенное сокращение («г.», «И.»).
+_END_OF_SENTENCE = re.compile(r"[^\W\d_]{2,}[.!?…]+[»\"')]*\s*$")
+# Расшифровка затихла на законченном предложении — дальше не ждём (см. _receive_audio).
+_FISH_SENTENCE_IDLE_SEC = float(os.getenv("JARVIS_SENTENCE_IDLE_MS", "250")) / 1000
+
+
+def _take_speakable(buf: str, first: bool, final: bool, force: bool = False) -> tuple[list[str], str]:
     """Отрезает от потоковой расшифровки ответа готовые к синтезу куски.
 
     Fish раньше получал ответ только по turn_complete — а тот приходит на
@@ -669,12 +679,19 @@ def _take_speakable(buf: str, first: bool, final: bool) -> tuple[list[str], str]
     модель «проговаривает» весь ответ, прежде чем закрыть ход. Эти секунды
     Джарвис молчал. Теперь предложение уходит в синтез, как только в
     расшифровке появилась его точка. Пороги те же, что у _split_for_speech.
+
+    Точка в самом конце расшифровки тоже конец: раньше резали только по
+    «точка + пробел», и ПОСЛЕДНЕЕ предложение (а у Джарвиса ответ чаще всего
+    из одного: «Включаю, сэр.») ждало turn_complete — те самые 4-5 секунд.
+    force — расшифровка затихла: законченное предложение отдаём и короче порога.
     """
     chunks: list[str] = []
     while True:
         floor = _MIN_FIRST_CHUNK if first and not chunks else _MIN_SPEECH_CHUNK
         cut = next((m.end() for m in re.finditer(r"[.!?…]+(?=\s)", buf)
                     if len(buf[:m.end()].strip()) >= floor), None)
+        if cut is None and buf.strip() and _END_OF_SENTENCE.search(buf) and (force or len(buf.strip()) >= floor):
+            cut = len(buf)
         if cut is None:
             break
         chunks.append(buf[:cut].strip())
@@ -3054,9 +3071,11 @@ class Jarvis:
         self.set_speaking(True)
 
         try:
+            from core import speech_pace
             from telegram_bot import tts_fish
             from telegram_bot import tts_edge
 
+            trimmed = [0]                  # сколько тишины срезано за ответ (журнал)
             # Жив ли Fish — решается один раз: после первого отказа остаток
             # ответа договаривает Edge, а не ждёт таймаута на каждом куске.
             # Куски синтезируются параллельно, поэтому первый запрос к Fish —
@@ -3064,42 +3083,83 @@ class Jarvis:
             # сервис каждый со своим таймаутом.
             fish_alive = tts_fish.is_configured()
             probe: asyncio.Future | None = None
+            if fish_alive and time.monotonic() - getattr(self, "_fish_ok_at", -1e9) < _FISH_TRUST_SEC:
+                probe = asyncio.get_running_loop().create_future()      # проба не нужна — Fish жив
+                probe.set_result(None)
 
             cache = quick.voice_cache()
 
-            async def synth(fragment: str):
-                # Готовая фраза («Есть, сэр.») уже озвучена — звучит сразу.
-                pcm = cache.get(fragment, RECV_SAMPLE_RATE)
-                if pcm:
-                    return pcm
-                pcm = await synth_fresh(fragment)
-                # Кэш — только своим голосом: Edge вместо Fish туда не пишем.
-                if pcm and cache.wanted(fragment) and (fish_alive or not tts_fish.is_configured()):
-                    cache.put(fragment, RECV_SAMPLE_RATE, pcm)
-                return pcm
-
-            async def synth_fresh(fragment: str):
+            async def fish_stream(fragment: str, emit) -> bytes | None:
+                """Кусок голосом Fish ПОТОКОМ: звук уходит в динамики по мере
+                синтеза, не дожидаясь конца. → весь звук (для кэша) или None —
+                Fish не ответил, пусть договорит Edge."""
                 nonlocal fish_alive, probe
                 if fish_alive and probe is not None:
                     await probe
-                if fish_alive:
-                    first = probe is None
-                    if first:
-                        probe = asyncio.get_running_loop().create_future()
-                    pcm = None
-                    try:
-                        pcm = await tts_fish.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
-                    finally:
-                        if not pcm and fish_alive:
+                if not fish_alive:
+                    return None
+                first = probe is None
+                if first:
+                    probe = asyncio.get_running_loop().create_future()
+                raw = bytearray()
+                alive = complete = False
+                try:
+                    async for chunk in tts_fish.stream_pcm(fragment, sample_rate=RECV_SAMPLE_RATE):
+                        raw += chunk
+                        if not alive and len(raw) >= 500:       # настоящий звук, а не обрывок ошибки
+                            alive = True
+                            self._fish_ok_at = time.monotonic()
+                            if first and not probe.done():
+                                probe.set_result(None)
+                            emit(bytes(raw))
+                        elif alive:
+                            emit(chunk)
+                    complete = True
+                except Exception as exc:
+                    logger.warning("Fish поток: %s: %s", type(exc).__name__, exc)
+                finally:
+                    if not alive:
+                        if fish_alive:
+                            self._fish_ok_at = -1e9
                             fish_alive = False
                             self.ui.write_log("SYS: Fish молчит — остаток ответа озвучит Edge-TTS")
-                        if first:
+                        if first and not probe.done():
                             probe.set_result(None)
+                if not alive:
+                    return None
+                return bytes(raw) if complete else b""
+
+            async def produce(fragment: str, out: asyncio.Queue):
+                """Звук одного куска в out (None — кусок кончился). Тишина по краям
+                срезается на лету (speech_pace), после куска — своя короткая пауза."""
+                pace = speech_pace.Tightener(RECV_SAMPLE_RATE)
+
+                def emit(pcm: bytes):
+                    body = pace.feed(pcm)
+                    if body:
+                        out.put_nowait(body)
+                try:
+                    # Готовая фраза («Есть, сэр.») уже озвучена — звучит сразу.
+                    pcm = cache.get(fragment, RECV_SAMPLE_RATE)
                     if pcm:
-                        return pcm
-                return await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+                        emit(pcm)
+                    else:
+                        whole = await fish_stream(fragment, emit)
+                        if whole is None:
+                            pcm = await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+                            if pcm:
+                                emit(pcm)
+                        elif whole and cache.wanted(fragment):
+                            # Кэш — только своим голосом и только целиком: Edge и обрывки не пишем.
+                            cache.put(fragment, RECV_SAMPLE_RATE, whole)
+                    if pace.started:
+                        out.put_nowait(pace.finish(speech_pace.ends_sentence(fragment)))
+                finally:
+                    trimmed[0] += pace.dropped * 2
+                    out.put_nowait(None)
 
             ordered: asyncio.Queue = asyncio.Queue()
+            producers: list[asyncio.Task] = []
 
             async def feed():
                 while True:
@@ -3112,7 +3172,9 @@ class Jarvis:
                         break
                     if fragment is None:
                         break
-                    ordered.put_nowait(asyncio.create_task(synth(fragment)))
+                    out: asyncio.Queue = asyncio.Queue()
+                    producers.append(asyncio.create_task(produce(fragment, out)))
+                    ordered.put_nowait(out)
                 ordered.put_nowait(None)
 
             feeder = asyncio.create_task(feed())
@@ -3120,30 +3182,33 @@ class Jarvis:
             spoken = 0
             try:
                 while True:
-                    task = await ordered.get()
-                    if task is None:
+                    out = await ordered.get()
+                    if out is None:
                         break
-                    pcm = await task
-                    if not pcm:
+                    played = 0
+                    while True:
+                        pcm = await out.get()
+                        if pcm is None:
+                            break
+                        if not spoken:
+                            self._latency.mark_answer_audio()
+                        spoken += len(pcm)
+                        played += len(pcm)
+                        for j in range(0, len(pcm), step):
+                            try:
+                                self.audio_in_queue.put_nowait(pcm[j:j + step])
+                            except asyncio.QueueFull:
+                                await self.audio_in_queue.put(pcm[j:j + step])
+                    if not played:
                         self.ui.write_log("SYS: синтез речи недоступен — ответ остался текстом")
-                        continue
-                    if not spoken:
-                        self._latency.mark_answer_audio()
-                    spoken += len(pcm)
-                    for j in range(0, len(pcm), step):
-                        try:
-                            self.audio_in_queue.put_nowait(pcm[j:j + step])
-                        except asyncio.QueueFull:
-                            await self.audio_in_queue.put(pcm[j:j + step])
             finally:
                 feeder.cancel()
-                while not ordered.empty():
-                    leftover = ordered.get_nowait()
-                    if leftover is not None:
-                        leftover.cancel()
+                for t in producers:
+                    t.cancel()
 
             if spoken:
-                logger.info("Голос Fish: %.1f с звука", spoken / 2 / RECV_SAMPLE_RATE)
+                logger.info("Голос Fish: %.1f с звука, срезано тишины %.1f с", spoken / 2 / RECV_SAMPLE_RATE,
+                            trimmed[0] / 2 / RECV_SAMPLE_RATE)
             self._latency.mark_turn_complete()
         finally:
             with self._speaking_lock:
@@ -3410,16 +3475,29 @@ class Jarvis:
                 fish_q.put_nowait(None)
                 fish_q = None
 
-        def fish_flush(final: bool = False):
-            nonlocal fish_text, fish_q
+        fish_idle: asyncio.Task | None = None
+
+        async def fish_idle_flush():
+            # Расшифровка затихла на законченном предложении («Есть, сэр.»):
+            # не ждать turn_complete ради короткой фразы ниже порога.
+            await asyncio.sleep(_FISH_SENTENCE_IDLE_SEC)
+            fish_flush(force=True)
+
+        def fish_flush(final: bool = False, force: bool = False):
+            nonlocal fish_text, fish_q, fish_idle
+            if fish_idle is not None and not force:
+                fish_idle.cancel()
+                fish_idle = None
             if addressed and get_voice_provider() == "fish":
-                chunks, fish_text = _take_speakable(fish_text, fish_q is None, final)
+                chunks, fish_text = _take_speakable(fish_text, fish_q is None, final, force)
                 if chunks and fish_q is None:
                     self._drop_pending_speech()   # один голос за раз
                     fish_q = asyncio.Queue()
                     self._fish_task = self._spawn(self._fish_worker(fish_q))
                 for chunk in chunks:
                     fish_q.put_nowait(chunk)
+                if not final and not force and fish_text.strip() and _END_OF_SENTENCE.search(fish_text):
+                    fish_idle = asyncio.create_task(fish_idle_flush())
             if final:
                 fish_close()
 

@@ -260,6 +260,13 @@ def draw_icon(p: QPainter, name: str, c: QPointF, s: float, color: QColor):
             p.rotate(-45)
             p.drawRoundedRect(QRectF(-s * 0.26, -s * 0.12, s * 0.52, s * 0.24), s * 0.12, s * 0.12)
             p.restore()
+    elif name == "image":                         # фото: рамка, горы, солнце
+        p.setPen(line)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(QRectF(x - s * 0.42, y - s * 0.34, s * 0.84, s * 0.68), s * 0.10, s * 0.10)
+        p.drawPolyline(_tri([(x - s * 0.34, y + s * 0.22), (x - s * 0.10, y - s * 0.04), (x + s * 0.06, y + s * 0.12),
+                             (x + s * 0.18, y + s * 0.02), (x + s * 0.34, y + s * 0.20)]))
+        p.drawEllipse(QPointF(x + s * 0.16, y - s * 0.14), s * 0.06, s * 0.06)
     elif name == "copy":
         p.setPen(line)
         p.setBrush(Qt.BrushStyle.NoBrush)

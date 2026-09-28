@@ -27,6 +27,13 @@ from typing import Callable
 logger = logging.getLogger(__name__)
 
 TIMEOUT = 8
+# Своё имя в запросах: стандартное «Python-urllib/3.x» защита Cloudflare (Groq и др.)
+# отбивает кодом 403 ещё до сервиса — и верный ключ выглядел «неверным».
+USER_AGENT = "JARVIS-Mark-X/1.1 (+https://github.com/Sardorbek505/jarvis-mark-x)"
+# При копировании из браузера к ключу цепляются пробелы, переносы и невидимые символы.
+# Секрет связи придумывает сам человек — он должен совпасть с сервером буква в букву.
+_AS_TYPED = {"pc_link_token"}
+_JUNK = re.compile(r"[\s\u200b-\u200f\u2060\ufeff\u00a0]+")
 
 
 @dataclass
@@ -58,7 +65,8 @@ class Service:
 
 def _http(url: str, headers: dict | None = None, data: bytes | None = None, method: str | None = None):
     """(код, тело) — без исключений на 4xx/5xx."""
-    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+    headers = {"User-Agent": USER_AGENT, **(headers or {})}
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             return r.status, r.read().decode("utf-8", "replace")
@@ -66,26 +74,48 @@ def _http(url: str, headers: dict | None = None, data: bytes | None = None, meth
         return e.code, e.read(2000).decode("utf-8", "replace")
 
 
+def clean_key(value: str) -> str:
+    """Ключ без мусора от копирования: пробелов, переносов, невидимых символов, кавычек."""
+    return _JUNK.sub("", str(value or "")).strip("\"'«»")
+
+
+def _api_message(body: str) -> str:
+    """Текст ошибки из JSON-ответа сервиса (Google, OpenAI-совместимые)."""
+    try:
+        err = json.loads(body).get("error", {})
+        return str(err.get("message", "") if isinstance(err, dict) else err)[:160]
+    except (ValueError, AttributeError):
+        return ""
+
+
 def _net_error(exc: Exception) -> tuple[str, str]:
     return "warn", f"Не получилось проверить — нет связи ({type(exc).__name__}). Ключ сохранён."
 
 
 def check_gemini(v: dict) -> tuple[str, str]:
-    key = v.get("gemini_api_key", "").strip()
-    if len(key) < 30 or not key.startswith("AIza"):
-        return "bad", "Не похоже на ключ Gemini: он начинается с «AIza» и длиной около 39 символов."
+    # Формат не угадываем: кроме старых «AIza…» (39 символов) Google выдаёт ключи и
+    # другого вида — раньше такие отбивались как «не похожие», даже не дойдя до Google.
+    key = clean_key(v.get("gemini_api_key", ""))
+    if len(key) < 20:
+        return "bad", "Ключ слишком короткий — скопируйте его в Google AI Studio целиком."
     try:
-        code, body = _http("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1&key="
-                           + urllib.parse.quote(key))
+        code, body = _http("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+                           {"x-goog-api-key": key})
     except Exception as exc:
         return _net_error(exc)
     if code == 200:
         return "ok", "Ключ работает."
     if code == 429 or "RESOURCE_EXHAUSTED" in body:
         return "warn", "Ключ верный, но квота на сегодня кончилась — заработает завтра или с новым ключом."
+    if "API_KEY_INVALID" in body or code == 401:
+        return "bad", "Ключ неверный — Google его не принимает."
     if code == 403:
-        return "bad", "Ключ отключён или заблокирован — создайте новый в Google AI Studio."
-    return "bad", "Ключ неверный — Google его не принимает."
+        why = _api_message(body)
+        if "SERVICE_DISABLED" in body or "has not been used" in why:
+            return "bad", "В проекте ключа выключен Gemini API — создайте ключ в Google AI Studio."
+        return "bad", "Ключ отключён или заблокирован — создайте новый в Google AI Studio." + (
+            f" ({why})" if why else "")
+    return "warn", f"Google ответил ошибкой {code}, ключ сохранён. {_api_message(body)}".strip()
 
 
 def check_fish(v: dict) -> tuple[str, str]:
@@ -189,14 +219,21 @@ def check_pc_link(v: dict) -> tuple[str, str]:
 
 
 def check_groq(v: dict) -> tuple[str, str]:
-    key = v.get("groq_api_key", "").strip()
+    key = clean_key(v.get("groq_api_key", ""))
     if not key.startswith("gsk_"):
         return "bad", "Ключ Groq начинается с «gsk_»."
     try:
-        code, _ = _http("https://api.groq.com/openai/v1/models", {"Authorization": f"Bearer {key}"})
+        code, body = _http("https://api.groq.com/openai/v1/models", {"Authorization": f"Bearer {key}"})
     except Exception as exc:
         return _net_error(exc)
-    return ("ok", "Ключ работает.") if code == 200 else ("bad", "Ключ неверный — Groq его не принимает.")
+    if code == 200:
+        return "ok", "Ключ работает."
+    if code == 401 or "invalid_api_key" in body:
+        return "bad", "Ключ неверный — Groq его не принимает."
+    if code == 429:
+        return "warn", "Ключ верный, но лимит запросов Groq на сейчас исчерпан."
+    # 403 без ответа Groq — это защита сайта (Cloudflare, VPN, страна), а не ключ
+    return "warn", f"Groq не дал проверить ключ (ошибка {code}) — ключ сохранён, бот попробует его сам."
 
 
 # ── сервисы ──────────────────────────────────────────────────────────────────
@@ -206,7 +243,7 @@ SERVICES: list[Service] = [
             "Голос, разговор и все команды. Без него Джарвис не работает.",
             [Field("gemini_api_key", "API-ключ", placeholder="AIza…", env="GEMINI_API_KEY")],
             ["Откройте Google AI Studio и войдите в Google-аккаунт.",
-             "Нажмите «Create API key» и скопируйте ключ (начинается с AIza).",
+             "Нажмите «Create API key» и скопируйте ключ целиком.",
              "Вставьте его сюда и нажмите «Сохранить и проверить»."],
             "https://aistudio.google.com/app/apikey", required=True, check=check_gemini),
     Service("fish", "Fish Audio — голос из фильма", "speak",
@@ -274,7 +311,8 @@ def load_values() -> dict:
             v = raw.get(f.key, "")
             if isinstance(v, list):
                 v = ", ".join(str(x) for x in v)
-            out[f.key] = str(v or (os.getenv(f.env, "") if f.env else "")).strip()
+            v = str(v or (os.getenv(f.env, "") if f.env else ""))
+            out[f.key] = clean_key(v) if f.secret and f.key not in _AS_TYPED else v.strip()
     return out
 
 
@@ -285,9 +323,10 @@ def from_env(f: Field) -> bool:
 
 def save_values(changes: dict) -> bool:
     from core.paths import save_api_keys
+    secret = {f.key for sv in SERVICES for f in sv.fields if f.secret} - _AS_TYPED
     clean = {}
     for k, v in changes.items():
-        v = str(v or "").strip()
+        v = clean_key(v) if k in secret else str(v or "").strip()
         if k == "telegram_allowed_users":
             clean[k] = [int(x) for x in re.findall(r"\d+", v)]
         elif k == "telethon_api_id" and v.isdigit():

@@ -40,6 +40,10 @@ IDLE_SEC = 90.0                 # никто ничего не говорит �
 # перед ответом. Как в голосовом Джарвисе на ПК (main._build_config), но чуть
 # длиннее: в трубке люди делают паузы внутри фразы.
 CALL_VAD_SILENCE_MS = int(os.getenv("CALL_VAD_SILENCE_MS", "450"))
+# Раздумья модели перед ответом. На ПК их выключили давно (main._THINKING_BUDGET:
+# медиана первого звука 4152 мс → 1377 мс), а в звонке забыли — каждая реплика
+# в трубке ждала лишние ~2,8 с. Разговору по телефону рассуждения не нужны.
+CALL_THINKING_BUDGET = int(os.getenv("JARVIS_THINKING_BUDGET", "0"))
 _BYE = re.compile(r"(?<!\w)(пока|до свидания|до встречи|до связи|спокойной ночи|доброй ночи|всего доброго|"
                   r"всего хорошего|хорошего дня|хорошего вечера|бывай|прощай|отключ\w*|клад\w* трубку|"
                   r"полож\w* трубку|bye|goodbye)(?!\w)", re.I)
@@ -580,6 +584,7 @@ def _gemini_live(prompt: str):
                 start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW)),
         speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Charon"))),
+        thinking_config=types.ThinkingConfig(thinking_budget=CALL_THINKING_BUDGET),
     )
     model = os.getenv("JARVIS_LIVE_MODEL", "models/gemini-2.5-flash-native-audio-latest")
     return client.aio.live.connect(model=model, config=config)

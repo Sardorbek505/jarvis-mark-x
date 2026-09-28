@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -76,8 +77,8 @@ def is_configured() -> bool:
     return bool(_key())
 
 
-def _request(text: str, fmt: str = "opus", latency: str | None = None,
-             sample_rate: int | None = None) -> bytes:
+def _open(text: str, fmt: str = "opus", latency: str | None = None, sample_rate: int | None = None):
+    """Ответ Fish как поток: звук идёт кусками по мере синтеза (как client.tts.stream в их SDK)."""
     payload = {
         "text": text[:_MAX_CHARS],
         "reference_id": _voice_id(),
@@ -92,7 +93,13 @@ def _request(text: str, fmt: str = "opus", latency: str | None = None,
         "Content-Type": "application/json",
         "model": _MODEL,
     })
-    return urllib.request.urlopen(req, timeout=_TIMEOUT_SEC).read()
+    return urllib.request.urlopen(req, timeout=_TIMEOUT_SEC)
+
+
+def _request(text: str, fmt: str = "opus", latency: str | None = None,
+             sample_rate: int | None = None) -> bytes:
+    with _open(text, fmt, latency, sample_rate) as r:
+        return r.read()
 
 
 def _pcm_from_wav(data: bytes) -> bytes | None:
@@ -129,23 +136,82 @@ async def speak_ogg(text: str) -> bytes | None:
     return audio
 
 
-async def speak_pcm(text: str, sample_rate: int = 24000) -> bytes | None:
-    """Тот же голос, что в Telegram, но сырым PCM — для десктопа.
+STREAM_BLOCK = 4096
 
-    Десктопный ассистент играет int16 напрямую в звуковую карту, поэтому
-    просим WAV на его же частоте и снимаем заголовок: Ogg/Opus здесь
-    потребовал бы ffmpeg, а Opus вдобавок не умеет 24 кГц (только 48).
 
-    Задержка: замер 17.08.2026 с машины владельца, фраза на 70 символов —
-    первый кусок `balanced` 989 мс против `normal` 3548 мс. Для разговора
-    важен именно первый звук, поэтому здесь balanced, а не общий _LATENCY.
-    """
+async def stream_pcm(text: str, sample_rate: int = 24000):
+    """Голос Джарвиса сырым PCM int16 — ПОТОКОМ: первый кусок звука играет, пока
+    остальное ещё синтезируется.
+
+    Раньше десктоп ждал файл целиком (~1 с на предложение, замер 17.08.2026:
+    первый кусок balanced 989 мс). S2.1 Pro отдаёт первый звук за ~70 мс у себя в
+    дата-центре — выигрыш виден, только если читать ответ по мере прихода.
+    Просим сырой pcm; если сервер всё же пришлёт WAV — заголовок снимаем.
+    Ошибка до первого звука — исключением (решит, звать ли Edge, вызывающий)."""
     text = (text or "").strip()
     if not text or not is_configured():
-        return None
+        return
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue = asyncio.Queue()
+    stop = threading.Event()
+
+    def work():
+        try:
+            with _open(text, "pcm", "balanced", sample_rate) as r:
+                read = getattr(r, "read1", None) or r.read
+                head = b""
+                while not stop.is_set():
+                    data = read(STREAM_BLOCK)
+                    if not data:
+                        break
+                    if head is not None:                     # первые байты: WAV или сырой PCM?
+                        head += data
+                        if head.startswith(b"RIFF"):
+                            idx = head.find(b"data", 12)
+                            if idx < 0 or len(head) < idx + 8:
+                                continue
+                            data = head[idx + 8:]
+                        elif len(head) < 4 and b"RIFF".startswith(head):
+                            continue
+                        else:
+                            data = head
+                        head = None
+                    if data:
+                        loop.call_soon_threadsafe(q.put_nowait, data)
+        except Exception as exc:                             # HTTP, сеть — отдать наверх
+            loop.call_soon_threadsafe(q.put_nowait, exc)
+        finally:
+            loop.call_soon_threadsafe(q.put_nowait, None)
+
+    loop.run_in_executor(None, work)
+    carry = b""
     try:
-        raw = await asyncio.to_thread(
-            _request, text, "wav", "balanced", sample_rate)
+        while True:
+            item = await q.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            data = carry + item
+            n = len(data) // 2 * 2
+            carry = data[n:]
+            if n:
+                yield data[:n]
+    finally:
+        stop.set()                                           # перебили — поток бросает чтение
+
+
+async def speak_pcm(text: str, sample_rate: int = 24000) -> bytes | None:
+    """Тот же голос, что в Telegram, но сырым PCM — для десктопа (целиком).
+
+    Десктопный ассистент играет int16 напрямую в звуковую карту; Ogg/Opus
+    здесь потребовал бы ffmpeg, а Opus вдобавок не умеет 24 кГц (только 48).
+    Собирает stream_pcm; для живой речи _fish_worker читает поток сам.
+    """
+    parts = []
+    try:
+        async for chunk in stream_pcm(text, sample_rate):
+            parts.append(chunk)
     except urllib.error.HTTPError as e:
         detail = e.read(200).decode("utf-8", "replace")
         logger.warning("Fish PCM: HTTP %s — %s", e.code, detail)
@@ -153,9 +219,9 @@ async def speak_pcm(text: str, sample_rate: int = 24000) -> bytes | None:
     except Exception as e:
         logger.warning("Fish PCM: %s: %s", type(e).__name__, e)
         return None
-
-    pcm = _pcm_from_wav(raw)
-    if not pcm or len(pcm) < 500:
-        logger.warning("Fish PCM: неожиданный ответ (%d байт)", len(raw))
+    pcm = b"".join(parts)
+    if len(pcm) < 500:
+        if (text or "").strip() and is_configured():
+            logger.warning("Fish PCM: неожиданный ответ (%d байт)", len(pcm))
         return None
     return pcm
