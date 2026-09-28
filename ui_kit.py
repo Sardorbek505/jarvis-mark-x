@@ -5,7 +5,7 @@
 бирюзовый акцент. Новое окно берёт всё отсюда — и выглядит так же."""
 from __future__ import annotations
 
-from PyQt6.QtCore import QPointF, QRect, QRectF, QSize, Qt
+from PyQt6.QtCore import QRect, QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QAbstractButton, QFrame, QLabel, QLayout, QPushButton, QWidget
 
@@ -70,6 +70,7 @@ QScrollBar::handle:vertical {{ background: {C.BORDER_B}; border-radius: 3px; min
 QScrollBar::handle:vertical:hover {{ background: {C.PRI_DIM}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QFrame#card {{ background: {C.PANEL}; border: 1px solid {C.BORDER}; border-radius: 14px; }}
+QFrame#card:hover {{ border-color: {C.BORDER_A}; }}
 QFrame#ai {{ background: {C.PRI_GHO}; border: 1px solid {C.PRI_DIM}; border-radius: 14px; }}
 QFrame#step {{ background: {C.PANEL}; border: 1px solid {C.BORDER}; border-radius: 12px; }}
 QFrame#step:hover {{ border-color: {C.BORDER_B}; }}
@@ -133,24 +134,60 @@ class IconBadge(QWidget):
         draw_icon(p, self.icon, r.center(), self.width() * 0.5, QColor(C.PRI))
 
 
+def _mix(a: str, b: str, t: float) -> QColor:
+    ca, cb = QColor(a), QColor(b)
+    return QColor(round(ca.red() + (cb.red() - ca.red()) * t), round(ca.green() + (cb.green() - ca.green()) * t),
+                  round(ca.blue() + (cb.blue() - ca.blue()) * t))
+
+
 class Toggle(QAbstractButton):
-    """Переключатель вкл/выкл."""
+    """Переключатель вкл/выкл: кружок переезжает, цвет перетекает, на ходу чуть вытягивается."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(40, 22)
+        self._t = 0.0
+        self._anim = None
+        self.toggled.connect(self._animate)
+
+    def setChecked(self, on: bool):             # из кода — сразу, без анимации
+        super().setChecked(on)
+        if self._anim is None:
+            self._t = 1.0 if on else 0.0
+            self.update()
+
+    def _animate(self, on: bool):
+        from ui_anim import animate_value, enabled
+        if not self.isVisible() or not enabled():
+            self._t = 1.0 if on else 0.0
+            self.update()
+            return
+        if self._anim is not None:
+            self._anim.stop()
+            self._anim = None
+        self._anim = animate_value(self, self._t, 1.0 if on else 0.0, 220, self._step,
+                                   on_done=self._done)
+
+    def _step(self, v):
+        self._t = float(v)
+        self.update()
+
+    def _done(self):
+        self._anim = None
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        on = self.isChecked()
+        t = max(0.0, min(1.0, self._t))
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(C.PRI if on else C.BORDER_B))
+        p.setBrush(_mix(C.BORDER_B, C.PRI, t))
         p.drawRoundedRect(QRectF(0, 0, 40, 22), 11, 11)
-        p.setBrush(QColor(C.BG if on else C.TEXT_MED))
-        p.drawEllipse(QPointF(29 if on else 11, 11), 8, 8)
+        p.setBrush(_mix(C.TEXT_MED, C.BG, t))
+        stretch = 3.0 * (1 - abs(2 * t - 1))       # в середине пути кружок вытянут, как капля
+        x = 11 + 18 * t
+        p.drawRoundedRect(QRectF(x - 8 - stretch / 2, 3, 16 + stretch, 16), 8, 8)
 
 
 class FlowLayout(QLayout):

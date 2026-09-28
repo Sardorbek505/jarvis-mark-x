@@ -83,6 +83,7 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     # Свои команды — из временного файла, не из настоящей папки данных.
     import core.macros as macros_mod
     monkeypatch.setenv("JARVIS_MACROS", str(d / "macros.json"))
+    monkeypatch.setenv("JARVIS_SETTINGS", str(d / "settings.json"))
     monkeypatch.setattr(macros_mod, "_macros", None)
     monkeypatch.setattr(mm, "_MEMORY_FILE", d / "data.json")
     monkeypatch.setattr(conv, "DIALOG_FILE", d / "dialog.jsonl")

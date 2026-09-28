@@ -48,6 +48,28 @@ def test_installer_uses_existing_art():
     assert big.size == (328, 628) and big.mode == "RGB"
 
 
+def test_installer_has_image_for_every_step_and_credit():
+    """Картинки шагов меняет [Code]: каждая, что он достаёт, вшита (dontcopy) и есть в 1× и 2×;
+    вшитые стоят раньше программы (иначе мастер распаковывал бы весь архив ради картинки)."""
+    iss = (ROOT / "scripts" / "installer.iss").read_text(encoding="utf-8")
+    shown = re.findall(r"ShowStepImage\(WizardForm\.\w+, '(\w+)', (\d+)\)", iss)
+    assert {n for n, _ in shown} == {"wizard_small", "step_tasks", "step_ready", "step_installing", "wizard_finish"}
+    files = re.findall(r'^Source: "([^"]+)"', iss, re.M)
+    assert files[-1].startswith("..\\dist\\JARVIS")                           # программа — последней
+    embedded = files[:-1]
+    for name, base in shown:
+        for sfx, k in (("", 1), ("_2x", 2)):
+            f = ART / "installer" / f"{name}{sfx}.bmp"
+            assert any(Path(f.name).match(Path(e.replace("\\", "/")).name) for e in embedded), f.name
+            im = Image.open(f)
+            assert im.mode == "RGB" and im.width == int(base) * k, f.name
+    assert "https://t.me/atabekovch" in iss and "instagram.com/atabekovch" in iss
+    # подпись в тёмном низу финальной картинки есть: светлые буквы ника над пустым краем
+    fin = Image.open(ART / "installer" / "wizard_finish_2x.bmp").convert("L")
+    assert max(fin.crop((40, 540, 288, 585)).getdata()) > 200
+    assert max(fin.crop((0, 600, 328, 628)).getdata()) < 60
+
+
 def test_screens_draw_art():
     from PyQt6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])  # noqa: F841

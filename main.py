@@ -87,6 +87,14 @@ sys.excepthook = _log_unhandled
 # Падение рабочего потока раньше было беззвучным: окно жило, Джарвис — нет.
 threading.excepthook = lambda args: _log_unhandled(args.exc_type, args.exc_value, args.exc_traceback)
 
+# Настройки из экрана «Настройки» (core/settings.py) → в окружение ДО того, как
+# ниже прочитаются MIC_DEVICE, MIC_RMS_THRESHOLD, JARVIS_WAKE_MODE и др.
+try:
+    from core import settings as _settings
+    _settings.apply_env()
+except Exception as _settings_exc:
+    logger.warning("Настройки не прочитались: %s", _settings_exc)
+
 import sounddevice as sd
 from google import genai
 from google.genai import types
@@ -253,12 +261,10 @@ _MIC_FULL_SCALE = float(os.getenv("JARVIS_LEVEL_SCALE", "4000"))
 # своя: по микрофонной волна упиралась бы в потолок на каждом слове.
 _SPEAK_FULL_SCALE = float(os.getenv("JARVIS_SPEAK_LEVEL_SCALE", "9000"))
 
-# Выше какого уровня в динамиках микрофон не слушаем.
-#
-# 0.08 — отсекает умеренно громкий звук в динамиках, не блокируя микрофон
-# при тихом фоновом шуме. Во время воспроизведения собственного ответа
-# Джарвиса микрофон глушится явно. MIC_IGNORE_SPEAKERS=0 отключает защиту.
-_SPEAKER_GATE = float(os.getenv("SPEAKER_GATE", "0.08"))
+# Звук из своих колонок отличается от голоса не порогом громкости колонок
+# (был SPEAKER_GATE=0.08 и замыкал круг с приглушением), а сравнением
+# микрофона с тем, что играет сейчас, — см. core/echo_gate.py.
+# MIC_IGNORE_SPEAKERS=0 отключает защиту.
 # Как часто рапортовать, что микрофон глух. Реже — можно не заметить, чаще —
 # спам: колбэк зовётся ~15 раз в секунду.
 _GATE_REPORT_SEC = float(os.getenv("MIC_GATE_REPORT_SEC", "5"))
@@ -328,6 +334,21 @@ def _mic_hears_speakers(device) -> bool:
 # буфера звуковой карты и отражается от стен. Без этого хвоста Джарвис
 # слышал конец своей фразы и отвечал сам себе.
 _ECHO_TAIL_SEC = float(os.getenv("JARVIS_ECHO_TAIL_SEC", "0.5"))
+# «Окно поправки»: включили музыку/видео — столько секунд звук приглушён и
+# микрофон пропускает речь поверх него. Иначе «поставь Люби меня… нет-нет,
+# не её, а …» терялось: заиграла музыка — гейт динамиков закрыл микрофон.
+_CORRECTION_SEC = float(os.getenv("JARVIS_CORRECTION_SEC", "8"))
+_MEDIA_TOOLS = {"music_player", "youtube_player", "movie_player"}
+# Пауза между слогами голоса поверх музыки — столько кадров ещё пропускаем.
+_VOICE_OVER_MUSIC_HOLD = 0.6
+
+
+def _frame_rms(indata) -> float:
+    try:
+        import numpy as np
+        return float(np.sqrt(np.mean(np.square(indata.astype(np.float32)))))
+    except Exception:
+        return 0.0
 
 # Потолок паузы между попытками подключения к Gemini.
 _RECONNECT_MAX_SEC = 30.0
@@ -1477,7 +1498,7 @@ TOOLS = [
             "Открыть окно Джарвиса: keys — «открой ключи», «где ввести ключ», «проверь ключи», "
             "«подключи Spotify/звонки» (там же вход кнопкой); commands — «открой редактор команд»; "
             "contacts — «открой контакты», «подключи мой телеграм»; about — «открой обо мне», «что ты обо мне знаешь» "
-            "(окно); study — «открой расписание», «открой учёбу»; football — «открой футбол», «покажи матчи Реала»; help — «что ты умеешь», «помощь», «подсказки», "
+            "(окно); study — «открой расписание», «открой учёбу»; football — «открой футбол», «покажи матчи Реала»; settings — «открой настройки», «поменяй микрофон», «выбери динамик»; help — «что ты умеешь», «помощь», «подсказки», "
             "«с чего начать»; backup — «сделай резервную копию», «перенеси на новый ПК», «восстанови из копии» "
             "(пароль — только в окне, не голосом)."
         ),
@@ -1485,7 +1506,7 @@ TOOLS = [
             "type": "OBJECT",
             "properties": {"window": {"type": "STRING",
                                       "enum": ["keys", "commands", "contacts", "about", "study", "help",
-                                               "backup", "football"]}},
+                                               "backup", "football", "settings"]}},
             "required": ["window"]
         }
     },
@@ -1609,11 +1630,23 @@ class Jarvis:
         self._speaker_meter  = None   # см. _listen_audio: не слушаем свои динамики
         self._turn_done_event: asyncio.Event | None = None
         self._awake_until    = 0.0    # см. _WAKE_MODE: до какого момента идёт разговор
+        # «Настройки» меняют микрофон/динамик/порог на ходу (core/settings.py).
+        self._mic_reopen = False
+        self._out_reopen = False
+        try:
+            from core import settings as _st
+            _st.subscribe(self._on_setting)
+        except Exception as exc:
+            logger.debug("Настройки: подписка не удалась: %s", exc)
         self._followups_left = 0      # сколько реплик без имени ещё продолжат разговор
         self._rearm_after_speech = False
         self._fish_task: asyncio.Task | None = None
         self._quick_lift = False     # system-реплика: снять глушение мгновенного хода
         self._echo_guard_until = 0.0  # см. _ECHO_TAIL_SEC
+        self._through_until = 0.0     # «окно поправки»: слышим речь поверх музыки (_CORRECTION_SEC)
+        from core.echo_gate import EchoGate
+        self._echo = EchoGate()       # голос или эхо колонок (учится на ходу, помнит комнату)
+        self._voice_over_music_at = 0.0
         self._resume_handle: str | None = None  # возобновление сессии после разрыва
 
         # Новый мозг ДЖАРВИС
@@ -1849,7 +1882,7 @@ class Jarvis:
         self.ui.bring_to_front()
         try:
             from core.ducking_controller import ducking_controller
-            ducking_controller.duck()
+            ducking_controller.duck("горячая клавиша F8")
         except Exception:
             pass
 
@@ -1988,14 +2021,33 @@ class Jarvis:
         иначе «Джарвис, открой ютуб» дошло бы как «…ютуб»."""
         if self.ui.muted:
             return
+        if self._is_speaking:
+            # Перебили по имени: замолкаем сразу, недоговорённое выбрасываем.
+            logger.info("Перебили словом «Джарвис» — замолкаю")
+            self._drop_pending_speech()
+            self.set_speaking(False)
         self.wake()
-        try:
-            from core.ducking_controller import ducking_controller
-            ducking_controller.duck()
-        except Exception:
-            pass
+        # Позвали под музыку — дальше речь должна доходить и поверх неё.
+        self._open_through(_CORRECTION_SEC)
         while self._wake_ring:
             put({"data": self._wake_ring.popleft(), "mime_type": "audio/pcm"})
+
+    def _open_through(self, sec: float):
+        """Окно поправки: музыка приглушена, микрофон пропускает речь поверх неё."""
+        self._through_until = max(self._through_until, time.monotonic() + sec)
+        try:
+            from core.ducking_controller import ducking_controller
+            ducking_controller.duck("окно поправки / позвали по имени")
+        except Exception:
+            pass
+        try:
+            asyncio.get_running_loop().call_later(sec + 0.1, self._close_through)
+        except RuntimeError:
+            pass                                  # не из событийного цикла (тесты) — закроется по времени
+
+    def _close_through(self):
+        if time.monotonic() >= self._through_until and not self._is_speaking:
+            self._release_ducking()
 
     def _arm(self):
         self._awake_until = time.monotonic() + _AWAKE_SEC
@@ -2041,7 +2093,9 @@ class Jarvis:
                 self._show_listen_state(force=True)
             # Вернуть звук — всегда, и при выключенном микрофоне: раньше
             # Ctrl+M во время ответа оставлял музыку приглушённой навсегда.
-            self._release_ducking()
+            # Кроме окна поправки: его закроет _close_through.
+            if time.monotonic() >= getattr(self, "_through_until", 0.0) or self.ui.muted:
+                self._release_ducking()
 
     def _release_ducking(self):
         try:
@@ -2553,7 +2607,8 @@ class Jarvis:
                           "contacts": ("open_contacts", "Контакты"), "about": ("open_about", "Обо мне"),
                           "study": ("open_study", "Учёба"), "help": ("open_welcome", "Что умеет Джарвис"),
                           "backup": ("open_backup", "Резервная копия"),
-                          "football": ("open_football", "Футбол")}
+                          "football": ("open_football", "Футбол"),
+                          "settings": ("open_settings", "Настройки")}
                 method, title = titles.get(which, titles["commands"])
                 opener = getattr(self.ui, method, None)
                 if opener:
@@ -2830,9 +2885,19 @@ class Jarvis:
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
             if jarvis_speaking or time.monotonic() < self._echo_guard_until:
-                self._note_gate("Джарвис говорит сам")
-                preroll.clear()
-                return
+                if not getattr(self, "_mic_hears_speakers", True) and not self.ui.muted:
+                    # Наушники: свой голос Джарвиса микрофон не слышит — можно
+                    # перебивать обычной речью, Gemini сам оборвёт ответ.
+                    pass
+                else:
+                    # Колонки: перебить можно словом «Джарвис» — его слышит
+                    # локальный детектор, а свой голос Джарвис по имени не зовёт.
+                    if self._local_wake and jarvis_speaking and not self.ui.muted:
+                        self._wake_ring.append(indata.tobytes())
+                        self._local_wake.feed(indata.tobytes())
+                    self._note_gate("Джарвис говорит сам")
+                    preroll.clear()
+                    return
             if self.ui.muted:
                 self._note_gate("микрофон выключен (Ctrl+M)")
                 preroll.clear()
@@ -2852,14 +2917,42 @@ class Jarvis:
             # Громко играет музыка/кино из своих динамиков — в облако не шлём:
             # по громкости её от голоса не отличить (см. _IGNORE_SPEAKERS).
             # Слушаем только ключевое слово «Джарвис», чтобы приглушить звук.
-            if (self._speaker_meter is not None and getattr(self, "_mic_hears_speakers", True)
-                    and self._speaker_meter.peak > _SPEAKER_GATE):
-                self._note_gate(
-                    f"звук в динамиках {self._speaker_meter.peak:.3f} > "
-                    f"порога {_SPEAKER_GATE}"
-                )
-                preroll.clear()
-                return
+            # Играет музыка / фильм из своих колонок. Раньше при громких колонках
+            # микрофон глушился целиком, а стоило их приглушить — музыка шла в
+            # Gemini как «речь» и снова приглушала себя (ползунки прыгали сами).
+            # Теперь кадр сравнивается с тем, что сейчас играет (core/echo_gate):
+            # голос заметно громче эха — пропускаем, эхо — нет.
+            meter = self._speaker_meter
+            level = float(getattr(meter, "recent", getattr(meter, "peak", 0.0))) if meter is not None else 0.0
+            music = (meter is not None and getattr(self, "_mic_hears_speakers", True)
+                     and self._echo.music(level))
+            if music:
+                rms = _frame_rms(indata)
+                self._echo.observe(rms, level)
+                now = time.monotonic()
+                through = now < self._through_until
+                if self._echo.coupling() is None:
+                    # Связь «колонки → микрофон» ещё не выучена: как раньше —
+                    # только в окне поправки и только заметно громче порога.
+                    voice = through and rms >= MIC_RMS_THRESHOLD * 2
+                else:
+                    voice = self._echo.is_voice(rms, level, MIC_RMS_THRESHOLD)
+                if voice:
+                    if now - self._voice_over_music_at > _VOICE_OVER_MUSIC_HOLD:
+                        logger.info("Голос поверх музыки (уровень %.2f, RMS %.0f) — приглушаю и слушаю",
+                                    level, rms)
+                    self._voice_over_music_at = now
+                    if not through:
+                        loop.call_soon_threadsafe(self._open_through, 3.0)
+                elif now - self._voice_over_music_at > _VOICE_OVER_MUSIC_HOLD:
+                    # Музыка, не голос. Имя слушаем всегда: раньше в открытом
+                    # окне разговора под музыкой не было слышно и «Джарвис».
+                    if self._local_wake:
+                        self._wake_ring.append(pcm_bytes)
+                        self._local_wake.feed(pcm_bytes)
+                    self._note_gate(f"играет звук {level:.2f} — это не голос")
+                    preroll.clear()
+                    return
 
             was_silent = getattr(self, "_quiet_frames", MIC_HANGOVER_FRAMES + 1) > MIC_HANGOVER_FRAMES
             if not self._is_loud_enough(indata):
@@ -2874,11 +2967,13 @@ class Jarvis:
                 # на подтверждении опасного сверяется просьба + «да».
                 self._voice_ring.append((time.monotonic(), pcm_bytes))
 
-            # Сбрасываем предбуфер (pre-roll) и плавно приглушаем музыку/кино при начале речи
-            if was_silent:
+            # Начало речи: приглушаем музыку — только если она правда играет.
+            # Раньше приглушение шло на любой звук, и ползунки всех программ
+            # в микшере прыгали от каждого слова и шороха.
+            if was_silent and music:
                 try:
                     from core.ducking_controller import ducking_controller
-                    ducking_controller.duck()
+                    ducking_controller.duck("голос поверх музыки")
                 except Exception:
                     pass
                 if preroll:
@@ -2924,6 +3019,10 @@ class Jarvis:
                         await asyncio.sleep(0.1)
                         self._show_listen_state()   # окно разговора истекло → «ОЖИДАЕТ»
                         silent_for = time.monotonic() - self._mic_last_cb
+                        if getattr(self, "_mic_reopen", False):   # выбрали другой микрофон в «Настройках»
+                            self._mic_reopen = False
+                            logger.info("Микрофон сменён в настройках — переоткрываю")
+                            break
                         if not stream.active or silent_for > _MIC_STALL_SEC:
                             logger.warning("Микрофон замолчал (%.1f с без кадров) — переоткрываю", silent_for)
                             self.ui.write_log("SYS: микрофон пропал — переподключаю…")
@@ -3160,6 +3259,10 @@ class Jarvis:
                 )
             responses.append(fr)
             self._show_card(fc, fr)
+            if fc.name in _MEDIA_TOOLS and str((fc.args or {}).get("action", "play")).lower() in (
+                    "play", "mood", "search", "latest", "open", ""):
+                # Только что включили — даём поправить: «нет-нет, не её, а …».
+                self._open_through(_CORRECTION_SEC)
         await self.session.send_tool_response(function_responses=responses)
 
     def _show_card(self, fc, fr):
@@ -3550,6 +3653,25 @@ class Jarvis:
         finally:
             fish_close()
 
+    def _on_setting(self, key: str, value):
+        """Изменили настройку на экране — применяем без перезапуска."""
+        global MIC_RMS_THRESHOLD, _IGNORE_SPEAKERS, _WAKE_MODE, _AWAKE_SEC
+        if key == "mic":
+            self._mic_reopen = True
+        elif key == "speaker":
+            self._out_reopen = True
+        elif key == "mic_threshold":
+            MIC_RMS_THRESHOLD = float(value)
+        elif key == "ignore_speakers":
+            _IGNORE_SPEAKERS = bool(value)
+        elif key == "wake_mode":
+            _WAKE_MODE = str(value or "wake_word")
+        elif key == "awake_sec":
+            _AWAKE_SEC = float(value)
+        elif key == "voice" and value:
+            set_voice_provider(str(value))
+        logger.info("Настройка «%s» = %r применена", key, value)
+
     # ── Воспроизведение аудио ─────────────────────────────────────────────────
     def _open_output(self):
         """Поток вывода: сначала устройство по умолчанию, потом любое рабочее.
@@ -3565,6 +3687,19 @@ class Jarvis:
             s.start()
             s.write(b"\x00" * (CHUNK_SIZE * 2))   # тишина: проверяем, что ПИШЕТСЯ
             return s
+
+        # Динамик, выбранный в «Настройках» (по имени: номера в Windows меняются).
+        want = os.getenv("JARVIS_OUTPUT_DEVICE", "").strip()
+        if want:
+            from core.settings import find_device
+            idx = find_device(want, "output")
+            if idx is None:
+                logger.warning("Динамик «%s» не найден — беру системный", want)
+            else:
+                try:
+                    return _try(idx)
+                except Exception as exc:
+                    logger.warning("Динамик «%s» не играет: %s — беру системный", want, exc)
 
         try:
             return _try(None)
@@ -3632,6 +3767,10 @@ class Jarvis:
                                 self.set_speaking(False)
                             if self._turn_done_event and self._turn_done_event.is_set():
                                 self._turn_done_event.clear()
+                            if getattr(self, "_out_reopen", False):   # выбрали другой динамик — между фразами
+                                self._out_reopen = False
+                                logger.info("Динамик сменён в настройках — переоткрываю")
+                                break
                         continue
 
                     self.set_speaking(True)

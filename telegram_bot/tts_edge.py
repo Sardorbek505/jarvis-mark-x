@@ -22,10 +22,15 @@ _DEFAULT_VOICE = os.getenv("EDGE_VOICE", "ru-RU-DmitryNeural")
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 
-async def _generate_audio_bytes(text: str, voice: str = _DEFAULT_VOICE) -> bytes | None:
+def _voice(voice: str | None) -> str:
+    """Голос из «Настроек» (EDGE_VOICE) читается при каждом вызове — меняется без перезапуска."""
+    return voice or os.getenv("EDGE_VOICE", "").strip() or _DEFAULT_VOICE
+
+
+async def _generate_audio_bytes(text: str, voice: str | None = None) -> bytes | None:
     try:
         import edge_tts
-        communicate = edge_tts.Communicate(text, voice)
+        communicate = edge_tts.Communicate(text, _voice(voice))
         chunks = []
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
@@ -36,7 +41,7 @@ async def _generate_audio_bytes(text: str, voice: str = _DEFAULT_VOICE) -> bytes
         return None
 
 
-async def speak_ogg(text: str, voice: str = _DEFAULT_VOICE) -> bytes | None:
+async def speak_ogg(text: str, voice: str | None = None) -> bytes | None:
     """Генерирует аудио для отправки в Telegram."""
     text = (text or "").strip()
     if not text:
@@ -79,7 +84,7 @@ def _mp3_to_pcm(mp3: bytes, sample_rate: int) -> bytes | None:
     return None
 
 
-async def speak_pcm(text: str, voice: str = _DEFAULT_VOICE, sample_rate: int = 24000) -> bytes | None:
+async def speak_pcm(text: str, voice: str | None = None, sample_rate: int = 24000) -> bytes | None:
     """Генерирует raw 16-bit PCM для прямого воспроизведения на десктопе."""
     text = (text or "").strip()
     if not text:

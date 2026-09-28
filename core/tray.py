@@ -126,7 +126,7 @@ class JarvisTray(QSystemTrayIcon):
         menu.addAction(self.act_toggle_window)
 
         # Настройки
-        self.act_settings = QAction("⚙️ Настройки и ключи", menu)
+        self.act_settings = QAction("⚙️ Настройки", menu)
         self.act_settings.triggered.connect(self._open_settings)
         menu.addAction(self.act_settings)
 

@@ -268,6 +268,12 @@ function connect() {
         break;
       case 'data':
         renderView(msg.view, msg.payload || {});
+        if (msg.view === enterView) {                     // первый показ после смены вкладки
+          enterView = '';
+          const body = document.querySelector(`#view-${msg.view} .view-body`);
+          cascade(body);
+          if (body) countUp(body);
+        }
         break;
     }
   };
@@ -654,12 +660,55 @@ voiceBtn.addEventListener('click', () => {
 // ── Вкладки ───────────────────────────────────────────────────────────────────
 let activeTab = 'chat';
 const TAB_TITLES = { chat: 'J.A.R.V.I.S', dashboard: 'СВОДКА', tasks: 'ДЕЛА', study: 'УЧЁБА', habits: 'ПРИВЫЧКИ', pc: 'ПК-ПУЛЬТ' };
+// ── Анимации: подсветка вкладки переезжает, карточки каскадом, числа набегают ──
+// Только transform/opacity (их рисует видеокарта) и только при смене вкладки —
+// обновления данных раз в 30 с не перезапускают каскад и не мигают.
+const tabGlider = document.createElement('i');
+tabGlider.id = 'tab-glider';
+$('tabbar').prepend(tabGlider);
+function placeGlider(animate = true) {
+  const t = document.querySelector('.tab.active');
+  if (!t) return;
+  tabGlider.style.transition = animate ? '' : 'none';
+  tabGlider.style.width = t.offsetWidth + 'px';
+  tabGlider.style.transform = `translateX(${t.offsetLeft}px)`;
+}
+window.addEventListener('resize', () => placeGlider(false));
+requestAnimationFrame(() => placeGlider(false));
+const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+let enterView = '';
+function cascade(el) {
+  if (!el || reduceMotion) return;
+  el.classList.remove('enter');
+  void el.offsetWidth;                                    // перезапуск анимации
+  el.classList.add('enter');
+  setTimeout(() => el.classList.remove('enter'), 900);
+}
+function countUp(root) {
+  if (reduceMotion) return;
+  root.querySelectorAll('[data-count]').forEach(el => {
+    const to = Number(el.dataset.count) || 0;
+    if (to <= 0) return;
+    const t0 = performance.now(), dur = 600;
+    const step = now => {
+      const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+      el.firstChild.nodeValue = String(Math.round(to * e));
+      if (k < 1) requestAnimationFrame(step);
+    };
+    el.firstChild.nodeValue = '0';
+    requestAnimationFrame(step);
+  });
+}
+
 function switchTab(name) {
-  if (name !== activeTab) haptic();
+  if (name !== activeTab) { haptic(); enterView = name; }
   activeTab = name;
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   $('screen-title').textContent = TAB_TITLES[name] || 'J.A.R.V.I.S';
+  placeGlider();
+  const t = document.querySelector(`.tab[data-tab="${name}"]`);
+  if (t && !reduceMotion) { t.classList.remove('pop'); void t.offsetWidth; t.classList.add('pop'); }
   if (['dashboard', 'tasks', 'habits', 'study'].includes(name)) send({ type: 'get_data', view: name });
   if (name === 'pc') send({ type: 'pc_macros' });
 }
@@ -721,12 +770,12 @@ function renderDashboard(p) {
     <div class="dash-grid">
       <button class="stat" onclick="switchTab('habits')">
         <div class="stat-ico">${icon('flame')}</div>
-        <div><div class="stat-num">${p.habits_done ?? 0}<span>/${p.habits_total ?? 0}</span></div>
+        <div><div class="stat-num" data-count="${Number(p.habits_done) || 0}">${p.habits_done ?? 0}<span>/${p.habits_total ?? 0}</span></div>
         <div class="stat-lbl">привычки · серия ${p.best_streak ?? 0}</div></div>
       </button>
       <button class="stat" onclick="switchTab('tasks')">
         <div class="stat-ico">${icon('checkCircle')}</div>
-        <div><div class="stat-num">${p.open_tasks ?? 0}</div><div class="stat-lbl">задач открыто</div></div>
+        <div><div class="stat-num" data-count="${Number(p.open_tasks) || 0}">${p.open_tasks ?? 0}</div><div class="stat-lbl">задач открыто</div></div>
       </button>
     </div>
     ${renderFootball(p.football || {}, p.pc_online)}

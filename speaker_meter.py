@@ -29,6 +29,7 @@ class SpeakerMeter:
 
     def __init__(self, poll_sec: float = _POLL_SEC):
         self._peak = 0.0
+        self._recent = [0.0, 0.0, 0.0]   # последние замеры: кадр микрофона длиннее одного
         self._poll = poll_sec
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -53,6 +54,11 @@ class SpeakerMeter:
     @property
     def peak(self) -> float:
         return self._peak
+
+    @property
+    def recent(self) -> float:
+        """Наибольший уровень за ~150 мс — то, что успело дойти до микрофона за кадр."""
+        return max(self._recent)
 
     # ── внутреннее ───────────────────────────────────────────────────────────
     @staticmethod
@@ -122,6 +128,7 @@ class SpeakerMeter:
                         logger.debug("Переключение измерителя: %s", exc)
             try:
                 self._peak = float(meter.GetPeakValue())
+                self._recent = self._recent[1:] + [self._peak]
                 misses = 0
             except Exception as exc:
                 misses += 1

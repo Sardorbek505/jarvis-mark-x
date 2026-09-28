@@ -73,6 +73,10 @@ class DuckingController:
         # трогаем: раньше возврат громкости затирал его выбор.
         self._last_set: Dict[int, float] = {}
         self._user_owned: set = set()
+        # Уровень звука каждой программы (IAudioMeterInformation сессии): молчащие
+        # не трогаем. Раньше приглушались ВСЕ — и ползунки Discord, браузера, игр
+        # прыгали в микшере от каждого слова, хотя ничего не играло.
+        self._session_meters: Dict[int, object] = {}
         # Громкость, которую не успели вернуть (Джарвис закрыли или он упал,
         # пока музыка была приглушена): имя процесса -> громкость «до».
         # Windows помнит громкость приложений, и без этого CS2, Steam, браузер
@@ -194,12 +198,24 @@ class DuckingController:
     def _set_master_volume(self, vol: float):
         self._current_volume = max(0.0, min(1.0, vol))
 
+    PLAYING_PEAK = 0.003    # тише — программа молчит, её громкость не трогаем
+
+    def _playing(self, pid: int) -> bool:
+        """Играет ли программа звук прямо сейчас. Не знаем — считаем, что играет."""
+        meter = self._session_meters.get(pid)
+        if meter is None:
+            return True
+        try:
+            return float(meter.GetPeakValue()) > self.PLAYING_PEAK
+        except Exception:
+            return True
+
     def _sessions(self):
         """Аудиосессии чужих программ. Пусто, если pycaw недоступен."""
         if not self._pycaw_ok:
             return []
         try:
-            from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
+            from pycaw.pycaw import AudioUtilities, IAudioMeterInformation, ISimpleAudioVolume
         except Exception:
             self._pycaw_ok = False
             logger.info("Audio Ducking: pycaw не установлен — музыка приглушаться не будет")
@@ -217,6 +233,10 @@ class DuckingController:
                 name = ""
             if any(k in name for k in ("jarvis", "audiodg", "system")):
                 continue
+            try:
+                self._session_meters[pid] = session._ctl.QueryInterface(IAudioMeterInformation)
+            except Exception:
+                self._session_meters.pop(pid, None)
             out.append((pid, name, session._ctl.QueryInterface(ISimpleAudioVolume)))
         return out
 
@@ -239,11 +259,14 @@ class DuckingController:
                         grew = True
                         continue
                     if pid not in self._saved_session_vols:
+                        if not self._playing(pid):
+                            continue            # молчит — не трогаем её ползунок
                         # Не вернули с прошлого раза — «до» берём оттуда, а
                         # не нынешний (уже заниженный) уровень.
                         self._saved_session_vols[pid] = self._pending_heal.pop(name, None) \
                             or float(ctl.GetMasterVolume())
                         self._saved_names[pid] = name
+                        logger.info("Приглушаю «%s» (играет звук)", name or pid)
                         grew = True
                     vol = max(0.02, self._saved_session_vols[pid] * level)
                     ctl.SetMasterVolume(vol, None)
@@ -417,8 +440,10 @@ class DuckingController:
                 if self._original_volume is not None:
                     self._begin_fade(self._original_volume, 100.0)
 
-    def duck(self):
-        """Шорткат для активации приглушения."""
+    def duck(self, reason: str = ""):
+        """Шорткат для активации приглушения. reason — в журнал: почему ползунки двинулись."""
+        if reason and self.state not in self._DUCKED_STATES:
+            logger.info("Приглушение: %s", reason)
         self.set_state(DuckingState.LISTENING)
 
     def restore(self):
