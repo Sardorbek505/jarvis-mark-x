@@ -130,3 +130,19 @@ def resolve_contact(alias: str) -> dict:
     if not target:
         return {"ok": False, "text": f"У {c.name} не указан Telegram."}
     return {"ok": True, "target": target, "name": c.name, "text": f"{c.name} → {target}"}
+
+
+def call_contact(alias: str, message: str = "", confirmed: bool = False) -> dict:
+    """«Позвони Ибрагиму и скажи …» из бота. Без confirmed — только вопрос «звонить?»
+    (живому человеку от вашего имени — только после явного «да»); с confirmed — звонок
+    в фоне тем же путём, что голосом на ПК (core/contacts: книжка, «звонить» разрешено,
+    тихие часы, ваш Telegram или аккаунт Джарвиса)."""
+    from core.contacts import contacts
+    api = contacts()
+    c, problem = api.precheck("call", alias, message, urgent=True)
+    if not c:
+        return {"ok": False, "text": problem}
+    if not confirmed:
+        return {"ok": True, "need_confirm": True, "name": c.name,
+                "text": "📞 " + api.confirm_text("call", alias, message)}
+    return {"ok": True, "name": c.name, "text": "📞 " + api.call(alias, message, urgent=True)}

@@ -225,6 +225,10 @@ class CallSession:
         # неотличима по поведению для «звук не приходит», «приходит тишина»
         # и «приходит, но Gemini не слышит речь» — журнал их различает.
         self.frames_in, self.sizes, self._sq, self._samples = 0, set(), 0.0, 0
+        # Молчит ли сам Джарвис: сколько сообщений пришло от Gemini и когда он заговорил.
+        self.gemini_msgs = 0
+        self._picked_up_at = 0.0
+        self.first_voice_sec = 0.0
 
     def audio_stats(self) -> str:
         rms = (self._sq / self._samples) ** 0.5 if self._samples else 0.0
@@ -268,7 +272,17 @@ class CallSession:
         self.log("взял трубку")
         try:
             await self.tg.listen(self.peer)
-            async with self.live(self.prompt) as session:
+            self._picked_up_at = time.monotonic()
+            try:
+                live = self.live(self.prompt)
+                session = await live.__aenter__()
+            except Exception as exc:
+                # Трубку взяли, а Gemini не подключился (ключ, квота, сеть) — человек
+                # слышал тишину, а причина пропадала. Теперь — в журнал целиком.
+                logger.error("Звонок: Gemini не подключился — %s: %s", type(exc).__name__, exc)
+                raise
+            logger.info("Звонок: Gemini на связи через %.1f с после ответа", time.monotonic() - self._picked_up_at)
+            try:
                 await session.send_client_content(
                     turns=[{"role": "user", "parts": [{"text": "[Собеседник взял трубку. Начинай разговор.]"}]}],
                     turn_complete=True)
@@ -293,6 +307,8 @@ class CallSession:
                     waiting -= done
                 for t in pumps | {pace, ended, watch, guard}:
                     t.cancel()
+            finally:
+                await live.__aexit__(None, None, None)
         finally:
             if not self._hung_up.is_set():
                 try:
@@ -310,6 +326,9 @@ class CallSession:
 
     async def _watch_audio(self, after: float = 6.0):
         await asyncio.sleep(after)
+        if not self.first_voice_sec:
+            logger.warning("Звонок: Джарвис за %.0f с не сказал ни слова — сообщений от Gemini: %d",
+                           after, self.gemini_msgs)
         if self.frames_in == 0:
             logger.warning("Звонок: за %.0f с из трубки не пришло ни одного кадра звука — "
                            "Джарвис говорит, но собеседника не слышит", after)
@@ -344,11 +363,15 @@ class CallSession:
             # закрылась), без паузы цикл крутился бы вхолостую и душил звонок.
             await asyncio.sleep(0.01)
             async for msg in session.receive():
+                self.gemini_msgs += 1
                 sc = getattr(msg, "server_content", None)
                 if sc is not None and getattr(sc, "interrupted", False):
                     self.out.clear()                      # перебили — замолкаем сразу
                     self.up.reset()
                 if getattr(msg, "data", None):
+                    if not self.first_voice_sec and self._picked_up_at:
+                        self.first_voice_sec = time.monotonic() - self._picked_up_at
+                        logger.info("Звонок: Джарвис заговорил через %.1f с после ответа", self.first_voice_sec)
                     if self._user_spoke_at:
                         self.reply_delays.append(time.monotonic() - self._user_spoke_at)
                         self._user_spoke_at = 0.0
