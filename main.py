@@ -667,6 +667,8 @@ def _split_for_speech(text: str) -> list[str]:
 # Конец предложения в самом конце расшифровки: «…, сэр.» — не цифра («2.» → «2.5»)
 # и не однобуквенное сокращение («г.», «И.»).
 _END_OF_SENTENCE = re.compile(r"[^\W\d_]{2,}[.!?…]+[»\"')]*\s*$")
+# Первый кусок можно отрезать и по запятой, если до неё набралось столько символов.
+_MIN_CLAUSE_CHUNK = 20
 # Расшифровка затихла на законченном предложении — дальше не ждём (см. _receive_audio).
 _FISH_SENTENCE_IDLE_SEC = float(os.getenv("JARVIS_SENTENCE_IDLE_MS", "250")) / 1000
 
@@ -692,6 +694,12 @@ def _take_speakable(buf: str, first: bool, final: bool, force: bool = False) -> 
                     if len(buf[:m.end()].strip()) >= floor), None)
         if cut is None and buf.strip() and _END_OF_SENTENCE.search(buf) and (force or len(buf.strip()) >= floor):
             cut = len(buf)
+        if cut is None and first and not chunks:
+            # Длинное первое предложение ждало своей точки целиком. Первый звук
+            # важнее интонации одной запятой: «Включаю плейлист для учёбы, …»
+            # уходит в озвучку по запятой, остальное догоняет.
+            cut = next((m.end() for m in re.finditer(r"[,;:—–]+(?=\s)", buf)
+                        if len(buf[:m.end()].strip()) >= _MIN_CLAUSE_CHUNK), None)
         if cut is None:
             break
         chunks.append(buf[:cut].strip())
@@ -3505,6 +3513,7 @@ class Jarvis:
             if addressed and get_voice_provider() == "fish":
                 chunks, fish_text = _take_speakable(fish_text, fish_q is None, final, force)
                 if chunks and fish_q is None:
+                    self._latency.mark("в озвучку")
                     self._drop_pending_speech()   # один голос за раз
                     fish_q = asyncio.Queue()
                     self._fish_task = self._spawn(self._fish_worker(fish_q))
@@ -3614,6 +3623,7 @@ class Jarvis:
 
                     if response.data and not quick_try():
                         answered = True
+                        self._latency.mark("gemini-звук")
                         if self._turn_done_event and self._turn_done_event.is_set():
                             self._turn_done_event.clear()
                         if addressed is None:
@@ -3631,6 +3641,7 @@ class Jarvis:
                         if (sc.output_transcription and sc.output_transcription.text
                                 and not quick_try()):
                             answered = True
+                            self._latency.mark("текст")
                             out_buf.append(sc.output_transcription.text)
                             fish_text += sc.output_transcription.text
                             if addressed is None:

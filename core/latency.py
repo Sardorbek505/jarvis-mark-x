@@ -90,6 +90,7 @@ class LatencyTracker:
         self._played: float | None = None
         self._tool_ms = 0
         self._tool_names: list[str] = []
+        self._marks: dict[str, float] = {}
         self._stats = {
             "heard": _Stat("слышит"),
             "answered": _Stat("отвечает"),
@@ -127,6 +128,13 @@ class LatencyTracker:
             return
         self._played = time.perf_counter()
 
+    def mark(self, name: str) -> None:
+        """Промежуточный этап хода (первый раз): «gemini-звук», «текст», «в озвучку».
+        В строке замера видно, какой этап съел время, а не только итог."""
+        if not self.enabled or self._last_frame is None or name in self._marks:
+            return
+        self._marks[name] = time.perf_counter()
+
     def add_tool(self, name: str, elapsed_ms: int) -> None:
         """Инструмент отработал внутри хода — его время объясняет паузу."""
         if not self.enabled:
@@ -153,7 +161,7 @@ class LatencyTracker:
 
     def _report(self) -> None:
         base = self._last_frame
-        parts = []
+        points = []
         for key, when in (
             ("heard", self._heard),
             ("answered", self._answered),
@@ -161,9 +169,11 @@ class LatencyTracker:
         ):
             if when is None:
                 continue
-            value = _ms(base, when)
-            self._stats[key].add(value)
-            parts.append(f"{self._stats[key].name} {value}мс")
+            self._stats[key].add(_ms(base, when))
+            points.append((when, self._stats[key].name))
+        # этапы хода по времени: где именно ушли секунды
+        points += [(when, name) for name, when in self._marks.items()]
+        parts = [f"{name} {_ms(base, when)}мс" for when, name in sorted(points)]
 
         if not parts:
             return
@@ -186,6 +196,7 @@ class LatencyTracker:
         self._played = None
         self._tool_ms = 0
         self._tool_names = []
+        self._marks = {}
 
     # ── итог за сессию ────────────────────────────────────────────────────────
 

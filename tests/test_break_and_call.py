@@ -646,3 +646,31 @@ def test_call_logs_reply_delay_and_send_lateness():
     assert len(sess.reply_delays) == 1 and 0 <= sess.reply_delays[0] < 1
     stats = sess.audio_stats()
     assert "ответ через: медиана" in stats and "опоздание отправки звука" in stats
+
+
+def test_call_logs_when_jarvis_starts_speaking(caplog):
+    """«В звонке он вообще не говорит» — теперь в журнале видно, заговорил ли
+    Джарвис и через сколько после ответа."""
+    import logging
+    tg = FakeTg()
+    speech = sine(24000, 0.2).tobytes()
+    sess = tc.CallSession(tg, FakeLive([Msg(speech), Msg(end=True)]), 42, "x", max_sec=5)
+    with caplog.at_level(logging.INFO, logger="core.tg_call"):
+        asyncio.run(sess.run())
+    assert sess.first_voice_sec > 0 and sess.gemini_msgs >= 2
+    assert "Gemini на связи через" in caplog.text and "Джарвис заговорил через" in caplog.text
+
+
+def test_call_gemini_connect_failure_is_logged_and_hung_up(caplog):
+    """Трубку взяли, Gemini не подключился — раньше человек слышал тишину без причины в журнале."""
+    import logging
+
+    class Broken(FakeLive):
+        async def __aenter__(self):
+            raise ConnectionError("1008 quota")
+    tg = FakeTg()
+    sess = tc.CallSession(tg, Broken([]), 42, "x", max_sec=5)
+    with caplog.at_level(logging.INFO, logger="core.tg_call"), pytest.raises(ConnectionError):
+        asyncio.run(sess.run())
+    assert "Gemini не подключился — ConnectionError: 1008 quota" in caplog.text
+    assert tg.hung                                              # трубку положили, а не молчим
