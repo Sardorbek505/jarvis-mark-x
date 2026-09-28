@@ -30,7 +30,10 @@ git clone -q --depth 1 -b %BRANCH% https://github.com/Sardorbek505/jarvis-mark-x
 pushd "%DIR%"
 
 git checkout -q --orphan deploy
-git rm -r -q --cached --ignore-unmatch app.ico assets face.png telegram_bot/miniapp/favicon.ico *.zip
+rem Папки с картинками и шрифтами целиком: Space отклоняет бинарные файлы
+rem больше мегабайта. Добавили новую папку с артом — впишите её сюда, иначе
+rem push упадёт с «Your push was rejected because it contains binary files».
+git rm -r -q --cached --ignore-unmatch app.ico assets design face.png telegram_bot/miniapp/favicon.ico *.zip
 git -c user.name=deploy -c user.email=deploy@localhost commit -q -m "deploy %BRANCH%" || goto :fail_pop
 
 echo Отправляю на Hugging Face...
