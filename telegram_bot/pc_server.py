@@ -489,6 +489,8 @@ def _do_unlock() -> dict:
 
 def _launch_jarvis() -> dict:
     """Start the desktop JARVIS GUI (main.py) on this PC, in the user's session."""
+    if _EMBEDDED:
+        return _r("🤖 Десктопный JARVIS уже запущен на ПК.")        # мост живёт внутри него
     import subprocess
     base = Path(__file__).resolve().parent.parent
     main_py = base / "main.py"
@@ -794,6 +796,49 @@ def _lost_time(started_wall: float, started_mono: float) -> tuple[str, float]:
     if mono >= _OPEN_TIMEOUT_SEC + _FROZEN_SEC:
         return "заморозка", mono
     return "", 0.0
+
+
+# Мост работает внутри самого Джарвиса (JARVIS.exe), а не отдельным процессом.
+_EMBEDDED = False
+
+
+def start_in_background(cfg=None):
+    """Мост «ПК ↔ сервер бота» в фоновом потоке голосового Джарвиса.
+
+    Раньше мост был только отдельным процессом (scripts/start_pc.bat, автозапуск,
+    сторож) из папки с исходниками. Установщик ставит один JARVIS.exe — моста в
+    нём не было, и Mini App показывал «ПК офлайн» при включённом ПК и работающем
+    Джарвисе. Теперь мост поднимается вместе с Джарвисом.
+
+    Отдельный клиент уже запущен (старая схема) — второй не поднимаем: тот же
+    замок-порт, что у отдельного процесса. → поток или None."""
+    global _EMBEDDED
+    import threading
+
+    if cfg is None:
+        from telegram_bot.config import load as load_config
+        cfg = load_config(require_bot=False)
+    if not cfg.pc_link_url or not cfg.pc_link_token:
+        logger.info("Связь с телефоном выключена: не заданы адрес сервера бота и секрет связи "
+                    "(«Ключи» → «Связь бота с этим ПК»).")
+        return None
+    lock = _claim_singleton()
+    if lock is None:
+        logger.info("Мост с телефоном уже работает отдельным процессом — второй не поднимаю.")
+        return None
+    _EMBEDDED = True
+
+    def run():
+        try:
+            asyncio.run(run_client(cfg.pc_link_url, cfg.pc_link_token))
+        except Exception:
+            logger.exception("Мост с телефоном остановился")
+        finally:
+            lock.close()
+
+    t = threading.Thread(target=run, daemon=True, name="pc-link")
+    t.start()
+    return t
 
 
 async def run_client(url: str, token: str):
