@@ -59,7 +59,7 @@ const C={blue:'#024ED8',yellow:'#FFD934',green:'#00AB4C',pink:'#FF9AC4',red:'#E4
    ui.JarvisUI, снятые promo/capture/capture.py (шар, карточки, капсула,
    страницы). Вырезки крупным планом — из тех же живых кадров.
    ========================================================================= */
-const DURATION=25.5, FPS=30;
+const DURATION=27.2, FPS=30;
 const A=window.ASSETS;
 const CARD_X=1234, CARD_Y=142, FRAME_W=1920, FRAME_H=1200;
 
@@ -90,8 +90,8 @@ function laptop(parent){
   const el=add(parent,`<div class="laptop"><div class="lid"><span class="cam"></span><div class="scr"><img></div><div class="glare"></div></div><div class="base"><span class="notch"></span></div></div>`);
   el.img=el.querySelector('.scr img');return el}
 /* вырезка прямоугольника rect=[x,y,w,h] кадра, ширина на сцене dw */
-function lens(parent,dw,rect){const el=add(parent,`<div class="lens"><img></div>`);el.img=el.querySelector('img');el.set=r=>{
-    const k=dw/r[2];el.style.width=dw+'px';el.style.height=r[3]*k+'px';el.style.left=(270-dw/2)+'px';el.style.top=(480-r[3]*k/2)+'px';
+function lens(parent,dw0,rect){const el=add(parent,`<div class="lens"><img></div>`);el.img=el.querySelector('img');el.set=(r,dw1)=>{
+    const dw=dw1||dw0,k=dw/r[2];el.style.width=dw+'px';el.style.height=r[3]*k+'px';el.style.left=(270-dw/2)+'px';el.style.top=(480-r[3]*k/2)+'px';
     Object.assign(el.img.style,{width:FRAME_W*k+'px',height:FRAME_H*k+'px',left:-r[0]*k+'px',top:-r[1]*k+'px'})};
   if(rect)el.set(rect);return el}
 const cardRect=name=>[CARD_X,CARD_Y,A.cards[name][0],A.cards[name][1]];
@@ -194,13 +194,15 @@ scene(6.0,6.0+BEATS.length*BEAT,root=>{
     const cp=prog(lt,.06,.26);tf(card,{x:70,y:lerp(170,40,E.back(cp)),z:120,s:lerp(.5,1,E.back(cp)),rz:lerp(-4,-1.5,cp),o:clamp(cp*4)});};
 });
 
-/* E · «Всё в одном окне»: живые страницы приложения (10.95 – 15.35) */
+/* E · «Всё в одном окне»: живые страницы приложения (10.95 – 17.05) */
 const PAGES=[
-  {seq:'tour',from:0,speed:2.6,dur:1.2,bg:'#fff',label:'Команды · Учёба · Футбол · Контакты',lens:null},
-  {seq:'page_study',from:26,speed:1,dur:1.1,bg:C.blue,label:'Учёба: пары и дедлайны',lens:[150,160,1760,470]},
-  {seq:'page_commands',from:12,speed:1.2,dur:1.1,bg:C.yellow,label:'Свои команды: фраза → шаги',lens:[570,170,1340,700]},
-  {seq:'page_contacts',from:22,speed:1.3,dur:1.0,bg:C.pink,label:'Контакты: «напиши маме»',lens:[100,330,1100,420]}];
-scene(10.95,15.35,root=>{
+  {seq:'tour',from:0,speed:2.6,dur:1.0,bg:'#fff',label:'Команды · Учёба · Футбол · Контакты',lens:null},
+  {seq:'dialog',from:4,speed:1.3,dur:1.2,bg:C.green,label:'Диалог: вся история разговора',lens:[1330,72,570,700],lw:250,lx:125,cx:-125},
+  {seq:'page_study',from:26,speed:1,dur:1.0,bg:C.blue,label:'Учёба: пары и дедлайны',lens:[150,160,1760,470]},
+  {seq:'page_commands',from:12,speed:1.2,dur:1.0,bg:C.yellow,label:'Свои команды: фраза → шаги',lens:[570,170,1340,700]},
+  {seq:'page_football',from:0,speed:1.3,dur:1.0,bg:C.red,label:'Футбол: живой счёт и новости',lens:[410,180,1220,320]},
+  {seq:'page_contacts',from:22,speed:1.3,dur:0.9,bg:C.pink,label:'Контакты: «напиши маме»',lens:[100,330,1100,420]}];
+scene(10.95,17.05,root=>{
   const hl=headline(root,'Всё в одном','окне');
   const lap=laptop(root);
   const zoom=lens(root,460,[0,0,100,100]);
@@ -209,23 +211,23 @@ scene(10.95,15.35,root=>{
   return t=>{
     let pi=0;for(let i=0;i<PAGES.length;i++)if(t>=starts[i])pi=i;
     const p=PAGES[pi],lt=t-starts[pi];stage.style.background=p.bg;
-    hl.el.style.display=pi>0?'block':'none';hl.update(t,[1.2,1.45,1.7],onBg(p.bg),hiOn(p.bg));
+    hl.el.style.display=pi>0?'block':'none';hl.update(t,[1.0,1.25,1.5],onBg(p.bg),hiOn(p.bg));
     const f=p.from+lt*FPS*p.speed;setSrc(lap.img,frameUrl(p.seq,f));
     const L=pi===0?kf(lt,[[0,{s:.8,y:40,rx:12,ry:-24,rz:4}],[1.2,{s:1.05,y:30,rx:6,ry:-6,rz:1}]])
                   :{s:1.04*(1+.04*(1-E.out(prog(lt,0,.18)))),y:250,rx:4,ry:lerp(6,-6,lt),rz:0};
     tf(lap,L);
     chips.forEach((c,i)=>c.style.display=i===pi?'flex':'none');
-    const cp=prog(lt,0,.16);tf(chips[pi],{y:(pi===0?-230:40)+lerp(16,0,E.back(cp)),s:lerp(.7,1,E.back(cp))});
+    const cp=prog(lt,0,.16);tf(chips[pi],{x:p.cx||0,y:(pi===0?-230:40)+lerp(16,0,E.back(cp)),s:lerp(.7,1,E.back(cp))});
     zoom.style.display=p.lens?'block':'none';
-    if(p.lens){zoom.set(p.lens);setSrc(zoom.img,frameUrl(p.seq,f));
-      const zp=prog(lt,.08,.34);tf(zoom,{y:lerp(160,-100,E.back(zp)),z:120,s:lerp(.5,1,E.back(zp)),rz:lerp(3,1,zp),o:clamp(zp*4)});}
+    if(p.lens){zoom.set(p.lens,p.lw);setSrc(zoom.img,frameUrl(p.seq,f));
+      const zp=prog(lt,.08,.34);tf(zoom,{x:p.lx||0,y:lerp(160,p.lw?-60:-100,E.back(zp)),z:120,s:lerp(.5,1,E.back(zp)),rz:lerp(3,1,zp),o:clamp(zp*4)});}
   };
 });
 
-/* F · капсула: окно свёрнуто — Джарвис рядом (15.35 – 18.85) */
+/* F · капсула: окно свёрнуто — Джарвис рядом (17.05 – 20.55) */
 const ISLW=[780,600,560,720];
 const ISL=[['island_listen','Слушает',C.blue,0],['island_reply','Отвечает',C.pink,4],['island_music','Что играет',C.yellow,0],['island_match','Счёт матча',C.green,30]];
-scene(15.35,18.85,root=>{
+scene(17.05,20.55,root=>{
   const hl=headline(root,'Свернул окно?','Я рядом.');
   const box=add(root,`<div class="abs" style="left:50%;top:430px;width:600px;margin-left:-300px"><img style="width:100%;display:block"></div>`);
   const im=box.querySelector('img');
@@ -241,11 +243,11 @@ scene(15.35,18.85,root=>{
     tf(chips[i],{y:180+lerp(16,0,E.back(prog(lt,0,.15)))});};
 });
 
-/* G · 38 навыков — все из main.py (18.85 – 21.85) */
+/* G · 38 навыков — все из main.py (20.55 – 23.55) */
 const SKILLS=[['Погода','weather'],['Музыка','music'],['YouTube','yt'],['Фильмы','film'],['Окна','win'],['Файлы','folder'],['Перевод','globe'],
   ['Зрение','eye'],['Память','brain'],['Obsidian','books'],['Календарь','cal'],['Будильник','alarm'],['Перерывы','cup'],['Футбол','ball'],
   ['Звонки','phone'],['Telegram','plane'],['Свои команды','cmd'],['Голос из фильма','voice'],['Громкость','vol'],['Учёба','bulb']];
-scene(18.85,21.85,root=>{
+scene(20.55,23.55,root=>{
   const cols=[[C.blue,'#fff'],['#fff',C.ink],[C.pink,C.ink],[C.yellow,C.ink],[C.red,'#fff'],[C.ink,'#fff'],[C.green,'#fff']];
   const pills=SKILLS.map(([t,ic],i)=>{const [bg,fg]=cols[i%cols.length];
     const e=add(root,`<div class="pill" style="background:${bg};color:${fg};${bg===C.ink?`box-shadow:0 0 0 3px ${C.mint}`:''}">${I[ic]()}${t}</div>`);
@@ -260,8 +262,8 @@ scene(18.85,21.85,root=>{
     const bp=prog(t,2.0,2.35);tf(big,{s:lerp(.5,1,E.back(bp))*(1+.08*prog(t,2.35,3)),rz:lerp(-3,0,E.out(bp)),o:bp>0?1:0});};
 });
 
-/* H · финал: настоящая иконка, Windows, свой бесплатный ключ (21.85 – 25.5) */
-scene(21.85,25.5,root=>{
+/* H · финал: настоящая иконка, Windows, свой бесплатный ключ (23.55 – 27.2) */
+scene(23.55,27.2,root=>{
   const g=add(root,`<div class="abs" style="left:0;right:0;top:330px;display:flex;flex-direction:column;align-items:center">
     <img class="ic" src="../assets/art/icon/icon_1024.png" style="width:170px;height:170px;border-radius:40px;box-shadow:0 24px 40px -18px rgba(0,0,0,.5)">
     <div class="t1" style="margin-top:26px;font-weight:800;font-size:56px;letter-spacing:-2px;color:#fff;line-height:1">JARVIS <span style="font-weight:600;font-size:30px;letter-spacing:0">Mark X</span></div>

@@ -37,7 +37,7 @@ def main():
     cards = {}
     (BUILD / "cards").mkdir(exist_ok=True)
     for name, n in manifest.items():
-        if name.startswith(("page_", "island", "wake", "tour")):
+        if name.startswith(("page_", "island", "wake", "tour", "dialog")):
             continue
         im = Image.open(cap / name / f"{n - 1:04d}.jpg").convert("RGB")
         box = (CARD_X0, CARD_Y0, CARD_X1, card_bottom(im))

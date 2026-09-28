@@ -10,7 +10,7 @@ import wave
 from pathlib import Path
 
 SR = 44100
-DUR = 25.5
+DUR = 27.2
 BPM = 124
 BEAT = 60 / BPM
 N = int(SR * DUR)
@@ -124,7 +124,7 @@ ROOTS = [41, 45, 38, 46]
 
 K, CL, HC, HO = kick(), clap(), hat(), hat(True)
 beats = int(DUR / BEAT) + 1
-DROP_OUT = (21.4, 21.85)  # short break before the end card
+DROP_OUT = (23.1, 23.55)  # short break before the end card
 
 for b in range(beats):
     t = b * BEAT
@@ -150,12 +150,12 @@ for b in range(beats):
         add(L, R, t + off * BEAT, pluck([midi(m) for m in chord]), pan=(-0.2 if off else 0.2), gain=0.5 if not intro else 0.35)
 
 # whooshes on the big cuts + a riser into the end card
-for cut in (1.3, 3.4, 6.0, 10.95, 15.35, 18.85):
+for cut in (1.3, 3.4, 6.0, 10.95, 17.05, 20.55):
     add(L, R, cut - 0.3, whoosh(0.4), gain=0.35)
 add(L, R, DROP_OUT[0] - 0.2, whoosh(0.85), gain=0.55)
 # final hit + sustained chord on the logo
-add(L, R, 21.85, K, gain=1.0)
-add(L, R, 21.85, pluck([midi(m) for m in (53, 65, 69, 72, 77)], length=3.2, bright=0.25), gain=0.9)
+add(L, R, 23.55, K, gain=1.0)
+add(L, R, 23.55, pluck([midi(m) for m in (53, 65, 69, 72, 77)], length=3.2, bright=0.25), gain=0.9)
 
 # master: fade out, soft clip, normalize
 peak = 0.0
