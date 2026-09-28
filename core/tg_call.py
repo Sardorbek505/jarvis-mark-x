@@ -200,8 +200,9 @@ class CallSession:
     Обе подменяются в тестах."""
 
     def __init__(self, tg, live: Callable, peer, prompt: str, max_sec: float = MAX_CALL_SEC,
-                 log: Callable[[str], None] | None = None):
+                 log: Callable[[str], None] | None = None, callee: str = ""):
         self.tg, self.live, self.peer, self.prompt = tg, live, peer, prompt
+        self.callee = callee               # кому звоним; "" — хозяину («Вы не взяли трубку»)
         self.max_sec = max_sec
         self.log = log or (lambda s: logger.info("Звонок: %s", s))
         self.out = OutBuffer()
@@ -259,7 +260,10 @@ class CallSession:
         try:
             await self.tg.ring(self.peer)
         except Exception as exc:
-            return _ring_error(exc)
+            # Настоящая причина — в журнал: раньше она терялась, и «не дозвонился»
+            # нечем было объяснить.
+            logger.warning("Звонок %s не состоялся: %s: %s", self.callee or "хозяину", type(exc).__name__, exc)
+            return _ring_error(exc, self.callee)
         started = time.monotonic()
         self.log("взял трубку")
         try:
@@ -422,14 +426,18 @@ class CallSession:
             await asyncio.sleep(max(0.0, next_t - time.monotonic()))
 
 
-def _ring_error(exc: BaseException) -> str:
-    kind = type(exc).__name__
+def _ring_error(exc: BaseException, callee: str = "") -> str:
+    """Почему не дозвонились — про того, кому звонили (хозяину — «вы»)."""
+    kind, text = type(exc).__name__, str(exc)
     if kind in ("TimedOutAnswer", "TimeoutError"):
-        return "Вы не взяли трубку."
+        return (f"{callee} не взял трубку за {ANSWER_TIMEOUT} с." if callee else "Вы не взяли трубку.")
     if kind == "CallDeclined":
-        return "Вы сбросили звонок."
+        return f"{callee} сбросил звонок." if callee else "Вы сбросили звонок."
     if kind == "CallBusy":
-        return "Линия занята — вы на другом звонке."
+        return f"У {callee} занята линия." if callee else "Линия занята — вы на другом звонке."
+    if "PRIVACY" in text.upper():
+        return (f"{callee} не принимает звонки от этого аккаунта (настройки приватности Telegram)."
+                if callee else "Ваши настройки Telegram не пускают звонки от аккаунта Джарвиса.")
     return f"Не удалось позвонить: {kind}: {exc}"
 
 
@@ -531,8 +539,20 @@ class TgCall:
             await self.app._app.discard_call(chat_id, False)
 
 
-async def resolve_peer(client, target: str) -> int:
+def _same_phone(a: str, b: str) -> bool:
+    """Один номер в разных записях: «+7 777…», «8 777…», «7777…» — по последним 10 цифрам."""
+    da, db = re.sub(r"\D", "", a or ""), re.sub(r"\D", "", b or "")
+    return len(da) >= 9 and len(db) >= 9 and da[-10:] == db[-10:]
+
+
+async def resolve_peer(client, target: str, name: str = "Сэр") -> int:
     """@username, ссылка t.me, номер телефона или «id:123» → id пользователя.
+
+    Номер телефона: сначала ищем среди УЖЕ сохранённых контактов аккаунта и
+    ничего в них не меняем. Раньше номер всегда «импортировался» с именем
+    «Сэр» (писалось для звонка хозяину) — а звонок контакту идёт с ВАШЕГО
+    Telegram, и Telegram переименовывал вашего «Ибрагима» в «Сэр».
+    Добавляем в контакты, только если человека там нет, и под его именем.
 
     «id:…» — внутренний номер аккаунта (контакт, подтянутый из вашего
     Telegram). Раньше он шёл голыми цифрами и принимался за номер телефона:
@@ -557,8 +577,14 @@ async def resolve_peer(client, target: str) -> int:
     if digits.lstrip("+").isdigit() and len(digits.lstrip("+")) >= 9 and not t.startswith("@"):
         from telethon.tl.functions.contacts import ImportContactsRequest
         from telethon.tl.types import InputPhoneContact
+        from telethon.tl.functions.contacts import GetContactsRequest
         phone = digits if digits.startswith("+") else "+" + digits
-        res = await client(ImportContactsRequest([InputPhoneContact(0, phone, "Сэр", "")]))
+        saved = await client(GetContactsRequest(hash=0))
+        for u in getattr(saved, "users", None) or []:
+            if _same_phone(getattr(u, "phone", ""), phone):
+                return u.id                                  # уже в контактах — имя не трогаем
+        first, _, last = (name or "Контакт").strip().partition(" ")
+        res = await client(ImportContactsRequest([InputPhoneContact(0, phone, first, last)]))
         if not res.users:
             raise RuntimeError(f"в Telegram нет аккаунта с номером {phone} или он скрыт настройками")
         return res.users[0].id
@@ -599,7 +625,8 @@ async def _call_async(topic: str, context: str, log, target: str = "", prompt: s
     try:
         if not await client.is_user_authorized():
             return "Аккаунт Джарвиса для звонков вышел из сессии: запустите JARVIS.exe --caller-login."
-        peer = await resolve_peer(client, target or str(_keys().get("call_to", "")))
+        peer = await resolve_peer(client, target or str(_keys().get("call_to", "")),
+                                  name="Сэр" if who == "вам" else who)
         tg = TgCall(client)
         await tg.start()
         name = (_keys().get("user_name") or "сэр")
@@ -610,7 +637,7 @@ async def _call_async(topic: str, context: str, log, target: str = "", prompt: s
 
 async def _talk(tg, peer, prompt: str, log, transcript: list | None, who: str, topic: str) -> str:
     """Сам разговор — и запись в историю звонков, чем бы он ни кончился."""
-    sess = CallSession(tg, _gemini_live, peer, prompt, log=log)
+    sess = CallSession(tg, _gemini_live, peer, prompt, log=log, callee="" if who == "вам" else who)
     started, result = time.time(), "Звонок оборвался."
     try:
         result = await sess.run()
@@ -628,7 +655,7 @@ async def _talk(tg, peer, prompt: str, log, transcript: list | None, who: str, t
 async def _call_via(client, holder, target: str, prompt: str, log, transcript: list, who: str, topic: str) -> str:
     """Звонок с ВАШЕГО аккаунта (core/contacts.Me): ваши люди вас знают —
     приватность Telegram не мешает, и видно, что звоните вы."""
-    peer = await resolve_peer(client, target)
+    peer = await resolve_peer(client, target, name=who)
     tg = getattr(holder, "_tgcall", None)
     if tg is None or tg.client is not client:              # один py-tgcalls на клиента
         tg = TgCall(client)
@@ -692,7 +719,10 @@ def call_contact(target: str, contact: str, message: str, log=None, via=None) ->
     finally:
         _call_lock.release()
     said = _what_they_said(heard)
-    return result + (f" {contact} ответил: «{said}»." if said else " Ответа не расслышал.")
+    if said:
+        return result + f" {contact} ответил: «{said}»."
+    # не дозвонились — «ответа не расслышал» только путает: разговора не было
+    return result + (" Ответа не расслышал." if result.startswith("Поговорили") else "")
 
 
 def call_in_background(topic: str, context_fn: Callable[[], str] | None = None,
