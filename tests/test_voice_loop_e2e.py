@@ -935,3 +935,43 @@ async def test_включил_музыку_открывает_окно_попр�
     fc = SimpleNamespace(id="2", name="music_player", args={"action": "pause"})
     await j._run_tool_calls([fc], allowed=True)
     assert j._through_until == 0.0                               # пауза — не повод
+
+
+class _Music:
+    """Колонки играют музыку уровня level (как SpeakerMeter.recent)."""
+
+    def __init__(self, level=0.5):
+        self.peak = self.recent = level
+
+
+@pytest.mark.asyncio
+async def test_под_музыкой_эхо_не_уходит_а_голос_уходит(стенд, monkeypatch):
+    """Живой случай: под музыкой Джарвис не слышал речь, а стоило приглушить
+    колонки — сам слушал песню. Теперь: эхо колонок — нет, голос поверх — да."""
+    j = стенд.jarvis
+    j._speaker_meter = _Music(0.5)
+    j._mic_hears_speakers = True
+    ducks = []
+    import core.ducking_controller as dcm
+    monkeypatch.setattr(dcm, "_singleton", type("D", (), {"duck": lambda self, r="": ducks.append(r),
+                                                            "set_state": lambda self, s: None})())
+    echo = [_loud(400)] * 40                                           # сама музыка в микрофоне
+    session = await _прогнать(стенд, echo, _SPOKEN, timeout=1.5)
+    assert not _audio_sent(session) and j._echo.coupling() is not None and ducks == []
+    j._is_speaking, j._echo_guard_until = False, 0.0       # ответ из первого прогона доиграл
+    j._input_device = None                                  # микрофон уже выбран, заново не ищем
+    стенд.out.written.clear()                               # иначе прогон сразу «доиграл»
+    session = await _прогнать(стенд, [_loud(4000)] * 5, _SPOKEN, timeout=1.5)
+    assert _audio_sent(session), "голос поверх музыки не дошёл"
+    assert ducks, "голос поверх музыки должен приглушить музыку"
+
+
+@pytest.mark.asyncio
+async def test_без_музыки_речь_не_двигает_микшер(стенд, monkeypatch):
+    """Раньше каждое слово приглушало все программы в микшере, даже молчащие."""
+    ducks = []
+    import core.ducking_controller as dcm
+    monkeypatch.setattr(dcm, "_singleton", type("D", (), {"duck": lambda self, r="": ducks.append(r),
+                                                            "set_state": lambda self, s: None})())
+    session = await _прогнать(стенд, [_loud()] * 5, _SPOKEN, timeout=1.5)
+    assert _audio_sent(session) and ducks == []

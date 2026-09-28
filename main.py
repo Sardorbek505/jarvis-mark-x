@@ -261,12 +261,10 @@ _MIC_FULL_SCALE = float(os.getenv("JARVIS_LEVEL_SCALE", "4000"))
 # своя: по микрофонной волна упиралась бы в потолок на каждом слове.
 _SPEAK_FULL_SCALE = float(os.getenv("JARVIS_SPEAK_LEVEL_SCALE", "9000"))
 
-# Выше какого уровня в динамиках микрофон не слушаем.
-#
-# 0.08 — отсекает умеренно громкий звук в динамиках, не блокируя микрофон
-# при тихом фоновом шуме. Во время воспроизведения собственного ответа
-# Джарвиса микрофон глушится явно. MIC_IGNORE_SPEAKERS=0 отключает защиту.
-_SPEAKER_GATE = float(os.getenv("SPEAKER_GATE", "0.08"))
+# Звук из своих колонок отличается от голоса не порогом громкости колонок
+# (был SPEAKER_GATE=0.08 и замыкал круг с приглушением), а сравнением
+# микрофона с тем, что играет сейчас, — см. core/echo_gate.py.
+# MIC_IGNORE_SPEAKERS=0 отключает защиту.
 # Как часто рапортовать, что микрофон глух. Реже — можно не заметить, чаще —
 # спам: колбэк зовётся ~15 раз в секунду.
 _GATE_REPORT_SEC = float(os.getenv("MIC_GATE_REPORT_SEC", "5"))
@@ -341,6 +339,16 @@ _ECHO_TAIL_SEC = float(os.getenv("JARVIS_ECHO_TAIL_SEC", "0.5"))
 # не её, а …» терялось: заиграла музыка — гейт динамиков закрыл микрофон.
 _CORRECTION_SEC = float(os.getenv("JARVIS_CORRECTION_SEC", "8"))
 _MEDIA_TOOLS = {"music_player", "youtube_player", "movie_player"}
+# Пауза между слогами голоса поверх музыки — столько кадров ещё пропускаем.
+_VOICE_OVER_MUSIC_HOLD = 0.6
+
+
+def _frame_rms(indata) -> float:
+    try:
+        import numpy as np
+        return float(np.sqrt(np.mean(np.square(indata.astype(np.float32)))))
+    except Exception:
+        return 0.0
 
 # Потолок паузы между попытками подключения к Gemini.
 _RECONNECT_MAX_SEC = 30.0
@@ -1636,6 +1644,9 @@ class Jarvis:
         self._quick_lift = False     # system-реплика: снять глушение мгновенного хода
         self._echo_guard_until = 0.0  # см. _ECHO_TAIL_SEC
         self._through_until = 0.0     # «окно поправки»: слышим речь поверх музыки (_CORRECTION_SEC)
+        from core.echo_gate import EchoGate
+        self._echo = EchoGate()       # голос или эхо колонок (учится на ходу, помнит комнату)
+        self._voice_over_music_at = 0.0
         self._resume_handle: str | None = None  # возобновление сессии после разрыва
 
         # Новый мозг ДЖАРВИС
@@ -1871,7 +1882,7 @@ class Jarvis:
         self.ui.bring_to_front()
         try:
             from core.ducking_controller import ducking_controller
-            ducking_controller.duck()
+            ducking_controller.duck("горячая клавиша F8")
         except Exception:
             pass
 
@@ -2026,7 +2037,7 @@ class Jarvis:
         self._through_until = max(self._through_until, time.monotonic() + sec)
         try:
             from core.ducking_controller import ducking_controller
-            ducking_controller.duck()
+            ducking_controller.duck("окно поправки / позвали по имени")
         except Exception:
             pass
         try:
@@ -2802,7 +2813,7 @@ class Jarvis:
         except Exception as exc:
             logger.debug("Уровень в HUD не ушёл: %s", exc, exc_info=True)
 
-    def _is_loud_enough(self, indata, mult: float = 1.0) -> bool:
+    def _is_loud_enough(self, indata) -> bool:
         """Пропускать ли кадр в облако.
 
         Раньше в Gemini Live уходил КАЖДЫЙ кадр с микрофона, пока Джарвис не
@@ -2825,7 +2836,7 @@ class Jarvis:
         # int16, а громкость обычной речи в метре от ноутбука: масштабируя по
         # 32767, мы получили бы почти неподвижную полоску.
         self._push_level(min(1.0, rms / _MIC_FULL_SCALE))
-        if rms >= MIC_RMS_THRESHOLD * mult:
+        if rms >= MIC_RMS_THRESHOLD:
             self._quiet_frames = 0
             self._frame_was_loud = True
             return True
@@ -2906,27 +2917,45 @@ class Jarvis:
             # Громко играет музыка/кино из своих динамиков — в облако не шлём:
             # по громкости её от голоса не отличить (см. _IGNORE_SPEAKERS).
             # Слушаем только ключевое слово «Джарвис», чтобы приглушить звук.
-            music_loud = (self._speaker_meter is not None and getattr(self, "_mic_hears_speakers", True)
-                          and self._speaker_meter.peak > _SPEAKER_GATE)
-            through = time.monotonic() < self._through_until
-            if music_loud and not through:
-                # Раньше здесь звук просто выбрасывался — и пока открыто окно
-                # разговора, до «Джарвис» он не доходил тоже: под музыкой
-                # Джарвис глох до конца окна. Имя слушаем всегда.
-                if self._local_wake:
-                    self._wake_ring.append(pcm_bytes)
-                    self._local_wake.feed(pcm_bytes)
-                self._note_gate(
-                    f"звук в динамиках {self._speaker_meter.peak:.3f} > "
-                    f"порога {_SPEAKER_GATE}"
-                )
-                preroll.clear()
-                return
+            # Играет музыка / фильм из своих колонок. Раньше при громких колонках
+            # микрофон глушился целиком, а стоило их приглушить — музыка шла в
+            # Gemini как «речь» и снова приглушала себя (ползунки прыгали сами).
+            # Теперь кадр сравнивается с тем, что сейчас играет (core/echo_gate):
+            # голос заметно громче эха — пропускаем, эхо — нет.
+            meter = self._speaker_meter
+            level = float(getattr(meter, "recent", getattr(meter, "peak", 0.0))) if meter is not None else 0.0
+            music = (meter is not None and getattr(self, "_mic_hears_speakers", True)
+                     and self._echo.music(level))
+            if music:
+                rms = _frame_rms(indata)
+                self._echo.observe(rms, level)
+                now = time.monotonic()
+                through = now < self._through_until
+                if self._echo.coupling() is None:
+                    # Связь «колонки → микрофон» ещё не выучена: как раньше —
+                    # только в окне поправки и только заметно громче порога.
+                    voice = through and rms >= MIC_RMS_THRESHOLD * 2
+                else:
+                    voice = self._echo.is_voice(rms, level, MIC_RMS_THRESHOLD)
+                if voice:
+                    if now - self._voice_over_music_at > _VOICE_OVER_MUSIC_HOLD:
+                        logger.info("Голос поверх музыки (уровень %.2f, RMS %.0f) — приглушаю и слушаю",
+                                    level, rms)
+                    self._voice_over_music_at = now
+                    if not through:
+                        loop.call_soon_threadsafe(self._open_through, 3.0)
+                elif now - self._voice_over_music_at > _VOICE_OVER_MUSIC_HOLD:
+                    # Музыка, не голос. Имя слушаем всегда: раньше в открытом
+                    # окне разговора под музыкой не было слышно и «Джарвис».
+                    if self._local_wake:
+                        self._wake_ring.append(pcm_bytes)
+                        self._local_wake.feed(pcm_bytes)
+                    self._note_gate(f"играет звук {level:.2f} — это не голос")
+                    preroll.clear()
+                    return
 
             was_silent = getattr(self, "_quiet_frames", MIC_HANGOVER_FRAMES + 1) > MIC_HANGOVER_FRAMES
-            # В окне поправки поверх (приглушённой) музыки — порог вдвое выше:
-            # голос рядом с микрофоном громче музыки из колонок.
-            if not self._is_loud_enough(indata, 2.0 if music_loud else 1.0):
+            if not self._is_loud_enough(indata):
                 self._note_gate("тихо для порога MIC_RMS_THRESHOLD")
                 preroll.append(pcm_bytes)
                 return
@@ -2938,11 +2967,13 @@ class Jarvis:
                 # на подтверждении опасного сверяется просьба + «да».
                 self._voice_ring.append((time.monotonic(), pcm_bytes))
 
-            # Сбрасываем предбуфер (pre-roll) и плавно приглушаем музыку/кино при начале речи
-            if was_silent:
+            # Начало речи: приглушаем музыку — только если она правда играет.
+            # Раньше приглушение шло на любой звук, и ползунки всех программ
+            # в микшере прыгали от каждого слова и шороха.
+            if was_silent and music:
                 try:
                     from core.ducking_controller import ducking_controller
-                    ducking_controller.duck()
+                    ducking_controller.duck("голос поверх музыки")
                 except Exception:
                     pass
                 if preroll:
