@@ -1887,6 +1887,7 @@ class Jarvis:
 
         # Локальный Telegram-бот — только по JARVIS_AUTOSTART_BOT=1 (см. метод)
         self._telegram_proc = self._start_telegram_bot()
+        self._pc_link = self._start_pc_link()
         atexit.register(self.cleanup)
 
     def _on_hotkey_wake(self):
@@ -1906,6 +1907,19 @@ class Jarvis:
     def _on_hotkey_mute(self):
         """Реакция на глобальный хоткей Ctrl+Shift+M из любого приложения."""
         self.ui.toggle_mute()
+
+    def _start_pc_link(self):
+        """Связь с телефоном (Mini App «ПК-пульт», команды из Telegram) — внутри Джарвиса.
+        Без неё установленный JARVIS.exe был для телефона «офлайн» (мост жил только
+        отдельным процессом из папки с исходниками)."""
+        if os.getenv("JARVIS_PC_LINK", "1") == "0":
+            return None
+        try:
+            from telegram_bot import pc_server
+            return pc_server.start_in_background()
+        except Exception as exc:
+            logger.warning("Связь с телефоном не поднялась: %s", exc)
+            return None
 
     def _start_telegram_bot(self):
         """Запускает Telegram-бота в отдельном фоновом процессе при наличии токена."""

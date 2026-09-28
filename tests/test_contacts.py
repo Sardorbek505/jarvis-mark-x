@@ -189,6 +189,48 @@ def test_resolve_peer_by_account_id_not_as_phone():
         asyncio.run(tg_call.resolve_peer(Nobody([]), "id:555555555"))
 
 
+def _phone_client(saved):
+    class Client:
+        def __init__(self):
+            self.asked = []
+
+        async def __call__(self, req):
+            self.asked.append(req)
+            if type(req).__name__ == "GetContactsRequest":
+                return SimpleNamespace(users=saved)
+            return SimpleNamespace(users=[SimpleNamespace(id=777)])
+    return Client()
+
+
+def test_phone_of_saved_contact_is_not_renamed():
+    """Звонок с ВАШЕГО Telegram по номеру: раньше номер «импортировался» с именем
+    «Сэр» — Telegram переименовывал вашего «Ибрагима» в «Сэр»."""
+    from core import tg_call
+    c = _phone_client([SimpleNamespace(id=11, phone="77011234567"), SimpleNamespace(id=42, phone="998901112233")])
+    assert asyncio.run(tg_call.resolve_peer(c, "+998 90 111-22-33", name="Ибрагим")) == 42
+    assert [type(r).__name__ for r in c.asked] == ["GetContactsRequest"]       # ничего не импортировали
+    c = _phone_client([SimpleNamespace(id=11, phone="77011234567")])
+    assert asyncio.run(tg_call.resolve_peer(c, "8 701 123 45 67", name="Ибрагим")) == 11   # «8…» и «7…» — один номер
+
+
+def test_new_phone_is_saved_under_contact_name_not_sir():
+    from core import tg_call
+    c = _phone_client([])
+    assert asyncio.run(tg_call.resolve_peer(c, "+998901112233", name="Ибрагим Каримов")) == 777
+    imported = c.asked[-1].contacts[0]
+    assert (imported.first_name, imported.last_name) == ("Ибрагим", "Каримов")
+
+
+def test_ring_errors_speak_about_callee():
+    from core import tg_call
+    TimedOutAnswer = type("TimedOutAnswer", (Exception,), {})
+    CallDeclined = type("CallDeclined", (Exception,), {})
+    assert tg_call._ring_error(TimedOutAnswer(), "Ибрагим").startswith("Ибрагим не взял трубку")
+    assert tg_call._ring_error(TimedOutAnswer()) == "Вы не взяли трубку."
+    assert tg_call._ring_error(CallDeclined(), "Ибрагим") == "Ибрагим сбросил звонок."
+    assert "приватности" in tg_call._ring_error(RuntimeError("USER_PRIVACY_RESTRICTED"), "Ибрагим")
+
+
 def test_what_they_said_from_transcript():
     from core import tg_call
     assert tg_call._what_they_said(["Джарвис: Здравствуйте", "Вы: Привет", "Вы: иду уже", "Джарвис: Хорошо"]) == \

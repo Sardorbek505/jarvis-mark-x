@@ -84,6 +84,7 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     import core.macros as macros_mod
     monkeypatch.setenv("JARVIS_MACROS", str(d / "macros.json"))
     monkeypatch.setenv("JARVIS_SETTINGS", str(d / "settings.json"))
+    monkeypatch.setenv("JARVIS_PC_LINK", "0")   # тесты не звонят на сервер бота
     monkeypatch.setattr(macros_mod, "_macros", None)
     monkeypatch.setattr(mm, "_MEMORY_FILE", d / "data.json")
     monkeypatch.setattr(conv, "DIALOG_FILE", d / "dialog.jsonl")

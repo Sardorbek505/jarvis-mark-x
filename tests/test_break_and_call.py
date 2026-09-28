@@ -596,8 +596,8 @@ def test_contact_call_goes_through_your_telegram(monkeypatch):
         async def start(self):
             pass
 
-    async def peer(client, target):
-        assert target == "id:22"
+    async def peer(client, target, name=""):
+        assert target == "id:22" and name == "Азиз"
         return 22
     speech = sine(24000, 0.2).tobytes()
     monkeypatch.setattr(tc, "TgCall", Tg)
