@@ -4,6 +4,7 @@
 стороны с пересэмплированием, перебивание, end_call → отбой, «не взял
 трубку». Настоящий звонок здесь не сделать — нужен второй аккаунт."""
 import asyncio
+import json
 import time
 from datetime import datetime
 
@@ -275,6 +276,31 @@ def test_schedule_once_and_daily(tmp_path):
     assert s.due(datetime(2026, 9, 27, 7, 40)) == []                  # опоздание больше 5 мин
     assert [i["topic"] for i in tc.Schedule(str(tmp_path / "calls.json")).due(datetime(2026, 9, 28, 7, 30))] == ["подъём"]
     assert "07:30" in s.describe() and s.cancel("07:30") == 1 and s.describe() == "Звонков по расписанию нет."
+
+
+def test_расписание_не_путает_себя_с_журналом_звонков(tmp_path, monkeypatch):
+    """Живой баг 28.09: расписание читало calls.json — журнал разговоров.
+
+    json.load давал объект, list() превращал его в список ключей-строк, и
+    due() падал каждые 20 с: «string indices must be integers, not 'str'».
+    """
+    # Arrange — файл журнала разговоров (core/call_log.py), а не расписания
+    log_shaped = tmp_path / "calls.json"
+    log_shaped.write_text(json.dumps({"version": 1, "calls": [{"id": "a", "who": "Ибрахим"}]}),
+                          encoding="utf-8")
+
+    # Act
+    s = tc.Schedule(str(log_shaped))
+
+    # Assert — чужой файл не стал расписанием, и проверка времени не падает
+    assert s.items == []
+    assert s.due(datetime(2026, 9, 28, 7, 30)) == []
+
+    # И у расписания теперь свой файл, так что затирать журнал больше нечем
+    import core.paths as paths_mod
+    monkeypatch.setattr(paths_mod, "get_data_root", lambda: tmp_path)
+    monkeypatch.setattr(tc, "_schedule", None)
+    assert tc.schedule().path.endswith("call_schedule.json")
 
 
 def test_morning_topic_reads_briefing():

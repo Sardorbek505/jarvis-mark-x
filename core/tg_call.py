@@ -979,7 +979,11 @@ class Schedule:
             try:
                 import json
                 with open(path, encoding="utf-8") as f:
-                    self.items = list(json.load(f))
+                    data = json.load(f)
+                # Только список словарей. list() по объекту вернул бы его ключи
+                # строками, и due() падал на it["time"] с «string indices must
+                # be integers», а add() затёр бы чужой файл своим списком.
+                self.items = [i for i in data if isinstance(i, dict)] if isinstance(data, list) else []
             except Exception as exc:
                 logger.warning("Расписание звонков: %s", exc)
 
@@ -1057,7 +1061,8 @@ def schedule() -> Schedule:
     if _schedule is None:
         try:
             from core.paths import get_data_root
-            path = os.path.join(str(get_data_root()), "calls.json")
+            # Не calls.json: там журнал разговоров (core/call_log.py).
+            path = os.path.join(str(get_data_root()), "call_schedule.json")
         except Exception:
             path = None
         _schedule = Schedule(path)
