@@ -24,6 +24,7 @@
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -832,3 +833,105 @@ async def test_готовая_фраза_звучит_из_кэша(стенд, 
     await j._speak_fish("Есть, сэр.")
     assert поддельный_fish == ["Есть, сэр."]
     assert j.audio_in_queue.qsize() >= 2
+
+
+# ─── Поправки и перебивания ───────────────────────────────────────────────────
+# Живой случай владельца: «поставь музыку Люби меня… нет-нет, не её, а …» —
+# музыка заиграла, гейт динамиков закрыл микрофон, и поправка не дошла; а пока
+# открыто окно разговора, под музыкой не слышно было даже «Джарвис».
+
+class _Ears:
+    """Локальный детектор имени: запоминает, что ему дали послушать."""
+
+    def __init__(self):
+        self.fed = 0
+
+    def feed(self, pcm):
+        self.fed += 1
+
+
+async def _idle_play(*_a, **_k):
+    while True:
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_в_окне_поправки_речь_доходит_поверх_музыки(стенд):
+    j = стенд.jarvis
+    j._speaker_meter = _LoudSpeakers()
+    j._mic_hears_speakers = True
+    j._through_until = time.monotonic() + 8           # только что включили музыку
+    session = await _прогнать(стенд, [_loud()] * 5, _SPOKEN, timeout=2.0)
+    assert _audio_sent(session), "поправка не дошла до Gemini"
+
+
+@pytest.mark.asyncio
+async def test_в_окне_поправки_тихая_музыка_не_уходит(стенд):
+    """Порог поверх музыки вдвое выше: приглушённая музыка в облако не едет."""
+    j = стенд.jarvis
+    j._speaker_meter = _LoudSpeakers()
+    j._mic_hears_speakers = True
+    j._through_until = time.monotonic() + 8
+    thr = jarvis_main.MIC_RMS_THRESHOLD
+    session = await _прогнать(стенд, [_loud(int(thr * 1.5))] * 5, _SPOKEN, timeout=2.0)
+    assert not _audio_sent(session)
+
+
+@pytest.mark.asyncio
+async def test_под_музыкой_имя_слышно_и_в_окне_разговора(стенд):
+    j = стенд.jarvis
+    j._speaker_meter = _LoudSpeakers()
+    j._mic_hears_speakers = True
+    j._local_wake = ears = _Ears()
+    session = await _прогнать(стенд, [_loud()] * 5, _SPOKEN, timeout=2.0)
+    assert not _audio_sent(session) and ears.fed == 5       # в облако нет, «Джарвис» — слушаем
+
+
+@pytest.mark.asyncio
+async def test_пока_говорит_на_колонках_имя_слышно(стенд):
+    j = стенд.jarvis
+    j._mic_hears_speakers = True
+    j._local_wake = ears = _Ears()
+    j._is_speaking = True
+    j._play_audio = _idle_play
+    session = await _прогнать(стенд, [_loud()] * 4, _SPOKEN, timeout=1.0)
+    assert not _audio_sent(session) and ears.fed == 4
+
+
+@pytest.mark.asyncio
+async def test_в_наушниках_можно_перебить_обычной_речью(стенд):
+    j = стенд.jarvis
+    j._mic_hears_speakers = False                      # гарнитура: свой голос не слышит
+    j._is_speaking = True
+    j._play_audio = _idle_play
+    session = await _прогнать(стенд, [_loud()] * 4, _SPOKEN, timeout=1.0)
+    assert _audio_sent(session), "перебить речью в наушниках не вышло"
+
+
+def test_имя_во_время_ответа_обрывает_его(стенд):
+    j = стенд.jarvis
+    j.audio_in_queue = asyncio.Queue()
+    for _ in range(3):
+        j.audio_in_queue.put_nowait(b"\x01\x02")
+    j._is_speaking = True
+    sent = []
+    j._on_local_wake(sent.append)
+    assert j.audio_in_queue.empty() and not j._is_speaking      # замолчал, хвост выброшен
+    assert j.is_awake() and j._through_until > time.monotonic()  # слушает, звук приглушён
+
+
+@pytest.mark.asyncio
+async def test_включил_музыку_открывает_окно_поправки(стенд, monkeypatch):
+    j = стенд.jarvis
+    j.session = _ToolSession([])
+
+    async def run(fc):
+        return jarvis_main.types.FunctionResponse(id=fc.id, name=fc.name, response={"result": "Играет."})
+    monkeypatch.setattr(j, "_execute_tool", run)
+    fc = SimpleNamespace(id="1", name="music_player", args={"action": "play", "query": "Люби меня"})
+    await j._run_tool_calls([fc], allowed=True)
+    assert j._through_until > time.monotonic() + 5
+    j._through_until = 0.0
+    fc = SimpleNamespace(id="2", name="music_player", args={"action": "pause"})
+    await j._run_tool_calls([fc], allowed=True)
+    assert j._through_until == 0.0                               # пауза — не повод
