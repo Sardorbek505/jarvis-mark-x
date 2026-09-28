@@ -359,6 +359,9 @@ _SESSION_HEALTHY_SEC = 10.0
 _MIC_STALL_SEC = 2.0
 # Fish ждёт следующий кусок ответа не дольше этого (см. _fish_worker).
 _FISH_IDLE_SEC = 20.0
+# Fish недавно ответил — следующие куски синтезируются сразу, без «пробы»
+# первым куском (иначе второе предложение ждало первое, и между ними — пауза).
+_FISH_TRUST_SEC = 300.0
 
 # Мгновенные ответы (core/quick.py): сколько после своего ответа глушить
 # запоздалую речь Gemini на ту же команду, если пользователь молчит.
@@ -661,7 +664,14 @@ def _split_for_speech(text: str) -> list[str]:
     return chunks
 
 
-def _take_speakable(buf: str, first: bool, final: bool) -> tuple[list[str], str]:
+# Конец предложения в самом конце расшифровки: «…, сэр.» — не цифра («2.» → «2.5»)
+# и не однобуквенное сокращение («г.», «И.»).
+_END_OF_SENTENCE = re.compile(r"[^\W\d_]{2,}[.!?…]+[»\"')]*\s*$")
+# Расшифровка затихла на законченном предложении — дальше не ждём (см. _receive_audio).
+_FISH_SENTENCE_IDLE_SEC = float(os.getenv("JARVIS_SENTENCE_IDLE_MS", "250")) / 1000
+
+
+def _take_speakable(buf: str, first: bool, final: bool, force: bool = False) -> tuple[list[str], str]:
     """Отрезает от потоковой расшифровки ответа готовые к синтезу куски.
 
     Fish раньше получал ответ только по turn_complete — а тот приходит на
@@ -669,12 +679,19 @@ def _take_speakable(buf: str, first: bool, final: bool) -> tuple[list[str], str]
     модель «проговаривает» весь ответ, прежде чем закрыть ход. Эти секунды
     Джарвис молчал. Теперь предложение уходит в синтез, как только в
     расшифровке появилась его точка. Пороги те же, что у _split_for_speech.
+
+    Точка в самом конце расшифровки тоже конец: раньше резали только по
+    «точка + пробел», и ПОСЛЕДНЕЕ предложение (а у Джарвиса ответ чаще всего
+    из одного: «Включаю, сэр.») ждало turn_complete — те самые 4-5 секунд.
+    force — расшифровка затихла: законченное предложение отдаём и короче порога.
     """
     chunks: list[str] = []
     while True:
         floor = _MIN_FIRST_CHUNK if first and not chunks else _MIN_SPEECH_CHUNK
         cut = next((m.end() for m in re.finditer(r"[.!?…]+(?=\s)", buf)
                     if len(buf[:m.end()].strip()) >= floor), None)
+        if cut is None and buf.strip() and _END_OF_SENTENCE.search(buf) and (force or len(buf.strip()) >= floor):
+            cut = len(buf)
         if cut is None:
             break
         chunks.append(buf[:cut].strip())
@@ -3066,6 +3083,9 @@ class Jarvis:
             # сервис каждый со своим таймаутом.
             fish_alive = tts_fish.is_configured()
             probe: asyncio.Future | None = None
+            if fish_alive and time.monotonic() - getattr(self, "_fish_ok_at", -1e9) < _FISH_TRUST_SEC:
+                probe = asyncio.get_running_loop().create_future()      # проба не нужна — Fish жив
+                probe.set_result(None)
 
             cache = quick.voice_cache()
 
@@ -3096,8 +3116,11 @@ class Jarvis:
                     pcm = None
                     try:
                         pcm = await tts_fish.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+                        if pcm:
+                            self._fish_ok_at = time.monotonic()
                     finally:
                         if not pcm and fish_alive:
+                            self._fish_ok_at = -1e9
                             fish_alive = False
                             self.ui.write_log("SYS: Fish молчит — остаток ответа озвучит Edge-TTS")
                         if first:
@@ -3418,16 +3441,29 @@ class Jarvis:
                 fish_q.put_nowait(None)
                 fish_q = None
 
-        def fish_flush(final: bool = False):
-            nonlocal fish_text, fish_q
+        fish_idle: asyncio.Task | None = None
+
+        async def fish_idle_flush():
+            # Расшифровка затихла на законченном предложении («Есть, сэр.»):
+            # не ждать turn_complete ради короткой фразы ниже порога.
+            await asyncio.sleep(_FISH_SENTENCE_IDLE_SEC)
+            fish_flush(force=True)
+
+        def fish_flush(final: bool = False, force: bool = False):
+            nonlocal fish_text, fish_q, fish_idle
+            if fish_idle is not None and not force:
+                fish_idle.cancel()
+                fish_idle = None
             if addressed and get_voice_provider() == "fish":
-                chunks, fish_text = _take_speakable(fish_text, fish_q is None, final)
+                chunks, fish_text = _take_speakable(fish_text, fish_q is None, final, force)
                 if chunks and fish_q is None:
                     self._drop_pending_speech()   # один голос за раз
                     fish_q = asyncio.Queue()
                     self._fish_task = self._spawn(self._fish_worker(fish_q))
                 for chunk in chunks:
                     fish_q.put_nowait(chunk)
+                if not final and not force and fish_text.strip() and _END_OF_SENTENCE.search(fish_text):
+                    fish_idle = asyncio.create_task(fish_idle_flush())
             if final:
                 fish_close()
 

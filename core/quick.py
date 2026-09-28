@@ -60,9 +60,18 @@ PHRASES: dict[str, tuple[str, ...]] = {
     "here": ("Здесь, сэр.", "Слушаю, сэр.", "На месте, сэр."),
 }
 
+# Частые ответы самого Gemini: озвучены заранее — звучат сразу, без синтеза (~1 с).
+COMMON = ("Секунду, сэр.", "Минуту, сэр.", "Сейчас, сэр.", "Включаю, сэр.", "Открываю, сэр.",
+          "Закрываю, сэр.", "Выполняю, сэр.", "Уже делаю, сэр.", "Да, сэр.", "Нет, сэр.", "Хорошо, сэр.",
+          "Понял, сэр.", "Конечно, сэр.", "Слушаюсь, сэр.", "Одну секунду, сэр.", "Смотрю, сэр.",
+          "Ищу, сэр.", "Запомнил, сэр.", "Записал, сэр.", "Напомню, сэр.", "Не получилось, сэр.",
+          "Доброе утро, сэр.", "Добрый день, сэр.", "Добрый вечер, сэр.", "Спокойной ночи, сэр.")
+
 
 def all_phrases() -> list[str]:
-    return [p for variants in PHRASES.values() for p in variants]
+    """Всё, что озвучивается заранее: ответы мгновенных команд и частые ответы Gemini."""
+    out = [p for variants in PHRASES.values() for p in variants]
+    return out + [p for p in COMMON if p not in out]
 
 
 # ── Разбор фразы ──────────────────────────────────────────────────────────────
@@ -247,8 +256,19 @@ class VoiceCache:
             pass
         return "edge:" + os.getenv("EDGE_VOICE", "ru-RU-DmitryNeural")
 
+    MAX_LEARNED = 400          # сколько коротких фраз запоминать сверх готовых
+    LEARN_CHARS = 40
+
+    @staticmethod
+    def norm(text: str) -> str:
+        """«Готово, сэр.» и «готово сэр» — одна фраза (Gemini ставит запятые как придётся).
+        Знак в конце сохраняем: вопрос звучит иначе, чем утверждение."""
+        t = (text or "").lower().replace("ё", "е").strip()
+        end = "?" if t.endswith("?") else "!" if t.endswith("!") else "."
+        return " ".join(re.findall(r"\w+", t)) + end
+
     def _key(self, text: str, rate: int, voice: str | None) -> str:
-        raw = f"{voice or self.voice()}|{rate}|{text.strip()}"
+        raw = f"{voice or self.voice()}|{rate}|{self.norm(text)}"
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
 
     def get(self, text: str, rate: int, voice: str | None = None) -> bytes | None:
@@ -278,11 +298,21 @@ class VoiceCache:
             logger.debug("Кэш голоса не записан: %s", exc)
 
     def wanted(self, text: str) -> bool:
-        """Кэшируем только готовые фразы — не весь разговор."""
-        return text.strip() in _PHRASE_SET
+        """Готовые фразы — всегда; ещё короткие без чисел («Открываю Telegram, сэр.»):
+        тот же текст — тот же звук, второй раз он звучит сразу. Числа (время,
+        температура, счёт) меняются — такое не храним, как и длинные ответы."""
+        t = text.strip()
+        if self.norm(t) in _PHRASE_SET:
+            return True
+        if len(t) > self.LEARN_CHARS or re.search(r"\d", t) or not re.search(r"\w", t):
+            return False
+        try:
+            return sum(1 for _ in self.root.glob("*.pcm")) < len(_PHRASE_SET) + self.MAX_LEARNED
+        except OSError:
+            return False
 
 
-_PHRASE_SET = set(all_phrases())
+_PHRASE_SET = {VoiceCache.norm(p) for p in all_phrases()}
 _cache: VoiceCache | None = None
 
 

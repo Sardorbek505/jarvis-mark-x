@@ -1,5 +1,6 @@
 """Gemini API wrapper for Telegram bot — text, voice and image responses."""
 import asyncio
+import os
 import time
 import logging
 
@@ -253,6 +254,16 @@ class GeminiClient:
         if len(h) > _MAX_HISTORY:
             self._history[user_id] = h[-_MAX_HISTORY:]
 
+    @staticmethod
+    def _fast(model: str) -> dict:
+        """Без раздумий для 2.5-flash: по умолчанию модель «думает» секунды перед
+        каждым ответом в чате. Выключить можно только у 2.5-flash(-lite);
+        остальным модели параметр не передаём — они его не принимают."""
+        budget = os.getenv("GEMINI_THINKING_BUDGET", "0")
+        if "2.5-flash" not in model or not budget.lstrip("-").isdigit():
+            return {}
+        return {"thinking_config": types.ThinkingConfig(thinking_budget=int(budget))}
+
     # Models tried in order if the configured one fails (404 / quota etc.)
     _FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
 
@@ -296,6 +307,7 @@ class GeminiClient:
                             config=types.GenerateContentConfig(
                                 system_instruction=system_instruction,
                                 temperature=0.7,
+                                **self._fast(m),
                             ),
                         ),
                     )
@@ -429,7 +441,7 @@ class GeminiClient:
                     lambda m=model: self._client.models.generate_content(
                         model=m,
                         contents=contents,
-                        config=types.GenerateContentConfig(temperature=0.0),
+                        config=types.GenerateContentConfig(temperature=0.0, **self._fast(m)),
                     ),
                 )
                 text = (response.text or "").strip()
@@ -587,7 +599,7 @@ class GeminiClient:
                         lambda m=model: self._client.models.generate_content(
                             model=m,
                             contents=prompt,
-                            config=types.GenerateContentConfig(temperature=0.0),
+                            config=types.GenerateContentConfig(temperature=0.0, **self._fast(m)),
                         ),
                     )
                     return parse(resp.text)

@@ -370,6 +370,48 @@ async def test_fish_начинает_говорить_до_конца_хода(�
     assert поддельный_fish == ["Секунду, сэр."], "Fish ждал конца хода"
 
 
+async def _fish_ждёт(стенд, поддельный_fish, script, sec=1.0):
+    j = стенд.jarvis
+    j.session = _Session(script)
+    j.audio_in_queue = asyncio.Queue()
+    j._turn_done_event = asyncio.Event()
+    task = asyncio.create_task(j._receive_audio())
+    t0 = asyncio.get_running_loop().time()
+    while not поддельный_fish and asyncio.get_running_loop().time() - t0 < sec:
+        await asyncio.sleep(0.01)
+    task.cancel()
+    return asyncio.get_running_loop().time() - t0
+
+
+@pytest.mark.asyncio
+async def test_ответ_из_одного_предложения_не_ждёт_конца_хода(стенд, поддельный_fish):
+    """Главная задержка: последнее (а часто единственное) предложение ответа
+    резалось только по «точка + пробел» и ждало turn_complete — +4-5 с."""
+    await _fish_ждёт(стенд, поддельный_fish, [
+        _resp(heard="включи музыку"),
+        _resp(said="Включаю плейлист, сэр."),                 # пробела после точки нет, конца хода нет
+    ])
+    assert поддельный_fish == ["Включаю плейлист, сэр."]
+
+
+@pytest.mark.asyncio
+async def test_короткий_ответ_уходит_по_тишине_расшифровки(стенд, поддельный_fish):
+    """«Есть, сэр.» короче порога первого куска — ждём чуть-чуть продолжения и отдаём."""
+    waited = await _fish_ждёт(стенд, поддельный_fish, [_resp(heard="как тебе идея"), _resp(said="Да, сэр.")])
+    assert поддельный_fish == ["Да, сэр."]
+    assert waited < jarvis_main._FISH_SENTENCE_IDLE_SEC + 0.5
+
+
+def test_конец_предложения_в_конце_буфера():
+    take = jarvis_main._take_speakable
+    assert take("Сейчас включу, сэр.", True, False) == (["Сейчас включу, сэр."], "")
+    assert take("Температура плюс 2.", True, False)[0] == []           # «2.» → может быть «2.5»
+    assert take("Отчёт за 2026 г.", True, False)[0] == []              # сокращение
+    assert take("Есть, сэр.", True, False)[0] == []                     # короче порога — ждём
+    assert take("Есть, сэр.", True, False, force=True)[0] == ["Есть, сэр."]
+    assert take("Смотрю прогноз", True, False, force=True)[0] == []     # фраза не закончена
+
+
 def test_нарезка_потока_ждёт_точку_и_порог():
     куски, остаток = jarvis_main._take_speakable("Секунду, сэр. Смотрю", first=True, final=False)
     assert куски == ["Секунду, сэр."] and остаток.strip() == "Смотрю"

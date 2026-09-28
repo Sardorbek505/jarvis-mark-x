@@ -80,3 +80,18 @@ def test_cache_and_prewarm(tmp_path, monkeypatch):
     assert fresh.get("Есть, сэр.", 24000) == b"\x01\x00" * 10
     assert fresh.get("Есть, сэр.", 16000) is None               # другая частота — другой звук
     assert cache.wanted("Есть, сэр.") and not cache.wanted("Сейчас 14:05.")
+
+
+def test_cache_ignores_commas_and_case_learns_short_phrases(tmp_path):
+    """Gemini ставит запятые как придётся: «Готово сэр» — та же готовая фраза.
+    Короткие ответы без чисел запоминаются после первого раза."""
+    cache = q.VoiceCache(tmp_path)
+    cache.put("Готово, сэр.", 24000, b"\x02\x00" * 8)
+    assert cache.get("готово сэр", 24000) == b"\x02\x00" * 8
+    assert cache.get("Готово, сэр?", 24000) is None                 # вопрос звучит иначе
+    assert "Секунду, сэр." in q.all_phrases() and len(q.all_phrases()) == len(set(q.all_phrases()))
+    assert cache.wanted("Секунду сэр.") and cache.wanted("Открываю Telegram, сэр.")
+    assert not cache.wanted("В Ташкенте плюс 18, сэр.")                 # числа меняются
+    assert not cache.wanted("Сегодня у вас три пары и одна контрольная по физике, сэр.")   # длинное
+    cache.MAX_LEARNED = 1 - len(q._PHRASE_SET)                         # на диске уже 1 файл — предел
+    assert not cache.wanted("Открываю Telegram, сэр.") and cache.wanted("Секунду, сэр.")   # предел

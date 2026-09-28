@@ -633,6 +633,8 @@ def test_call_waits_short_pause_before_answering(monkeypatch):
     vad = captured["config"].realtime_input_config.automatic_activity_detection
     assert vad.silence_duration_ms == tc.CALL_VAD_SILENCE_MS == 450
     assert vad.end_of_speech_sensitivity.name == "END_SENSITIVITY_HIGH"
+    # раздумья выключены, как на ПК: с ними каждая реплика в трубке ждала ~2,8 с
+    assert captured["config"].thinking_config.thinking_budget == 0
 
 
 def test_call_logs_reply_delay_and_send_lateness():
