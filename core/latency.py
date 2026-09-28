@@ -85,6 +85,12 @@ class LatencyTracker:
         # Сентинел — None, а не 0.0: perf_counter() имеет право вернуть ноль,
         # и тогда «отметка есть» стало бы неотличимо от «отметки нет».
         self._last_frame: float | None = None   # пишется из аудио-колбэка
+        # Точка отсчёта — последний кадр речи ДО первой отметки хода. Дальше она
+        # замирает: пока Джарвис отвечает, микрофон продолжает слать громкие
+        # кадры (свой же голос из динамиков, музыка, речь поверх), и отсчёт от
+        # «самого последнего» кадра уезжал за ответ — в журнале владельца это
+        # дало «отвечает -3937мс · звучит -5550мс».
+        self._base: float | None = None
         self._heard: float | None = None
         self._answered: float | None = None
         self._played: float | None = None
@@ -109,6 +115,8 @@ class LatencyTracker:
         if self._last_frame is not None and (now - self._last_frame) > _TURN_GAP_SEC:
             self._reset_turn()
         self._last_frame = now
+        if self._heard is None and self._answered is None and self._played is None:
+            self._base = now
 
     def mark_transcript(self) -> None:
         """Пришёл первый фрагмент расшифровки сказанного."""
@@ -160,7 +168,7 @@ class LatencyTracker:
             self._last_frame = None
 
     def _report(self) -> None:
-        base = self._last_frame
+        base = self._base if self._base is not None else self._last_frame
         points = []
         for key, when in (
             ("heard", self._heard),
@@ -191,6 +199,7 @@ class LatencyTracker:
                 pass
 
     def _reset_turn(self) -> None:
+        self._base = None
         self._heard = None
         self._answered = None
         self._played = None

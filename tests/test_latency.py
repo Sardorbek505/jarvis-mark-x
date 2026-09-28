@@ -1,7 +1,10 @@
 """Секундомер голосового хода не должен врать и не должен ронять ассистента."""
 
+import re
 import sys
 from pathlib import Path
+
+import pytest
 
 _BASE = Path(__file__).resolve().parent.parent
 if str(_BASE) not in sys.path:
@@ -33,6 +36,39 @@ def test_замер_считается_от_последнего_кадра_а_�
 
     # Assert — 500 мс, а не 3500
     assert "отвечает 500мс" in lines[0]
+
+
+def test_свой_голос_в_микрофоне_не_даёт_отрицательных_миллисекунд(monkeypatch):
+    """Джарвис говорит, микрофон слышит его же — точка отсчёта уже замерла.
+
+    Живой журнал 28.09 дал «отвечает -3937мс · звучит -5550мс»: пока звучал
+    ответ на 4.6 с, громкие кадры продолжали идти и уезжали за момент ответа.
+    """
+    clock = [0.0]
+    monkeypatch.setattr("core.latency.time.perf_counter", lambda: clock[0])
+    lines = []
+    t = _tracker(sink=lines.append)
+
+    # Arrange — человек договорил на 1.0
+    for tick in (0.0, 0.5, 1.0):
+        clock[0] = tick
+        t.mark_voice_frame()
+
+    # Act — ответ через 0.4 с, а потом 4 с своего голоса обратно в микрофон
+    clock[0] = 1.4
+    t.mark_answer_audio()
+    clock[0] = 1.5
+    t.mark_playback()
+    tick = 1.6
+    while tick < 5.5:                 # кадры идут вплотную, паузы нет
+        clock[0] = tick
+        t.mark_voice_frame()
+        tick += 0.1
+    t.mark_turn_complete()
+
+    # Assert — считаем от конца речи человека, а не от своего эха
+    assert "звучит 500мс" in lines[0]
+    assert [int(v) for v in re.findall(r"(-?\d+)мс", lines[0])] == pytest.approx([400, 500], abs=1)
 
 
 def test_пауза_начинает_новый_ход(monkeypatch):
