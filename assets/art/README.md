@@ -58,9 +58,13 @@ assets/art/
 │   ├── setup_spotify.jpg      # Шаг «Spotify / музыка» (нота и эквалайзер)
 │   └── setup_done.jpg         # Шаг «Готово» (шар на полной яркости + зелёная галочка)
 │
-├── installer/                 # Графика установщика Inno Setup
-│   ├── wizard_large.bmp       # 164×314, 24-bit BMP (левый вертикальный баннер)
-│   └── wizard_small.bmp       # 55×58, 24-bit BMP (малая иконка заголовка)
+├── installer/                 # Установщик Inno Setup: своя картинка на каждый шаг (1× и _2x)
+│   ├── wizard_large.bmp       # 164×314 «Добро пожаловать» (левый баннер)
+│   ├── wizard_small.bmp       # 55×58 «Папка установки» (значок в заголовке)
+│   ├── step_tasks.bmp         # 55×58 «Ярлык и автозапуск»
+│   ├── step_ready.bmp         # 55×58 «Всё готово к установке»
+│   ├── step_installing.bmp    # 55×58 «Установка»
+│   └── wizard_finish.bmp      # 164×314 «Готово» + подпись CREATED BY @atabekovch
 │
 ├── empty/                     # Пустые состояния списков (480×320, прозрачный фон, тусклый бирюзовый)
 │   ├── empty_commands.png     # Команды (>_ терминал)
@@ -87,7 +91,9 @@ assets/art/
 - `app.ico` (корень, им подписан exe) и `icon/jarvis.ico` — шар на тёмной скруглённой плашке во всех размерах
   16…256 (без плашки шар пропадал в светлой теме Windows), `icon/icon_256.png`;
 - `icon/tray_online.png`, `icon/tray_offline.png` — трей (пауза — серый);
-- `installer/wizard_large(_2x).bmp`, `installer/wizard_small(_2x).bmp` — установщик, 1× и 2×;
+- `installer/*.bmp` — установщик, 1× и 2×, из картинок ИИ в `design/installer/01…06_*.png`
+  (исходники лежат вне `assets`, чтобы не попасть в exe); на последнюю картинку скрипт
+  сам пишет «CREATED BY @atabekovch» шрифтом `design/fonts/Tektur` (OFL) — у нейросети буквы плывут;
 - картинки `setup/` и `miniapp/` — в JPEG (в exe было ~10 МБ PNG).
 
 ## 4. Где используются

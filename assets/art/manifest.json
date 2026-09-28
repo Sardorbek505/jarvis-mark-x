@@ -161,28 +161,6 @@
     "prompt": "wide UI background illustration, composition on the right side featuring a brilliantly luminescent teal dot-particle sphere with a subtle glowing green #46e880 thin checkmark badge hovering beside it, radiating complete readiness, left side is dark empty negative space, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people"
   },
   {
-    "file": "installer/wizard_large.bmp",
-    "use": "вертикальный левый баннер мастера установки Inno Setup (164×314, 24-bit BMP)",
-    "size": [
-      164,
-      314
-    ],
-    "transparent": false,
-    "prompt": "Inno Setup vertical wizard banner, dark minimalist HUD, glowing teal dot sphere, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people",
-    "generated": "scripts/build_art.py"
-  },
-  {
-    "file": "installer/wizard_small.bmp",
-    "use": "верхняя малая иконка заголовка мастера установки Inno Setup (55×58, 24-bit BMP)",
-    "size": [
-      55,
-      58
-    ],
-    "transparent": false,
-    "prompt": "Inno Setup small header icon, glowing teal dot sphere, minimal dark UI illustration, near-black background #030609, teal accent #3fd0bd, glowing dot-particle sphere, thin 1px HUD lines, soft glow, lots of negative space, Apple-like clean aesthetic, no text, no letters, no logos, no people",
-    "generated": "scripts/build_art.py"
-  },
-  {
     "file": "empty/empty_commands.png",
     "use": "пустое состояние экрана: терминал и скобки команд >_ из светящихся точек",
     "size": [
@@ -310,21 +288,135 @@
     "generated": "scripts/build_art.py"
   },
   {
+    "file": "installer/wizard_large.bmp",
+    "use": "установщик Inno Setup: шаг «Добро пожаловать» — левый баннер (164×314, 24-bit BMP)",
+    "size": [
+      164,
+      314
+    ],
+    "transparent": false,
+    "source": "design/installer/01_welcome.png",
+    "generated": "scripts/build_art.py"
+  },
+  {
     "file": "installer/wizard_large_2x.bmp",
-    "use": "баннер установщика для экранов 150–200 %",
+    "use": "установщик Inno Setup: шаг «Добро пожаловать» — левый баннер (328×628, 24-bit BMP)",
     "size": [
       328,
       628
     ],
+    "transparent": false,
+    "source": "design/installer/01_welcome.png",
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "installer/wizard_small.bmp",
+    "use": "установщик Inno Setup: шаг «Папка установки» — значок в заголовке (55×58, 24-bit BMP)",
+    "size": [
+      55,
+      58
+    ],
+    "transparent": false,
+    "source": "design/installer/02_folder.png",
     "generated": "scripts/build_art.py"
   },
   {
     "file": "installer/wizard_small_2x.bmp",
-    "use": "малая иконка установщика для экранов 150–200 %",
+    "use": "установщик Inno Setup: шаг «Папка установки» — значок в заголовке (110×116, 24-bit BMP)",
     "size": [
       110,
       116
     ],
+    "transparent": false,
+    "source": "design/installer/02_folder.png",
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "installer/step_tasks.bmp",
+    "use": "установщик Inno Setup: шаг «Ярлык и автозапуск» — значок в заголовке (55×58, 24-bit BMP)",
+    "size": [
+      55,
+      58
+    ],
+    "transparent": false,
+    "source": "design/installer/03_tasks.png",
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "installer/step_tasks_2x.bmp",
+    "use": "установщик Inno Setup: шаг «Ярлык и автозапуск» — значок в заголовке (110×116, 24-bit BMP)",
+    "size": [
+      110,
+      116
+    ],
+    "transparent": false,
+    "source": "design/installer/03_tasks.png",
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "installer/step_ready.bmp",
+    "use": "установщик Inno Setup: шаг «Всё готово к установке» — значок в заголовке (55×58, 24-bit BMP)",
+    "size": [
+      55,
+      58
+    ],
+    "transparent": false,
+    "source": "design/installer/04_ready.png",
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "installer/step_ready_2x.bmp",
+    "use": "установщик Inno Setup: шаг «Всё готово к установке» — значок в заголовке (110×116, 24-bit BMP)",
+    "size": [
+      110,
+      116
+    ],
+    "transparent": false,
+    "source": "design/installer/04_ready.png",
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "installer/step_installing.bmp",
+    "use": "установщик Inno Setup: шаг «Установка» — значок в заголовке (55×58, 24-bit BMP)",
+    "size": [
+      55,
+      58
+    ],
+    "transparent": false,
+    "source": "design/installer/05_installing.png",
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "installer/step_installing_2x.bmp",
+    "use": "установщик Inno Setup: шаг «Установка» — значок в заголовке (110×116, 24-bit BMP)",
+    "size": [
+      110,
+      116
+    ],
+    "transparent": false,
+    "source": "design/installer/05_installing.png",
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "installer/wizard_finish.bmp",
+    "use": "установщик Inno Setup: шаг «Готово» — левый баннер с подписью «CREATED BY @atabekovch» (164×314, 24-bit BMP)",
+    "size": [
+      164,
+      314
+    ],
+    "transparent": false,
+    "source": "design/installer/06_finish.png",
+    "generated": "scripts/build_art.py"
+  },
+  {
+    "file": "installer/wizard_finish_2x.bmp",
+    "use": "установщик Inno Setup: шаг «Готово» — левый баннер с подписью «CREATED BY @atabekovch» (328×628, 24-bit BMP)",
+    "size": [
+      328,
+      628
+    ],
+    "transparent": false,
+    "source": "design/installer/06_finish.png",
     "generated": "scripts/build_art.py"
   }
 ]

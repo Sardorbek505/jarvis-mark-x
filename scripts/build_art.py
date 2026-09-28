@@ -4,7 +4,8 @@
     скруглённой плашке во всех размерах 16…256: без плашки шар терялся в
     светлой теме Windows и на светлом Проводнике;
   • assets/art/icon/tray_online.png / tray_offline.png — трей (пауза — серый);
-  • установщик: wizard_large / wizard_small в 1× и 2× (экраны 150–200 %);
+  • установщик: картинка на каждый шаг (design/installer) и подпись автора
+    на последнем, в 1× и 2× (экраны 150–200 %);
   • картинки мастера и Mini App — в JPEG (в exe было ~10 МБ PNG).
 
 Запуск: python scripts/build_art.py  (нужен Pillow; исходник — icon_1024.png)
@@ -65,31 +66,66 @@ def build_tray():
         im.save(ART / "icon" / f"{name}.png")
 
 
-def _wizard(w: int, h: int, small: bool) -> Image.Image:
-    im = Image.new("RGB", (w, h), BG)
+STEPS = ("folder", "tasks", "ready", "installing")    # маленькие картинки внутренних шагов
+CREDIT = "@atabekovch"                                   # автор — на последнем экране
+
+
+def _fit(src: Path, w: int, h: int, zoom: float = 1.0) -> Image.Image:
+    """Вырезать из картинки середину с пропорцией w:h (zoom > 1 — ближе) и уменьшить."""
+    im = Image.open(src).convert("RGB")
+    sw, sh = im.size
+    cw = min(sw, sh * w / h) / zoom
+    ch = min(sh, cw * h / w)
+    box = ((sw - cw) / 2, (sh - ch) / 2, (sw + cw) / 2, (sh + ch) / 2)
+    return im.resize((w, h), Image.Resampling.LANCZOS, box=box)
+
+
+def _font(size: int, medium: bool = True):
+    from PIL import ImageFont
+    name = "Tektur-Medium.ttf" if medium else "Tektur-Regular.ttf"
+    return ImageFont.truetype(str(ROOT / "design" / "fonts" / name), size)
+
+
+def _credit(im: Image.Image, scale: int) -> Image.Image:
+    """Подпись автора в тёмном низу финальной картинки: черта, CREATED BY, ник со свечением.
+    Текст рисуем сами, а не нейросетью — у неё буквы «плывут»."""
+    from PIL import ImageFilter
+    w, h = im.size
+    teal = (63, 208, 189)
+    small, big = _font(7 * scale, medium=False), _font(15 * scale)
+    y_line = h - 62 * scale
     d = ImageDraw.Draw(im, "RGBA")
-    if not small:                                    # сетка HUD и дуги, как у мастера
-        step = w // 5
-        for x in range(step, w, step):
-            d.line((x, 0, x, h), fill=(63, 208, 189, 18), width=1)
-        for y in range(step, h, step):
-            d.line((0, y, w, y), fill=(63, 208, 189, 18), width=1)
-        for r, a in ((w * 0.46, 70), (w * 0.34, 40)):
-            cx, cy = w / 2, h * 0.86
-            d.arc((cx - r, cy - r, cx + r, cy + r), 200, 340, fill=(63, 208, 189, a), width=max(1, w // 160))
-    sph = int(w * (0.78 if small else 0.62))
-    s = _sphere(sph)
-    y = (h - sph) // 2 if small else int(h * 0.2)
-    im.paste(s, ((w - sph) // 2, y), s)
-    return im
+    for x in range(w):                                         # черта гаснет к краям
+        a = int(150 * max(0.0, 1 - abs(x - w / 2) / (w * 0.36)))
+        if a:
+            d.point((x, y_line), fill=(*teal, a))
+    label = "C R E A T E D   B Y"
+    lw = d.textlength(label, font=small)
+    d.text(((w - lw) / 2, y_line + 9 * scale), label, font=small, fill=(*teal, 170))
+    nw = d.textlength(CREDIT, font=big)
+    pos = ((w - nw) / 2, y_line + 21 * scale)
+    glow = Image.new("RGBA", im.size, (0, 0, 0, 0))            # мягкое бирюзовое свечение под ником
+    ImageDraw.Draw(glow).text(pos, CREDIT, font=big, fill=(*teal, 200))
+    glow = glow.filter(ImageFilter.GaussianBlur(3 * scale))
+    out = Image.alpha_composite(im.convert("RGBA"), glow)
+    ImageDraw.Draw(out).text(pos, CREDIT, font=big, fill=(226, 252, 248, 255))
+    return out.convert("RGB")
 
 
 def build_installer():
-    out = ART / "installer"
+    """Картинки установщика из design/installer (сгенерированы ИИ): у каждого шага своя.
+
+    wizard_large — «Добро пожаловать», wizard_finish — «Готово» с подписью автора,
+    wizard_small — «Папка установки» (по умолчанию), step_* — остальные шаги."""
+    src, out = ROOT / "design" / "installer", ART / "installer"
     for scale in (1, 2):
-        suffix = "" if scale == 1 else "_2x"
-        _wizard(164 * scale, 314 * scale, False).save(out / f"wizard_large{suffix}.bmp")
-        _wizard(55 * scale, 58 * scale, True).save(out / f"wizard_small{suffix}.bmp")
+        sfx = "" if scale == 1 else "_2x"
+        W, H, w, h = 164 * scale, 314 * scale, 55 * scale, 58 * scale
+        _fit(src / "01_welcome.png", W, H).save(out / f"wizard_large{sfx}.bmp")
+        _credit(_fit(src / "06_finish.png", W, H), scale).save(out / f"wizard_finish{sfx}.bmp")
+        for i, name in enumerate(STEPS, start=2):
+            im = _fit(src / f"0{i}_{name}.png", w, h, zoom=1.45)     # значок крупнее, поля меньше
+            im.save(out / (f"wizard_small{sfx}.bmp" if name == "folder" else f"step_{name}{sfx}.bmp"))
 
 
 def to_jpeg():
