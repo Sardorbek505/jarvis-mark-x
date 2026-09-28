@@ -320,9 +320,13 @@ def поддельный_fish(monkeypatch):
 
     async def speak_pcm(text, sample_rate=None):
         сказанное.append(text)
-        return b"\x11\x11" * 50
+        return b"\x11\x11" * 300
+
+    async def stream_pcm(text, sample_rate=None):
+        yield await speak_pcm(text, sample_rate)
     monkeypatch.setattr(tts_fish, "is_configured", lambda: True)
     monkeypatch.setattr(tts_fish, "speak_pcm", speak_pcm)
+    monkeypatch.setattr(tts_fish, "stream_pcm", stream_pcm)
     monkeypatch.setattr(jarvis_main, "_VOICE_PROVIDER", "fish")
     return сказанное
 
@@ -344,7 +348,9 @@ async def test_с_голосом_fish_звук_gemini_не_играет(стен
 
     assert b"\x01\x02" * 100 not in стенд.out.written, "звук Gemini дошёл до динамиков"
     assert поддельный_fish == ["Всё в норме, сэр."], "Fish должен получить текст ответа"
-    assert стенд.out.written == [b"\x11\x11" * 50]
+    played = b"".join(стенд.out.written)
+    assert played.startswith(b"\x11\x11" * 300) and not played[600:].strip(b"\x00"), \
+        "играет голос Fish, после него — только своя короткая пауза"
 
 
 @pytest.mark.asyncio

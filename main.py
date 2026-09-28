@@ -3089,47 +3089,77 @@ class Jarvis:
 
             cache = quick.voice_cache()
 
-            async def synth(fragment: str):
-                # Готовая фраза («Есть, сэр.») уже озвучена — звучит сразу.
-                pcm = cache.get(fragment, RECV_SAMPLE_RATE)
-                if not pcm:
-                    pcm = await synth_fresh(fragment)
-                    # Кэш — только своим голосом: Edge вместо Fish туда не пишем.
-                    if pcm and cache.wanted(fragment) and (fish_alive or not tts_fish.is_configured()):
-                        cache.put(fragment, RECV_SAMPLE_RATE, pcm)
-                if pcm:
-                    # Тишина по краям каждого куска складывалась на стыках — после
-                    # каждой точки Джарвис «задумывался». Срезаем, кладём свою паузу.
-                    before = len(pcm)
-                    pcm = speech_pace.tighten(pcm, RECV_SAMPLE_RATE, speech_pace.ends_sentence(fragment))
-                    trimmed[0] += max(0, before - len(pcm))
-                return pcm
-
-            async def synth_fresh(fragment: str):
+            async def fish_stream(fragment: str, emit) -> bytes | None:
+                """Кусок голосом Fish ПОТОКОМ: звук уходит в динамики по мере
+                синтеза, не дожидаясь конца. → весь звук (для кэша) или None —
+                Fish не ответил, пусть договорит Edge."""
                 nonlocal fish_alive, probe
                 if fish_alive and probe is not None:
                     await probe
-                if fish_alive:
-                    first = probe is None
-                    if first:
-                        probe = asyncio.get_running_loop().create_future()
-                    pcm = None
-                    try:
-                        pcm = await tts_fish.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
-                        if pcm:
+                if not fish_alive:
+                    return None
+                first = probe is None
+                if first:
+                    probe = asyncio.get_running_loop().create_future()
+                raw = bytearray()
+                alive = complete = False
+                try:
+                    async for chunk in tts_fish.stream_pcm(fragment, sample_rate=RECV_SAMPLE_RATE):
+                        raw += chunk
+                        if not alive and len(raw) >= 500:       # настоящий звук, а не обрывок ошибки
+                            alive = True
                             self._fish_ok_at = time.monotonic()
-                    finally:
-                        if not pcm and fish_alive:
+                            if first and not probe.done():
+                                probe.set_result(None)
+                            emit(bytes(raw))
+                        elif alive:
+                            emit(chunk)
+                    complete = True
+                except Exception as exc:
+                    logger.warning("Fish поток: %s: %s", type(exc).__name__, exc)
+                finally:
+                    if not alive:
+                        if fish_alive:
                             self._fish_ok_at = -1e9
                             fish_alive = False
                             self.ui.write_log("SYS: Fish молчит — остаток ответа озвучит Edge-TTS")
-                        if first:
+                        if first and not probe.done():
                             probe.set_result(None)
+                if not alive:
+                    return None
+                return bytes(raw) if complete else b""
+
+            async def produce(fragment: str, out: asyncio.Queue):
+                """Звук одного куска в out (None — кусок кончился). Тишина по краям
+                срезается на лету (speech_pace), после куска — своя короткая пауза."""
+                pace = speech_pace.Tightener(RECV_SAMPLE_RATE)
+
+                def emit(pcm: bytes):
+                    body = pace.feed(pcm)
+                    if body:
+                        out.put_nowait(body)
+                try:
+                    # Готовая фраза («Есть, сэр.») уже озвучена — звучит сразу.
+                    pcm = cache.get(fragment, RECV_SAMPLE_RATE)
                     if pcm:
-                        return pcm
-                return await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+                        emit(pcm)
+                    else:
+                        whole = await fish_stream(fragment, emit)
+                        if whole is None:
+                            pcm = await tts_edge.speak_pcm(fragment, sample_rate=RECV_SAMPLE_RATE)
+                            if pcm:
+                                emit(pcm)
+                        elif whole and cache.wanted(fragment):
+                            # Кэш — только своим голосом и только целиком: Edge и обрывки не пишем.
+                            cache.put(fragment, RECV_SAMPLE_RATE, whole)
+                    if pace.started:
+                        out.put_nowait(pace.finish(speech_pace.ends_sentence(fragment)))
+                finally:
+                    trimmed[0] += pace.dropped * 2
+                    out.put_nowait(None)
 
             ordered: asyncio.Queue = asyncio.Queue()
+            producers: list[asyncio.Task] = []
 
             async def feed():
                 while True:
@@ -3142,7 +3172,9 @@ class Jarvis:
                         break
                     if fragment is None:
                         break
-                    ordered.put_nowait(asyncio.create_task(synth(fragment)))
+                    out: asyncio.Queue = asyncio.Queue()
+                    producers.append(asyncio.create_task(produce(fragment, out)))
+                    ordered.put_nowait(out)
                 ordered.put_nowait(None)
 
             feeder = asyncio.create_task(feed())
@@ -3150,27 +3182,29 @@ class Jarvis:
             spoken = 0
             try:
                 while True:
-                    task = await ordered.get()
-                    if task is None:
+                    out = await ordered.get()
+                    if out is None:
                         break
-                    pcm = await task
-                    if not pcm:
+                    played = 0
+                    while True:
+                        pcm = await out.get()
+                        if pcm is None:
+                            break
+                        if not spoken:
+                            self._latency.mark_answer_audio()
+                        spoken += len(pcm)
+                        played += len(pcm)
+                        for j in range(0, len(pcm), step):
+                            try:
+                                self.audio_in_queue.put_nowait(pcm[j:j + step])
+                            except asyncio.QueueFull:
+                                await self.audio_in_queue.put(pcm[j:j + step])
+                    if not played:
                         self.ui.write_log("SYS: синтез речи недоступен — ответ остался текстом")
-                        continue
-                    if not spoken:
-                        self._latency.mark_answer_audio()
-                    spoken += len(pcm)
-                    for j in range(0, len(pcm), step):
-                        try:
-                            self.audio_in_queue.put_nowait(pcm[j:j + step])
-                        except asyncio.QueueFull:
-                            await self.audio_in_queue.put(pcm[j:j + step])
             finally:
                 feeder.cancel()
-                while not ordered.empty():
-                    leftover = ordered.get_nowait()
-                    if leftover is not None:
-                        leftover.cancel()
+                for t in producers:
+                    t.cancel()
 
             if spoken:
                 logger.info("Голос Fish: %.1f с звука, срезано тишины %.1f с", spoken / 2 / RECV_SAMPLE_RATE,

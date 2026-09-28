@@ -61,8 +61,15 @@ def _wire(monkeypatch, *, configured: bool, fish_pcm: bytes | None):
         edge_calls.append(fragment)
         return b"\x00\x01" * 600
 
+    async def fake_stream(fragment, sample_rate=24000):
+        pcm = await fake_fish(fragment, sample_rate)
+        if pcm is None:
+            raise OSError("Fish лежит")
+        yield pcm
+
     monkeypatch.setattr(tts_fish, "is_configured", lambda: configured)
     monkeypatch.setattr(tts_fish, "speak_pcm", fake_fish)
+    monkeypatch.setattr(tts_fish, "stream_pcm", fake_stream)
     monkeypatch.setattr(tts_edge, "speak_pcm", fake_edge)
     return fish_calls, edge_calls
 
