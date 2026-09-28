@@ -908,8 +908,12 @@ class NavRail(QFrame):
             QToolButton {{ background: transparent; border: none; border-radius: 10px; color: {C.TEXT_DIM};
                            padding: 6px 0; font-size: 10px; }}
             QToolButton:hover {{ background: {C.PANEL2}; color: {C.TEXT}; }}
-            QToolButton:checked {{ background: {C.PRI_GHO}; color: {C.PRI}; }}
+            QToolButton:checked {{ background: transparent; color: {C.PRI}; }}
         """)
+        # Подсветка выбранного экрана переезжает к нему (ui_anim), а не прыгает.
+        from ui_anim import SlidingHighlight
+        self._hl = SlidingHighlight(self, C.PRI_GHO, C.PRI)
+        self._selected = ""
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 10, 8, 10)
         lay.setSpacing(4)
@@ -935,6 +939,22 @@ class NavRail(QFrame):
     def select(self, key: str):
         for k, b in self.buttons.items():
             b.setChecked(k == key)
+        animate = bool(self._selected) and self._selected != key
+        self._selected = key
+        self._place_highlight(animate)
+
+    def _place_highlight(self, animate: bool = False):
+        b = self.buttons.get(self._selected)
+        if b is not None and self.isVisible():
+            self._hl.move_to(b.geometry(), animate)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._place_highlight(False)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._place_highlight(False)
 
 
 class MainWindow(QMainWindow):
@@ -961,6 +981,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Д.Ж.А.Р.В.И.С — Голосовой ИИ")
         self.setMinimumSize(_MIN_W, _MIN_H)
         self.resize(_DEFAULT_W, _DEFAULT_H)
+        # Волна от нажатия на любой кнопке окна (ui_anim.RippleLayer).
+        try:
+            from ui_anim import install_click_ripple
+            install_click_ripple(self, C.PRI)
+        except Exception as exc:
+            _logger.debug("Волна нажатий: %s", exc)
 
         # Установка иконки окна и панели задач
         try:
@@ -1065,6 +1091,8 @@ class MainWindow(QMainWindow):
         self._pages["home"] = self._hud
         self._nav.select("home")
         self._hud.installEventFilter(self)
+        if getattr(self, "_ripple_layer", None) is not None:
+            self._ripple_layer.track(self)             # шапка и левая панель уже построены
 
         # ── История диалога: выезжает справа поверх шара ─────────────
         # Постоянная колонка чата отнимала треть экрана, а сказанное и так
@@ -1384,9 +1412,24 @@ class MainWindow(QMainWindow):
             self._pages[key] = page
             self._stack.addWidget(page)
         page = self._pages[key]
-        self._stack.setCurrentWidget(page)
+        # Переход: уходящий экран растворяется, новый выплывает навстречу —
+        # вниз по списку экранов снизу, вверх — сверху (ui_anim, на снимках).
+        keys = [k for k, _t, _i in PAGES]
+        old = getattr(self, "_page", "home")
+        direction = 1 if keys.index(key) >= (keys.index(old) if old in keys else 0) else -1
+        if page.layout() is not None:
+            page.layout().activate()
+        try:
+            from ui_anim import page_transition
+            page_transition(self._stack, page, direction)
+        except Exception as exc:
+            _logger.debug("Переход экрана: %s", exc)
+            self._stack.setCurrentWidget(page)
         self._nav.select(key)
         self._page = key
+        layer = getattr(self, "_ripple_layer", None)
+        if layer is not None:
+            layer.track(page)                          # волна и на кнопках этого экрана
         refresh = getattr(page, "refresh", None)
         if key == "help" and callable(refresh):
             refresh()                                  # галочки — после настройки в других экранах

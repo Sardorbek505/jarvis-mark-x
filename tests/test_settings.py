@@ -136,6 +136,11 @@ def test_settings_page_saves_immediately(page):
     assert d.saved.text().startswith("✓") and d.meter.threshold == v["mic_threshold"]
     d.island.setChecked(False)
     assert "после перезапуска" in d.saved.text()                   # капсула — после перезапуска
+    import ui_anim
+    d.anims.setChecked(False)
+    assert os.environ["JARVIS_ANIMATIONS"] == "0" and not ui_anim.enabled()   # сразу, без перезапуска
+    d.anims.setChecked(True)
+    assert ui_anim.enabled()
     d.meter.set_level(500)
     d.meter.grab()
 

@@ -338,3 +338,22 @@ def test_football_card_on_phone(page):
     t.eval("window.__opened = []; window.open = u => window.__opened.push(u); document.querySelector('[data-link]').click()")
     assert json.loads(_js(t, "window.__opened")) == ["https://example.com/n1"]
     assert json.loads(_js(t, "window.__errors")) == []
+
+
+def test_tab_glider_and_cascade(page):
+    """Подсветка вкладки переезжает к выбранной, карточки выплывают каскадом
+    только при смене вкладки (обновления данных их не перезапускают)."""
+    t = page
+    t.eval("switchTab('dashboard')")
+    assert t.wait("document.querySelector('#dash-body.enter') !== null", timeout=5)
+    shot = os.getenv("JARVIS_SHOT_DIR")
+    if shot:
+        time.sleep(0.12)
+        Path(shot, "phone_cascade.png").write_bytes(base64.b64decode(t.call("Page.captureScreenshot")["data"]))
+    assert t.wait("(() => { const g = document.getElementById('tab-glider'), a = document.querySelector('.tab.active');"
+                  " return g.getBoundingClientRect().left - a.getBoundingClientRect().left < 2; })()", timeout=3)
+    assert t.wait("!document.querySelector('#dash-body.enter')", timeout=3)            # каскад закончился
+    t.eval("send({type: 'get_data', view: 'dashboard'})")                               # обновление данных
+    time.sleep(0.2)
+    assert t.eval("document.querySelector('#dash-body.enter') === null")                # без повторного каскада
+    assert json.loads(_js(t, "window.__errors")) == []

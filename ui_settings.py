@@ -354,6 +354,9 @@ class SettingsDialog(QDialog):
         self.island = self._toggle("island", v["island"])
         self._row(lay, "Капсула сверху экрана", "Когда окно свёрнуто. Применится после перезапуска Джарвиса.",
                   self.island)
+        self.anims = self._toggle("animations", v["animations"])
+        self._row(lay, "Анимации", "Плавные переходы, подсветка, волны от нажатий. Выключите на слабом ПК.",
+                  self.anims)
 
     # ── действия ────────────────────────────────────────────────────────────
     def save(self, key: str, value):

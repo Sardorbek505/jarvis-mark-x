@@ -48,6 +48,7 @@ OPTS = [
     Opt("camera", "JARVIS_CAMERA_INDEX", 0),
     Opt("briefing", "JARVIS_BRIEFING", True),
     Opt("island", "JARVIS_ISLAND", True, restart=True),
+    Opt("animations", "JARVIS_ANIMATIONS", True),       # переходы, подсветка, волны (ui_anim)
 ]
 BY_KEY = {o.key: o for o in OPTS}
 
