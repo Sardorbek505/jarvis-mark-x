@@ -87,6 +87,14 @@ sys.excepthook = _log_unhandled
 # Падение рабочего потока раньше было беззвучным: окно жило, Джарвис — нет.
 threading.excepthook = lambda args: _log_unhandled(args.exc_type, args.exc_value, args.exc_traceback)
 
+# Настройки из экрана «Настройки» (core/settings.py) → в окружение ДО того, как
+# ниже прочитаются MIC_DEVICE, MIC_RMS_THRESHOLD, JARVIS_WAKE_MODE и др.
+try:
+    from core import settings as _settings
+    _settings.apply_env()
+except Exception as _settings_exc:
+    logger.warning("Настройки не прочитались: %s", _settings_exc)
+
 import sounddevice as sd
 from google import genai
 from google.genai import types
@@ -1477,7 +1485,7 @@ TOOLS = [
             "Открыть окно Джарвиса: keys — «открой ключи», «где ввести ключ», «проверь ключи», "
             "«подключи Spotify/звонки» (там же вход кнопкой); commands — «открой редактор команд»; "
             "contacts — «открой контакты», «подключи мой телеграм»; about — «открой обо мне», «что ты обо мне знаешь» "
-            "(окно); study — «открой расписание», «открой учёбу»; football — «открой футбол», «покажи матчи Реала»; help — «что ты умеешь», «помощь», «подсказки», "
+            "(окно); study — «открой расписание», «открой учёбу»; football — «открой футбол», «покажи матчи Реала»; settings — «открой настройки», «поменяй микрофон», «выбери динамик»; help — «что ты умеешь», «помощь», «подсказки», "
             "«с чего начать»; backup — «сделай резервную копию», «перенеси на новый ПК», «восстанови из копии» "
             "(пароль — только в окне, не голосом)."
         ),
@@ -1485,7 +1493,7 @@ TOOLS = [
             "type": "OBJECT",
             "properties": {"window": {"type": "STRING",
                                       "enum": ["keys", "commands", "contacts", "about", "study", "help",
-                                               "backup", "football"]}},
+                                               "backup", "football", "settings"]}},
             "required": ["window"]
         }
     },
@@ -1609,6 +1617,14 @@ class Jarvis:
         self._speaker_meter  = None   # см. _listen_audio: не слушаем свои динамики
         self._turn_done_event: asyncio.Event | None = None
         self._awake_until    = 0.0    # см. _WAKE_MODE: до какого момента идёт разговор
+        # «Настройки» меняют микрофон/динамик/порог на ходу (core/settings.py).
+        self._mic_reopen = False
+        self._out_reopen = False
+        try:
+            from core import settings as _st
+            _st.subscribe(self._on_setting)
+        except Exception as exc:
+            logger.debug("Настройки: подписка не удалась: %s", exc)
         self._followups_left = 0      # сколько реплик без имени ещё продолжат разговор
         self._rearm_after_speech = False
         self._fish_task: asyncio.Task | None = None
@@ -2553,7 +2569,8 @@ class Jarvis:
                           "contacts": ("open_contacts", "Контакты"), "about": ("open_about", "Обо мне"),
                           "study": ("open_study", "Учёба"), "help": ("open_welcome", "Что умеет Джарвис"),
                           "backup": ("open_backup", "Резервная копия"),
-                          "football": ("open_football", "Футбол")}
+                          "football": ("open_football", "Футбол"),
+                          "settings": ("open_settings", "Настройки")}
                 method, title = titles.get(which, titles["commands"])
                 opener = getattr(self.ui, method, None)
                 if opener:
@@ -2924,6 +2941,10 @@ class Jarvis:
                         await asyncio.sleep(0.1)
                         self._show_listen_state()   # окно разговора истекло → «ОЖИДАЕТ»
                         silent_for = time.monotonic() - self._mic_last_cb
+                        if getattr(self, "_mic_reopen", False):   # выбрали другой микрофон в «Настройках»
+                            self._mic_reopen = False
+                            logger.info("Микрофон сменён в настройках — переоткрываю")
+                            break
                         if not stream.active or silent_for > _MIC_STALL_SEC:
                             logger.warning("Микрофон замолчал (%.1f с без кадров) — переоткрываю", silent_for)
                             self.ui.write_log("SYS: микрофон пропал — переподключаю…")
@@ -3550,6 +3571,25 @@ class Jarvis:
         finally:
             fish_close()
 
+    def _on_setting(self, key: str, value):
+        """Изменили настройку на экране — применяем без перезапуска."""
+        global MIC_RMS_THRESHOLD, _IGNORE_SPEAKERS, _WAKE_MODE, _AWAKE_SEC
+        if key == "mic":
+            self._mic_reopen = True
+        elif key == "speaker":
+            self._out_reopen = True
+        elif key == "mic_threshold":
+            MIC_RMS_THRESHOLD = float(value)
+        elif key == "ignore_speakers":
+            _IGNORE_SPEAKERS = bool(value)
+        elif key == "wake_mode":
+            _WAKE_MODE = str(value or "wake_word")
+        elif key == "awake_sec":
+            _AWAKE_SEC = float(value)
+        elif key == "voice" and value:
+            set_voice_provider(str(value))
+        logger.info("Настройка «%s» = %r применена", key, value)
+
     # ── Воспроизведение аудио ─────────────────────────────────────────────────
     def _open_output(self):
         """Поток вывода: сначала устройство по умолчанию, потом любое рабочее.
@@ -3565,6 +3605,19 @@ class Jarvis:
             s.start()
             s.write(b"\x00" * (CHUNK_SIZE * 2))   # тишина: проверяем, что ПИШЕТСЯ
             return s
+
+        # Динамик, выбранный в «Настройках» (по имени: номера в Windows меняются).
+        want = os.getenv("JARVIS_OUTPUT_DEVICE", "").strip()
+        if want:
+            from core.settings import find_device
+            idx = find_device(want, "output")
+            if idx is None:
+                logger.warning("Динамик «%s» не найден — беру системный", want)
+            else:
+                try:
+                    return _try(idx)
+                except Exception as exc:
+                    logger.warning("Динамик «%s» не играет: %s — беру системный", want, exc)
 
         try:
             return _try(None)
@@ -3632,6 +3685,10 @@ class Jarvis:
                                 self.set_speaking(False)
                             if self._turn_done_event and self._turn_done_event.is_set():
                                 self._turn_done_event.clear()
+                            if getattr(self, "_out_reopen", False):   # выбрали другой динамик — между фразами
+                                self._out_reopen = False
+                                logger.info("Динамик сменён в настройках — переоткрываю")
+                                break
                         continue
 
                     self.set_speaking(True)

@@ -891,7 +891,7 @@ class SetupOverlay(QWidget):
 PAGES = [
     ("home", "Джарвис", "spark"), ("commands", "Команды", "bolt"), ("study", "Учёба", "book"),
     ("football", "Футбол", "ball"), ("contacts", "Контакты", "phone"), ("about", "Обо мне", "person"), ("keys", "Ключи", "key"),
-    ("backup", "Копия", "lock"), ("help", "Что умею", "grid"),
+    ("backup", "Копия", "lock"), ("help", "Что умею", "grid"), ("settings", "Настройки", "gear"),
 ]
 
 
@@ -998,7 +998,8 @@ class MainWindow(QMainWindow):
         # ── Системный трей Windows ──────────────────────────────────
         try:
             from core.tray import JarvisTray
-            self.tray = JarvisTray(main_window=self, on_exit=self.force_quit, parent=self)
+            self.tray = JarvisTray(main_window=self, on_exit=self.force_quit, on_settings=self.open_settings,
+                                   parent=self)
             self.tray.show()
         except Exception as _exc:
             _logger.debug("Системный трей недоступен: %s", _exc)
@@ -1327,6 +1328,9 @@ class MainWindow(QMainWindow):
         elif key == "football":
             from ui_football import FootballDialog
             w = FootballDialog(None)
+        elif key == "settings":
+            from ui_settings import SettingsDialog
+            w = SettingsDialog(None)
         elif key == "contacts":
             from ui_contacts import ContactsDialog
             w = ContactsDialog(None, open_keys=lambda: self.show_page("keys"))
@@ -1415,6 +1419,9 @@ class MainWindow(QMainWindow):
 
     def open_football(self):
         self.open_page("football")
+
+    def open_settings(self):
+        self.open_page("settings")
 
     def open_backup(self):
         self.open_page("backup")
