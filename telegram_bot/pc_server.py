@@ -710,6 +710,11 @@ def _handle_action(action: str, msg: dict) -> dict:
         res = pc_macros.run(str(msg.get("name") or ""), bool(msg.get("confirmed")))
         return {"ok": res["ok"], "text": res["text"],
                 "data": {"need_confirm": bool(res.get("need_confirm")), "name": res.get("name", "")}}
+    if action == "call_contact":
+        res = pc_macros.call_contact(str(msg.get("alias") or ""), str(msg.get("message") or ""),
+                                     bool(msg.get("confirmed")))
+        return {"ok": res["ok"], "text": res["text"],
+                "data": {"need_confirm": bool(res.get("need_confirm")), "name": res.get("name", "")}}
     res = pc_macros.resolve_contact(str(msg.get("alias") or ""))
     return {"ok": res["ok"], "text": res["text"],
             "data": {k: res[k] for k in ("target", "name") if k in res}}
@@ -723,7 +728,7 @@ async def _handle(ws, msg: dict):
         action = msg.get("action")
         if action == "send_telegram":
             result = await _handle_userbot(msg)
-        elif action in ("list_macros", "run_macro", "resolve_contact"):
+        elif action in ("list_macros", "run_macro", "resolve_contact", "call_contact"):
             result = await asyncio.to_thread(_handle_action, action, msg)
         elif action in ("study_add", "study_done", "about_answer", "football_watch"):
             from core import pc_snapshot
