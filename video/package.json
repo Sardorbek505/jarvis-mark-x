@@ -6,14 +6,17 @@
   "license": "UNLICENSED",
   "private": true,
   "dependencies": {
+    "@fontsource/jetbrains-mono": "^5.3.0",
     "@remotion/cli": "4.0.529",
+    "@remotion/fonts": "4.0.529",
+    "@remotion/media": "4.0.529",
+    "@remotion/tailwind-v4": "4.0.529",
     "@remotion/zod-types": "4.0.529",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "remotion": "4.0.529",
-    "zod": "4.5.4",
-    "@remotion/tailwind-v4": "4.0.529",
-    "tailwindcss": "4.0.0"
+    "tailwindcss": "4.0.0",
+    "zod": "4.5.4"
   },
   "devDependencies": {
     "@remotion/eslint-config-flat": "4.0.529",

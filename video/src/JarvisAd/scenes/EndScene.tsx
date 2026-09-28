@@ -1,0 +1,184 @@
+import React from "react";
+import { AbsoluteFill, Img, interpolate, random, staticFile, useCurrentFrame } from "remotion";
+import { Center, CoreRings, riseClip } from "../primitives";
+import { C, DISPLAY, ENTER, EXIT, MONO, MOVE, UNIT, scene, timeline, tween, voiceAt } from "../theme";
+
+const IGNITE = timeline.beatFrames; // one beat after the cut — the boom and impact land here (build.py)
+const WORD = "JARVIS";
+
+/** The one "wow": the core ignites, settles into a lockup, and the call to action lands. */
+export const EndScene: React.FC = () => {
+  const f = useCurrentFrame();
+  const s = scene("end");
+  const lit = f >= IGNITE;
+  const flash = tween(f, [IGNITE - 1, IGNITE + 1], [0, 1]) * tween(f, [IGNITE + 1, IGNITE + 24], [1, 0], EXIT);
+  const amp = 11 * tween(f, [IGNITE, IGNITE + 18], [1, 0]);
+  const shake = `${(random(`ex${f}`) - 0.5) * 2 * amp}px ${(random(`ey${f}`) - 0.5) * 2 * amp}px`;
+  const settle = tween(f, [IGNITE + 26, IGNITE + 52], [0, 1], MOVE); // core rises to make room for the lockup
+  const energy = lit ? 0.35 + 0.4 * flash + 0.5 * voiceAt(s.from + f) : 0.08;
+  const logo = f - (IGNITE + 38);
+
+  return (
+    <AbsoluteFill style={{ translate: shake }}>
+      {/* god rays behind the core */}
+      <AbsoluteFill
+        style={{
+          opacity: lit ? 0.18 + flash * 0.4 : 0,
+          background: "repeating-conic-gradient(from 0deg at 50% 50%, rgba(46,200,255,0.5) 0deg 2deg, transparent 2deg 12deg)",
+          rotate: `${f * 0.15}deg`,
+          scale: "1.6",
+          maskImage: "radial-gradient(circle at 50% 50%, #000 0%, transparent 45%)",
+          translate: `0 ${-240 * settle}px`,
+        }}
+      />
+
+      <Center style={{ translate: `0 ${-240 * settle}px`, scale: String(1 - 0.54 * settle) }}>
+        <div style={{ position: "relative", width: 900, height: 900 }}>
+          <Center>
+            <Img
+              src={staticFile("jarvis-ad/img/core.png")}
+              style={{
+                width: 640,
+                height: 640,
+                opacity: lit ? 1 : tween(f, [0, IGNITE], [0.05, 0.25]),
+                scale: String(lit ? tween(f, [IGNITE, IGNITE + UNIT + 4], [0.72, 1]) : 0.72),
+                rotate: `${f * 0.3}deg`,
+                filter: `brightness(${lit ? 1 + flash * 1.8 : 0.5}) saturate(1.15)`,
+              }}
+            />
+          </Center>
+          <Center>
+            <CoreRings size={900} draw={tween(f, [0, IGNITE + 20], [0, 1], MOVE)} energy={energy} spin={f * 0.8} />
+          </Center>
+          {/* shockwave */}
+          <Center>
+            <div
+              style={{
+                width: 200,
+                height: 200,
+                borderRadius: "50%",
+                border: `3px solid ${C.hot}`,
+                boxShadow: `0 0 40px ${C.core}`,
+                scale: String(tween(f, [IGNITE, IGNITE + 30], [0.5, 9], ENTER)),
+                opacity: lit ? tween(f, [IGNITE, IGNITE + 30], [0.9, 0]) : 0,
+              }}
+            />
+          </Center>
+        </div>
+      </Center>
+
+      <AbsoluteFill
+        style={{
+          opacity: flash,
+          background: "radial-gradient(circle at 50% 50%, rgba(235,252,255,0.95), rgba(46,200,255,0.4) 30%, transparent 70%)",
+        }}
+      />
+
+      {/* lockup */}
+      <AbsoluteFill style={{ alignItems: "center", paddingTop: 560 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 36 }}>
+          <div style={{ display: "flex" }}>
+            {WORD.split("").map((ch, i) => {
+              const t = logo - i * 2;
+              return (
+                <div key={i} style={{ ...riseClip(t) }}>
+                  <div
+                    style={{
+                      fontFamily: DISPLAY,
+                      fontWeight: 500,
+                      fontSize: 150,
+                      lineHeight: 1.05,
+                      letterSpacing: "0.14em",
+                      color: C.ink,
+                      textShadow: `0 0 40px ${C.glow}`,
+                      translate: `0 ${tween(t, [0, UNIT], [105, 0])}%`,
+                      filter: `blur(${tween(t, [0, UNIT], [10, 0])}px)`,
+                    }}
+                  >
+                    {ch}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div
+            style={{
+              padding: "10px 30px 12px",
+              borderRadius: 999,
+              border: "1px solid rgba(255,255,255,0.2)",
+              background: "linear-gradient(180deg, rgba(40,52,64,0.95), rgba(8,14,22,0.98))",
+              boxShadow: "inset 0 2px rgba(255,255,255,0.18), 0 0 40px rgba(46,200,255,0.25)",
+              fontFamily: MONO,
+              fontSize: 34,
+              letterSpacing: "0.4em",
+              color: C.hot,
+              opacity: tween(logo - 14, [0, 6], [0, 1]),
+              scale: `${interpolate(logo - 14, [0, 8, 16], [0.9, 1.07, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: ENTER })} ${interpolate(logo - 14, [0, 8, 16], [1.08, 0.94, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: ENTER })}`,
+            }}
+          >
+            MARK X
+          </div>
+        </div>
+
+        <div
+          style={{
+            marginTop: 26,
+            fontFamily: DISPLAY,
+            fontSize: 44,
+            color: C.muted,
+            opacity: tween(logo - 26, [0, UNIT], [0, 1]),
+            translate: `0 ${tween(logo - 26, [0, UNIT], [16, 0])}px`,
+          }}
+        >
+          Your personal AI assistant for Windows
+        </div>
+
+        <div
+          style={{
+            position: "relative",
+            overflow: "hidden",
+            marginTop: 44,
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "14px 16px 14px 16px",
+            borderRadius: 999,
+            border: `1px solid ${C.core}66`,
+            background: "rgba(6,18,30,0.8)",
+            boxShadow: `0 0 50px rgba(46,200,255,0.2)`,
+            opacity: tween(logo - 40, [0, 8], [0, 1]),
+            scale: String(tween(logo - 40, [0, UNIT], [0.92, 1])),
+          }}
+        >
+          <div
+            style={{
+              padding: "12px 28px",
+              borderRadius: 999,
+              background: `linear-gradient(180deg, ${C.hot}, ${C.core})`,
+              color: C.void,
+              fontFamily: MONO,
+              fontSize: 26,
+              letterSpacing: "0.18em",
+              boxShadow: `0 0 30px ${C.glow}`,
+            }}
+          >
+            FREE DOWNLOAD
+          </div>
+          <div style={{ fontFamily: MONO, fontSize: 28, letterSpacing: "0.04em", color: C.ink, paddingRight: 18 }}>
+            github.com/Sardorbek505/jarvis-mark-x
+          </div>
+          <div
+            style={{
+              position: "absolute",
+              top: 0,
+              bottom: 0,
+              width: "18%",
+              left: `${tween(logo - 70, [0, 26], [-25, 120], MOVE)}%`,
+              background: "linear-gradient(105deg, transparent, rgba(220,248,255,0.28) 50%, transparent)",
+            }}
+          />
+        </div>
+      </AbsoluteFill>
+    </AbsoluteFill>
+  );
+};

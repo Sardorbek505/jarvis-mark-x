@@ -44,6 +44,24 @@ Output goes to `out/` (git-ignored).
 > existing headless shell (a full Chrome binary will not work):
 > `npx remotion render HelloWorld --browser-executable=/path/to/headless_shell`
 
+**JARVIS Mark X ad** (`JarvisAd`, 41 s, 1920×1080)
+
+```console
+npx remotion render JarvisAd out/JarvisAd.mp4
+```
+
+Voice-over, score, sound effects, scene timing and images are pre-built and
+committed (`public/jarvis-ad/`, `src/JarvisAd/timeline.json`). To change the
+script or the mix, edit `scripts/jarvis_ad/build.py` and rebuild (Python 3.10+,
+downloads the Kokoro TTS model and SFX into `.cache/` on first run):
+
+```console
+pip install -r scripts/jarvis_ad/requirements.txt
+python scripts/jarvis_ad/build.py
+```
+
+Credits and licenses: `scripts/jarvis_ad/CREDITS.md`.
+
 **Upgrade Remotion**
 
 ```console

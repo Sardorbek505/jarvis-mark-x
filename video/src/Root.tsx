@@ -1,13 +1,39 @@
 import "./index.css";
-import { Composition } from "remotion";
+import { Composition, Folder } from "remotion";
 import { HelloWorld } from "./HelloWorld";
 import { Logo } from "./HelloWorld/Logo";
+import { JarvisAd, JarvisAdScene } from "./JarvisAd/JarvisAd";
+import { timeline } from "./JarvisAd/theme";
 
 // Each <Composition> is an entry in the sidebar!
 
 export const RemotionRoot: React.FC = () => {
   return (
     <>
+      {/* JARVIS Mark X ad: npx remotion render JarvisAd out/JarvisAd.mp4 */}
+      <Composition
+        id="JarvisAd"
+        component={JarvisAd}
+        durationInFrames={timeline.durationInFrames}
+        fps={timeline.fps}
+        width={1920}
+        height={1080}
+      />
+      <Folder name="JarvisAd-Scenes">
+        {timeline.scenes.map((s) => (
+          <Composition
+            key={s.id}
+            id={`JarvisAd-${s.id}`}
+            component={JarvisAdScene}
+            durationInFrames={s.durationInFrames}
+            fps={timeline.fps}
+            width={1920}
+            height={1080}
+            defaultProps={{ id: s.id }}
+          />
+        ))}
+      </Folder>
+
       <Composition
         // You can take the "id" to render a video:
         // npx remotion render HelloWorld

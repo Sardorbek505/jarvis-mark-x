@@ -801,3 +801,10 @@ VAD 400 мс. Клиент уже ЗНАЕТ, когда речь кончила
 - [x] `video/` — Remotion 4.0.529 из официального шаблона Hello World (TypeScript, Tailwind v4), зависимости поставлены, `package-lock.json` в репо
 - [x] Проверено: `npm run lint` (eslint + tsc) чисто; `npx remotion render HelloWorld` → 150 кадров, MP4 1.1 МБ; `npm run dev` (Studio) отвечает 200
 - Ревью: Remotion сам качает chrome-headless-shell при первом рендере; без сети — `--browser-executable` на headless_shell (полный Chrome не подходит: старый headless удалён). Записано в `video/README.md`.
+
+## Рекламный ролик JARVIS в Remotion (28.09)
+- [x] Изучены: NullMotion (это не скилл, а веб-приложение с 27 HTML+GSAP шаблонами — взяты приёмы: слои HUD, kinetic headline, blur reveal), remotion-dev/skills (официальные), iart-ai/motion-design-skills, video-shotcraft, heygen hyperframes
+- [x] `video/src/JarvisAd` — 7 сцен, 41 с, 1920×1080: загрузка → имя → голос → зрение → память → управление → финальная карточка
+- [x] Голос: Kokoro-82M `bm_george` (британский, офлайн, Apache-2.0); Edge-TTS закрыт сетевой политикой среды. Музыка — своя, синтез numpy; SFX — Mixkit (из репо shotcraft, коммит зафиксирован)
+- [x] Склейки на долях 100 BPM (18 кадров), музыка приглушается под голос (~10 дБ), субтитры по словам, волна/свечение от громкости голоса
+- Ревью: кадры просмотрены; найдено и исправлено — свечение букв резалось масками (прямоугольники), чипы «Управления» наезжали на субтитры, волна стояла ниже волны на картинке, AAC не декодируется в headless Chromium → mp3. Разборчивость голоса проверена распознаванием (pocketsphinx). «STARK INDUSTRIES» обрезано с баннера и иконки.
