@@ -796,3 +796,8 @@ VAD 400 мс. Клиент уже ЗНАЕТ, когда речь кончила
 - [x] scripts/build_art.py: обрезка под пропорции Inno, 1× и 2×, значки крупнее; на последнюю — «CREATED BY @atabekovch» шрифтом Tektur (OFL) со свечением: текст рисуем сами, у нейросети буквы плывут
 - [x] installer.iss: [Code] меняет картинку на каждом шаге (2× на экранах 150–200 %); на последнем экране — «Создал JARVIS: @atabekovch», ссылки Telegram · Instagram; вшитые картинки стоят в [Files] раньше программы (сплошное сжатие)
 - Ревью: tests/test_art.py — каждая картинка, что достаёт [Code], вшита и есть в 1×/2×, подпись на месте; снимки проверены глазами. Код Inno проверит сборка CI (на Linux ISCC нет).
+
+## Remotion — проект для видео (28.09)
+- [x] `video/` — Remotion 4.0.529 из официального шаблона Hello World (TypeScript, Tailwind v4), зависимости поставлены, `package-lock.json` в репо
+- [x] Проверено: `npm run lint` (eslint + tsc) чисто; `npx remotion render HelloWorld` → 150 кадров, MP4 1.1 МБ; `npm run dev` (Studio) отвечает 200
+- Ревью: Remotion сам качает chrome-headless-shell при первом рендере; без сети — `--browser-executable` на headless_shell (полный Chrome не подходит: старый headless удалён). Записано в `video/README.md`.
