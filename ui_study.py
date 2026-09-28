@@ -4,6 +4,8 @@
   • Расписание — неделя столбцами (Пн–Сб), сегодня подсвечено; сверху
     «Сейчас / следующая пара»; у каждого дня «+ пара»; клик по паре —
     правка. Переключатель «эта неделя / следующая» — видно чётность.
+    «Из фото» (или Ctrl+V, или перетащить картинку) — скриншот расписания
+    читает Gemini, пары видно до сохранения (core/study_import.py).
   • Задачи — строка «что сделать · предмет · срок словами» и список по
     срокам: просрочено, сегодня, на неделе, позже, без срока, сделано.
 Логика — core/study.py; вид — общий (ui_kit).
@@ -11,13 +13,17 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import date, timedelta
+from pathlib import Path
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLineEdit, QPushButton,
-                             QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
+from PyQt6.QtCore import QBuffer, QIODevice, QObject, Qt, pyqtSignal
+from PyQt6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
+from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
+                             QLabel, QLineEdit, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
 from core import study as S
+from core import study_import as SI
 from ui import C
 from ui_icons import qicon
 from ui_kit import STYLE, IconBadge, _cap, _icon_btn, _label, _line
@@ -40,6 +46,165 @@ QPushButton#checked {{ border: none; border-radius: 11px; padding: 0; background
 """
 
 KIND_SHORT = {"лекция": "лек", "практика": "прак", "семинар": "сем", "лабораторная": "лаб"}
+IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+
+
+def lesson_meta(x: S.Lesson) -> str:
+    return " · ".join(p for p in (KIND_SHORT.get(x.kind, x.kind), x.room and f"ауд. {x.room}",
+                                  {"odd": "нечёт", "even": "чёт"}.get(x.weeks, "")) if p)
+
+
+def image_bytes(img: QImage) -> bytes:
+    buf = QBuffer()
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    img.save(buf, "PNG")
+    return bytes(buf.data())
+
+
+def read_error(exc: Exception) -> str:
+    """Почему не прочиталось — словами, а не трассировкой."""
+    t = f"{type(exc).__name__}: {exc}"
+    if "UnidentifiedImage" in t:
+        return "Это не картинка — выберите PNG или JPG со скриншотом расписания."
+    if "нет ключа" in t:
+        return "Нет ключа Gemini — добавьте его на экране «Ключи»."
+    if "API_KEY_INVALID" in t or "API key not valid" in t:
+        return "Ключ Gemini неверный — проверьте его на экране «Ключи»."
+    if "429" in t or "RESOURCE_EXHAUSTED" in t:
+        return "Квота Gemini на сегодня кончилась — попробуйте завтра или с другим ключом."
+    if "imeout" in t or "DEADLINE" in t or "timed out" in t:
+        return "Gemini не успел ответить. Попробуйте ещё раз или обрежьте картинку до одной недели."
+    return f"Не получилось прочитать картинку ({type(exc).__name__}). Попробуйте ещё раз."
+
+
+class _Bridge(QObject):
+    result = pyqtSignal(object)
+
+
+class ImportDialog(QDialog):
+    """Расписание с картинки: Gemini читает в фоне, найденное видно до сохранения."""
+
+    def __init__(self, parent, st: S.Study, image: bytes, reader=SI.read):
+        super().__init__(parent)
+        self.st, self.found, self.added = st, [], 0
+        self._stop = False
+        self.setWindowTitle("ДЖАРВИС — расписание с фото")
+        self.setStyleSheet(STYLE + EXTRA)
+        self.resize(760, 620)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(10)
+        head = QHBoxLayout()
+        head.setSpacing(14)
+        thumb = QLabel()
+        pm = QPixmap()
+        if pm.loadFromData(image):
+            thumb.setPixmap(pm.scaled(120, 120, Qt.AspectRatioMode.KeepAspectRatio,
+                                      Qt.TransformationMode.SmoothTransformation))
+        head.addWidget(thumb, 0, Qt.AlignmentFlag.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(4)
+        col.addWidget(_label("Расписание с фото", "h1", wrap=False))
+        self.status = _label("Читаю расписание… обычно 10–30 секунд.", "hint")
+        col.addWidget(self.status)
+        self.warn = _label("", "soon")
+        self.warn.hide()
+        col.addWidget(self.warn)
+        col.addStretch(1)
+        head.addLayout(col, 1)
+        lay.addLayout(head)
+        lay.addWidget(_line())
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        body = QWidget()
+        body.setObjectName("canvas")
+        self.list = QVBoxLayout(body)
+        self.list.setContentsMargins(0, 0, 0, 0)
+        self.list.setSpacing(4)
+        self.list.addStretch(1)
+        scroll.setWidget(body)
+        lay.addWidget(scroll, 1)
+        foot = QHBoxLayout()
+        self.mode = QComboBox()
+        self.mode.addItem("Заменить текущее расписание", True)
+        self.mode.addItem("Добавить к текущему", False)
+        self.mode.setVisible(bool(st.lessons))
+        foot.addWidget(self.mode)
+        foot.addStretch(1)
+        cancel = QPushButton("Отмена")
+        cancel.clicked.connect(self.reject)
+        foot.addWidget(cancel)
+        self.ok = QPushButton("Сохранить")
+        self.ok.setObjectName("primary")
+        self.ok.setFixedWidth(150)
+        self.ok.setEnabled(False)
+        self.ok.clicked.connect(self._save)
+        foot.addWidget(self.ok)
+        lay.addLayout(foot)
+        self._bridge = _Bridge()
+        self._bridge.result.connect(self._on_result)
+        threading.Thread(target=self._work, args=(image, reader), daemon=True, name="schedule-photo").start()
+
+    def _work(self, image: bytes, reader):
+        try:
+            res = reader(image)
+        except Exception as exc:                            # сеть, ключ, не картинка — покажем словами
+            logger.warning("Расписание с картинки: %s", exc)
+            res = exc
+        if not self._stop:
+            try:
+                self._bridge.result.emit(res)
+            except RuntimeError:                           # окно уже закрыли
+                pass
+
+    def _on_result(self, res):
+        if self._stop:
+            return
+        if isinstance(res, Exception):
+            self.status.setText(read_error(res))
+            return
+        self.found = res.lessons
+        if not self.found:
+            self.status.setText("Пар на картинке не нашёл." + (f" ({res.note})" if res.note else "") +
+                                " Попробуйте скриншот почётче или только одну неделю.")
+            return
+        days = len({x.weekday for x in self.found})
+        self.status.setText(f"Нашёл пар: {len(self.found)}, дней: {days}. Проверьте и сохраните — "
+                            "потом любую пару можно поправить кликом." +
+                            (f"\nЗаметка: {res.note[0].upper() + res.note[1:]}" if res.note else ""))
+        if res.guessed_time:
+            self.warn.setText(f"У {res.guessed_time} пар на картинке не было времени — поставил обычные "
+                              "звонки (08:30, 10:00, 11:30…). Поправьте, если у вас иначе.")
+            self.warn.show()
+        at = 0
+        for wd in sorted({x.weekday for x in self.found}):
+            self.list.insertWidget(at, _cap(S.WEEKDAYS[wd]))
+            at += 1
+            for x in (y for y in self.found if y.weekday == wd):
+                row = QHBoxLayout()
+                row.setSpacing(10)
+                t = _label(x.start + (f"–{x.end}" if x.end else ""), "time", wrap=False)
+                t.setFixedWidth(84)
+                row.addWidget(t)
+                row.addWidget(_label(x.subject, "subj"), 1)
+                meta = " · ".join(p for p in (lesson_meta(x), x.teacher) if p)
+                row.addWidget(_label(meta, "hint", wrap=False))
+                w = QWidget()
+                w.setLayout(row)
+                self.list.insertWidget(at, w)
+                at += 1
+        self.ok.setText(f"Сохранить {len(self.found)}")
+        self.ok.setEnabled(True)
+
+    def _save(self):
+        replace = bool(self.mode.currentData()) if self.st.lessons else True
+        self.added = SI.apply(self.st, self.found, replace)
+        self._stop = True
+        self.accept()
+
+    def done(self, r: int):                                # закрыли любым путём — фон больше не нужен
+        self._stop = True
+        super().done(r)
 
 
 class LessonDialog(QDialog):
@@ -158,6 +323,9 @@ class StudyDialog(QDialog):
         root.addWidget(self.pages, 1)
         self.render_week()
         self.render_tasks()
+        self.setAcceptDrops(True)
+        # в поле ввода Ctrl+V вставляет текст, как обычно, — поле перехватывает клавишу первым
+        QShortcut(QKeySequence.StandardKey.Paste, self, activated=self.paste_image)
 
     # ── шапка ────────────────────────────────────────────────────────────────
     def _header(self) -> QWidget:
@@ -228,6 +396,14 @@ class StudyDialog(QDialog):
         nav.addWidget(self.week_label)
         nav.addWidget(nxt)
         nav.addStretch(1)
+        photo = QPushButton("  Из фото")
+        photo.setIcon(qicon("image", 14, C.PRI))
+        photo.setCursor(Qt.CursorShape.PointingHandCursor)
+        photo.setToolTip("Скриншот или фото расписания — Джарвис сам впишет пары.\n"
+                         "Можно и вставить картинку (Ctrl+V) или перетащить её в окно.")
+        photo.clicked.connect(self.pick_image)
+        nav.addWidget(photo)
+        nav.addSpacing(8)
         nav.addWidget(_label("Начало семестра", "hint", wrap=False))
         self.sem = QLineEdit(self.st.semester_start)
         self.sem.setPlaceholderText("2026-09-01")
@@ -246,6 +422,57 @@ class StudyDialog(QDialog):
         scroll.setWidget(body)
         lay.addWidget(scroll, 1)
         return page
+
+    # ── расписание с картинки ───────────────────────────────────────────────
+    def pick_image(self):
+        start = next((str(p) for p in (Path.home() / "Pictures" / "Screenshots", Path.home() / "Pictures")
+                      if p.is_dir()), str(Path.home()))
+        path, _ = QFileDialog.getOpenFileName(self, "Скриншот расписания", start,
+                                              "Картинки (*.png *.jpg *.jpeg *.webp *.bmp)")
+        if path:
+            self.import_image(Path(path).read_bytes())
+
+    def paste_image(self):
+        md = QApplication.clipboard().mimeData()
+        if md is None:
+            return
+        if md.hasImage():
+            img = QApplication.clipboard().image()
+            if not img.isNull():
+                self.import_image(image_bytes(img))
+                return
+        for url in md.urls() if md.hasUrls() else []:
+            if url.isLocalFile() and url.toLocalFile().lower().endswith(IMAGE_EXT):
+                self.import_image(Path(url.toLocalFile()).read_bytes())
+                return
+
+    def _dropped_image(self, e) -> str:
+        md = e.mimeData()
+        for url in md.urls() if md.hasUrls() else []:
+            if url.isLocalFile() and url.toLocalFile().lower().endswith(IMAGE_EXT):
+                return url.toLocalFile()
+        return ""
+
+    def dragEnterEvent(self, e):
+        if self._dropped_image(e) or e.mimeData().hasImage():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        path = self._dropped_image(e)
+        if path:
+            self.import_image(Path(path).read_bytes())
+        elif e.mimeData().hasImage():
+            self.import_image(image_bytes(QImage(e.mimeData().imageData())))
+
+    def import_image(self, data: bytes, reader=None) -> "ImportDialog":
+        dlg = ImportDialog(self, self.st, data, **({"reader": reader} if reader else {}))
+        dlg.finished.connect(self._import_finished)
+        self.show_page(0)
+        dlg.open()
+        return dlg
+
+    def _import_finished(self, _code: int):
+        self.render_week()
 
     def shift_week(self, d: int):
         self.week_offset += d
@@ -275,7 +502,8 @@ class StudyDialog(QDialog):
         self.week_label.setText(f"{when} · {monday.day}.{monday.month:02d}–{(monday + timedelta(days=5)).day}."
                                 f"{(monday + timedelta(days=5)).month:02d} · {parity}")
         self.now_label.setText(self.st.now_next() if self.st.lessons else
-                               "Расписания пока нет — добавьте пары: «+ пара» у нужного дня.")
+                               "Расписания пока нет — загрузите скриншот: «Из фото» (или Ctrl+V), "
+                               "или добавьте пары: «+ пара» у нужного дня.")
         for i in range(6):
             d = monday + timedelta(days=i)
             self.grid.addWidget(self._day(d, d == today), 0, i)
@@ -315,8 +543,7 @@ class StudyDialog(QDialog):
         lay.setSpacing(1)
         lay.addWidget(_label(x.start + (f"–{x.end}" if x.end else ""), "time", wrap=False))
         lay.addWidget(_label(x.subject, "subj"))
-        meta = " · ".join(p for p in (KIND_SHORT.get(x.kind, x.kind), x.room and f"ауд. {x.room}",
-                                      {"odd": "нечёт", "even": "чёт"}.get(x.weeks, "")) if p)
+        meta = lesson_meta(x)
         if meta:
             lay.addWidget(_label(meta, "hint"))
         box.mousePressEvent = lambda _e, les=x: self.edit_lesson(les)
