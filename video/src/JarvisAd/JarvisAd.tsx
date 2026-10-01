@@ -42,7 +42,7 @@ export const JarvisAd: React.FC = () => (
       })}
     </Series>
     <HudOverlay />
-    <Captions hide={["title", "end"]} />
+    <Captions hide={["boot", "title", "end"]} />
     <FadeOut />
     <Audio src={staticFile("jarvis-ad/mix.mp3")} />
   </AbsoluteFill>

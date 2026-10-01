@@ -20,20 +20,21 @@ export const timeline = timelineJson as unknown as {
 };
 export const scene = (id: SceneId) => timeline.scenes.find((s) => s.id === id)!;
 
-// Palette taken from the product art (assets/*.jpg): deep void, arc-reactor cyan, teal status.
+// Palette taken from the product itself: the app's idle teal (ui.py _STATE_RGB "ОЖИДАЕТ"),
+// its "speaking" orange, its "listening" green, on the app's near-black.
 export const C = {
-  void: "#02060d",
-  panel: "rgba(8, 20, 34, 0.62)",
-  line: "rgba(190, 240, 255, 0.16)",
-  core: "#2ec8ff",
-  coreDeep: "#0a6fa8",
-  hot: "#d9f7ff",
-  glow: "rgba(46, 200, 255, 0.55)",
-  teal: "#3ff0c8",
-  amber: "#ffb547",
-  ink: "#eaf8ff",
-  muted: "rgba(206, 236, 250, 0.62)",
-  dim: "rgba(206, 236, 250, 0.32)",
+  void: "#03070a",
+  panel: "rgba(10, 18, 22, 0.72)",
+  line: "rgba(190, 255, 245, 0.14)",
+  core: "#30d0be",
+  coreDeep: "#137a70",
+  hot: "#d6fff8",
+  glow: "rgba(48, 208, 190, 0.5)",
+  teal: "#46e880",
+  amber: "#ff8a34",
+  ink: "#eefcfa",
+  muted: "rgba(214, 240, 236, 0.66)",
+  dim: "rgba(214, 240, 236, 0.34)",
 };
 
 // Motion language — one entrance curve, one exit curve, one move curve; base unit 12 frames.

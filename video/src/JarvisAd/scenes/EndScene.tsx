@@ -1,5 +1,6 @@
 import React from "react";
-import { AbsoluteFill, Img, interpolate, random, staticFile, useCurrentFrame } from "remotion";
+import { AbsoluteFill, interpolate, random, useCurrentFrame } from "remotion";
+import { ORB, OrbView } from "../devices";
 import { Center, CoreRings, riseClip } from "../primitives";
 import { C, DISPLAY, ENTER, EXIT, MONO, MOVE, UNIT, scene, timeline, tween, voiceAt } from "../theme";
 
@@ -24,7 +25,7 @@ export const EndScene: React.FC = () => {
       <AbsoluteFill
         style={{
           opacity: lit ? 0.18 + flash * 0.4 : 0,
-          background: "repeating-conic-gradient(from 0deg at 50% 50%, rgba(46,200,255,0.5) 0deg 2deg, transparent 2deg 12deg)",
+          background: "repeating-conic-gradient(from 0deg at 50% 50%, rgba(48,208,190,0.5) 0deg 2deg, transparent 2deg 12deg)",
           rotate: `${f * 0.15}deg`,
           scale: "1.6",
           maskImage: "radial-gradient(circle at 50% 50%, #000 0%, transparent 45%)",
@@ -35,15 +36,18 @@ export const EndScene: React.FC = () => {
       <Center style={{ translate: `0 ${-240 * settle}px`, scale: String(1 - 0.54 * settle) }}>
         <div style={{ position: "relative", width: 900, height: 900 }}>
           <Center>
-            <Img
-              src={staticFile("jarvis-ad/img/core.png")}
+            {/* the real HUD orb as the core */}
+            <OrbView
+              absFrom={scene("end").from}
+              size={640}
+              center={ORB.withCard}
+              scale={0.95}
               style={{
-                width: 640,
-                height: 640,
-                opacity: lit ? 1 : tween(f, [0, IGNITE], [0.05, 0.25]),
+                borderRadius: "50%",
+                maskImage: "radial-gradient(circle, #000 55%, transparent 71%)",
+                opacity: lit ? 1 : tween(f, [0, IGNITE], [0.05, 0.3]),
                 scale: String(lit ? tween(f, [IGNITE, IGNITE + UNIT + 4], [0.72, 1]) : 0.72),
-                rotate: `${f * 0.3}deg`,
-                filter: `brightness(${lit ? 1 + flash * 1.8 : 0.5}) saturate(1.15)`,
+                filter: `brightness(${lit ? 1 + flash * 1.8 : 0.5})`,
               }}
             />
           </Center>
@@ -70,7 +74,7 @@ export const EndScene: React.FC = () => {
       <AbsoluteFill
         style={{
           opacity: flash,
-          background: "radial-gradient(circle at 50% 50%, rgba(235,252,255,0.95), rgba(46,200,255,0.4) 30%, transparent 70%)",
+          background: "radial-gradient(circle at 50% 50%, rgba(230,255,250,0.95), rgba(48,208,190,0.4) 30%, transparent 70%)",
         }}
       />
 
@@ -107,7 +111,7 @@ export const EndScene: React.FC = () => {
               borderRadius: 999,
               border: "1px solid rgba(255,255,255,0.2)",
               background: "linear-gradient(180deg, rgba(40,52,64,0.95), rgba(8,14,22,0.98))",
-              boxShadow: "inset 0 2px rgba(255,255,255,0.18), 0 0 40px rgba(46,200,255,0.25)",
+              boxShadow: "inset 0 2px rgba(255,255,255,0.18), 0 0 40px rgba(48,208,190,0.25)",
               fontFamily: MONO,
               fontSize: 34,
               letterSpacing: "0.4em",
@@ -130,7 +134,7 @@ export const EndScene: React.FC = () => {
             translate: `0 ${tween(logo - 26, [0, UNIT], [16, 0])}px`,
           }}
         >
-          Your personal AI assistant for Windows
+          Your personal AI — on Windows and in Telegram
         </div>
 
         <div
@@ -145,7 +149,7 @@ export const EndScene: React.FC = () => {
             borderRadius: 999,
             border: `1px solid ${C.core}66`,
             background: "rgba(6,18,30,0.8)",
-            boxShadow: `0 0 50px rgba(46,200,255,0.2)`,
+            boxShadow: `0 0 50px rgba(48,208,190,0.2)`,
             opacity: tween(logo - 40, [0, 8], [0, 1]),
             scale: String(tween(logo - 40, [0, UNIT], [0.92, 1])),
           }}

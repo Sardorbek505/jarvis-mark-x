@@ -1,80 +1,40 @@
 import React from "react";
-import { useCurrentFrame, useVideoConfig } from "remotion";
-import { GlassFrame, Headline, Label, SceneShell, Shot } from "../primitives";
-import { C, DISPLAY, MONO, UNIT, tween } from "../theme";
+import { AbsoluteFill, useVideoConfig } from "remotion";
+import { AppWindow, Beam, HudVideo, Phone, Tap } from "../devices";
+import { Headline, Label, SceneShell } from "../primitives";
+import { scene } from "../theme";
 
-const COMMANDS = ["Open VS Code", "Volume down 20%", "Send this to my phone"];
+// Taps on the Mini App's PC remote (393-wide CSS px of public/jarvis-ad/phone/pc.png):
+// «Режим учёбы» (opens VS Code), volume down, «Скрин в TG».
+const TAPS: [number, number][] = [
+  [98, 322],
+  [272, 675],
+  [242, 553],
+];
+const PHONE_W = 340;
 
-const Mic: React.FC<{ color: string }> = ({ color }) => (
-  <svg width={30} height={30} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round">
-    <rect x={9} y={3} width={6} height={11} rx={3} />
-    <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
-  </svg>
-);
-
-/** Spoken commands type in and resolve to DONE on the bleeps; the remote-control art sits right. */
+/** Cause and effect: a tap on the phone, a pulse across, the real result card on the PC. */
 export const ControlScene: React.FC = () => {
-  const f = useCurrentFrame();
   const { durationInFrames } = useVideoConfig();
-  const step = durationInFrames / 4; // same spacing as the bleeps in scripts/jarvis_ad/build.py
-
+  const s = scene("control");
+  // The PC capture shows each card at tick - 4 and the bleep plays on tick (build.py).
+  const ticks = [1, 2, 3].map((k) => Math.round((k * durationInFrames) / 4));
   return (
     <SceneShell>
-      <div style={{ position: "absolute", left: 132, top: 170, width: 680 }}>
+      <AbsoluteFill style={{ alignItems: "center", paddingTop: 54 }}>
         <Label delay={4}>04 — CONTROL</Label>
-        <div style={{ height: 26 }} />
-        <Headline lines={["Your PC,", "on command."]} sub="Apps, sound, windows, Telegram" delay={8} size={96} />
-      </div>
-
-      <div style={{ position: "absolute", left: 132, top: 530, display: "flex", flexDirection: "column", gap: 16 }}>
-        {COMMANDS.map((cmd, k) => {
-          const tick = Math.round((k + 1) * step);
-          const t = f - (tick - 26);
-          const typed = Math.floor(tween(t, [4, 18], [0, cmd.length], (x) => x));
-          const done = f >= tick;
-          const flash = tween(f, [tick, tick + 10], [1, 0]);
-          return (
-            <div
-              key={cmd}
-              style={{
-                width: 700,
-                display: "flex",
-                alignItems: "center",
-                gap: 20,
-                padding: "16px 26px",
-                borderRadius: 18,
-                background: "rgba(6,18,30,0.75)",
-                border: `1px solid ${done ? C.teal : C.line}`,
-                boxShadow: `0 0 ${20 + flash * 40}px ${done ? `rgba(63,240,200,${0.12 + flash * 0.3})` : "transparent"}, inset 0 1px rgba(255,255,255,0.08)`,
-                opacity: tween(t, [0, 8], [0, 1]),
-                translate: `${tween(t, [0, UNIT], [-40, 0])}px 0`,
-              }}
-            >
-              <Mic color={done ? C.teal : C.core} />
-              <div style={{ flex: 1, fontFamily: DISPLAY, fontSize: 34, color: C.ink, whiteSpace: "pre" }}>
-                “{cmd.slice(0, typed)}
-                {typed < cmd.length ? <span style={{ color: C.core }}>▌</span> : "”"}
-              </div>
-              <div
-                style={{
-                  fontFamily: MONO,
-                  fontSize: 22,
-                  letterSpacing: "0.2em",
-                  whiteSpace: "nowrap",
-                  color: done ? C.teal : C.dim,
-                  scale: String(done ? 1 + flash * 0.15 : 1),
-                }}
-              >
-                {done ? "DONE ✓" : "···"}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <GlassFrame x={880} y={200} w={920} h={518} delay={2}>
-        <Shot src="remote.jpg" from={1} to={1.07} origin="30% 50%" />
-      </GlassFrame>
+        <div style={{ height: 14 }} />
+        <Headline lines={["Your PC, on command."]} delay={8} size={72} align="center" />
+      </AbsoluteFill>
+      <Phone x={170} y={214} w={PHONE_W} rotY={9} delay={2} screens={[{ src: "pc", from: 0 }]}>
+        {TAPS.map(([x, y], k) => (
+          <Tap key={k} at={ticks[k] - 18} x={x} y={y} phoneW={PHONE_W} />
+        ))}
+      </Phone>
+      <Beam a={[520, 560]} b={[668, 540]} delay={10} pulses={ticks.map((t) => t - 16)} />
+      <AppWindow x={660} y={262} w={1140} rotY={-7} delay={8}>
+        <HudVideo absFrom={s.from} />
+      </AppWindow>
     </SceneShell>
   );
 };

@@ -60,6 +60,20 @@ pip install -r scripts/jarvis_ad/requirements.txt
 python scripts/jarvis_ad/build.py
 ```
 
+Every product shot is the real app, captured with fictional demo data (no
+personal data) on a throwaway copy of the sources:
+
+```console
+python scripts/capture/capture_pc.py     # PC app pages + live HUD session -> public/jarvis-ad/pc/
+python scripts/capture/capture_phone.py  # Telegram Mini App tabs (393×852 @3x) -> public/jarvis-ad/phone/
+```
+
+`capture_pc.py` runs the PyQt6 app offscreen on a virtual clock and records the
+HUD frame by frame in sync with the voice-over (`src/JarvisAd/timeline.json`),
+so re-run it after changing the script. It needs the repo's
+`requirements-dev.txt` plus `libegl1` and `libportaudio2`;
+`capture_phone.py` needs Playwright and Chromium.
+
 Credits and licenses: `scripts/jarvis_ad/CREDITS.md`.
 
 **Upgrade Remotion**

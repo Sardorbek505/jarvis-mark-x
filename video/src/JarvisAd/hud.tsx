@@ -1,16 +1,6 @@
 import React from "react";
 import { AbsoluteFill, random, useCurrentFrame } from "remotion";
-import { C, DISPLAY, ENTER, MONO, SceneId, timeline, tween, voiceAt, wordTimings } from "./theme";
-
-const SECTION: Record<SceneId, string> = {
-  boot: "SYSTEM BOOT",
-  title: "IDENTITY",
-  voice: "01 / VOICE",
-  vision: "02 / VISION",
-  memory: "03 / MEMORY",
-  control: "04 / CONTROL",
-  end: "ONLINE",
-};
+import { C, DISPLAY, SceneId, timeline, tween, wordTimings } from "./theme";
 
 const activeScene = (frame: number) =>
   timeline.scenes.find((s) => frame >= s.from && frame < s.from + s.durationInFrames) ??
@@ -24,7 +14,7 @@ export const Backdrop: React.FC = () => {
       <AbsoluteFill
         style={{
           background:
-            "radial-gradient(circle at 38% 42%, rgba(46,200,255,0.10), transparent 46%), radial-gradient(circle at 70% 64%, rgba(63,240,200,0.06), transparent 42%), linear-gradient(154deg, #07121f, #02060d 58%, #050814)",
+            "radial-gradient(circle at 38% 42%, rgba(48,208,190,0.09), transparent 46%), radial-gradient(circle at 70% 64%, rgba(255,138,52,0.04), transparent 42%), linear-gradient(154deg, #061012, #03070a 58%, #05080c)",
         }}
       />
       <AbsoluteFill
@@ -73,13 +63,9 @@ const Dust: React.FC = () => {
   );
 };
 
-/** Foreground HUD: corners, top bar, voice meter, scanlines, grain, vignette. */
+/** Foreground optics over everything: corner marks, scanlines, grain, vignette. */
 export const HudOverlay: React.FC = () => {
   const f = useCurrentFrame();
-  const s = activeScene(f);
-  const local = f - s.from;
-  const secs = f / timeline.fps;
-  const tc = `T+00:${String(Math.floor(secs)).padStart(2, "0")}:${String(f % timeline.fps).padStart(2, "0")}`;
   const intro = tween(f, [4, 30], [0, 1]);
   const outro = tween(f, [timeline.durationInFrames - 14, timeline.durationInFrames], [1, 0]);
 
@@ -106,46 +92,11 @@ export const HudOverlay: React.FC = () => {
       {corner(180, { right: 48, bottom: 48 })}
       {corner(270, { left: 48, bottom: 48 })}
 
-      {/* top bar */}
-      <div
-        style={{
-          position: "absolute",
-          left: 132,
-          right: 132,
-          top: 62,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          fontFamily: MONO,
-          fontSize: 20,
-          letterSpacing: "0.26em",
-          color: C.muted,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div style={{ width: 8, height: 8, borderRadius: 8, background: C.hot, boxShadow: `0 0 14px ${C.core}` }} />
-          J.A.R.V.I.S // MARK X
-        </div>
-        <div style={{ overflow: "hidden", height: 26 }}>
-          <div
-            key={s.id}
-            style={{
-              color: C.core,
-              translate: `0 ${tween(local, [0, 10], [100, 0], ENTER)}%`,
-            }}
-          >
-            {SECTION[s.id]}
-          </div>
-        </div>
-        <div>{tc}</div>
-      </div>
-
-      <VoiceMeter />
 
       {/* optics */}
       <AbsoluteFill
         style={{
-          opacity: 0.35,
+          opacity: 0.18,
           backgroundImage: "repeating-linear-gradient(0deg, rgba(220,250,255,0.035) 0 1px, transparent 1px 4px)",
         }}
       />
@@ -164,28 +115,13 @@ const Grain: React.FC = () => {
   return (
     <AbsoluteFill
       style={{
-        opacity: 0.09,
+        opacity: 0.06,
         mixBlendMode: "screen",
         backgroundImage: GRAIN,
         backgroundSize: "256px 256px",
         backgroundPosition: `${Math.floor(random(`gx${f}`) * 256)}px ${Math.floor(random(`gy${f}`) * 256)}px`,
       }}
     />
-  );
-};
-
-/** Bottom-left equalizer that follows the voice-over. */
-const VoiceMeter: React.FC = () => {
-  const f = useCurrentFrame();
-  return (
-    <div style={{ position: "absolute", left: 132, bottom: 70, display: "flex", alignItems: "flex-end", gap: 5, height: 40 }}>
-      {new Array(14).fill(0).map((_, i) => {
-        const level = voiceAt(f - i * 0.7);
-        const h = 4 + 34 * level * (0.55 + 0.45 * Math.abs(Math.sin(f / 3 + i * 1.7)));
-        return <div key={i} style={{ width: 5, height: h, background: C.core, opacity: 0.35 + level * 0.6, borderRadius: 2 }} />;
-      })}
-      <div style={{ marginLeft: 14, fontFamily: MONO, fontSize: 16, letterSpacing: "0.24em", color: C.dim }}>VOICE LINK</div>
-    </div>
   );
 };
 
@@ -200,17 +136,17 @@ export const Captions: React.FC<{ hide?: SceneId[] }> = ({ hide = [] }) => {
   if (vis <= 0) return null;
   const words = wordTimings(s.vo.text, d);
   return (
-    <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: 92, opacity: vis }}>
+    <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: 26, opacity: vis }}>
       <div
         style={{
-          maxWidth: 1360,
+          maxWidth: 1560,
           textAlign: "center",
           fontFamily: DISPLAY,
-          fontSize: 42,
+          fontSize: 34,
           lineHeight: 1.3,
-          padding: "12px 30px",
+          padding: "8px 26px",
           borderRadius: 14,
-          background: "rgba(2,8,16,0.55)",
+          background: "rgba(3,7,10,0.7)",
           translate: `0 ${tween(t, [-6, 6], [12, 0])}px`,
         }}
       >

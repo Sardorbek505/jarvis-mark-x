@@ -2,4 +2,3 @@ kokoro-onnx==0.6.1
 soundfile
 numpy
 scipy
-pillow

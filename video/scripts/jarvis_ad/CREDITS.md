@@ -5,9 +5,10 @@
 | Voice-over | [Kokoro-82M](https://github.com/hexgrad/kokoro) via [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx), voice `bm_george`, synthesized offline | Apache-2.0 |
 | Music | Original cue, synthesized by `build.py` | this repo |
 | Sound effects | [Mixkit](https://mixkit.co/free-sound-effects/), fetched from [video-shotcraft](https://github.com/louiseliu/hyperFrames-video-shotcraft) @ `1df77f1` (URLs per file in its `assets/audio/ATTRIBUTION.md`) | Mixkit Sound Effects Free License |
-| Product art | `assets/` images of this repo; third-party wordmarks cropped out by `build.py` | this repo |
+| Product footage | The real PC app and Telegram Mini App of this repo, captured by `scripts/capture/` with fictional demo data | this repo |
 | Tektur font | `design/fonts/` | SIL OFL 1.1 (`public/jarvis-ad/fonts/Tektur-OFL.txt`) |
 | JetBrains Mono font | `@fontsource/jetbrains-mono` | SIL OFL 1.1 (`public/jarvis-ad/fonts/JetBrainsMono-OFL.txt`) |
+| Capture-time fonts (not shipped) | Noto Sans, JetBrains Mono, Inter from [google/fonts](https://github.com/google/fonts) — stand-ins for Segoe UI / Consolas / iOS system font | SIL OFL 1.1 |
 
 Sound effects used (all Mixkit):
 

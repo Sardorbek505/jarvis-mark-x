@@ -13,8 +13,8 @@ Pipeline (deterministic — same inputs give the same files):
      video-shotcraft repo at a pinned commit.
   5. Mix: music ducked under the voice, peak-limited, written as
      public/jarvis-ad/mix.wav and encoded to mix.mp3 with Remotion's ffmpeg.
-  6. Images: product art from ../assets, cropped (no third-party marks) and
-     resized into public/jarvis-ad/img/.
+  6. Fonts into public/jarvis-ad/fonts/. Product footage comes from
+     scripts/capture/ (real PC app + Telegram Mini App), not from here.
 
 Run from video/:  python scripts/jarvis_ad/build.py
 Requirements:     pip install -r scripts/jarvis_ad/requirements.txt
@@ -31,7 +31,6 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from PIL import Image, ImageFilter
 from scipy import signal
 
 VIDEO = Path(__file__).resolve().parents[2]
@@ -403,36 +402,7 @@ def mix(tl: dict, vo: list[np.ndarray]) -> np.ndarray:
     return out.astype(np.float32)
 
 
-# ── 6. images ────────────────────────────────────────────────────────────────
-
-def prep_images() -> None:
-    src = REPO / "assets"
-    dst = PUBLIC / "img"
-    dst.mkdir(parents=True, exist_ok=True)
-
-    def save(im: Image.Image, name: str, width: int) -> None:
-        h = round(im.height * width / im.width)
-        im = im.convert("RGB").resize((width, h), Image.LANCZOS)
-        im = im.filter(ImageFilter.UnsharpMask(radius=1.6, percent=60, threshold=2))
-        im.save(dst / name, quality=90, optimize=True)
-
-    save(Image.open(src / "voice.png"), "voice.jpg", 1600)
-    save(Image.open(src / "vision.jpg"), "vision.jpg", 1600)
-    save(Image.open(src / "memory.jpg"), "memory.jpg", 1600)
-    save(Image.open(src / "telegram_remote.png"), "remote.jpg", 1600)
-    # banner: keep the HUD scene, drop the lower-left third-party wordmark
-    b = Image.open(src / "banner.jpg")
-    save(b.crop((0, 0, b.width, round(b.height * 0.84))), "banner.jpg", 1600)
-    # icon: just the glowing core — no top/bottom plates with text
-    ic = Image.open(src / "icon.png")
-    c, r = ic.width // 2, round(ic.width * 0.30)
-    core = ic.crop((c - r, c - r, c + r, c + r)).convert("RGBA")
-    mask = Image.new("L", core.size, 0)
-    from PIL import ImageDraw
-    ImageDraw.Draw(mask).ellipse((0, 0, core.width, core.height), fill=255)
-    core.putalpha(mask.filter(ImageFilter.GaussianBlur(core.width * 0.02)))
-    core.resize((900, 900), Image.LANCZOS).save(dst / "core.png", optimize=True)
-
+# ── 6. fonts ──────────────────────────────────────────────────────────────────
 
 def copy_fonts() -> None:
     dst = PUBLIC / "fonts"
@@ -460,8 +430,7 @@ def main() -> None:
                     "-c:a", "libmp3lame", "-b:a", "256k", str(PUBLIC / "mix.mp3")], cwd=VIDEO, check=True)
     TIMELINE.parent.mkdir(parents=True, exist_ok=True)
     TIMELINE.write_text(json.dumps(tl, indent=1) + "\n")
-    print("images + fonts")
-    prep_images()
+    print("fonts")
     copy_fonts()
     print("done")
 

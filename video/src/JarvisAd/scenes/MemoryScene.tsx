@@ -1,60 +1,52 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
-import { Chip, Headline, Label, SceneShell, Shot } from "../primitives";
-import { C, EXIT, scene, timeline, tween, wordTimings } from "../theme";
+import { AppWindow, PcShot, Phone, Tap } from "../devices";
+import { Headline, Label, SceneShell } from "../primitives";
+import { UNIT, tween } from "../theme";
 
-const NODE = { x: 984, y: 506 }; // central node of memory.jpg at 1920×1080
+const PAGE_SWAP = 84; // PC: Study → About me
+const TAP = 64; // phone: tap the «Учёба» tab
+const PHONE_W = 340;
 
-/** Knowledge-graph art with beat-synced pulses; the chips pop as each word is spoken. */
+/** The real Study and About-me pages on the PC, the same data synced into the phone. */
 export const MemoryScene: React.FC = () => {
   const f = useCurrentFrame();
-  const s = scene("memory");
-  const words = wordTimings(s.vo.text, s.vo.durationInFrames);
-  const at = (w: string) => s.vo.from + Math.round(words.find((x) => x.word.toLowerCase().startsWith(w))!.start);
-
+  const t = f - PAGE_SWAP;
   return (
     <SceneShell>
-      <AbsoluteFill>
-        <Shot src="memory.jpg" from={1} to={1.14} origin="51% 47%" />
-      </AbsoluteFill>
-      {/* pulse rings from the central node, one per beat */}
-      <AbsoluteFill>
-        {[0, 1].map((k) => {
-          const t = (f + k * (timeline.beatFrames / 2)) % timeline.beatFrames;
-          const p = t / timeline.beatFrames;
-          return (
-            <div
-              key={k}
-              style={{
-                position: "absolute",
-                left: NODE.x - 40 - p * 360,
-                top: NODE.y - 40 - p * 360,
-                width: 80 + p * 720,
-                height: 80 + p * 720,
-                borderRadius: "50%",
-                border: `2px solid ${C.core}`,
-                opacity: tween(p, [0, 1], [0.45, 0], EXIT) * tween(f, [6, 20], [0, 1]),
-              }}
-            />
-          );
-        })}
-      </AbsoluteFill>
-      <AbsoluteFill
-        style={{ background: "linear-gradient(90deg, rgba(2,6,13,0.94) 0%, rgba(2,6,13,0.75) 32%, transparent 60%)" }}
-      />
-
-      <div style={{ position: "absolute", left: 132, top: 280, width: 720 }}>
+      <AbsoluteFill style={{ alignItems: "center", paddingTop: 54 }}>
         <Label delay={4}>03 — MEMORY</Label>
-        <div style={{ height: 26 }} />
-        <Headline lines={["Remembers", "what matters."]} sub="Obsidian notes & long-term memory" delay={8} size={96} />
-        <div style={{ display: "flex", gap: 16, marginTop: 50 }}>
-          <Chip delay={at("notes")}>NOTES</Chip>
-          <Chip delay={at("plans")}>PLANS</Chip>
-          <Chip delay={at("preferences")} color={C.teal}>
-            PREFERENCES
-          </Chip>
+        <div style={{ height: 14 }} />
+        <Headline lines={["Remembers what matters."]} delay={8} size={72} align="center" />
+      </AbsoluteFill>
+      <AppWindow x={110} y={262} w={1130} rotY={8} delay={2}>
+        <div style={{ position: "relative", width: "100%", height: "100%" }}>
+          <PcShot page="study" />
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              opacity: tween(t, [0, 8], [0, 1]),
+              translate: `${tween(t, [0, UNIT + 4], [6, 0])}% 0`,
+            }}
+          >
+            <PcShot page="about" />
+          </div>
         </div>
-      </div>
+      </AppWindow>
+      <Phone
+        x={1390}
+        y={214}
+        w={PHONE_W}
+        rotY={-8}
+        delay={8}
+        screens={[
+          { src: "dashboard", from: 0 },
+          { src: "study", from: TAP + 6 },
+        ]}
+      >
+        <Tap at={TAP} x={229} y={818} phoneW={PHONE_W} />
+      </Phone>
     </SceneShell>
   );
 };
