@@ -42,6 +42,16 @@ import collections
 import json
 import traceback
 import re
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    from pathlib import Path
+    _env_user = Path(os.getenv("APPDATA", "")) / "JARVIS" / ".env"
+    if _env_user.exists():
+        load_dotenv(_env_user)
+except Exception:
+    pass
 import threading
 import time
 import subprocess
@@ -361,16 +371,9 @@ _FOLLOWUPS = int(os.getenv("JARVIS_FOLLOWUPS", "4"))
 _WAKE_PREROLL_FRAMES = 32
 
 
-def _device_is_silent(index: int, seconds: float = 0.05, need_signal: bool = True) -> bool:
-    """Проверяет, является ли устройство мёртвым или фантомным виртуальным входом.
-
-    need_signal=False — достаточно, что устройство открывается и пишет.
-    Гарнитура и микрофон с шумоподавлением (ASUS AI, Krisp) в тихой комнате
-    честно отдают цифровой ноль, и проверка «есть ли сигнал» отбрасывала их
-    в пользу встроенного массива.
-    """
+def _device_is_silent(index: int, seconds: float = 0.05, need_signal: bool = False) -> bool:
+    """Проверяет, является ли устройство мёртвым или недоступным входом."""
     try:
-        import numpy as np
         rec = sd.rec(int(seconds * SEND_SAMPLE_RATE), samplerate=SEND_SAMPLE_RATE,
                      channels=1, dtype="int16", device=index)
         sd.wait()
@@ -405,14 +408,23 @@ def _pick_input_device():
             continue
         name = d["name"].lower()
         if any(k in name for k in ("headset", "headphone", "bluetooth", "wireless", "buds", "airpods", "freebuds", "wh-1000", "airdots", "гарнитур", "наушник", "hands-free", "usb")) and not _device_is_silent(i, need_signal=False):
-            # Веб-камера тоже «USB», но её микрофон — через всю комнату.
             is_camera = any(k in name for k in ("cam", "камер"))
             if not is_camera and "virtual" not in name and "line" not in name and "output" not in name:
                 logger.info("Обнаружена подключенная гарнитура/наушники — выбран микрофон: «%s» (индекс %d)", d["name"], i)
                 return i
 
-    # 2. Аппаратные/драйверные микрофоны с ИИ-шумоподавлением (ASUS AI Noise-cancelling, Krisp, RTX Voice, Intelligo)
-    # Они отсекают пространственные шумы комнаты, эхо и посторонние голоса при работе со встроенного микрофона ноутбука.
+    # 2. Встроенный физический массив микрофонов (Realtek / физический микрофон)
+    # Это основной аппаратный микрофон ноутбука, отдающий полный динамический диапазон.
+    for i, d in devices:
+        if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
+            continue
+        name = d["name"].lower()
+        if any(k in name for k in ("realtek", "микрофон", "array", "массив")) and not _device_is_silent(i, need_signal=False):
+            if "virtual" not in name and "line" not in name and "output" not in name and "stereo mix" not in name:
+                logger.info("Выбран физический микрофон: «%s» (индекс %d)", d["name"], i)
+                return i
+
+    # 3. Аппаратные/драйверные микрофоны с ИИ-шумоподавлением (ASUS AI Noise-cancelling, Krisp, RTX Voice, Intelligo)
     for i, d in devices:
         if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
             continue
@@ -422,25 +434,16 @@ def _pick_input_device():
                 logger.info("Выбран микрофон с аппаратным шумоподавлением: «%s» (индекс %d)", d["name"], i)
                 return i
 
-    # 3. Встроенный Realtek / массив микрофонов
-    for i, d in devices:
-        if d["max_input_channels"] <= 0 or d.get("hostapi", 0) != 0:
-            continue
-        name = d["name"].lower()
-        if any(k in name for k in ("realtek", "микрофон", "array", "массив")) and not _device_is_silent(i):
-            if "virtual" not in name and "line" not in name:
-                logger.info("Выбран микрофон: «%s» (индекс %d)", d["name"], i)
-                return i
-
     # 4. Системное устройство по умолчанию
+    default_dev = sd.default.device[0]
+    if default_dev is not None and default_dev >= 0:
+        return default_dev
     return None
 CHUNK_SIZE        = 1024
 
 # Порог тишины для микрофона (RMS по int16). Ниже него кадры в облако не
-# уходят вовсе. Речь в метре от ноутбука даёт ~1000-5000, тишина — единицы
-# и десятки. 150 отсекает пространственный шум комнаты, шёпот и шорохи.
-# Тихий микрофон — подобрать своё значение: scripts/mic_check.py.
-MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "150"))
+# уходят вовсе. Речь в метре от ноутбука даёт ~500-4000, тишина — единицы.
+MIC_RMS_THRESHOLD = float(os.getenv("MIC_RMS_THRESHOLD", "80"))
 # Хвост тишины после речи — не косметика, а условие того, что тебе вообще
 # ответят. Конец фразы определяет VAD на стороне Gemini, и определить его он
 # может только по ПОЛУЧЕННОЙ тишине: когда гейт обрывает поток сразу за

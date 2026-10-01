@@ -65,7 +65,7 @@ ALIASES_FILE = "wake_aliases.json"
 _STOP = {"и", "в", "во", "на", "не", "из", "за", "что", "как", "это", "так", "вот", "да", "нет", "он",
          "она", "они", "мы", "вы", "ты", "я", "его", "ее", "их", "там", "тут", "уже", "еще", "все",
          "всё", "ну", "же", "бы", "ли", "по", "от", "до", "для", "при", "про", "но", "а", "то", "с", "со",
-         "к", "ко", "у", "о", "об", "при"}
+         "к", "ко", "у", "о", "об", "без", "под", "над"}
 
 
 def aliases_path() -> Path:
@@ -73,7 +73,10 @@ def aliases_path() -> Path:
     if env:
         return Path(env)
     try:
-        from core.paths import get_data_root
+        from core.paths import get_data_root, get_user_data_dir
+        user_file = get_user_data_dir() / ALIASES_FILE
+        if user_file.exists():
+            return user_file
         return Path(get_data_root()) / ALIASES_FILE
     except Exception:
         return Path(__file__).resolve().parent.parent / ALIASES_FILE
@@ -91,10 +94,25 @@ def load_aliases() -> list[str]:
 
 
 def save_aliases(aliases: list[str], report: dict | None = None):
-    path = aliases_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"aliases": aliases, **(report or {})}, ensure_ascii=False, indent=2),
-                    encoding="utf-8")
+    env = os.getenv("JARVIS_WAKE_ALIASES", "").strip()
+    if env:
+        targets = [Path(env)]
+    else:
+        targets = [aliases_path()]
+        try:
+            from core.paths import get_data_root, get_user_data_dir
+            for p in (get_user_data_dir() / ALIASES_FILE, Path(get_data_root()) / ALIASES_FILE):
+                if p not in targets:
+                    targets.append(p)
+        except Exception:
+            pass
+    for path in targets:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"aliases": aliases, **(report or {})}, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Не удалось сохранить %s: %s", path, exc)
 
 
 def norm(text: str) -> str:
