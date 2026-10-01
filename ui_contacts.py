@@ -151,7 +151,7 @@ class ContactsDialog(QDialog):
         lay = QHBoxLayout(w)
         lay.setContentsMargins(24, 14, 24, 14)
         lay.setSpacing(14)
-        lay.addWidget(IconBadge("person", 38))
+        lay.addWidget(IconBadge("phone", 38))
         col = QVBoxLayout()
         col.setSpacing(1)
         col.addWidget(_label("Джарвис", "brand"))

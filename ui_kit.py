@@ -81,6 +81,7 @@ QPushButton#primary:disabled {{ background: {C.BORDER_B}; color: {C.TEXT_DIM}; }
 QPushButton#ghost {{ border: none; padding: 4px; border-radius: 6px; }}
 QPushButton#ghost:hover {{ background: {C.PRI_GHO}; }}
 QPushButton#danger {{ color: {C.RED}; border: 1px solid #4a1f28; }}
+QPushButton#danger:disabled {{ color: {C.TEXT_DIM}; border-color: {C.BORDER}; background: transparent; }}
 QPushButton#danger:hover {{ color: {C.RED}; border-color: {C.RED}; background: #1a0a0e; }}
 QPushButton#seg {{ border: none; border-radius: 8px; padding: 7px 16px; color: {C.TEXT_MED}; }}
 QPushButton#seg:hover {{ color: {C.WHITE}; background: transparent; }}

@@ -548,3 +548,13 @@ header {
 }
 /* Свои команды ПК — в одну колонку: в две названия обрезались до «Рабочий ре…». */
 #pc-macros.pc-grid.two { grid-template-columns: minmax(0, 1fr); }
+
+/* ─── Сворачиваемые карточки «Сводки» ──────────────────────── */
+.fold > summary { list-style: none; cursor: pointer; min-height: 24px; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary h3 { margin-bottom: 0; }
+.fold[open] > summary h3 { margin-bottom: 8px; }
+.fold .chev { width: 16px; height: 16px; margin-left: auto; color: var(--text-dim); transition: transform .25s var(--ease); }
+.fold h3 .count { margin-left: auto; }
+.fold h3 .count + .chev { margin-left: 8px; }
+.fold[open] .chev { transform: rotate(180deg); }

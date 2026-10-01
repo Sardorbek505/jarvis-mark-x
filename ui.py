@@ -637,7 +637,15 @@ class HeaderBar(QWidget):
             vw = p.fontMetrics().horizontalAdvance(val)
             parts.append((lab, val, lw, vw))
         gap = 22
-        total = sum(lw + vw for _, _, lw, vw in parts) + gap * max(0, len(parts) - 1)
+
+        def width(ps):
+            return sum(lw + vw for _, _, lw, vw in ps) + gap * max(0, len(ps) - 1)
+        # Не влезают между именем и кнопками справа — последние цифры уходят,
+        # а не наезжают на «JARVIS» (на узком окне так и было).
+        left_end, right_start = 180, W - 270
+        while parts and (W - width(parts)) / 2 < left_end or parts and (W + width(parts)) / 2 > right_start:
+            parts.pop()
+        total = width(parts)
         x = (W - total) / 2
         for i, (lab, val, lw, vw) in enumerate(parts):
             p.setFont(lab_f)
@@ -893,8 +901,18 @@ class SetupOverlay(QWidget):
 PAGES = [
     ("home", "Джарвис", "spark"), ("commands", "Команды", "bolt"), ("study", "Учёба", "book"),
     ("football", "Футбол", "ball"), ("contacts", "Контакты", "phone"), ("about", "Обо мне", "person"), ("keys", "Ключи", "key"),
-    ("backup", "Копия", "lock"), ("help", "Что умею", "grid"), ("settings", "Настройки", "gear"),
+    ("backup", "Копия", "copy"), ("help", "Что умею", "grid"), ("settings", "Настройки", "gear"),
 ]
+
+
+_NAV_SYSTEM_FIRST = {"keys"}
+
+
+def _nav_sep() -> QFrame:
+    ln = QFrame()
+    ln.setFixedSize(40, 1)
+    ln.setStyleSheet(f"background: {C.BORDER_B}; border: none;")
+    return ln
 
 
 class NavRail(QFrame):
@@ -933,10 +951,17 @@ class NavRail(QFrame):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _=False, k=key: on_pick(k))
             self.buttons[key] = b
+            if key in _NAV_SYSTEM_FIRST:
+                # Системное (ключи, копия, справка, настройки) — внизу, отдельно от
+                # своих экранов, как в macOS; раньше было 10 одинаковых пунктов подряд.
+                lay.addStretch(1)
+                lay.addWidget(_nav_sep(), 0, Qt.AlignmentFlag.AlignHCenter)
+                lay.addSpacing(4)
             lay.addWidget(b, 0, Qt.AlignmentFlag.AlignHCenter)
             if key == "home":
-                lay.addSpacing(6)
-        lay.addStretch(1)
+                lay.addSpacing(2)
+                lay.addWidget(_nav_sep(), 0, Qt.AlignmentFlag.AlignHCenter)
+                lay.addSpacing(2)
 
     def select(self, key: str):
         for k, b in self.buttons.items():
