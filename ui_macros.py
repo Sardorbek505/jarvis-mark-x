@@ -349,7 +349,7 @@ class MacrosDialog(QDialog):
         lay.addWidget(IconBadge("bolt", 38))
         col = QVBoxLayout()
         col.setSpacing(1)
-        brand = _label("ДЖАРВИС", "brand")
+        brand = _label("Джарвис", "brand")
         f = brand.font()
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 3)
         brand.setFont(f)

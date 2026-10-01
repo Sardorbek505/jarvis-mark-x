@@ -659,7 +659,7 @@ voiceBtn.addEventListener('click', () => {
 
 // ── Вкладки ───────────────────────────────────────────────────────────────────
 let activeTab = 'chat';
-const TAB_TITLES = { chat: 'J.A.R.V.I.S', dashboard: 'СВОДКА', tasks: 'ДЕЛА', study: 'УЧЁБА', habits: 'ПРИВЫЧКИ', pc: 'ПК-ПУЛЬТ' };
+const TAB_TITLES = { chat: 'Джарвис', dashboard: 'Сводка', tasks: 'Дела', study: 'Учёба', habits: 'Привычки', pc: 'ПК-пульт' };
 // ── Анимации: подсветка вкладки переезжает, карточки каскадом, числа набегают ──
 // Только transform/opacity (их рисует видеокарта) и только при смене вкладки —
 // обновления данных раз в 30 с не перезапускают каскад и не мигают.
@@ -705,7 +705,7 @@ function switchTab(name) {
   activeTab = name;
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  $('screen-title').textContent = TAB_TITLES[name] || 'J.A.R.V.I.S';
+  $('screen-title').textContent = TAB_TITLES[name] || 'Джарвис';
   placeGlider();
   const t = document.querySelector(`.tab[data-tab="${name}"]`);
   if (t && !reduceMotion) { t.classList.remove('pop'); void t.offsetWidth; t.classList.add('pop'); }

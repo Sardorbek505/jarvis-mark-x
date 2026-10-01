@@ -21,37 +21,66 @@ def plural(n: int, forms=("шаг", "шага", "шагов")) -> str:
 
 
 # ── стиль ────────────────────────────────────────────────────────────────────
+def _chevron_png() -> str:
+    """Стрелка выпадающего списка — файлом: Qt-стили берут картинку только по пути.
+    Без неё списки выглядели как поля ввода, и никто не догадывался их открыть."""
+    import tempfile
+    from pathlib import Path
+    path = Path(tempfile.gettempdir()) / "jarvis_ui_chevron_v1.png"
+    if not path.is_file():
+        try:
+            from PyQt6.QtGui import QImage
+            img = QImage(28, 28, QImage.Format.Format_ARGB32)
+            img.fill(0)
+            p = QPainter(img)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(QPen(QColor(C.TEXT_MED), 3.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                          Qt.PenJoinStyle.RoundJoin))
+            from PyQt6.QtCore import QPointF
+            p.drawPolyline([QPointF(8, 11), QPointF(14, 17), QPointF(20, 11)])
+            p.end()
+            img.save(str(path))
+        except Exception:
+            return ""
+    return path.as_posix()
+
+
+_CHEVRON = _chevron_png()
+
 STYLE = f"""
 QDialog {{ background: {C.BG}; }}
 QWidget {{ color: {C.TEXT}; font-family: 'Segoe UI'; font-size: 13px; }}
 QLabel {{ background: transparent; }}
 QScrollArea {{ background: transparent; border: none; }}
 QWidget#canvas {{ background: {C.BG}; }}
-QLineEdit, QComboBox {{ background: {C.DARK}; color: {C.WHITE}; border: 1px solid {C.BORDER};
-  border-radius: 8px; padding: 7px 10px; selection-background-color: {C.BORDER_B}; }}
+QLineEdit, QComboBox {{ background: {C.DARK}; color: {C.WHITE}; border: 1px solid {C.BORDER_B};
+  border-radius: 10px; padding: 7px 10px; selection-background-color: {C.BORDER_B}; }}
+QComboBox {{ padding-right: 30px; }}
+QComboBox:hover {{ border-color: {C.PRI_DIM}; }}
 QLineEdit:focus, QComboBox:focus {{ border-color: {C.PRI_DIM}; }}
 QLineEdit:disabled {{ color: {C.TEXT_DIM}; }}
 QLineEdit#title {{ background: transparent; border: 1px solid transparent; font-size: 22px;
   font-weight: 600; padding: 2px 4px; }}
 QLineEdit#title:hover {{ border-color: {C.BORDER}; }}
 QLineEdit#title:focus {{ border-color: {C.PRI_DIM}; background: {C.DARK}; }}
-QComboBox::drop-down {{ border: none; width: 22px; }}
+QComboBox::drop-down {{ border: none; width: 28px; }}
+QComboBox::down-arrow {{ image: url("{_CHEVRON}"); width: 14px; height: 14px; }}
 QComboBox QAbstractItemView {{ background: {C.PANEL2}; border: 1px solid {C.BORDER_B}; outline: none;
   selection-background-color: {C.PRI_GHO}; selection-color: {C.PRI}; padding: 4px; }}
 QListWidget {{ background: transparent; border: none; outline: none; }}
 QListWidget::item {{ border-radius: 10px; padding: 10px 8px; margin: 2px 0; color: {C.TEXT}; }}
 QListWidget::item:hover {{ background: {C.PANEL2}; }}
 QListWidget::item:selected {{ background: {C.PRI_GHO}; color: {C.WHITE}; }}
-QPushButton {{ background: transparent; color: {C.TEXT_MED}; border: 1px solid {C.BORDER_B};
-  border-radius: 8px; padding: 8px 14px; }}
+QPushButton {{ background: transparent; color: {C.TEXT}; border: 1px solid {C.BORDER_B};
+  border-radius: 10px; padding: 8px 14px; }}
 QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; background: {C.PRI_GHO}; }}
 QPushButton:disabled {{ color: {C.TEXT_DIM}; border-color: {C.BORDER}; }}
 QPushButton#primary {{ background: {C.PRI}; color: {C.BG}; border: none; font-weight: 700; }}
 QPushButton#primary:hover {{ background: #5fe0cf; }}
-QPushButton#primary:disabled {{ background: {C.PRI_DIM}; color: {C.PANEL}; }}
+QPushButton#primary:disabled {{ background: {C.BORDER_B}; color: {C.TEXT_DIM}; }}
 QPushButton#ghost {{ border: none; padding: 4px; border-radius: 6px; }}
 QPushButton#ghost:hover {{ background: {C.PRI_GHO}; }}
-QPushButton#danger {{ color: {C.TEXT_DIM}; border: 1px solid {C.BORDER}; }}
+QPushButton#danger {{ color: {C.RED}; border: 1px solid #4a1f28; }}
 QPushButton#danger:hover {{ color: {C.RED}; border-color: {C.RED}; background: #1a0a0e; }}
 QPushButton#seg {{ border: none; border-radius: 8px; padding: 7px 16px; color: {C.TEXT_MED}; }}
 QPushButton#seg:hover {{ color: {C.WHITE}; background: transparent; }}
@@ -69,7 +98,7 @@ QScrollBar:vertical {{ background: transparent; width: 6px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {C.BORDER_B}; border-radius: 3px; min-height: 30px; }}
 QScrollBar::handle:vertical:hover {{ background: {C.PRI_DIM}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-QFrame#card {{ background: {C.PANEL}; border: 1px solid {C.BORDER}; border-radius: 14px; }}
+QFrame#card {{ background: {C.PANEL}; border: 1px solid {C.BORDER}; border-radius: 16px; }}
 QFrame#card:hover {{ border-color: {C.BORDER_A}; }}
 QFrame#ai {{ background: {C.PRI_GHO}; border: 1px solid {C.PRI_DIM}; border-radius: 14px; }}
 QFrame#step {{ background: {C.PANEL}; border: 1px solid {C.BORDER}; border-radius: 12px; }}
@@ -78,11 +107,11 @@ QFrame#chip {{ background: {C.PRI_GHO}; border: 1px solid {C.PRI_DIM}; border-ra
 QFrame#sidebar {{ background: {C.PANEL}; border: none; border-right: 1px solid {C.BORDER}; }}
 QFrame#bar {{ background: {C.PANEL}; border: none; }}
 QFrame#seg {{ background: {C.DARK}; border: 1px solid {C.BORDER}; border-radius: 10px; }}
-QLabel#cap {{ color: {C.TEXT_DIM}; font-family: Consolas; font-size: 11px; font-weight: bold; }}
-QLabel#hint {{ color: {C.TEXT_DIM}; font-size: 12px; }}
+QLabel#cap {{ color: {C.TEXT_MED}; font-size: 13px; font-weight: 600; }}
+QLabel#hint {{ color: {C.TEXT_DIM}; font-size: 12.5px; }}
 QLabel#h1 {{ color: {C.WHITE}; font-size: 17px; font-weight: 700; }}
 QLabel#h2 {{ color: {C.WHITE}; font-size: 15px; font-weight: 600; }}
-QLabel#brand {{ color: {C.PRI}; font-family: Consolas; font-size: 11px; font-weight: bold; }}
+QLabel#brand {{ color: {C.PRI}; font-size: 12px; font-weight: 600; }}
 QLabel#stepTitle {{ color: {C.TEXT_MED}; font-size: 12px; font-weight: 600; }}
 QLabel#status {{ color: {C.TEXT_MED}; font-size: 12px; }}
 """
@@ -97,12 +126,12 @@ def _label(text: str, name: str = "", wrap: bool = True) -> QLabel:
 
 
 def _cap(text: str) -> QLabel:
-    """Подпись раздела капсом, с разрядкой — как в HUD."""
-    w = _label(text.upper(), "cap", wrap=False)
-    f = w.font()
-    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.6)
-    w.setFont(f)
-    return w
+    """Подпись раздела — как в настройках macOS: обычными буквами, полужирным.
+    Капс с разрядкой читался тяжело и делал окна мрачными."""
+    text = text.strip()
+    if text.isupper() and len(text) > 1:           # «ГОЛОС» из старых вызовов → «Голос»
+        text = text[0] + text[1:].lower()
+    return _label(text, "cap", wrap=False)
 
 
 def _icon_btn(icon: str, tip: str, size: int = 14, color: str = C.TEXT_MED) -> QPushButton:

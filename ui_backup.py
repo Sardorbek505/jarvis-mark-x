@@ -70,7 +70,7 @@ class BackupDialog(QDialog):
         lay.addWidget(IconBadge("lock", 38))
         col = QVBoxLayout()
         col.setSpacing(1)
-        col.addWidget(_label("ДЖАРВИС", "brand"))
+        col.addWidget(_label("Джарвис", "brand"))
         col.addWidget(_label("Резервная копия", "h1"))
         lay.addLayout(col, 1)
         return w

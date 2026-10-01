@@ -82,7 +82,7 @@ class WelcomeDialog(QDialog):
         lay.addWidget(IconBadge("spark", 38))
         col = QVBoxLayout()
         col.setSpacing(1)
-        col.addWidget(_label("ДЖАРВИС", "brand"))
+        col.addWidget(_label("Джарвис", "brand"))
         col.addWidget(_label("Добро пожаловать" if first_run else "Что умеет Джарвис", "h1", wrap=False))
         lay.addLayout(col)
         lay.addStretch(1)

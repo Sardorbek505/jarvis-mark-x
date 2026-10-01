@@ -81,10 +81,12 @@ class C:
     GREEN_D  = "#2aa05a"
     RED      = "#ff4660"
     MUTED_C  = "#ff4660"
-    TEXT     = "#d6dee5"
-    TEXT_DIM = "#5c6873"
-    TEXT_MED = "#8a96a1"
-    WHITE    = "#eef3f6"
+    # Текст — «холодный HUD»: с голубым оттенком в тон бирюзе. Самый тусклый
+    # (TEXT_DIM) — не ниже 4.5:1 к панелям: раньше подсказки сливались с фоном.
+    TEXT     = "#e6f3fa"
+    TEXT_DIM = "#6f8ca0"
+    TEXT_MED = "#8fb0c4"
+    WHITE    = "#f4fbff"
     DARK     = "#05090d"
     BAR_BG   = "#0f161d"
 
@@ -1013,7 +1015,8 @@ class MainWindow(QMainWindow):
         self.move(screen.x() + (screen.width() - w0) // 2, screen.y() + (screen.height() - h0) // 2)
 
         self.setStyleSheet(f"""
-            QMainWindow, QWidget {{ background: {C.BG}; color: {C.TEXT}; }}
+            QMainWindow, QWidget#central {{ background: {C.BG}; }}
+            QWidget {{ color: {C.TEXT}; }}
             QSplitter::handle {{ background: {C.BORDER}; }}
         """)
 
@@ -1037,6 +1040,9 @@ class MainWindow(QMainWindow):
         # Шапка во всю ширину, под ней шар и чат. Левой колонки с полосками
         # больше нет: цифры уехали в шапку, статус — в плашку над шаром.
         central = QWidget()
+        # Фон — только у окна и центра. Правило «QWidget {background}» красило
+        # каждую обёртку внутри карточек: на экранах были тёмные прямоугольники.
+        central.setObjectName("central")
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)

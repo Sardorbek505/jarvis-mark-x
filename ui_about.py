@@ -203,7 +203,7 @@ class AboutDialog(QDialog):
         lay.addWidget(IconBadge("person", 38))
         col = QVBoxLayout()
         col.setSpacing(1)
-        col.addWidget(_label("ДЖАРВИС", "brand"))
+        col.addWidget(_label("Джарвис", "brand"))
         col.addWidget(_label("Обо мне", "h1", wrap=False))
         lay.addLayout(col)
         lay.addStretch(1)
