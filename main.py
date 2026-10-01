@@ -515,6 +515,36 @@ def _confirm_question(name: str, args: dict) -> str:
         return ""
 
 
+def _confirm_label(name: str, args: dict) -> str:
+    """Вопрос для кнопок на капсуле: «Выключить компьютер?», «Удалить a.txt?»."""
+    question = _confirm_question(name, args)
+    if question:
+        return question
+    action = _action_of(args)
+    target = str(args.get("path") or args.get("name") or args.get("value") or "").strip()
+    if name == "computer_control":
+        if any(k in action for k in ("restart", "reboot", "перезагруз")):
+            return "Перезагрузить компьютер?"
+        return "Выключить компьютер?"
+    if name == "files":
+        return f"Удалить {target}?" if target else "Удалить файлы?"
+    if name == "macro":
+        return f"Запустить команду «{target}»?" if target else "Запустить свою команду?"
+    return f"Выполнить {name} · {action}?"
+
+
+def _tool_outcome(result) -> bool | None:
+    """Как закончился шаг для капсулы: True — сделано, False — не вышло,
+    None — ждёт «да» (это не провал)."""
+    text = str((result or {}).get("result", "") if isinstance(result, dict) else result or "")
+    if text.startswith("НЕ ВЫПОЛНЕНО — нужно подтверждение"):
+        return None
+    return not text.startswith(("Ошибка", "НЕ ВЫПОЛНЕНО", "Не выполнено", "Не успело"))
+
+
+_QUOTA_WORDS = ("resource_exhausted", "quota", "429", "rate limit", "too many requests")
+
+
 _YES_RE = re.compile(
     r"\b(да|давай|подтверждаю|конечно|выключай|удаляй|перезагружай|ага|угу|"
     r"yes|yeah|ok|окей|ha|ҳа|иә|иа)\b", re.IGNORECASE)
@@ -1880,6 +1910,8 @@ class Jarvis:
         self._wake_ring = collections.deque(maxlen=_WAKE_PREROLL_FRAMES)
 
         self.ui.on_text_command = self._on_text_command
+        self.ui.on_island_confirm = self._on_island_confirm
+        self.ui.on_file_dropped = self._on_file_dropped
 
         # Глобальные системные горячие клавиши (F8 / Ctrl+Shift+J — вызов, Ctrl+Shift+M — мьют)
         try:
@@ -2042,6 +2074,67 @@ class Jarvis:
             self._typed_turn = self._user_turn
             self._remember_turn(text, "")
             self._send_text_to_session(text)
+
+    def _on_island_confirm(self, ok: bool):
+        """«Разрешить» / «Отклонить» на капсуле — то же, что набрать «да» / «нет»:
+        клик мышью за этим ПК — владелец, как и набранное с клавиатуры. Проверка
+        в _execute_tool та же: «да» засчитывается только на ждущий вызов."""
+        logger.info("Капсула: %s", "разрешил" if ok else "отклонил")
+        self.ui.write_log(f"SYS: {'✅ разрешено' if ok else '⛔ отклонено'} кнопкой на капсуле")
+        if not ok:
+            self._pending_destructive = None
+        self._on_text_command("да" if ok else "нет, отмена")
+
+    def _confirm_heard(self, text: str):
+        """Голосом сказали «нет» на вопрос — снять кнопки с капсулы."""
+        if self._pending_destructive and _NO_RE.search(text or "") and not _is_affirmative(text):
+            done = getattr(self.ui, "confirm_done", None)
+            if done:
+                done()
+
+    def _on_file_dropped(self, path: str):
+        threading.Thread(target=self._send_dropped_file, args=(path,), daemon=True, name="drop-file").start()
+
+    def _send_dropped_file(self, path: str):
+        """Файл с капсулы — в разговор: прочитать, отдать Gemini, ответ придёт голосом."""
+        from core import dropped_file
+        progress = getattr(self.ui, "file_progress", None) or (lambda *_a: None)
+        name = os.path.basename(path)
+        progress(name, 0.15, "Читаю")
+        try:
+            f = dropped_file.prepare(path)
+        except dropped_file.Unsupported as exc:
+            logger.info("Файл с капсулы не прочитан: %s — %s", name, exc)
+            progress(name, -1.0, str(exc))
+            return
+        except Exception as exc:
+            logger.warning("Файл с капсулы: %s", exc, exc_info=True)
+            progress(name, -1.0, "не получилось прочитать")
+            return
+        if not self._loop or not self.session or not self._loop.is_running():
+            progress(name, -1.0, "нет связи с Gemini")
+            return
+        progress(name, 0.6, "Отправляю")
+        parts = [types.Part.from_text(text=dropped_file.instruction(f))]
+        if f.kind == "image":
+            parts.append(types.Part.from_bytes(data=f.data, mime_type=f.mime))
+        else:
+            parts.append(types.Part.from_text(text=f"Содержимое «{f.name}»:\n{f.text}"))
+        self.wake()
+        self.last_user_text = f"[файл {name}]"
+        self._user_turn += 1
+        self._typed_turn = self._user_turn
+        self.ui.write_log(f"Вы: 📎 {name}")
+        fut = asyncio.run_coroutine_threadsafe(
+            self.session.send_client_content(turns=[types.Content(role="user", parts=parts)], turn_complete=True),
+            self._loop)
+        try:
+            fut.result(timeout=30)
+        except Exception as exc:
+            logger.warning("Файл %s не ушёл в Gemini: %s", name, exc)
+            progress(name, -1.0, "не отправился — повторите")
+            return
+        progress(name, 1.0, "Отправил")
 
     # ── Обращение по имени ────────────────────────────────────────────────────
     def wake(self):
@@ -2322,6 +2415,9 @@ class Jarvis:
                 question = _confirm_question(name, args)
                 logger.warning("Требую подтверждения: %s/%s", name, _action_of(args))
                 self.ui.write_log(f"SYS: жду подтверждения — {question or name + '/' + _action_of(args)}")
+                ask = getattr(self.ui, "ask_confirm", None)
+                if ask:
+                    ask(_confirm_label(name, args))
                 if not self.ui.muted:
                     self.ui.set_state("LISTENING")
                 return types.FunctionResponse(
@@ -2334,6 +2430,9 @@ class Jarvis:
                 )
             if name == "contacts":
                 args = dict(getattr(self, "_pending_args", None) or args)   # ровно то, что подтвердили
+            done = getattr(self.ui, "confirm_done", None)
+            if done:
+                done()
             denied = await self._voice_denied(name, args)
             if denied:
                 self._pending_destructive = None
@@ -3322,6 +3421,9 @@ class Jarvis:
             except Exception as exc:
                 logger.debug("Прицел не встал: %s", exc, exc_info=True)
             _tool_started = time.perf_counter()
+            _step = getattr(self.ui, "tool_started", None)
+            if _step:
+                _step(fc.name, dict(fc.args or {}))
             try:
                 # Инструмент без ответа (Spotify не отвечает, браузерный вход в
                 # Google) держал весь приём: ни звука, ни реакции — «завис».
@@ -3344,6 +3446,9 @@ class Jarvis:
                     fc.name,
                     int((time.perf_counter() - _tool_started) * 1000),
                 )
+            _end = getattr(self.ui, "tool_finished", None)
+            if _end:
+                _end(fc.name, _tool_outcome(getattr(fr, "response", None)))
             responses.append(fr)
             self._show_card(fc, fr)
             if fc.name in _MEDIA_TOOLS and str((fc.args or {}).get("action", "play")).lower() in (
@@ -3383,13 +3488,21 @@ class Jarvis:
         if q.tool:
             self._quick_seq = getattr(self, "_quick_seq", 0) + 1
             fc = SimpleNamespace(id=f"quick-{self._quick_seq}", name=q.tool, args=dict(q.args))
+            _step = getattr(self.ui, "tool_started", None)
+            if _step:
+                _step(fc.name, dict(fc.args))
+            ok = False
             try:
                 fr = await asyncio.wait_for(self._execute_tool(fc), _TOOL_TIMEOUT_SEC)
                 result = str((getattr(fr, "response", None) or {}).get("result", ""))
+                ok = _tool_outcome(getattr(fr, "response", None))
                 self._show_card(fc, fr)
             except Exception as exc:
                 logger.warning("Мгновенная команда %s: %s", q.tool, exc)
                 result = f"Не получилось, сэр: {exc}"
+            _end = getattr(self.ui, "tool_finished", None)
+            if _end:
+                _end(fc.name, ok)
         text = quick.reply_for(q, result)
         logger.info("⚡ Мгновенно: «%s» → %s %s → «%s» (%d мс)", heard[:80], q.tool or "-",
                     q.args, text, int((time.perf_counter() - started) * 1000))
@@ -3703,6 +3816,7 @@ class Jarvis:
                                 self.ui.write_log(f"Вы: {full_in}")
                                 self.last_user_text = full_in
                                 self._user_turn += 1
+                                self._confirm_heard(full_in)
                                 asyncio.get_running_loop().run_in_executor(
                                     None, self._learn_from_phrase, full_in
                                 )
@@ -4038,6 +4152,9 @@ class Jarvis:
                     self._resume_handle = None
                 if failures == 3:
                     self.ui.write_log("SYS: нет связи с Gemini — продолжаю попытки…")
+                if any(k in low for k in _QUOTA_WORDS):
+                    self.ui.write_log(f"SYS: 😵 Слишком много запросов: Gemini просит паузу — "
+                                      f"вернусь через {delay:.0f} с")
             logger.info("Переподключение через %.1f с", delay)
             self.ui.set_state("RECONNECTING")
             await asyncio.sleep(delay)

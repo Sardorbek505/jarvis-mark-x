@@ -1020,6 +1020,8 @@ class MainWindow(QMainWindow):
         self.muted = False        # см. комментарий выше — микрофон слушает сразу
         self.current_file: str | None = None
         self.on_text_command = None
+        self.on_island_confirm = None      # кнопки «Разрешить / Отклонить» на капсуле (main.py)
+        self.on_file_dropped = None        # файл брошен на капсулу (main.py)
 
         # ── Системный трей Windows ──────────────────────────────────
         try:
@@ -1268,6 +1270,9 @@ class MainWindow(QMainWindow):
             elif text.startswith("SYS: ⏰") and ":" in text[7:]:
                 title, _, body = text[len("SYS: ⏰"):].strip().partition(":")
                 island.notify(title.strip(), body.strip())
+            elif text.startswith("SYS: 😵") and ":" in text[7:]:
+                title, _, body = text[len("SYS: 😵"):].strip().partition(":")
+                island.trouble(title.strip().upper(), body.strip())
         # Готовый ответ (в том числе на текстовую команду) — ещё и субтитром.
         if text[:8].lower() == "джарвис:":
             self._sub_sig.emit(text.split(":", 1)[1])
@@ -1301,7 +1306,9 @@ class MainWindow(QMainWindow):
             return
         try:
             from ui_island import Island
-            self._island = Island(on_open=self._restore_from_island)
+            self._island = Island(on_open=self._restore_from_island,
+                                  on_confirm=lambda ok: self._island_call("on_island_confirm", ok),
+                                  on_file=lambda path: self._island_call("on_file_dropped", path))
         except Exception as exc:
             _logger.warning("Капсула недоступна: %s", exc)
             return
@@ -1312,6 +1319,36 @@ class MainWindow(QMainWindow):
             self._island_tmr = QTimer(self)
             self._island_tmr.timeout.connect(lambda: self._island_wanted(self._out_of_sight()))
             self._island_tmr.start(700)
+
+    def _island_call(self, attr: str, *args):
+        """Кнопка или файл на капсуле → обработчик, который поставил main.py."""
+        handler = getattr(self, attr, None)
+        if callable(handler):
+            try:
+                handler(*args)
+            except Exception as exc:
+                _logger.warning("Капсула: %s не сработал: %s", attr, exc, exc_info=True)
+
+    def _island_do(self, method: str, *args):
+        isl = getattr(self, "_island", None)
+        if isl is not None:
+            getattr(isl, method)(*args)
+
+    # Из любого потока: капсула принимает всё через сигналы.
+    def tool_started(self, name: str, args: dict | None = None):
+        self._island_do("tool_started", name, args)
+
+    def tool_finished(self, name: str, ok: bool | None = True):
+        self._island_do("tool_finished", name, ok)
+
+    def ask_confirm(self, question: str):
+        self._island_do("ask_confirm", question)
+
+    def confirm_done(self):
+        self._island_do("confirm_done")
+
+    def file_progress(self, name: str, frac: float, stage: str):
+        self._island_do("file_progress", name, frac, stage)
 
     def _out_of_sight(self) -> bool:
         if not self.isVisible() or self.isMinimized():

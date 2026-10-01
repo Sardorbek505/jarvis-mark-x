@@ -48,6 +48,8 @@ class HeadlessUI:
     def __init__(self, config_path: Path | None = None):
         self.muted = False
         self.on_text_command = None
+        self.on_island_confirm = None   # капсулы без окна нет — кнопок и файлов не будет
+        self.on_file_dropped = None
         self.on_voice_intro = None      # кнопка «Познакомиться голосом» (в окне; тут — нет)
         self.state = "INIT"
         self.logs: list[str] = []
