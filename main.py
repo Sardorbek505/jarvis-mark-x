@@ -315,6 +315,12 @@ def _local_wake_enabled() -> bool:
             return True
     except Exception:
         pass
+    try:                                     # sherpa-onnx: «Джарвис» без ключей и обучения
+        from core import wake_kws
+        if wake_kws.available():
+            return True
+    except Exception:
+        pass
     from core.wake_vosk import load_aliases
     return bool(load_aliases())
 
@@ -3166,6 +3172,22 @@ class Jarvis:
                 self._local_wake = wake
                 self.ui.write_log("SYS: слово «Джарвис» слушается на компьютере (Porcupine)")
                 return
+            # Без ключей: sherpa-onnx знает «Джарвис» текстом. Модели ещё нет —
+            # пока работает Vosk, модель качается в фоне, потом переключимся.
+            try:
+                from core import wake_kws
+                if wake_kws.available():
+                    if wake_kws.find_model() is not None:
+                        kw = wake_kws.KwsWake(_heard)
+                        if await asyncio.to_thread(kw.start):
+                            self._local_wake = kw
+                            self.ui.write_log("SYS: слово «Джарвис» слушается на компьютере (sherpa-onnx)")
+                            return
+                    elif not getattr(self, "_kws_downloading", False):
+                        self._kws_downloading = True
+                        threading.Thread(target=self._download_kws, daemon=True, name="kws-download").start()
+            except Exception as exc:
+                logger.warning("Детектор слова sherpa-onnx: %s", exc)
             wake = LocalWake(_heard)
             if await asyncio.to_thread(wake.start):
                 self._local_wake = wake
@@ -3173,6 +3195,28 @@ class Jarvis:
             else:
                 self._local_wake = False     # не пробовать при каждом переподключении
                 self.ui.write_log("SYS: нет модели слова «Джарвис» — слушаю через Gemini")
+
+    def _download_kws(self):
+        """Скачать модель «Джарвис» (5 МБ) и перейти на неё с Vosk."""
+        try:
+            from core import wake_kws
+            wake_kws.download()
+        except Exception as exc:
+            logger.warning("Модель слова «Джарвис» не скачалась: %s — остаюсь на Vosk", exc)
+            return
+        finally:
+            self._kws_downloading = False
+        if self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._switch_to_kws(), self._loop)
+
+    async def _switch_to_kws(self):
+        old = self._local_wake
+        if old and not isinstance(old, LocalWake):
+            return                                 # уже Porcupine или sherpa
+        if old:
+            old.stop()
+        self._local_wake = None
+        await self._start_local_wake()
 
     def _on_wake_trained(self):
         """Обучили слову «Джарвис» — включить детектор сразу. Раньше флаг «нет
@@ -3689,13 +3733,27 @@ class Jarvis:
             if _end:
                 _end(fc.name, ok)
         text = quick.reply_for(q, result)
-        logger.info("⚡ Мгновенно: «%s» → %s %s → «%s» (%d мс)", heard[:80], q.tool or "-",
-                    q.args, text, int((time.perf_counter() - started) * 1000))
+        silent = quick.silent(q, result)
+        logger.info("⚡ Мгновенно: «%s» → %s %s → «%s»%s (%d мс)", heard[:80], q.tool or "-",
+                    q.args, text, " [звуком]" if silent else "", int((time.perf_counter() - started) * 1000))
         self.ui.write_log(f"Вы: {heard}")
-        self.ui.write_log(f"Джарвис: {text}")
+        self.ui.write_log(f"Джарвис: {'✓ ' + text if silent else text}")
         self._remember_turn(heard, text)
-        if text:
+        if silent:
+            self._play_done_sound()               # сделано — звук и галочка, без «Есть, сэр»
+        elif text:
             await self._speak_fish(text)
+
+    def _play_done_sound(self):
+        """Короткое «готово» тем же путём, что голос Джарвиса (в выбранный динамик)."""
+        try:
+            from core.sounds import done_pcm
+            pcm = done_pcm(RECV_SAMPLE_RATE)
+            step = CHUNK_SIZE * 2
+            for j in range(0, len(pcm), step):
+                self.audio_in_queue.put_nowait(pcm[j:j + step])
+        except Exception as exc:
+            logger.debug("Звук «готово»: %s", exc)
 
     async def _voice_denied(self, name: str, args: dict) -> str:
         """Опасное подтверждено — но ВАШИМ ли голосом? '' — да (или проверить

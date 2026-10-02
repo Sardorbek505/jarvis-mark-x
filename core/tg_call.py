@@ -31,6 +31,7 @@ TG_RATE = 48000
 FRAME_SEC = 0.01
 FRAME_BYTES = int(TG_RATE * FRAME_SEC) * 2           # 10 мс, моно, 16 бит = 960 байт
 IN_RATE, OUT_RATE = 16000, 24000
+MIC_BATCH_SEC = 0.03
 ANSWER_TIMEOUT = 45
 MAX_CALL_SEC = 10 * 60
 BYE_SILENCE_SEC = 6.0           # попрощались и тишина — кладём трубку сами
@@ -73,10 +74,19 @@ _call_lock = threading.Lock()
 # ── звук ──────────────────────────────────────────────────────────────────────
 
 class Downsampler:
-    """48 кГц → 16 кГц: среднее по тройкам (простой фильтр от наложения).
-    Хвост, не кратный трём, ждёт следующего куска."""
+    """48 кГц → 16 кГц: фильтр нижних частот (окно Хэмминга, срез 7 кГц), потом
+    каждый третий отсчёт. Раньше было среднее по тройкам — оно почти не режет
+    7–16 кГц, и шипение линии заворачивалось в речь: Gemini слышал «<noise>».
+    Хвост, не кратный трём, и историю фильтра помнит между кусками."""
+
+    TAPS = 63
 
     def __init__(self):
+        import numpy as np
+        n = np.arange(self.TAPS) - (self.TAPS - 1) / 2
+        h = np.sinc(2 * 7000 / TG_RATE * n) * np.hamming(self.TAPS)
+        self._h = h / h.sum()
+        self._hist = np.zeros(self.TAPS - 1)
         self._tail = b""
 
     def __call__(self, pcm: bytes) -> bytes:
@@ -86,8 +96,37 @@ class Downsampler:
         self._tail = data[n:]
         if not n:
             return b""
-        x = np.frombuffer(data[:n], dtype="<i2").astype(np.int32).reshape(-1, 3)
-        return x.mean(axis=1).astype("<i2").tobytes()
+        x = np.concatenate((self._hist, np.frombuffer(data[:n], dtype="<i2").astype(np.float64)))
+        self._hist = x[-(self.TAPS - 1):]
+        y = np.convolve(x, self._h, mode="valid")[::3]
+        return np.clip(np.round(y), -32768, 32767).astype("<i2").tobytes()
+
+
+class LineGain:
+    """Тихая трубка → нормальная громкость. Телефон отдаёт голос в 5–10 раз
+    тише микрофона у ПК, и Gemini с «низкой чувствительностью к началу речи»
+    принимал его за шум. Усиление подстраивается по громкости РЕЧИ (тишина и
+    шум линии его не раскачивают), не больше MAX раз, плавно — без щелчков."""
+
+    TARGET, FLOOR, MAX = 4000.0, 120.0, 6.0
+
+    def __init__(self):
+        self.gain = 1.0
+        self._level = 0.0                      # огибающая громкости речи
+
+    def __call__(self, pcm: bytes) -> bytes:
+        import numpy as np
+        x = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype="<i2").astype(np.float64)
+        if not len(x):
+            return b""
+        rms = float(np.sqrt(np.mean(x * x)))
+        if rms > self.FLOOR:                   # это речь, а не шум линии
+            k = 0.3 if rms > self._level else 0.02          # быстро вверх, медленно вниз
+            self._level = rms if not self._level else self._level + k * (rms - self._level)
+        want = min(self.MAX, max(1.0, self.TARGET / self._level)) if self._level else 1.0
+        ramp = np.linspace(self.gain, want, len(x), endpoint=False)
+        self.gain = want
+        return np.clip(np.round(x * ramp), -32768, 32767).astype("<i2").tobytes()
 
 
 class Upsampler:
@@ -218,7 +257,7 @@ class CallSession:
         self.max_sec = max_sec
         self.log = log or (lambda s: logger.info("Звонок: %s", s))
         self.out = OutBuffer()
-        self.up, self.down = Upsampler(), Downsampler()
+        self.up, self.down, self.boost = Upsampler(), Downsampler(), LineGain()
         self.transcript: list[str] = []
         self._mic: asyncio.Queue[bytes] | None = None
         self._hung_up = asyncio.Event()
@@ -264,7 +303,7 @@ class CallSession:
         if self._mic is not None:
             chunk = self.down(pcm48)
             if chunk:
-                self._mic.put_nowait(chunk)
+                self._mic.put_nowait(self.boost(chunk))
 
     def _on_hangup(self):
         self._hung_up.set()
@@ -365,8 +404,15 @@ class CallSession:
     async def _pump_mic(self, session):
         from google.genai import types
         while True:
-            chunk = await self._mic.get()
-            await session.send_realtime_input(audio=types.Blob(data=chunk, mime_type=f"audio/pcm;rate={IN_RATE}"))
+            # Из трубки кадры по 10 мс: слать каждый — 100 сообщений в секунду,
+            # отправка не успевает, и голос доходит до Gemini с опозданием.
+            # Копим ~40 мс и шлём одним куском.
+            chunks = [await self._mic.get()]
+            await asyncio.sleep(MIC_BATCH_SEC)
+            while not self._mic.empty():
+                chunks.append(self._mic.get_nowait())
+            await session.send_realtime_input(audio=types.Blob(data=b"".join(chunks),
+                                                               mime_type=f"audio/pcm;rate={IN_RATE}"))
 
     async def _pump_gemini(self, session):
         from google.genai import types

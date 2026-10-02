@@ -377,6 +377,10 @@ class SettingsDialog(QDialog):
         self.island = self._toggle("island", v["island"])
         self._row(lay, "Капсула сверху экрана",
                   "Когда окно свёрнуто, видно, что делает Джарвис. Включится после перезапуска.", self.island)
+        self.quick_voice = self._toggle("quick_voice", v["quick_voice"])
+        self._row(lay, "Отвечать голосом на простые команды",
+                  "Выключено — «пауза», «громче», «следующий трек» выполняются сразу и подтверждаются "
+                  "коротким звуком, без «Есть, сэр».", self.quick_voice)
         self.anims = self._toggle("animations", v["animations"])
         self._row(lay, "Анимации", "Плавные переходы и подсветка. Выключите, если компьютер тормозит.",
                   self.anims)

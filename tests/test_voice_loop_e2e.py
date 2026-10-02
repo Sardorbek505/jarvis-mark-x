@@ -829,7 +829,7 @@ async def _мгновенно(стенд, script, monkeypatch, result="Пауз�
 
 @pytest.mark.asyncio
 async def test_частая_команда_выполняется_сразу_и_gemini_не_дублирует(стенд, поддельный_fish, monkeypatch):
-    """«Пауза»: Джарвис ставит паузу сам и отвечает готовой фразой; вызов и
+    """«Пауза»: Джарвис ставит паузу сам и молча подтверждает звуком; вызов и
     речь Gemini на ту же команду глушатся — пауза не ставится дважды."""
     выполнено, session = await _мгновенно(стенд, [
         _resp(heard="пауза"),
@@ -843,7 +843,7 @@ async def test_частая_команда_выполняется_сразу_и_
     ], monkeypatch)
 
     assert выполнено == [("video_control", {"action": "pause"})], "команда выполнена не ровно один раз"
-    assert поддельный_fish and поддельный_fish[0] in jarvis_main.quick.PHRASES["pause"]
+    assert поддельный_fish == [], "простая команда — звуком, без слов"
     assert "Ставлю на паузу, сэр." not in поддельный_fish and "Готово, сэр." not in поддельный_fish
     assert "Уже выполнено" in str(session.tool_responses[0].response)
     assert "Вы: пауза" in стенд.ui.logs
