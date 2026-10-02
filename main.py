@@ -4388,6 +4388,8 @@ def main():
     def runner():
         ui.wait_for_api_key()
         jarvis = Jarvis(ui)
+        # Крестик закрывает программу целиком: вернуть громкость, снять хоткеи, погасить бота.
+        ui.on_quit = [*getattr(ui, "on_quit", []), jarvis.cleanup]
         try:
             asyncio.run(jarvis.run())
         except KeyboardInterrupt:

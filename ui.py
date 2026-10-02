@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import platform
+import os
 import sys
 import threading
 import time
@@ -1168,7 +1169,7 @@ class MainWindow(QMainWindow):
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(14, 0, 14, 0)
         btn_row.setSpacing(14)
-        for label, slot in [("Очистить", self._clear_log), ("Свернуть в трей", self.close)]:
+        for label, slot in [("Очистить", self._clear_log), ("Свернуть в трей", self.hide_to_tray)]:
             b = QPushButton(label)
             b.setFont(QFont("Segoe UI", 7))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1845,18 +1846,24 @@ class MainWindow(QMainWindow):
         self._header.set_accent(rgb)
 
     def closeEvent(self, event):
-        """Сворачивание в трей при закрытии окна (вместо уничтожения процесса)."""
-        if hasattr(self, "tray") and self.tray and self.tray.isVisible():
-            event.ignore()
-            self.hide()
-            self.tray.showMessage(
-                "JARVIS Mark X",
-                "Ассистент свёрнут в системный трей и продолжает слушать.",
-                QSystemTrayIcon.MessageIcon.Information,
-                2000,
-            )
-        else:
-            event.accept()
+        """Крестик — выход из программы. Раньше он прятал окно в трей, и
+        Джарвис «не выключался»: процесс жил и слушал дальше. Спрятать окно
+        и оставить Джарвиса слушать — «Свернуть в трей»."""
+        event.accept()
+        self.force_quit()
+
+    def hide_to_tray(self):
+        """Спрятать окно, Джарвис продолжает слушать (вернуть — из трея)."""
+        if not (getattr(self, "tray", None) and self.tray.isVisible()):
+            self.showMinimized()
+            return
+        self.hide()
+        self.tray.showMessage(
+            "JARVIS Mark X",
+            "Ассистент свёрнут в системный трей и продолжает слушать.",
+            QSystemTrayIcon.MessageIcon.Information,
+            2000,
+        )
 
     def force_quit(self):
         """Полное закрытие приложения по команде из меню трея."""
@@ -1922,4 +1929,12 @@ class JarvisUI(MainWindow):
         self._mute_sig.emit()
 
     def mainloop(self):
-        sys.exit(self._app.exec())
+        code = self._app.exec()
+        # Окно закрыто — выходим целиком. Рабочие потоки (Gemini, Telegram,
+        # звонки) не все демоны и держали процесс живым после крестика.
+        for hook in getattr(self, "on_quit", []):
+            try:
+                hook()
+            except Exception:
+                pass
+        os._exit(code)
