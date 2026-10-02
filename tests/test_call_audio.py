@@ -78,3 +78,30 @@ async def test_phone_frames_go_to_gemini_in_batches_not_100_a_second():
     pump.cancel()
     assert sum(live.sent) == 16000 * 2 * 0.5                       # ничего не потеряно
     assert len(live.sent) <= 25, f"{len(live.sent)} отправок на 50 кадров"
+
+
+def _talk(s, seconds):
+    s._mic = asyncio.Queue()
+    frame = tone(48000, 0.01, 300, 900).tobytes()
+    for _ in range(int(seconds * 100)):
+        s._on_audio(frame)
+
+
+def test_owner_call_voice_is_saved_for_diagnosis(tmp_path):
+    """«Говорю, а он не слышит»: что пришло из трубки и что ушло в Gemini — в файлы."""
+    import wave
+    s = tc.CallSession(tg=None, live=None, peer=1, prompt="")           # звонок хозяину
+    _talk(s, tc.REC_SEC + 5)
+    raw, sent = s.save_recording(tmp_path)
+    with wave.open(raw) as w:
+        assert w.getframerate() == 48000 and w.getnframes() == tc.REC_SEC * 48000   # не больше REC_SEC
+    with wave.open(sent) as w:
+        assert w.getframerate() == 16000 and w.getnframes() == tc.REC_SEC * 16000
+        loud = np.frombuffer(w.readframes(w.getnframes()), "<i2").astype(float)
+    assert np.sqrt(np.mean(loud[-16000:] ** 2)) > 3 * 900 / 2 ** 0.5          # усиленный — как слышит Gemini
+
+
+def test_contact_call_is_never_recorded(tmp_path):
+    s = tc.CallSession(tg=None, live=None, peer=1, prompt="", callee="Азиз")
+    _talk(s, 2)
+    assert s.save_recording(tmp_path) == [] and not list(tmp_path.iterdir())

@@ -32,6 +32,11 @@ FRAME_SEC = 0.01
 FRAME_BYTES = int(TG_RATE * FRAME_SEC) * 2           # 10 мс, моно, 16 бит = 960 байт
 IN_RATE, OUT_RATE = 16000, 24000
 MIC_BATCH_SEC = 0.03
+# Диагностика «говорю, а он не слышит»: первые секунды голоса из трубки — в файлы
+# (как пришло из Telegram и что ушло в Gemini). Только в звонках хозяину:
+# голоса контактов не сохраняются.
+REC_SEC = 20
+REC_NAMES = ("call_in_raw.wav", "call_in_gemini.wav")
 ANSWER_TIMEOUT = 45
 MAX_CALL_SEC = 10 * 60
 BYE_SILENCE_SEC = 6.0           # попрощались и тишина — кладём трубку сами
@@ -258,6 +263,7 @@ class CallSession:
         self.log = log or (lambda s: logger.info("Звонок: %s", s))
         self.out = OutBuffer()
         self.up, self.down, self.boost = Upsampler(), Downsampler(), LineGain()
+        self._rec_raw, self._rec_sent = bytearray(), bytearray()
         self.transcript: list[str] = []
         self._mic: asyncio.Queue[bytes] | None = None
         self._hung_up = asyncio.Event()
@@ -300,10 +306,42 @@ class CallSession:
             x = np.frombuffer(pcm48[: len(pcm48) // 2 * 2], dtype="<i2").astype(np.float64)
             self._sq += float((x * x).sum())
             self._samples += x.size
+        recording = not self.callee
+        if recording and len(self._rec_raw) < REC_SEC * TG_RATE * 2:
+            self._rec_raw += pcm48
         if self._mic is not None:
             chunk = self.down(pcm48)
             if chunk:
-                self._mic.put_nowait(self.boost(chunk))
+                sent = self.boost(chunk)
+                if recording and len(self._rec_sent) < REC_SEC * IN_RATE * 2:
+                    self._rec_sent += sent
+                self._mic.put_nowait(sent)
+
+    def save_recording(self, folder=None) -> list[str]:
+        """Голос из трубки — в WAV рядом с журналом: что пришло и что услышал Gemini."""
+        if not self._rec_raw:
+            return []
+        import wave
+        try:
+            if folder is None:
+                from core.paths import get_user_data_dir
+                folder = os.getenv("JARVIS_CALL_REC_DIR") or get_user_data_dir()
+            saved = []
+            for name, data, rate in ((REC_NAMES[0], self._rec_raw, TG_RATE),
+                                     (REC_NAMES[1], self._rec_sent, IN_RATE)):
+                path = os.path.join(str(folder), name)
+                with wave.open(path, "wb") as w:
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(rate)
+                    w.writeframes(bytes(data))
+                saved.append(path)
+            logger.info("Звонок: голос из трубки сохранён (%d с) — %s", len(self._rec_raw) // (TG_RATE * 2),
+                        ", ".join(saved))
+            return saved
+        except Exception as exc:
+            logger.warning("Звонок: запись голоса не сохранилась: %s", exc)
+            return []
 
     def _on_hangup(self):
         self._hung_up.set()
@@ -367,6 +405,7 @@ class CallSession:
                 except Exception as exc:
                     logger.warning("Отбой не удался: %s: %s", type(exc).__name__, exc)
         logger.info("Звонок: %s", self.audio_stats())
+        self.save_recording()
         for line in self.transcript[-40:]:
             logger.info("Звонок | %s", line[:200])
         if self.ended_by:
