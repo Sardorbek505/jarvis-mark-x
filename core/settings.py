@@ -162,12 +162,14 @@ def unsubscribe(fn) -> None:
 def _voice_from_keys() -> str:
     """Как выбирает main.py: сохранённый голос, иначе Fish при ключе, иначе Gemini."""
     try:
-        from core.keys import load_values
-        saved = str(load_values().get("jarvis_voice") or "").strip().lower()
+        # Читаем тем же путём, которым пишем (_save_voice): core.keys.load_values
+        # поля jarvis_voice не знает — экран показывал не тот голос.
+        from core.paths import load_api_keys
+        saved = str(load_api_keys().get("jarvis_voice") or "").strip().lower()
         if saved:
             return saved
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Голос из ключей не прочитался: %s", exc)
     try:
         from telegram_bot import tts_fish
         return "fish" if tts_fish.is_configured() else "gemini"

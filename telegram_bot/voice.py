@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 async def speak_ogg(text: str, gemini) -> bytes | None:
     """Ogg/Opus для голосового сообщения. None — если не смог никто."""
+    # Ответ бота — с markdown, ссылками и эмодзи; голосом читать только слова.
+    from core.speech_text import for_speech
+    text = for_speech(text) or text
     if tts_fish.is_configured():
         audio = await tts_fish.speak_ogg(text)
         if audio:

@@ -144,7 +144,14 @@ def стенд(tmp_path, monkeypatch):
     # чтобы тест не трогал настоящие файлы пользователя.
     monkeypatch.setattr(jarvis_main, "BASE_DIR", tmp_path)
     monkeypatch.setattr(jarvis_main, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(jarvis_main, "_IGNORE_SPEAKERS", False)
+    # Настройка «Не слушать, пока играет звук» включена, как у владельца по
+    # умолчанию; настоящий замер колонок (loopback) не запускаем — тесты
+    # подставляют свои «колонки» в j._speaker_meter.
+    monkeypatch.setattr(jarvis_main, "_IGNORE_SPEAKERS", True)
+
+    async def _no_meter(self):
+        return None
+    monkeypatch.setattr(jarvis_main.Jarvis, "_start_speaker_meter", _no_meter)
     monkeypatch.setattr(jarvis_main, "_pick_input_device", lambda: None)
     # Тракт озвучки закрепляем явно: по умолчанию говорит Fish, и тогда звук
     # Gemini намеренно выбрасывается. Тесты ниже проверяют именно путь Gemini,
@@ -1028,3 +1035,16 @@ async def test_без_музыки_речь_не_двигает_микшер(с�
                                                             "set_state": lambda self, s: None})())
     session = await _прогнать(стенд, [_loud()] * 5, _SPOKEN, timeout=1.5)
     assert _audio_sent(session) and ducks == []
+
+
+
+@pytest.mark.asyncio
+async def test_выключили_не_слушать_при_звуке_голос_идёт_сразу(стенд, monkeypatch):
+    """Выключатель «Не слушать, пока играет звук» раньше читался только при
+    запуске: выключили на время игры — Джарвис оставался глухим."""
+    j = стенд.jarvis
+    j._speaker_meter = _LoudSpeakers()
+    j._mic_hears_speakers = True
+    monkeypatch.setattr(jarvis_main, "_IGNORE_SPEAKERS", False)
+    session = await _прогнать(стенд, [_loud()] * 5, _SPOKEN, timeout=2.0)
+    assert _audio_sent(session)

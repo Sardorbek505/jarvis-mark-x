@@ -40,7 +40,6 @@ if sys.platform == "win32":
 import asyncio
 import collections
 import json
-import traceback
 import re
 import threading
 import time
@@ -127,6 +126,7 @@ from core.onboarding import ensure_gemini_key
 from core.latency import LatencyTracker
 from core.result_card import build_card, capture_foreground_png
 from core import quick
+from core.speech_text import for_speech, short_reason
 from core.headless_ui import HeadlessUI, headless_requested
 from actions.open_app import open_app
 from actions.weather import weather_action
@@ -536,6 +536,15 @@ def _confirm_question(name: str, args: dict) -> str:
         return ""
 
 
+def _tool_human(name: str) -> str:
+    """«Поиск», «Открываю…» вместо web_search/open_app — в чате владельца."""
+    try:
+        from ui_island import tool_label
+        return tool_label(name)
+    except Exception:
+        return name
+
+
 def _confirm_label(name: str, args: dict) -> str:
     """Вопрос для кнопок на капсуле: «Выключить компьютер?», «Удалить a.txt?»."""
     question = _confirm_question(name, args)
@@ -644,6 +653,9 @@ def _clean_dialog_text(text: str) -> str:
     text = _CTRL_RE.sub("", text)
     text = _NOISE_TOKENS_RE.sub("", text)
     text = re.sub(r"[\x00-\x08\x0b-\x1f]", "", text)
+    if "`" in text or "**" in text:                 # блоки кода и разметка — не в чат
+        from core.speech_text import for_chat
+        text = for_chat(text)
 
     # Убираем звуки-паразиты и заминки
     for filler in ("э-э-э", "м-м-м", "э-м-м", "м-э-м", "э-э", "м-м", "а-а"):
@@ -2300,11 +2312,6 @@ class Jarvis:
         """Итог звонка — в журнал, не голосом: звонок мог быть в 6 утра."""
         self.ui.write_log(f"SYS: 📞 {result}")
 
-    def speak_error(self, tool_name: str, error: str):
-        short = str(error)[:100]
-        self.ui.write_log(f"ERR: {tool_name} — {short}")
-        self.speak(f"Сэр, произошла ошибка в модуле {tool_name}. {short}")
-
     # ── Конфигурация Gemini ───────────────────────────────────────────────────
     def _asr_config(self) -> dict:
         """Расшифровка речи: русский, узбекский, казахский и само имя «Джарвис».
@@ -2709,7 +2716,8 @@ class Jarvis:
                         None, lambda: get_translation_history(date_range)
                     )
                     if history:
-                        result = f"История переводов ({date_range}): {len(history)} записей. Последний: {history[0].get('translation', 'N/A')}"
+                        last = history[0].get("translation") or ""
+                        result = f"В истории переводов {len(history)}" + (f". Последний: «{last}»" if last else "")
                     else:
                         result = f"История переводов ({date_range}) пуста."
 
@@ -2857,7 +2865,7 @@ class Jarvis:
                 if provider not in ("fish", "gemini"):
                     provider = "fish"
                 set_voice_provider(provider)
-                rus_name = "киношный дубляж Пола Беттани (Fish Audio)" if provider == "fish" else "стандартный быстрый голос Gemini"
+                rus_name = "голос Джарвиса из фильмов" if provider == "fish" else "быстрый встроенный голос"
                 self.ui.write_log(f"SYS: Голос переключён на {rus_name}")
                 result = {"status": "success", "voice": provider, "message": f"Голос переключён на {rus_name}"}
 
@@ -2880,9 +2888,12 @@ class Jarvis:
             # Ошибку модель получает в ответе инструмента и сама скажет о ней.
             # Раньше здесь ещё и speak_error() слал отдельную реплику в сессию —
             # Джарвис отвечал дважды, второй раз «сам себе».
-            result = f"Ошибка инструмента '{name}': {e}"
-            traceback.print_exc()
-            self.ui.write_log(f"ERR: {name} — {str(e)[:100]}")
+            # Модели — причина человеческими словами, не текст исключения: она
+            # пересказывала его вслух («ConnectionResetError, WinError…»).
+            # Подробности — в журнал (logger), не в чат.
+            result = f"Ошибка: {short_reason(e)}. Скажи сэру по-человечески, без технических деталей."
+            logger.exception("Инструмент %s упал", name)
+            self.ui.write_log(f"ERR: {_tool_human(name)} — не получилось ({short_reason(e)})")
 
         # Профиль и прогнозы пишутся на диск — в поток, и их сбой не должен
         # рвать сессию: без ответа на вызов модель ждёт его и после реконнекта.
@@ -3218,7 +3229,7 @@ class Jarvis:
     async def _speak_fish(self, text: str):
         """Озвучивает готовый текст голосом Джарвиса из Telegram-бота."""
         q: asyncio.Queue = asyncio.Queue()
-        for chunk in _split_for_speech(text):
+        for chunk in _split_for_speech(for_speech(text)):
             q.put_nowait(chunk)
         q.put_nowait(None)
         await self._fish_worker(q)
@@ -3470,7 +3481,7 @@ class Jarvis:
                 fr = await asyncio.wait_for(self._execute_tool(fc), _TOOL_TIMEOUT_SEC)
             except asyncio.TimeoutError:
                 logger.error("Инструмент %s не ответил за %.0f с", fc.name, _TOOL_TIMEOUT_SEC)
-                self.ui.write_log(f"ERR: {fc.name} — нет ответа {_TOOL_TIMEOUT_SEC:.0f} с")
+                self.ui.write_log(f"ERR: {_tool_human(fc.name)} — нет ответа {_TOOL_TIMEOUT_SEC:.0f} с")
                 fr = types.FunctionResponse(id=fc.id, name=fc.name, response={
                     "result": f"Не успело выполниться за {_TOOL_TIMEOUT_SEC:.0f} секунд."})
             except Exception as exc:
@@ -3478,7 +3489,7 @@ class Jarvis:
                 # вызов модель так и ждёт его после переподключения.
                 logger.exception("Инструмент %s упал", fc.name)
                 fr = types.FunctionResponse(id=fc.id, name=fc.name,
-                                            response={"result": f"Ошибка: {exc}"})
+                                            response={"result": f"Ошибка: {short_reason(exc)}."})
             finally:
                 # Медленный инструмент — самая частая причина
                 # паузы, которую слышно как «завис».
@@ -3539,7 +3550,7 @@ class Jarvis:
                 self._show_card(fc, fr)
             except Exception as exc:
                 logger.warning("Мгновенная команда %s: %s", q.tool, exc)
-                result = f"Не получилось, сэр: {exc}"
+                result = f"Ошибка: {short_reason(exc)}"
             _end = getattr(self.ui, "tool_finished", None)
             if _end:
                 _end(fc.name, ok)
@@ -3665,6 +3676,8 @@ class Jarvis:
                 fish_idle = None
             if addressed and get_voice_provider() == "fish":
                 chunks, fish_text = _take_speakable(fish_text, fish_q is None, final, force)
+                # Ссылки, пути, коды, служебные метки — не вслух (core/speech_text).
+                chunks = [c for c in (for_speech(x) for x in chunks) if c.strip()]
                 if chunks and fish_q is None:
                     self._latency.mark("в озвучку")
                     self._drop_pending_speech()   # один голос за раз
@@ -3752,6 +3765,14 @@ class Jarvis:
                                 quick_lift("новая реплика")
                             in_buf.append(txt)
                             self._latency.mark_transcript()
+                            if len(in_buf) == 1 and get_voice_provider() == "fish":
+                                # Сэр ещё говорит — TLS до Fish уже открываем:
+                                # к ответу соединение будет готово.
+                                try:
+                                    from telegram_bot import tts_fish
+                                    tts_fish.prewarm()
+                                except Exception as exc:
+                                    logger.debug("Fish: прогрев: %s", exc)
                             print(f"[ДЖАРВИС] 🎤 Фрагмент: '{txt}'")
                             if not named.is_set() and _has_wake_word("".join(in_buf)):
                                 named.set()
@@ -4050,7 +4071,7 @@ class Jarvis:
                 # по-человечески.
                 logger.exception("Сбой в коде воспроизведения (%s) — устройство ни при чём",
                                  type(bug).__name__)
-                self.ui.write_log("SYS: ошибка воспроизведения в коде — подробности в логе")
+                self.ui.write_log("SYS: звук сбился — перезапускаю воспроизведение")
                 raise
             except Exception as e:
                 logger.error("Воспроизведение оборвалось (%s) — переоткрываю устройство", e)
@@ -4161,13 +4182,13 @@ class Jarvis:
                 if "1008" in low or "leaked" in low:
                     logger.error("Ключ Gemini заблокирован (1008) — создайте новый: "
                                  "https://aistudio.google.com/app/apikey")
-                    self.ui.write_log("SYS: ❌ API ключ заблокирован. Получите новый на https://aistudio.google.com/app/apikey")
+                    self.ui.write_log("SYS: ❌ API-ключ Gemini заблокирован. Получите новый (aistudio.google.com) и впишите на экране «Ключи»")
                     break
                 if any(k in low for k in ("api key not valid", "api key expired",
                                           "api_key_invalid", "invalid api key",
                                           "api key not found")):
                     logger.error("Ключ Gemini недействителен. Обновите его в %s", API_CONFIG)
-                    self.ui.write_log("SYS: ❌ API ключ недействителен. Обновите config/api_keys.json")
+                    self.ui.write_log("SYS: ❌ API-ключ Gemini недействителен. Обновите его на экране «Ключи»")
                     break
 
             self.set_speaking(False)
