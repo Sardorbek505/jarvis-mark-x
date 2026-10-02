@@ -16,7 +16,7 @@ import numpy as np
 PROMO = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROMO))
 
-from build import CARD_AT  # noqa: E402
+from build import CARD_AT, OUTRO_MARK  # noqa: E402
 from scenes import INTRO_LINES, INTRO_SEC  # noqa: E402
 from timeline import BUILD, VO_AT, durations, plan, total  # noqa: E402
 
@@ -98,7 +98,7 @@ def main():
         if k == "title":
             put(fx, sfx["impact"], S, 0.55)
         if k == "outro":
-            put(fx, sfx["impact"], S + L * 0.45, 0.45)
+            put(fx, sfx["impact"], S + OUTRO_MARK, 0.45)
 
     bed_path = AUD / "bed.wav"
     bed = load(bed_path)

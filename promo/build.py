@@ -38,12 +38,13 @@ HF_VERSION = "0.8.112"
 FIT = 1000 / 1280
 ORB_FOCUS = (497, 352)
 CAM = {
-    "study": [(0, FIT, 640, 400), (1.4, FIT, 640, 400), (2.6, 1.32, 760, 470), (6.5, 1.32, 760, 300)],
-    "calls": [(0, FIT, 640, 400), (1.2, FIT, 640, 400), (2.4, 1.35, 1010, 300), (6.0, 1.35, 1010, 560)],
-    "commands": [(0, FIT, 640, 400), (1.2, FIT, 640, 400), (2.4, 1.35, 1000, 260), (6.5, 1.35, 1000, 520)],
-    "safety": [(0, FIT, 640, 400), (1.2, FIT, 640, 400), (2.4, 1.4, 760, 300), (7.0, 1.4, 760, 520)],
-    "setup": [(0, FIT, 640, 400), (1.2, FIT, 640, 400), (2.4, 1.35, 800, 260), (5.5, 1.35, 800, 520)],
+    "study": [(0, FIT, 640, 400), (1.4, FIT, 640, 400), (2.6, 1.15, 520, 400), (7.5, 1.15, 820, 400)],
+    "calls": [(0, FIT, 640, 400), (1.2, FIT, 640, 400), (2.4, 1.15, 822, 330), (7.5, 1.15, 822, 470)],
+    "commands": [(0, FIT, 640, 400), (1.2, FIT, 640, 400), (2.4, 1.15, 822, 330), (7.5, 1.15, 822, 470)],
+    "safety": [(0, FIT, 640, 400), (1.2, FIT, 640, 400), (2.4, 1.2, 680, 330), (6.5, 1.2, 680, 480)],
+    "setup": [(0, FIT, 640, 400), (1.2, FIT, 640, 400), (2.4, 1.08, 765, 330), (6.0, 1.08, 765, 480)],
 }
+OUTRO_MARK = 2.4      # когда в финале появляется знак (интро к этому моменту гаснет)
 CARD_AT = 2.0          # в клипе карточка результата появляется на 2,0 с (capture.cycle)
 STATE_COLORS = [("Ждёт", "#30d0be"), ("Слушает", "#46e880"), ("Думает", "#b6e240"), ("Говорит", "#ff8a34")]
 
@@ -73,20 +74,19 @@ def encode():
 
 
 def card_box(clip: str) -> tuple[int, int, int, int] | None:
-    """Где на кадре карточка результата (логические px): ищем её рамку справа от шара."""
+    """Где на кадре карточка результата (логические px): всё яркое справа от шара."""
     frames = sorted((CLIPS / clip).glob("*.png"))
     if not frames:
         return None
-    im = np.asarray(Image.open(frames[-1]).convert("RGB")).astype(int)
+    im = np.asarray(Image.open(frames[-1]).convert("RGB")).max(axis=2)
     k = im.shape[1] / 1280
-    x0 = int(824 * k)
-    col = im[:, x0 - 2:x0 + 3].max(axis=1).max(axis=1)     # левая рамка карточки
-    ys = np.where(col > 70)[0]
-    ys = ys[(ys > 60 * k) & (ys < 700 * k)]
+    area = im[int(50 * k):int(700 * k), int(760 * k):]
+    ys, xs = np.where(area > 55)
     if not len(ys):
         return None
-    top, bot = ys.min() / k, ys.max() / k
-    return 822, int(top) - 2, 1266, int(bot) + 3
+    x0, x1 = xs.min() / k + 760, xs.max() / k + 760
+    y0, y1 = ys.min() / k + 50, ys.max() / k + 50
+    return int(x0) - 3, int(y0) - 3, int(x1) + 4, int(y1) + 4
 
 
 def stills():
@@ -126,7 +126,7 @@ FONT_CSS = "\n".join(
     for w in (300, 500, 600, 800)
     for s, r in (("cyrillic", "U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116"),
                  ("latin", "U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+20AC,"
-                           "U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD")))
+                           "U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD"))
 ) + "\n@font-face{font-family:T;src:url(assets/fonts/Tektur-Medium.ttf)}"
 
 CSS = """
@@ -176,19 +176,29 @@ def cam_xy(s: float, cx: float, cy: float, w=1000, h=840) -> dict:
 
 
 def caption_groups(text: str, start: float, sec: float) -> list[tuple[float, float, str]]:
-    """Реплика → группы по 2–5 слов, разрез по знакам препинания; время — пропорционально символам."""
-    words = text.split()
-    groups, cur = [], []
-    for w in words:
+    """Реплика → группы по 2–5 слов: сначала по знакам препинания, длинное — пополам.
+    Время — пропорционально символам (без транскрипции точнее не нужно)."""
+    clauses, cur = [], []
+    for w in text.split():
         cur.append(w)
-        if len(cur) >= 5 or (len(cur) >= 2 and re.search(r"[.,:;?!»—]$", w)) or (len(cur) >= 3 and len(" ".join(cur)) > 26):
-            groups.append(" ".join(cur))
+        if re.search(r"[.,:;?!—]$|[.?!]»$", w) or w == "—":
+            clauses.append(cur)
             cur = []
     if cur:
-        if groups and len(cur) == 1:
-            groups[-1] += " " + cur[0]
+        clauses.append(cur)
+    groups = []
+    for c in clauses:
+        if c == ["—"] and groups:                  # тире — к предыдущей группе
+            groups[-1] += " —"
+            continue
+        while len(c) > 5:
+            half = (len(c) + 1) // 2
+            groups.append(" ".join(c[:half]))
+            c = c[half:]
+        if len(c) == 1 and groups and len(groups[-1].split()) < 5:
+            groups[-1] += " " + c[0]
         else:
-            groups.append(" ".join(cur))
+            groups.append(" ".join(c))
     total_chars = sum(len(g) + 2 for g in groups)
     out, t = [], start
     for g in groups:
@@ -257,8 +267,8 @@ def html_doc() -> str:
                 h = (y1 - y0) * sc
                 top = min(1480 - h * 0.62, 1500 - h)
                 card_at = 3.6 if k == "page" else CARD_AT + 0.15
-                media = 1.8 if k == "page" else 0.0
-                start = S + (card_at - CARD_AT - 0.15 if k == "page" else 0)
+                media = 1.8 if k == "page" else 1.5
+                start = S + (card_at - CARD_AT - 0.15 if k == "page" else 1.5)
                 parts.append(f'<div class="cardwrap" id="cw_{sid}" style="top:{top:.0f}px;height:{h:.0f}px">'
                              f'<div class="ccam" style="transform:translate({-x0 * sc:.1f}px,{-y0 * sc:.1f}px) scale({sc:.4f})">'
                              f'{vid("vc_" + sid, f"assets/{card_clip}.mp4", start, S + L - start, media)}</div></div>')
@@ -285,7 +295,8 @@ def html_doc() -> str:
             parts.append(f'<div class="wall" id="w_{sid}">{imgs}</div>')
             parts[0] = parts[0].replace('class="problem"', 'class="big1" style="top:700px"')
             parts[1] = parts[1].replace('class="head"', 'class="big2" style="top:930px"')
-            js.append(f"tl.fromTo('#w_{sid}',{{opacity:0,y:120,rotation:-8}},{{opacity:.42,y:-60,rotation:-8,duration:{L * 0.55:.2f},ease:'power1.out'}},{S});")
+            js.append(f"tl.fromTo('#w_{sid}',{{y:120,rotation:-8}},{{y:-80,rotation:-8,duration:{L:.2f},ease:'none'}},{S});")
+            js.append(f"tl.fromTo('#w_{sid}',{{opacity:0}},{{opacity:.42,duration:.8,ease:EO}},{S});")
             js.append(f"tl.to('#w_{sid}',{{opacity:.08,filter:'blur(10px)',duration:.6,ease:EO}},{S + 1.7});")
             js.append(f"tl.fromTo('#p_{sid}',{{opacity:0,y:30}},{{opacity:1,y:0,duration:.7,ease:EO}},{S + 0.25});")
             js.append(f"tl.fromTo('#h_{sid}',{{opacity:0,y:40,scale:.96}},{{opacity:1,y:0,scale:1,duration:.8,ease:EO}},{S + 1.9});")
@@ -293,16 +304,19 @@ def html_doc() -> str:
             parts.append('<div class="mark" id="m_title" style="top:760px;font-size:118px;letter-spacing:.08em">Д.Ж.А.Р.В.И.С.</div>')
             parts.append('<div class="mark" id="m_title2" style="top:910px;font-size:38px;letter-spacing:.5em;color:#3fd0bd">MARK X</div>')
             parts.append('<div class="tag" id="t_title" style="top:1010px">Голосовой ИИ-ассистент для вашего компьютера</div>')
-            js.append(f"tl.fromTo('#m_title',{{opacity:0,letterSpacing:'.3em',filter:'blur(12px)'}},"
-                      f"{{opacity:1,letterSpacing:'.08em',filter:'blur(0px)',duration:1.1,ease:EO}},{S + 0.05});")
+            js.append(f"tl.fromTo('#m_title',{{opacity:0,scale:1.12,filter:'blur(12px)'}},"
+                      f"{{opacity:1,scale:1,filter:'blur(0px)',duration:1.1,ease:EO}},{S + 0.05});")
             js.append(f"tl.fromTo('#m_title2',{{opacity:0}},{{opacity:1,duration:.6,ease:EO}},{S + 0.6});")
             js.append(f"tl.fromTo('#t_title',{{opacity:0,y:24}},{{opacity:1,y:0,duration:.7,ease:EO}},{S + 0.9});")
         if k == "outro":
-            parts.append(vid("v_outro", "assets/intro.mp4", S, L, max(0.0, INTRO_SEC - 0.4 - L), cls="intro"))
-            parts.append('<div class="mark" id="m_out" style="top:1180px;font-size:104px;letter-spacing:.08em">Д.Ж.А.Р.В.И.С.</div>')
-            parts.append('<div class="mark" id="m_out2" style="top:1320px;font-size:34px;letter-spacing:.5em;color:#3fd0bd">MARK X</div>')
-            js.append(f"tl.fromTo('#m_out',{{opacity:0,y:30}},{{opacity:1,y:0,duration:.9,ease:EO}},{S + L * 0.45:.2f});")
-            js.append(f"tl.fromTo('#m_out2',{{opacity:0}},{{opacity:1,duration:.6,ease:EO}},{S + L * 0.45 + 0.4:.2f});")
+            # сеть модулей сворачивается, шар улетает к капсуле — на чистом фоне встаёт знак
+            ms = INTRO_SEC - 0.8 - OUTRO_MARK
+            parts.append(vid("v_outro", "assets/intro.mp4", S, min(L, INTRO_SEC - ms), ms, cls="intro"))
+            parts.append('<div class="mark" id="m_out" style="top:820px;font-size:110px;letter-spacing:.08em">Д.Ж.А.Р.В.И.С.</div>')
+            parts.append('<div class="mark" id="m_out2" style="top:970px;font-size:36px;letter-spacing:.5em;color:#3fd0bd">MARK X</div>')
+            js.append(f"tl.to('#v_outro',{{opacity:0,duration:1.0,ease:'power1.inOut'}},{S + OUTRO_MARK - 0.3:.2f});")
+            js.append(f"tl.fromTo('#m_out',{{opacity:0,scale:1.08,filter:'blur(10px)'}},{{opacity:1,scale:1,filter:'blur(0px)',duration:1.0,ease:EO}},{S + OUTRO_MARK:.2f});")
+            js.append(f"tl.fromTo('#m_out2',{{opacity:0}},{{opacity:1,duration:.6,ease:EO}},{S + OUTRO_MARK + 0.4:.2f});")
         dom.append(f'<div class="sc" id="s_{sid}">' + "".join(parts) + "</div>")
 
     for j, (t, d, g) in enumerate(caps):
