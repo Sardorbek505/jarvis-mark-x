@@ -138,6 +138,10 @@ from core.onboarding import ensure_gemini_key
 from core.latency import LatencyTracker
 from core.result_card import build_card, capture_foreground_png
 from core import quick
+from core.speech_split import END_OF_SENTENCE as _END_OF_SENTENCE
+from core.speech_split import MIN_FIRST_CHUNK as _MIN_FIRST_CHUNK
+from core.speech_split import MIN_SPEECH_CHUNK as _MIN_SPEECH_CHUNK
+from core.speech_split import take_speakable as _take_speakable
 from core.speech_text import for_speech, short_reason
 from core.headless_ui import HeadlessUI, headless_requested
 from actions.open_app import open_app
@@ -713,17 +717,6 @@ def _clean_dialog_text(text: str) -> str:
 _clean = _clean_dialog_text
 
 
-# Короче этого предложение не отправляем в синтез отдельно: «Да, сэр.» звучит
-# оборванно, если оторвать его от следующей фразы, а выигрыша по времени не
-# даёт — накладные расходы запроса больше самой фразы.
-_MIN_SPEECH_CHUNK = 40
-
-# Первому куску порог ниже: он определяет, через сколько человек услышит хоть
-# что-то, а синтез тем короче, чем короче фраза. «Секунду, сэр.» — идеальное
-# начало: звучит почти сразу и прикрывает синтез остального ответа.
-_MIN_FIRST_CHUNK = 12
-
-
 def _chunk_level(chunk: bytes) -> float:
     """Громкость 0..1 куска int16-аудио — для волны на HUD.
 
@@ -764,50 +757,8 @@ def _split_for_speech(text: str) -> list[str]:
     return chunks
 
 
-# Конец предложения в самом конце расшифровки: «…, сэр.» — не цифра («2.» → «2.5»)
-# и не однобуквенное сокращение («г.», «И.»).
-_END_OF_SENTENCE = re.compile(r"[^\W\d_]{2,}[.!?…]+[»\"')]*\s*$")
-# Первый кусок можно отрезать и по запятой, если до неё набралось столько символов.
-_MIN_CLAUSE_CHUNK = 20
 # Расшифровка затихла на законченном предложении — дальше не ждём (см. _receive_audio).
 _FISH_SENTENCE_IDLE_SEC = float(os.getenv("JARVIS_SENTENCE_IDLE_MS", "250")) / 1000
-
-
-def _take_speakable(buf: str, first: bool, final: bool, force: bool = False) -> tuple[list[str], str]:
-    """Отрезает от потоковой расшифровки ответа готовые к синтезу куски.
-
-    Fish раньше получал ответ только по turn_complete — а тот приходит на
-    4-5 секунд позже первого звука Gemini (замер в test_voice_loop_e2e):
-    модель «проговаривает» весь ответ, прежде чем закрыть ход. Эти секунды
-    Джарвис молчал. Теперь предложение уходит в синтез, как только в
-    расшифровке появилась его точка. Пороги те же, что у _split_for_speech.
-
-    Точка в самом конце расшифровки тоже конец: раньше резали только по
-    «точка + пробел», и ПОСЛЕДНЕЕ предложение (а у Джарвиса ответ чаще всего
-    из одного: «Включаю, сэр.») ждало turn_complete — те самые 4-5 секунд.
-    force — расшифровка затихла: законченное предложение отдаём и короче порога.
-    """
-    chunks: list[str] = []
-    while True:
-        floor = _MIN_FIRST_CHUNK if first and not chunks else _MIN_SPEECH_CHUNK
-        cut = next((m.end() for m in re.finditer(r"[.!?…]+(?=\s)", buf)
-                    if len(buf[:m.end()].strip()) >= floor), None)
-        if cut is None and buf.strip() and _END_OF_SENTENCE.search(buf) and (force or len(buf.strip()) >= floor):
-            cut = len(buf)
-        if cut is None and first and not chunks:
-            # Длинное первое предложение ждало своей точки целиком. Первый звук
-            # важнее интонации одной запятой: «Включаю плейлист для учёбы, …»
-            # уходит в озвучку по запятой, остальное догоняет.
-            cut = next((m.end() for m in re.finditer(r"[,;:—–]+(?=\s)", buf)
-                        if len(buf[:m.end()].strip()) >= _MIN_CLAUSE_CHUNK), None)
-        if cut is None:
-            break
-        chunks.append(buf[:cut].strip())
-        buf = buf[cut:]
-    if final and buf.strip():
-        chunks.append(buf.strip())
-        buf = ""
-    return chunks, buf
 
 
 # ─── Описания инструментов (на русском) ───────────────────────────────────────

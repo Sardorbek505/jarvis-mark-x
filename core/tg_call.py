@@ -4,6 +4,9 @@
 Джарвиса свой аккаунт (второй номер). Он звонит с ПК через py-tgcalls:
   твой голос из звонка (48 кГц) → 16 кГц → Gemini Live,
   ответ Gemini (24 кГц) → 48 кГц → звонок кадрами по 10 мс.
+Голос — тот же Джарвис, что на ПК (Fish Audio): Gemini понимает и отвечает,
+текст его ответа озвучивает Fish (см. CallSession.speaker). Без ключа Fish
+или с голосом «gemini» в настройках говорит сам Gemini (Charon).
 Перебил — очередь ответа сбрасывается. Попрощались — Gemini вызывает
 end_call, Джарвис договаривает и кладёт трубку.
 
@@ -22,7 +25,8 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections import deque
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -50,6 +54,9 @@ CALL_VAD_SILENCE_MS = int(os.getenv("CALL_VAD_SILENCE_MS", "450"))
 # медиана первого звука 4152 мс → 1377 мс), а в звонке забыли — каждая реплика
 # в трубке ждала лишние ~2,8 с. Разговору по телефону рассуждения не нужны.
 CALL_THINKING_BUDGET = int(os.getenv("JARVIS_THINKING_BUDGET", "0"))
+# Голос Fish: расшифровка ответа затихла на законченном предложении — озвучиваем,
+# не дожидаясь конца хода (как main._FISH_SENTENCE_IDLE_SEC).
+SAY_IDLE_SEC = float(os.getenv("JARVIS_SENTENCE_IDLE_MS", "250")) / 1000
 _BYE = re.compile(r"(?<!\w)(пока|до свидания|до встречи|до связи|спокойной ночи|доброй ночи|всего доброго|"
                   r"всего хорошего|хорошего дня|хорошего вечера|бывай|прощай|отключ\w*|клад\w* трубку|"
                   r"полож\w* трубку|bye|goodbye)(?!\w)", re.I)
@@ -256,8 +263,22 @@ class CallSession:
     Обе подменяются в тестах."""
 
     def __init__(self, tg, live: Callable, peer, prompt: str, max_sec: float = MAX_CALL_SEC,
-                 log: Callable[[str], None] | None = None, callee: str = ""):
+                 log: Callable[[str], None] | None = None, callee: str = "",
+                 speaker: Callable[[str], AsyncIterator[bytes]] | None = None,
+                 fallback: Callable[[str], object] | None = None):
         self.tg, self.live, self.peer, self.prompt = tg, live, peer, prompt
+        # speaker(text) — поток PCM 24 кГц голосом Джарвиса (Fish). Есть он — звук
+        # Gemini выбрасывается, говорит Fish по расшифровке ответа. fallback(text) —
+        # чем договорить ход, если Fish отказал (Edge); со следующего хода — Gemini.
+        self.speaker, self.fallback = speaker, fallback
+        self._fish_failed = False
+        self._turn_open = False            # Gemini сейчас отвечает (ход начат, turn_complete не пришёл)
+        self._say_buf = ""                 # расшифровка ответа, ещё не отданная в синтез
+        self._say_q: deque[str] = deque()  # куски, ждущие синтеза
+        self._say_first = True             # следующий кусок — первый в ходе
+        self._say_text_at = 0.0
+        self._speaking = False             # кусок синтезируется прямо сейчас
+        self._turn = 0                     # растёт, когда перебили: старый синтез — в мусор
         self.callee = callee               # кому звоним; "" — хозяину («Вы не взяли трубку»)
         self.max_sec = max_sec
         self.log = log or (lambda s: logger.info("Звонок: %s", s))
@@ -374,9 +395,15 @@ class CallSession:
         self._mic = asyncio.Queue()
         self.tg.on_audio = self._on_audio
         self.tg.on_hangup = self._on_hangup
+        # Gemini подключаем, пока телефон звонит, а не после ответа: раньше
+        # человек брал трубку и 1,2–2,2 с слушал тишину (журнал 02.10).
+        connecting = asyncio.create_task(self._connect_live())
+        if self.speaker is not None:
+            asyncio.get_running_loop().run_in_executor(None, _prewarm_voice)
         try:
             await self.tg.ring(self.peer)
         except Exception as exc:
+            await _close_unused(connecting)
             # Настоящая причина — в журнал: раньше она терялась, и «не дозвонился»
             # нечем было объяснить.
             logger.warning("Звонок %s не состоялся: %s: %s", self.callee or "хозяину", type(exc).__name__, exc)
@@ -384,10 +411,15 @@ class CallSession:
         started = time.monotonic()
         self.log("взял трубку")
         try:
-            await self.tg.listen(self.peer)
+            try:
+                await self.tg.listen(self.peer)
+            except BaseException:
+                await _close_unused(connecting)
+                raise
             self._picked_up_at = time.monotonic()
-            live, session = await self._connect_live()
-            logger.info("Звонок: Gemini на связи через %.1f с после ответа", time.monotonic() - self._picked_up_at)
+            live, session = await connecting
+            logger.info("Звонок: Gemini на связи через %.1f с после ответа, голос: %s",
+                        time.monotonic() - self._picked_up_at, "Fish" if self.speaker else "Gemini")
             try:
                 await session.send_client_content(
                     turns=[{"role": "user", "parts": [{"text": "[Собеседник взял трубку. Начинай разговор.]"}]}],
@@ -395,6 +427,7 @@ class CallSession:
                 pace = asyncio.create_task(self._pace())
                 watch = asyncio.create_task(self._watch_audio())
                 guard = asyncio.create_task(self._idle_guard())
+                voice = asyncio.create_task(self._say_loop())
                 ended = asyncio.create_task(self._hung_up.wait())
                 pumps = {asyncio.create_task(self._pump_mic(session)),
                          asyncio.create_task(self._pump_gemini(session))}
@@ -411,7 +444,7 @@ class CallSession:
                     if not done or pace in done or ended in done or failed:
                         break
                     waiting -= done
-                for t in pumps | {pace, ended, watch, guard}:
+                for t in pumps | {pace, ended, watch, guard, voice}:
                     t.cancel()
             finally:
                 await live.__aexit__(None, None, None)
@@ -452,7 +485,7 @@ class CallSession:
         while True:
             await asyncio.sleep(0.5)
             quiet = time.monotonic() - self._last_voice
-            if self._user_bye_at and quiet > BYE_SILENCE_SEC and not len(self.out):
+            if self._user_bye_at and quiet > BYE_SILENCE_SEC and not self._voice_pending():
                 self._end("попрощались и тишина")
             elif quiet > IDLE_SEC:
                 self._end("долго тишина")
@@ -480,17 +513,14 @@ class CallSession:
                 self.gemini_msgs += 1
                 sc = getattr(msg, "server_content", None)
                 if sc is not None and getattr(sc, "interrupted", False):
-                    self.out.clear()                      # перебили — замолкаем сразу
-                    self.up.reset()
-                if getattr(msg, "data", None):
-                    if not self.first_voice_sec and self._picked_up_at:
-                        self.first_voice_sec = time.monotonic() - self._picked_up_at
-                        logger.info("Звонок: Джарвис заговорил через %.1f с после ответа", self.first_voice_sec)
-                    if self._user_spoke_at:
-                        self.reply_delays.append(time.monotonic() - self._user_spoke_at)
-                        self._user_spoke_at = 0.0
-                    self.out.push(self.up(msg.data))
-                    self._last_voice = time.monotonic()
+                    self._shut_up()                       # перебили — замолкаем сразу
+                out_tr = getattr(sc, "output_transcription", None) if sc is not None else None
+                if (getattr(msg, "data", None) or out_tr is not None) and not self._turn_open:
+                    self._turn_open = True
+                    if self._fish_failed:                 # Fish отказал — с нового хода говорит Gemini
+                        self.speaker = None
+                if getattr(msg, "data", None) and self.speaker is None:
+                    self._voice_out(self.up(msg.data))
                 if sc is not None:
                     for attr, who in (("input_transcription", "Вы"), ("output_transcription", "Джарвис")):
                         tr = getattr(sc, attr, None)
@@ -499,12 +529,17 @@ class CallSession:
                             self.transcript.append(f"{who}:{tr.text}")
                             self._last_voice = time.monotonic()
                             self._heard(who, tr.text)
+                            if who == "Джарвис" and self.speaker is not None:
+                                self._say(tr.text)
                     # Джарвис договорил реплику: вы попрощались, и он попрощался в ответ —
                     # кладём трубку, даже если Gemini забыл вызвать end_call.
                     if getattr(sc, "turn_complete", False):
                         if self._user_bye_at and says_bye(self._jarvis_said):
                             self._end("попрощались (без end_call)")
                         self._jarvis_said = ""
+                        self._turn_open = False
+                        if self.speaker is not None:
+                            self._say("", final=True)
                 tc = getattr(msg, "tool_call", None)
                 if tc is not None:
                     replies = []
@@ -540,6 +575,97 @@ class CallSession:
                 self._user_bye_at = 0.0
                 self.log("собеседник продолжает говорить — трубку не кладу")
 
+    def _voice_out(self, pcm48: bytes):
+        """Голос Джарвиса — в трубку (и замеры: когда заговорил, как быстро ответил)."""
+        if not pcm48:
+            return
+        if not self.first_voice_sec and self._picked_up_at:
+            self.first_voice_sec = time.monotonic() - self._picked_up_at
+            logger.info("Звонок: Джарвис заговорил через %.1f с после ответа", self.first_voice_sec)
+        if self._user_spoke_at:
+            self.reply_delays.append(time.monotonic() - self._user_spoke_at)
+            self._user_spoke_at = 0.0
+        self.out.push(pcm48)
+        self._last_voice = time.monotonic()
+
+    def _shut_up(self):
+        self.out.clear()
+        self.up.reset()
+        self._turn += 1
+        self._turn_open = False
+        self._say_q.clear()
+        self._say_buf, self._say_first = "", True
+
+    def _say(self, text: str, final: bool = False, force: bool = False):
+        """Кусочек расшифровки ответа → готовые предложения в очередь синтеза."""
+        from core.speech_split import take_speakable
+        self._say_buf += text
+        if text:
+            self._say_text_at = time.monotonic()
+        chunks, self._say_buf = take_speakable(self._say_buf, self._say_first, final, force)
+        if chunks:
+            self._say_first = False
+            self._say_q.extend(chunks)
+        if final:
+            self._say_first = True
+
+    def _say_pending(self) -> bool:
+        return bool(self._say_q or self._speaking or self._say_buf.strip())
+
+    def _voice_pending(self) -> bool:
+        return bool(len(self.out)) or self._say_pending()
+
+    async def _say_loop(self):
+        """Озвучка ответа голосом Fish: кусок за куском, звук — в трубку по мере синтеза."""
+        from core.speech_split import END_OF_SENTENCE
+        while True:
+            if not self._say_q:
+                if (self._say_buf.strip() and END_OF_SENTENCE.search(self._say_buf)
+                        and time.monotonic() - self._say_text_at > SAY_IDLE_SEC):
+                    self._say("", force=True)          # расшифровка затихла на точке — не ждём конца хода
+                if not self._say_q:
+                    await asyncio.sleep(0.02)
+                    continue
+            text, turn = self._say_q.popleft(), self._turn
+            self._speaking = True
+            try:
+                await self._speak(text, turn)
+            finally:
+                self._speaking = False
+
+    async def _speak(self, text: str, turn: int):
+        asked = time.monotonic()
+        got = False
+        if not self._fish_failed and self.speaker is not None:
+            try:
+                async for chunk in self.speaker(text):
+                    if turn != self._turn:
+                        return                             # перебили — остаток не нужен
+                    if not got:
+                        got = True
+                        logger.info("Звонок: Fish — первый звук через %.2f с", time.monotonic() - asked)
+                    self._voice_out(self.up(chunk))
+                if got:
+                    return
+                raise RuntimeError("пустой ответ")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Звонок: Fish не озвучил (%s: %s) — договорит Edge, дальше голос Gemini",
+                               type(exc).__name__, exc)
+                self._fish_failed = True
+                if got:
+                    return
+        if self.fallback is None:
+            return
+        try:
+            pcm = await self.fallback(text)
+        except Exception as exc:
+            logger.warning("Звонок: запасной голос не озвучил: %s", exc)
+            return
+        if pcm and turn == self._turn:
+            self._voice_out(self.up(pcm))
+
     async def _pace(self):
         """Кадр каждые 10 мс по часам, а не по sleep: на Windows sleep
         дрожит на ~15 мс, поэтому отстающие кадры досылаются пачкой."""
@@ -552,7 +678,7 @@ class CallSession:
                 next_t = now
             while next_t <= now:
                 frame = self.out.pop()
-                if frame is None and self._ending:
+                if frame is None and self._ending and not self._say_pending():
                     frame = self.out.flush_tail()
                     if frame is None:
                         idle_after_end += 1
@@ -728,6 +854,49 @@ async def resolve_peer(client, target: str, name: str = "Сэр") -> int:
     return (await client.get_entity(t)).id
 
 
+async def _close_unused(connecting: asyncio.Task):
+    """Звонок не состоялся — закрыть Gemini, подключённый на время гудков."""
+    connecting.cancel()
+    try:
+        live, _ = await connecting
+    except BaseException:
+        return
+    try:
+        await live.__aexit__(None, None, None)
+    except Exception:
+        pass
+
+
+def _prewarm_voice():
+    try:
+        from telegram_bot import tts_fish
+        tts_fish.prewarm()
+    except Exception as exc:
+        logger.debug("Fish prewarm: %s", exc)
+
+
+def call_voice() -> str:
+    """Чей голос в звонке: «fish» — Джарвис из фильмов, как на ПК; «gemini» — Charon.
+    Настройка общая с ПК (jarvis_voice); без ключа Fish — всегда Gemini."""
+    want = (os.getenv("JARVIS_VOICE") or _keys().get("jarvis_voice") or _keys().get("voice_provider") or "")
+    if str(want).strip().lower() == "gemini":
+        return "gemini"
+    try:
+        from telegram_bot import tts_fish
+        return "fish" if tts_fish.is_configured() else "gemini"
+    except Exception:
+        return "gemini"
+
+
+def _voices() -> dict:
+    """speaker и fallback для CallSession по настройке голоса."""
+    if call_voice() != "fish":
+        return {}
+    from telegram_bot import tts_edge, tts_fish
+    return {"speaker": lambda text: tts_fish.stream_pcm(text, sample_rate=OUT_RATE),
+            "fallback": lambda text: tts_edge.speak_pcm(text, sample_rate=OUT_RATE)}
+
+
 def _gemini_live(prompt: str):
     from google.genai import types
 
@@ -774,7 +943,12 @@ async def _call_async(topic: str, context: str, log, target: str = "", prompt: s
 
 async def _talk(tg, peer, prompt: str, log, transcript: list | None, who: str, topic: str) -> str:
     """Сам разговор — и запись в историю звонков, чем бы он ни кончился."""
-    sess = CallSession(tg, _gemini_live, peer, prompt, log=log, callee="" if who == "вам" else who)
+    try:
+        voices = _voices()
+    except Exception as exc:
+        logger.warning("Звонок: голос Fish недоступен (%s) — говорит Gemini", exc)
+        voices = {}
+    sess = CallSession(tg, _gemini_live, peer, prompt, log=log, callee="" if who == "вам" else who, **voices)
     started, result = time.time(), "Звонок оборвался."
     try:
         result = await sess.run()
