@@ -58,6 +58,8 @@ def ensure_vosk_model():
                 "wespeaker_en_voxceleb_resnet34.onnx")
     print("[2e] Слово «Джарвис» без ключей (sherpa-onnx KWS)...")
     try:
+        if str(_BASE_DIR) not in sys.path:          # скрипт запускают из scripts/ — core рядом не виден
+            sys.path.insert(0, str(_BASE_DIR))
         from core import wake_kws
         dst = _BASE_DIR / "models" / wake_kws.MODEL_DIRNAME
         if all((dst / f).is_file() for f in wake_kws.FILES.values()):
