@@ -110,10 +110,15 @@ def hud(scenes: list[dict]):
         return ev
 
     def home():
+        """Сброс между клипами: карточка, субтитр и подпись инструмента не должны
+        переезжать в следующую сцену («Telegram открыт.» висел в сцене таймера)."""
         w.show_page("home")
         w.set_state("IDLE")
-        w._hud._card = None
-        vpump(1.5)
+        hud_ = w._hud
+        hud_._card, hud_._card_vis = None, 0.0
+        hud_._sub_text, hud_._sub_alpha = "", 0.0
+        hud_._tool, hud_._tool_lock = None, 0.0
+        vpump(2.5)
 
     for s in scenes:
         sid, L, vo = s["id"], s["sec"] + 0.3, s["vo_sec"]
