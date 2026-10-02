@@ -1146,20 +1146,25 @@ async def test_goaway_не_закрывает_уже_новую_сессию(с�
 
 @pytest.mark.asyncio
 async def test_два_хлопка_интро_звук_и_джарвис_слушает(стенд, monkeypatch):
+    """Интро: три реплики Джарвиса голосом (субтитры получают их длину), под ними —
+    звук интро; в конце Джарвис слушает."""
     from core import intro
-    monkeypatch.setattr(intro, "T_END", 0.2)
     j = стенд.jarvis
-    played, heard = [], bytearray()
+    played, продлено, субтитры, heard = [], [], [], bytearray()
     стенд.ui.play_intro = lambda checks=None: played.append(checks)
-    продлено = []
     стенд.ui.extend_intro = продлено.append
+    стенд.ui.intro_voice = lambda lines, env: субтитры.append((lines, env))
     j.audio_in_queue = asyncio.Queue(maxsize=200)
-    голос = (b"\x10\x27" * 2400)                # 0,1 с «голоса» (10000)
+    j._intro_pcm = bytes(int(intro.T_END * jarvis_main.RECV_SAMPLE_RATE) * 2)    # тихий «звук интро»
+    голоса = {}
 
     async def озвучка(self, text):
-        assert text.endswith("Слушаю.")
-        return голос
+        голоса[text] = (bytes([len(голоса) + 1, 0x27]) * 2400)          # 0,1 с, у каждой реплики своё значение
+        return голоса[text]
     monkeypatch.setattr(jarvis_main.Jarvis, "_intro_voice", озвучка)
+    monkeypatch.setattr(intro, "LINE_BOOT", (0.05, "Проверка систем."))
+    monkeypatch.setattr(intro, "LINE_NODES", (0.6, "Подключаю модули."))
+    monkeypatch.setattr(intro, "T_VOICE", 1.2)
 
     async def динамики():                       # колонки забирают звук, как _play_audio
         while True:
@@ -1167,14 +1172,18 @@ async def test_два_хлопка_интро_звук_и_джарвис_слу�
             await asyncio.sleep(0)
     speaker = asyncio.create_task(динамики())
     j._on_double_clap()
-    await asyncio.wait_for(j._intro_task, 10)
+    await asyncio.wait_for(j._intro_task, 15)
     speaker.cancel()
     assert played and "Gemini" in played[0]
-    assert bytes(голос[:400]) in bytes(heard), "в конце интро звучит голос Джарвиса"
-    assert продлено and продлено[0] > intro.T_VOICE, "лицо на экране, пока Джарвис говорит"
-    assert any("Слушаю." in line for line in стенд.ui.logs)
+    for голос in голоса.values():
+        assert bytes(голос[:400]) in bytes(heard), "каждая реплика звучит"
+    assert len(голоса) == 3
+    last_lines, env = субтитры[-1]
+    assert [round(d, 2) for _, d, _ in last_lines] == [0.1, 0.1, 0.1], "субтитры знают длину каждой реплики"
+    assert env and max(env) == 1.0
+    assert продлено and продлено[0] > 1.2, "картинка держится, пока Джарвис говорит"
+    assert any("Все системы в норме" in line or "кроме" in line for line in стенд.ui.logs)
     assert j.is_awake(), "после интро Джарвис слушает"
-    assert any("онлайн" in line for line in стенд.ui.logs)
 
 
 @pytest.mark.asyncio

@@ -1005,6 +1005,7 @@ class MainWindow(QMainWindow):
     _overlay_sig = pyqtSignal(str)
     _intro_sig = pyqtSignal(object)             # интро на два хлопка (core/intro.py)
     _intro_end_sig = pyqtSignal(float)          # продлить интро под фразу Джарвиса
+    _intro_voice_sig = pyqtSignal(object, object)   # реплики (субтитры) и громкость голоса
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1282,6 +1283,7 @@ class MainWindow(QMainWindow):
         self._overlay_sig.connect(self._show_overlay)
         self._intro_sig.connect(self._show_intro)
         self._intro_end_sig.connect(self._extend_intro)
+        self._intro_voice_sig.connect(self._set_intro_voice)
         self.on_intro_skipped = None              # main.py: пропустили — заглушить звук
 
     # ── Публичный API ──────────────────────────────────────────────────────────
@@ -1620,6 +1622,15 @@ class MainWindow(QMainWindow):
     def extend_intro(self, end: float):
         """Джарвис здоровается дольше сценария — интро ждёт конца фразы (из любого потока)."""
         self._intro_end_sig.emit(float(end))
+
+    def intro_voice(self, lines, env):
+        """Реплики Джарвиса (начало, длительность, текст) и громкость голоса — в интро."""
+        self._intro_voice_sig.emit(list(lines), list(env))
+
+    def _set_intro_voice(self, lines, env):
+        ov = getattr(self, "_intro", None)
+        if ov is not None:
+            ov.scene.set_voice(lines, env)
 
     def _extend_intro(self, end: float):
         ov = getattr(self, "_intro", None)

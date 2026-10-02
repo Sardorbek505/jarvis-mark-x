@@ -1,156 +1,61 @@
-"""Интро Джарвиса (два хлопка): общий сценарий для картинки (ui_intro.py) и звука.
+"""Интро Джарвиса (два хлопка): сценарий, реплики с субтитрами и звук.
 
-Звук синтезируется здесь же, без файлов: так он всегда совпадает со сценарием
-по времени, а установщик не растёт. Сценарий:
+Как в образце владельца: экран гаснет, голос Джарвиса говорит, внизу — его
+слова субтитрами (слово за словом), в центре загорается шар в золотом кольце,
+от него расходится сеть — большие узлы с иконками и подписями, тонкие дуги
+по всему экрану. Лица нет. Сценарий:
 
-  0,0  экран гаснет — низкий «спуск» питания и щелчок
-  0,4  сверху заполняется полоса-сканер — тихий тик на каждое деление
-  2,0  загорается кольцо — нарастающий гул
-  3,2  удар — сабвуфер, вспышка; внутри кольца оживает шар
-  3,4  от кольца расходятся узлы-умения (иконки) — по ноте на каждый, под ними — пэд
-  5,6  слева — проверка систем: иконки загораются зелёным, тик на каждую
-  6,6  шар собирается в лицо Джарвиса, оно машет — финальный аккорд и колокольчик
-  6,9  голос Джарвиса: «Добрый вечер, сэр. Все системы в норме. Слушаю.» —
-       музыка под ним стихает (greeting, mix_voice)
-  9,6  картинка тает, к 10,2 — обычный Джарвис
+  0,0  экран гаснет — спуск питания, щелчок реле
+  0,9  «Проверка систем.» — тишина, по краям рисуется HUD
+  2,6  шар заряжается — нарастающий гул, кольцо дорисовывается
+  4,0  удар — вспышка, ударная волна до краёв экрана
+  4,3  «Подключаю модули.» — узлы выходят по одному (всё быстрее), каждый — щелчок
+  7,4  сеть оживает — дуги по всему экрану, луч проверки обегает узлы
+  8,6  «<приветствие>, сэр. Все системы в норме.» — финальный удар и аккорд
+  ...  сеть складывается, шар улетает наверх к капсуле
+
+Звук синтезируется здесь, без файлов: всегда совпадает с картинкой.
 """
 from __future__ import annotations
 
 import numpy as np
 
 RATE = 24000
-TITLE = "СИСТЕМНАЯ ПРОВЕРКА"
-FINAL = "ДЖАРВИС — ОНЛАЙН"
 
-T_DARK, T_TYPE, T_RING, T_HIT, T_NODES, T_CHECKS, T_FINAL, T_FADE, T_END = (
-    0.0, 0.4, 2.0, 3.2, 3.4, 5.6, 6.6, 9.6, 10.2)     # лицо держится, пока Джарвис здоровается
-T_VOICE = T_FINAL + 0.3              # голос — когда лицо уже машет
-TYPE_STEP = 0.08                     # секунд на букву
-NODE_STEP = 0.2                      # между узлами
-CHECK_STEP = 0.16                    # между строками проверки
+T_DARK, T_BOOT, T_CHARGE, T_HIT, T_NODES, T_NET, T_FINAL, T_FADE, T_END = (
+    0.0, 0.9, 2.6, 4.0, 4.3, 7.4, 8.6, 11.6, 12.4)
 
-NODES = ("Музыка", "Звонки", "Память", "Календарь", "Погода", "Браузер",
-         "Telegram", "Экран", "YouTube", "Файлы")
+# Реплики Джарвиса: (с какой секунды, текст). Последняя — приветствие (greeting).
+LINE_BOOT = (T_BOOT, "Проверка систем.")
+LINE_NODES = (T_NODES, "Подключаю модули.")
+T_VOICE = T_FINAL + 0.15
+
+# Узлы сети: (подпись, иконка). Порядок — по часовой стрелке сверху.
+NODES = (("Музыка", "music"), ("Звонки", "phone"), ("Память", "memory"), ("Календарь", "calendar"),
+         ("Погода", "weather"), ("Интернет", "globe"), ("Telegram", "telegram"), ("Экран", "vision"),
+         ("YouTube", "video"), ("Учёба", "study"))
 CHECKS = ("Микрофон", "Голос", "Слово «Джарвис»", "Gemini", "Память", "Telegram")
-# Без текста на экране: у каждого узла и строки проверки — иконка (ui_icons.draw_icon;
-# «sun» и «calendar» рисует сам ui_intro).
-NODE_ICONS = {"Музыка": "note", "Звонки": "phone", "Память": "book", "Календарь": "calendar",
-              "Погода": "sun", "Браузер": "globe", "Telegram": "plane", "Экран": "eye",
-              "YouTube": "play", "Файлы": "copy"}
-CHECK_ICONS = {"Микрофон": "mic", "Голос": "speak", "Слово «Джарвис»": "spark", "Gemini": "bolt",
-               "Память": "book", "Telegram": "plane"}
-
-# Нота на каждый узел — пентатоника ля минор, вверх по кругу.
-_NODE_HZ = (440.0, 523.25, 587.33, 659.25, 783.99, 880.0, 1046.5, 1174.66, 1318.51, 1567.98)
-
-
-def type_times() -> list[float]:
-    return [T_TYPE + i * TYPE_STEP for i, ch in enumerate(TITLE) if ch != " "]
 
 
 def node_times() -> list[float]:
-    return [T_NODES + i * NODE_STEP for i in range(len(NODES))]
+    """Узлы выходят всё быстрее — разгон, а не метроном."""
+    out, t, gap = [], T_NODES + 0.35, 0.36
+    for _ in NODES:
+        out.append(round(t, 3))
+        t += gap
+        gap = max(0.14, gap * 0.84)
+    return out
 
 
-def check_times() -> list[float]:
-    return [T_CHECKS + i * CHECK_STEP for i in range(len(CHECKS))]
-
-
-def _t(sec: float) -> np.ndarray:
-    return np.arange(int(sec * RATE)) / RATE
-
-
-def _add(buf: np.ndarray, at: float, sig: np.ndarray):
-    i = int(at * RATE)
-    j = min(len(buf), i + len(sig))
-    if j > i:
-        buf[i:j] += sig[: j - i]
-
-
-def _env(n: int, attack: float, decay: float) -> np.ndarray:
-    t = np.arange(n) / RATE
-    a = np.clip(t / max(attack, 1e-4), 0, 1)
-    return a * np.exp(-np.maximum(t - attack, 0) / decay)
-
-
-def _blip(hz: float, dur: float, decay: float, vol: float) -> np.ndarray:
-    t = _t(dur)
-    tone = np.sin(2 * np.pi * hz * t) + 0.3 * np.sin(2 * np.pi * hz * 2 * t)
-    return tone * _env(len(t), 0.003, decay) * vol
-
-
-def _noise(dur: float, rng, hi: bool = True) -> np.ndarray:
-    x = rng.normal(0, 1, int(dur * RATE))
-    return np.diff(x, prepend=0.0) * 0.5 if hi else np.convolve(x, np.ones(8) / 8, "same")
-
-
-def render(seed: int = 7) -> np.ndarray:
-    """Весь звук интро: float32, −1…1, моно, RATE Гц."""
-    rng = np.random.default_rng(seed)
-    out = np.zeros(int((T_END + 0.6) * RATE))
-
-    # 0,0 — питание уходит: спуск 140→40 Гц и щелчок реле
-    t = _t(0.7)
-    f = 140 * (40 / 140) ** (t / 0.7)
-    _add(out, T_DARK, np.sin(2 * np.pi * np.cumsum(f) / RATE) * _env(len(t), 0.01, 0.35) * 0.45)
-    _add(out, T_DARK, _noise(0.03, rng) * _env(int(0.03 * RATE), 0.0005, 0.006) * 0.6)
-
-    # 0,4 — печать заголовка
-    for k, at in enumerate(type_times()):
-        _add(out, at, _blip(2400 + 180 * (k % 3), 0.04, 0.008, 0.10))
-
-    # 2,0 — гул: пила и шум, растут к удару
-    dur = T_HIT - T_RING
-    t = _t(dur)
-    f = 70 * (320 / 70) ** (t / dur) ** 1.6
-    ph = 2 * np.pi * np.cumsum(f) / RATE
-    saw = 2 * ((ph / (2 * np.pi)) % 1.0) - 1
-    rise = (t / dur) ** 2.2
-    hum = (0.18 * np.sin(ph) + 0.06 * saw + 0.08 * _noise(dur, rng)[: len(t)]) * rise
-    _add(out, T_RING, hum)
-
-    # 3,2 — удар: сабвуфер с «падением» высоты + хлопок шума + хвост
-    t = _t(1.6)
-    f = 55 + 70 * np.exp(-t / 0.05)
-    boom = np.sin(2 * np.pi * np.cumsum(f) / RATE) * _env(len(t), 0.002, 0.45) * 0.9
-    crack = _noise(0.25, rng) * _env(int(0.25 * RATE), 0.0005, 0.04) * 0.5
-    tail = _noise(1.6, rng, hi=False)[: len(t)] * _env(len(t), 0.01, 0.6) * 0.25
-    _add(out, T_HIT, boom + tail)
-    _add(out, T_HIT, crack)
-
-    # 3,4 — пэд под узлами: ля минор с ноной, медленно вспухает и держится до финала
-    dur = T_FINAL - T_NODES + 0.4
-    t = _t(dur)
-    pad = sum(np.sin(2 * np.pi * hz * t + k) for k, hz in enumerate((110.0, 164.81, 220.0, 246.94, 329.63)))
-    pad *= np.clip(t / 1.2, 0, 1) * np.clip((dur - t) / 0.5, 0, 1) * 0.045
-    _add(out, T_NODES, pad)
-    for at, hz in zip(node_times(), _NODE_HZ):
-        _add(out, at, _blip(hz, 0.5, 0.12, 0.16))
-
-    # 5,6 — проверка систем: сухие двойные тики
-    for at in check_times():
-        _add(out, at, _blip(1800, 0.03, 0.006, 0.12))
-        _add(out, at + 0.04, _blip(2600, 0.03, 0.006, 0.09))
-
-    # 6,6 — финал: аккорд-стаб + колокольчик (негармоничные обертоны)
-    t = _t(2.2)
-    stab = sum(np.sin(2 * np.pi * hz * t) for hz in (220.0, 277.18, 329.63, 440.0, 554.37))
-    _add(out, T_FINAL, stab * _env(len(t), 0.004, 0.5) * 0.12)
-    bell = sum(a * np.sin(2 * np.pi * 1318.5 * r * t) for r, a in ((1, 1), (2.76, 0.5), (5.4, 0.25), (8.93, 0.12)))
-    _add(out, T_FINAL + 0.05, bell * _env(len(t), 0.002, 0.7) * 0.10)
-    _add(out, T_FINAL, np.sin(2 * np.pi * 55 * t) * _env(len(t), 0.003, 0.4) * 0.5)
-
-    peak = float(np.max(np.abs(out))) or 1.0
-    return (out / peak * 0.89).astype(np.float32)
-
-
-def pcm16(volume: float = 0.6, rate: int = RATE) -> bytes:
-    """Звук интро в формате колонок Джарвиса: int16, моно."""
-    x = render()
-    if rate != RATE:
-        n = int(len(x) * rate / RATE)
-        x = np.interp(np.arange(n) * RATE / rate, np.arange(len(x)), x)
-    return (np.clip(x * volume, -1, 1) * 32767).astype("<i2").tobytes()
+def word_times(text: str, start: float, dur: float) -> list[tuple[str, float]]:
+    """Субтитры слово за словом: когда загорается каждое слово (по длине слов)."""
+    words = text.split()
+    total = sum(len(w) + 2 for w in words) or 1
+    out, t = [], start
+    for w in words:
+        out.append((w, t))
+        t += dur * (len(w) + 2) / total
+    return out
 
 
 def greeting(checks: dict | None = None, hour: int | None = None) -> str:
@@ -168,12 +73,177 @@ def greeting(checks: dict | None = None, hour: int | None = None) -> str:
     else:
         state = "Всё работает, кроме " + ", ".join(_genitive(n) for n in failed[:-1]) + \
                 f" и {_genitive(failed[-1])}."
-    return f"{hello}, сэр. {state} Слушаю."
+    return f"{hello}, сэр. {state}"
+
+
+def lines(checks: dict | None = None, hour: int | None = None) -> list[tuple[float, str]]:
+    return [LINE_BOOT, LINE_NODES, (T_VOICE, greeting(checks, hour))]
+
+
+def prewarm_texts() -> list[str]:
+    """Что озвучить заранее (в кэш), чтобы первая реплика звучала сразу после хлопков."""
+    return [LINE_BOOT[1], LINE_NODES[1]] + [greeting({}, h) for h in (3, 8, 14, 20)]
 
 
 def _genitive(name: str) -> str:
     return {"Микрофон": "микрофона", "Голос": "голоса", "Слово «Джарвис»": "слова «Джарвис»",
             "Память": "памяти"}.get(name, name)
+
+
+# ── звук ─────────────────────────────────────────────────────────────────────
+
+def _t(sec: float) -> np.ndarray:
+    return np.arange(int(sec * RATE)) / RATE
+
+
+def _add(buf: np.ndarray, at: float, sig: np.ndarray):
+    i = int(at * RATE)
+    j = min(len(buf), i + len(sig))
+    if j > i >= 0:
+        buf[i:j] += sig[: j - i]
+
+
+def _env(n: int, attack: float, decay: float) -> np.ndarray:
+    t = np.arange(n) / RATE
+    return np.clip(t / max(attack, 1e-4), 0, 1) * np.exp(-np.maximum(t - attack, 0) / decay)
+
+
+def _lp(x: np.ndarray, n: int) -> np.ndarray:
+    return np.convolve(x, np.ones(n) / n, "same")
+
+
+def _reverb(x: np.ndarray, mix: float = 0.25) -> np.ndarray:
+    """Хвост комнаты: несколько затухающих отражений — удар не обрывается сухо."""
+    out = x.copy()
+    for d, g in ((0.031, 0.5), (0.047, 0.42), (0.067, 0.36), (0.089, 0.3), (0.113, 0.25)):
+        k = int(d * RATE)
+        y = x.copy()
+        for rep in range(1, 9):                       # гребёнка без питоновского цикла по отсчётам
+            sh = k * rep
+            if sh >= len(y):
+                break
+            y[sh:] += (g ** rep) * x[:-sh]
+        out += mix * y / 5
+    return out
+
+
+def _click(rng, vol: float, bright: float = 0.6) -> np.ndarray:
+    n = int(0.03 * RATE)
+    x = rng.normal(0, 1, n) * _env(n, 0.0004, 0.004)
+    tone = np.sin(2 * np.pi * 3200 * _t(0.03)) * _env(n, 0.0005, 0.006)
+    return (np.diff(x, prepend=0.0) * bright + tone * (1 - bright)) * vol
+
+
+def _blip(hz: float, dur: float, decay: float, vol: float) -> np.ndarray:
+    t = _t(dur)
+    tone = (np.sin(2 * np.pi * hz * t) + 0.35 * np.sin(2 * np.pi * hz * 2.01 * t)
+            + 0.12 * np.sin(2 * np.pi * hz * 3 * t))
+    return tone * _env(len(t), 0.002, decay) * vol
+
+
+def _whoosh(rng, dur: float, f0: float, f1: float, vol: float) -> np.ndarray:
+    """Шум через «окно» частот от f0 к f1 — пролёт."""
+    n = int(dur * RATE)
+    x = rng.normal(0, 1, n)
+    out = np.zeros(n)
+    hop = 480
+    for s in range(0, n, hop):
+        f = f0 + (f1 - f0) * (s / n)
+        k = max(1, int(RATE / max(f, 60) / 2))
+        seg = x[s:s + hop * 2]
+        if len(seg) > 1:
+            out[s:s + len(seg)] += _lp(seg, k) * np.hanning(len(seg))
+    shape = np.sin(np.pi * np.arange(n) / n) ** 1.5
+    peak = np.max(np.abs(out)) or 1.0
+    return out / peak * shape * vol
+
+
+def _impact(rng, vol: float, sub: float = 48.0) -> np.ndarray:
+    t = _t(2.4)
+    f = sub + 90 * np.exp(-t / 0.04)
+    boom = np.sin(2 * np.pi * np.cumsum(f) / RATE) * _env(len(t), 0.001, 0.55)
+    crack = np.zeros(len(t))
+    n = int(0.3 * RATE)
+    crack[:n] = np.diff(rng.normal(0, 1, n), prepend=0.0) * _env(n, 0.0003, 0.05) * 0.6
+    body = _lp(rng.normal(0, 1, len(t)), 6) * _env(len(t), 0.002, 0.35) * 0.35
+    return _reverb(boom + crack + body, 0.5) * vol
+
+
+def render(seed: int = 11) -> np.ndarray:
+    """Все эффекты интро (без голоса): float32, −1…1, моно, RATE Гц."""
+    rng = np.random.default_rng(seed)
+    out = np.zeros(int((T_END + 0.8) * RATE))
+
+    # 0,0 — экран схлопывается: «пиу» вниз и щелчок реле
+    t = _t(0.5)
+    f = 1800 * (60 / 1800) ** (t / 0.5)
+    _add(out, 0.0, np.sin(2 * np.pi * np.cumsum(f) / RATE) * _env(len(t), 0.003, 0.18) * 0.30)
+    _add(out, 0.42, _click(rng, 0.9, 0.9))
+    _add(out, 0.42, _blip(90, 0.25, 0.08, 0.35))
+
+    # 0,9 — тихий гул комнаты, тики HUD по краям
+    hum_t = _t(T_CHARGE - T_BOOT)
+    _add(out, T_BOOT, (np.sin(2 * np.pi * 55 * hum_t) * 0.04 + _lp(rng.normal(0, 1, len(hum_t)), 40) * 0.05)
+         * np.clip(hum_t / 0.6, 0, 1))
+    for k, at in enumerate((1.1, 1.22, 1.3, 1.55, 1.62, 1.9, 2.05, 2.3)):
+        _add(out, at, _click(rng, 0.18 + 0.05 * (k % 2), 0.4))
+
+    # 2,6 — заряд: свист конденсатора вверх + саб нарастает, перед ударом — «вдох»
+    dur = T_HIT - T_CHARGE
+    t = _t(dur)
+    f = 180 * (2600 / 180) ** ((t / dur) ** 1.8)
+    whine = np.sin(2 * np.pi * np.cumsum(f * (1 + 0.004 * np.sin(2 * np.pi * 7 * t))) / RATE)
+    rise = (t / dur) ** 2.4
+    sub = np.sin(2 * np.pi * 42 * t)
+    gate = np.clip((T_HIT - 0.1 - (T_CHARGE + t)) / 0.05, 0, 1)        # обрыв за 0,1 с до удара
+    _add(out, T_CHARGE, (whine * 0.10 + sub * 0.35) * rise * gate)
+    _add(out, T_HIT - 1.2, _whoosh(rng, 1.15, 300, 6000, 0.35))
+
+    # 4,0 — удар
+    _add(out, T_HIT, _impact(rng, 0.95))
+
+    # 4,3 — узлы: на каждый — чёткий щелчок и нота, восходящая
+    notes = (523.25, 587.33, 659.25, 783.99, 880.0, 987.77, 1046.5, 1174.66, 1318.51, 1567.98)
+    for at, hz in zip(node_times(), notes):
+        _add(out, at - 0.06, _whoosh(rng, 0.18, 2000, 7000, 0.10))
+        _add(out, at, _click(rng, 0.45, 0.7))
+        _add(out, at + 0.01, _blip(hz, 0.45, 0.10, 0.14))
+
+    # пэд под сетью — тёплый, медленно вспухает
+    dur = T_FADE - T_NODES
+    t = _t(dur)
+    pad = sum(np.sin(2 * np.pi * hz * t + k) * (1 + 0.15 * np.sin(2 * np.pi * 0.3 * t + k))
+              for k, hz in enumerate((110.0, 164.81, 220.0, 277.18, 329.63)))
+    _add(out, T_NODES, pad * np.clip(t / 2.0, 0, 1) * np.clip((dur - t) / 1.0, 0, 1) * 0.035)
+
+    # 7,4 — сеть оживает: пролёт и россыпь тихих искр
+    _add(out, T_NET, _whoosh(rng, 0.9, 500, 9000, 0.22))
+    for k in range(14):
+        at = T_NET + 0.15 + k * 0.07 + rng.uniform(0, 0.03)
+        _add(out, at, _blip(2000 + 260 * (k % 5), 0.08, 0.02, 0.05))
+
+    # 8,6 — финал: второй удар (мягче) и аккорд с блеском
+    _add(out, T_FINAL, _impact(rng, 0.55, 55.0))
+    t = _t(3.0)
+    chord = sum(np.sin(2 * np.pi * hz * t) for hz in (220.0, 277.18, 329.63, 440.0, 554.37, 659.25))
+    _add(out, T_FINAL, _reverb(chord * _env(len(t), 0.01, 0.9) * 0.06, 0.4))
+    bell = sum(a * np.sin(2 * np.pi * 1760 * r * t) for r, a in ((1, 1), (2.76, 0.45), (5.4, 0.2)))
+    _add(out, T_FINAL + 0.05, bell * _env(len(t), 0.002, 0.6) * 0.05)
+
+    # конец — сеть складывается: пролёт вниз
+    _add(out, T_FADE - 0.2, _whoosh(rng, 0.8, 6000, 400, 0.18))
+
+    peak = float(np.max(np.abs(out))) or 1.0
+    return (out / peak * 0.89).astype(np.float32)
+
+
+def pcm16(volume: float = 0.6, rate: int = RATE) -> bytes:
+    """Звук интро в формате колонок Джарвиса: int16, моно."""
+    x = render()
+    if rate != RATE:
+        n = int(len(x) * rate / RATE)
+        x = np.interp(np.arange(n) * RATE / rate, np.arange(len(x)), x)
+    return (np.clip(x * volume, -1, 1) * 32767).astype("<i2").tobytes()
 
 
 def mix_voice(intro_pcm: bytes, voice_pcm: bytes, rate: int, at: float = T_VOICE, duck: float = 0.35) -> bytes:
@@ -188,10 +258,20 @@ def mix_voice(intro_pcm: bytes, voice_pcm: bytes, rate: int, at: float = T_VOICE
     gain = np.ones(n, dtype=np.float32)
     ramp = int(0.15 * rate)
     lo, hi = i, i + len(v)
-    gain[lo:hi] = duck
-    gain[max(0, lo - ramp):lo] = np.linspace(1, duck, min(ramp, lo), dtype=np.float32)
+    gain[lo:hi] = np.minimum(gain[lo:hi], duck)
+    gain[max(0, lo - ramp):lo] = np.minimum(gain[max(0, lo - ramp):lo],
+                                            np.linspace(1, duck, min(ramp, lo), dtype=np.float32))
     tail = min(ramp, n - hi)
-    gain[hi:hi + tail] = np.linspace(duck, 1, tail, dtype=np.float32)
+    gain[hi:hi + tail] = np.minimum(gain[hi:hi + tail], np.linspace(duck, 1, tail, dtype=np.float32))
     out *= gain
     out[lo:hi] += v
     return np.clip(out, -32768, 32767).astype("<i2").tobytes()
+
+
+def envelope(pcm: bytes, rate: int, step: float = 0.03) -> list[float]:
+    """Громкость голоса кусочками по step с (0…1) — для волны и пульса шара."""
+    x = np.frombuffer(pcm[: len(pcm) // 2 * 2], "<i2").astype(np.float32)
+    n = max(1, int(step * rate))
+    rms = [float(np.sqrt(np.mean(x[i:i + n] ** 2))) for i in range(0, len(x), n)] or [0.0]
+    top = max(rms) or 1.0
+    return [min(1.0, r / top) for r in rms]
