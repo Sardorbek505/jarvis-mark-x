@@ -1,5 +1,8 @@
 """Интро Джарвиса на весь экран (два хлопка). Сценарий и звук — core/intro.py.
 
+Текста на экране нет — только иконки и анимация: полоса-сканер вместо
+заголовка, иконки в узлах и в проверке систем, в финале — лицо Джарвиса.
+
 Кадр рисуется функцией от времени (paint_at): окно и превью-видео рисуют
 одно и то же, а тест может проверить любой момент без таймеров.
 Клик или Esc — пропустить.
@@ -15,6 +18,8 @@ from PyQt6.QtWidgets import QApplication, QWidget
 
 from core import intro as S
 from orb import DotOrb
+from ui_face import Face
+from ui_icons import draw_icon
 
 TEAL = QColor("#3fd0bd")
 TEAL_HI = QColor("#8ff3e6")
@@ -45,6 +50,32 @@ def _back(x: float) -> float:
     return 1 + (s + 1) * (x - 1) ** 3 + s * (x - 1) ** 2
 
 
+def _icon(p: QPainter, name: str, c: QPointF, s: float, color: QColor):
+    """Иконки ui_icons плюс две своих — солнце (погода) и календарь."""
+    if name == "sun":
+        p.save()
+        p.setPen(QPen(color, max(1.2, s * 0.11), cap=Qt.PenCapStyle.RoundCap))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(c, s * 0.2, s * 0.2)
+        for k in range(8):
+            a = k * math.pi / 4
+            p.drawLine(QPointF(c.x() + math.cos(a) * s * 0.32, c.y() + math.sin(a) * s * 0.32),
+                       QPointF(c.x() + math.cos(a) * s * 0.44, c.y() + math.sin(a) * s * 0.44))
+        p.restore()
+    elif name == "calendar":
+        p.save()
+        p.setPen(QPen(color, max(1.2, s * 0.11), cap=Qt.PenCapStyle.RoundCap))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        box = QRectF(c.x() - s * 0.36, c.y() - s * 0.3, s * 0.72, s * 0.66)
+        p.drawRoundedRect(box, s * 0.08, s * 0.08)
+        p.drawLine(QPointF(box.left(), box.top() + s * 0.2), QPointF(box.right(), box.top() + s * 0.2))
+        for dx in (-0.18, 0.18):
+            p.drawLine(QPointF(c.x() + s * dx, box.top() - s * 0.1), QPointF(c.x() + s * dx, box.top() + s * 0.06))
+        p.restore()
+    else:
+        draw_icon(p, name, c, s, color)
+
+
 class IntroScene:
     """Состояние между кадрами — только шар (у него своя физика)."""
 
@@ -52,6 +83,8 @@ class IntroScene:
         self.checks = checks or {}
         self.orb = DotOrb(n=900, seed=11)
         self.orb.set_shape("sphere")
+        self.face = Face(seed=3)
+        self._greeted = False
         self._last_t = 0.0
 
     def paint_at(self, p: QPainter, w: int, h: int, t: float):
@@ -67,7 +100,7 @@ class IntroScene:
         r = min(w, h) * 0.15
 
         self._sweep(p, w, h, t)
-        self._title(p, w, h, t)
+        self._scanner(p, w, h, t)
         self._orbits(p, cx, cy, r, t)
         self._nodes(p, cx, cy, r, t)
         self._ring(p, cx, cy, r, t)
@@ -85,26 +118,32 @@ class IntroScene:
             g.setColorAt(1, _c(TEAL, 0))
             p.fillRect(QRectF(0, y - 1.5, w, 3), g)
 
-    def _title(self, p, w, h, t):
+    def _scanner(self, p, w, h, t):
+        """Вместо «СИСТЕМНАЯ ПРОВЕРКА» — полоса из делений: по одному на тик звука,
+        вдоль неё бежит блик. Уходит, когда появляются узлы."""
         if t < S.T_TYPE or t > S.T_NODES + 0.3:
             return
-        shown = sum(1 for at in S.type_times() if at <= t)
-        text, k = "", 0
-        for ch in S.TITLE:
-            if ch == " ":
-                text += ch
-                continue
-            if k >= shown:
-                break
-            text += ch
-            k += 1
-        a = 1 - _clamp((t - S.T_NODES) / 0.3)               # уступает место узлам
-        f = QFont("Segoe UI", max(10, int(h * 0.022)), QFont.Weight.DemiBold)
-        f.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 135)
-        p.setFont(f)
-        cursor = "▍" if int(t * 3) % 2 == 0 and t < S.T_RING + 0.6 else ""
-        p.setPen(_c(TEAL_HI, a))
-        p.drawText(QRectF(0, h * 0.11, w, h * 0.06), Qt.AlignmentFlag.AlignCenter, text + cursor)
+        a = 1 - _clamp((t - S.T_NODES) / 0.3)
+        times = S.type_times()
+        n = len(times)
+        bw, y = w * 0.26, h * 0.12
+        x0 = (w - bw) / 2
+        gap = bw / n
+        seg = gap * 0.62
+        p.setPen(Qt.PenStyle.NoPen)
+        for i, at in enumerate(times):
+            on = _clamp((t - at) / 0.08)
+            p.setBrush(_c(TEAL_HI if on >= 1 else TEAL, a * (0.18 + 0.82 * on)))
+            p.drawRoundedRect(QRectF(x0 + i * gap, y - 3, seg, 6), 2, 2)
+        done = sum(1 for at in times if at <= t)
+        if 0 < done < n or (t < S.T_RING + 0.6):
+            u = (t * 0.9) % 1.0
+            gx = x0 + bw * u
+            g = QRadialGradient(QPointF(gx, y), gap * 2.2)
+            g.setColorAt(0, _c(WHITE, 0.6 * a))
+            g.setColorAt(1, _c(WHITE, 0))
+            p.setBrush(g)
+            p.drawEllipse(QPointF(gx, y), gap * 2.2, gap * 2.2)
 
     def _ring(self, p, cx, cy, r, t):
         if t < S.T_RING:
@@ -130,7 +169,9 @@ class IntroScene:
     def _sphere(self, p, cx, cy, r, t, dt):
         if t < S.T_HIT:
             return
-        a = _ease_out((t - S.T_HIT) / 0.6)
+        a = _ease_out((t - S.T_HIT) / 0.6) * (1 - _ease_out((t - S.T_FINAL) / 0.35))
+        if a <= 0:
+            return
         self.orb.step(min(dt, 0.05), level=0.25 + 0.6 * math.exp(-(t - S.T_HIT) / 0.5), active=True)
         xs, ys, zs = self.orb.project(cx, cy, r * 0.78)
         p.setPen(Qt.PenStyle.NoPen)
@@ -184,58 +225,64 @@ class IntroScene:
             if grow < 1:
                 continue
             pop = _back((t - at - 0.3) / 0.3)
-            rad = r * 0.085 * pop
-            g = QRadialGradient(QPointF(nx, ny), rad * 3)
-            g.setColorAt(0, _c(TEAL, 0.45))
+            rad = r * 0.17 * pop
+            g = QRadialGradient(QPointF(nx, ny), rad * 2.2)
+            g.setColorAt(0, _c(TEAL, 0.40))
             g.setColorAt(1, _c(TEAL, 0))
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(g)
-            p.drawEllipse(QPointF(nx, ny), rad * 3, rad * 3)
-            p.setBrush(_c(TEAL_HI, 1))
+            p.drawEllipse(QPointF(nx, ny), rad * 2.2, rad * 2.2)
+            p.setBrush(_c(QColor("#04121a"), 0.95))
+            p.setPen(QPen(_c(TEAL_HI, 0.9), 1.6))
             p.drawEllipse(QPointF(nx, ny), rad, rad)
-            la = _clamp((t - at - 0.35) / 0.3)
-            p.setPen(_c(WHITE, la))
-            right = nx >= cx - 1
-            box = QRectF(nx + rad * 2.2, ny - 14, 220, 28) if right else QRectF(nx - rad * 2.2 - 220, ny - 14, 220, 28)
-            align = (Qt.AlignmentFlag.AlignLeft if right else Qt.AlignmentFlag.AlignRight) | Qt.AlignmentFlag.AlignVCenter
-            if abs(nx - cx) < r * 0.3:                        # узлы сверху и снизу — подпись над/под
-                box = QRectF(nx - 110, ny + (-rad * 2.2 - 28 if ny < cy else rad * 2.2), 220, 28)
-                align = Qt.AlignmentFlag.AlignCenter
-            p.drawText(box, align, name)
+            if pop > 0.05:
+                _icon(p, S.NODE_ICONS.get(name, "spark"), QPointF(nx, ny), rad * 1.05,
+                      _c(TEAL_HI, _clamp((t - at - 0.35) / 0.25)))
 
     def _checks(self, p, w, h, t):
-        if t < S.T_CHECKS - 0.2:
+        """Проверка систем — столбик иконок: серые, по очереди загораются зелёным
+        с галочкой (или красным с крестиком, если не работает)."""
+        if t < S.T_CHECKS - 0.25:
             return
-        f = QFont("Consolas", max(10, int(h * 0.019)))
-        p.setFont(f)
-        x, y0, step = w * 0.04, h * 0.38, h * 0.042
-        p.setPen(_c(DIM, _clamp((t - S.T_CHECKS + 0.2) / 0.2)))
-        p.drawText(QPointF(x, y0 - step), "ПРОВЕРКА СИСТЕМ")
+        size = h * 0.05
+        x, y0, step = w * 0.06, h * 0.5 - (len(S.CHECKS) - 1) * size * 0.75, size * 1.5
         for i, (name, at) in enumerate(zip(S.CHECKS, S.check_times())):
-            if t < at - 0.12:
+            appear = _clamp((t - at + 0.25) / 0.2)
+            if appear <= 0:
                 continue
-            ok = self.checks.get(name, True)
+            c = QPointF(x, y0 + i * step)
             done = t >= at
-            mark = ("✓" if ok else "✕") if done else "…"
+            ok = self.checks.get(name, True)
             col = (GREEN if ok else QColor("#ff4660")) if done else DIM
-            p.setPen(col)
-            p.drawText(QPointF(x, y0 + i * step), mark)
-            p.setPen(_c(WHITE if done else DIM, 0.9))
-            p.drawText(QPointF(x + h * 0.03, y0 + i * step), name)
+            pop = 1 + 0.25 * math.exp(-max(0, t - at) / 0.12) * done
+            rr = size * 0.5 * pop
+            p.setBrush(_c(QColor("#04121a"), 0.9 * appear))
+            p.setPen(QPen(_c(col, appear), 1.6))
+            p.drawEllipse(c, rr, rr)
+            _icon(p, S.CHECK_ICONS.get(name, "spark"), c, rr * 1.05, _c(col, appear))
+            if done:                                       # значок-итог в углу
+                b = QPointF(c.x() + rr * 0.75, c.y() + rr * 0.75)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(col)
+                p.drawEllipse(b, rr * 0.36, rr * 0.36)
+                draw_icon(p, "check" if ok else "close", b, rr * 0.42, QColor("#02050a"))
 
     def _final(self, p, w, h, cx, cy, r, t):
+        """Вместо «ДЖАРВИС — ОНЛАЙН»: шар внутри кольца собирается в лицо, оно машет."""
         if t < S.T_FINAL:
             return
+        if not self._greeted:
+            self.face.greet()
+            self.face.set_emotion("happy")
+            self._greeted = True
+        target = t - S.T_FINAL                   # догоняем время мелкими шагами: кадры могут пропадать
+        while self.face.clock < target - 1e-6:
+            self.face.step(min(0.05, target - self.face.clock))
         a = _ease_out((t - S.T_FINAL) / 0.35)
-        f = QFont("Segoe UI", max(12, int(h * 0.04)), QFont.Weight.Bold)
-        f.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 125)
-        p.setFont(f)
-        rect = QRectF(0, h * 0.04, w, h * 0.08)              # наверху, где был заголовок
-        for off, alpha in ((3, 0.18), (1.5, 0.3)):
-            p.setPen(_c(TEAL, alpha * a))
-            p.drawText(rect.adjusted(0, off, 0, off), Qt.AlignmentFlag.AlignCenter, S.FINAL)
-        p.setPen(_c(WHITE, a))
-        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, S.FINAL)
+        p.save()
+        p.setOpacity(p.opacity() * a)
+        self.face.paint(p, cx, cy, r * 0.9)
+        p.restore()
 
     def render(self, t: float, w: int = 1280, h: int = 720) -> QImage:
         img = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)

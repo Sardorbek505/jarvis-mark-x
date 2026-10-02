@@ -46,19 +46,27 @@ def _lit(img, x0, y0, x1, y1):
     return n
 
 
+def _white(img):
+    """Почти белые точки в центре: лицо белое, шар — бирюзовый."""
+    from PyQt6.QtGui import QColor
+    w, h = img.width(), img.height()
+    return sum(1 for x in range(int(w * 0.42), int(w * 0.58), 2) for y in range(int(h * 0.38), int(h * 0.62), 2)
+               if (c := QColor(img.pixel(x, y))).lightness() > 200 and c.hslSaturation() < 60)
+
+
 def test_frames_show_each_stage(qapp):
     from ui_intro import IntroScene
     sc = IntroScene()
     frames = {t: sc.render(t, 640, 360) for t in (0.2, 1.5, 2.6, 4.0, 6.0, 7.0, S.T_END)}
-    assert _lit(frames[1.5], 0.2, 0.08, 0.8, 0.2) > 0, "печатается заголовок"
+    assert _lit(frames[1.5], 0.3, 0.08, 0.7, 0.16) > 0, "заполняется полоса-сканер"
     assert _lit(frames[0.2], 0.3, 0.3, 0.7, 0.7) == 0 and _lit(frames[2.6], 0.3, 0.3, 0.7, 0.7) > 0, "загорается кольцо"
     assert _lit(frames[6.0], 0.0, 0.3, 0.2, 0.7) > 0, "проверка систем слева"
-    assert _lit(frames[7.0], 0.2, 0.03, 0.8, 0.13) > _lit(frames[6.0], 0.2, 0.03, 0.8, 0.13), "«ДЖАРВИС — ОНЛАЙН» наверху"
+    assert _white(frames[7.0]) > 50 and _white(frames[6.0]) < 5, "в финале в кольце — белое лицо Джарвиса вместо шара"
     assert _lit(frames[S.T_END], 0, 0, 1, 1) == 0, "в конце — снова рабочий стол"
 
 
 def test_title_leaves_before_top_node_arrives(qapp):
-    """Верхний узел «Музыка» и заголовок не должны наезжать друг на друга."""
+    """Верхний узел «Музыка» и полоса-сканер не должны наезжать друг на друга."""
     from ui_intro import IntroScene
     sc = IntroScene()
     sc.render(S.T_NODES + 0.35, 640, 360)
@@ -87,3 +95,21 @@ def test_click_skips_intro(qapp):
     ov.play()
     ov.skip()
     assert done == [True]
+
+
+def test_every_node_and_check_has_an_icon():
+    """Текста на экране нет — у каждого узла и строки проверки своя иконка."""
+    assert set(S.NODE_ICONS) == set(S.NODES) and set(S.CHECK_ICONS) == set(S.CHECKS)
+
+
+def test_no_text_on_screen(qapp, monkeypatch):
+    """Интро рисует без текста: drawText не вызывается ни в одном кадре."""
+    from PyQt6.QtGui import QPainter
+
+    from ui_intro import IntroScene
+    calls = []
+    monkeypatch.setattr(QPainter, "drawText", lambda self, *a, **k: calls.append(a))
+    sc = IntroScene()
+    for i in range(0, int(S.T_END * 10)):
+        sc.render(i / 10, 320, 180)
+    assert calls == []
