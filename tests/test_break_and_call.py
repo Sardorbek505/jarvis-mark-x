@@ -661,6 +661,61 @@ def test_call_logs_when_jarvis_starts_speaking(caplog):
     assert "Gemini на связи через" in caplog.text and "Джарвис заговорил через" in caplog.text
 
 
+def test_call_survives_google_1011_on_connect(monkeypatch):
+    """Журнал 02.10, 21:00: «1011 service unavailable» при подключении Gemini ронял
+    весь звонок. Временный сбой — пробуем ещё раз, и разговор идёт."""
+    monkeypatch.setattr(tc.asyncio, "sleep", _fast_sleep)
+
+    class Flaky(FakeLive):
+        tries = 0
+
+        async def __aenter__(self):
+            Flaky.tries += 1
+            if Flaky.tries == 1:
+                raise RuntimeError("1011 None. The service is currently unavailable.")
+            return self
+    tg = FakeTg()
+    live = Flaky([Msg(end=True)])
+    result = asyncio.run(tc.CallSession(tg, live, 42, "x", max_sec=5).run())
+    assert Flaky.tries == 2 and "Поговорили" in result
+
+
+def test_quota_error_is_not_retried():
+    class Quota(FakeLive):
+        tries = 0
+
+        async def __aenter__(self):
+            Quota.tries += 1
+            raise ConnectionError("1008 quota")
+    with pytest.raises(ConnectionError):
+        asyncio.run(tc.CallSession(FakeTg(), Quota([]), 42, "x", max_sec=5).run())
+    assert Quota.tries == 1
+
+
+def test_voice_is_saved_even_when_gemini_fails(tmp_path, monkeypatch):
+    """Запись голоса нужнее всего именно после сбоя — раньше она писалась только
+    после нормального звонка."""
+    monkeypatch.setenv("JARVIS_CALL_REC_DIR", str(tmp_path))
+    monkeypatch.setattr(tc.asyncio, "sleep", _fast_sleep)
+
+    class Down(FakeLive):
+        async def __aenter__(self):
+            for _ in range(20):
+                self_tg.on_audio(sine(48000, 0.01).tobytes())     # человек уже говорит в трубку
+            raise RuntimeError("1011 service unavailable")
+    self_tg = FakeTg()
+    with pytest.raises(RuntimeError):
+        asyncio.run(tc.CallSession(self_tg, Down([]), 42, "x", max_sec=5).run())
+    assert (tmp_path / tc.REC_NAMES[0]).is_file()
+
+
+_real_sleep = asyncio.sleep
+
+
+async def _fast_sleep(sec, *a, **k):
+    await _real_sleep(min(sec, 0.01))
+
+
 def test_call_gemini_connect_failure_is_logged_and_hung_up(caplog):
     """Трубку взяли, Gemini не подключился — раньше человек слышал тишину без причины в журнале."""
     import logging
