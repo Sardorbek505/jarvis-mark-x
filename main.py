@@ -297,6 +297,12 @@ def _local_wake_enabled() -> bool:
     env = os.getenv("JARVIS_LOCAL_WAKE", "").strip()
     if env in ("0", "1"):
         return env == "1"
+    try:                                     # своё слово в Porcupine — лучший детектор
+        from core import wake_porcupine
+        if wake_porcupine.configured():
+            return True
+    except Exception:
+        pass
     from core.wake_vosk import load_aliases
     return bool(load_aliases())
 
@@ -3086,6 +3092,21 @@ class Jarvis:
 
             def _heard(text: str):
                 loop.call_soon_threadsafe(self._on_local_wake, self._put_frame)
+            wake = None
+            # Сначала Porcupine (слово «Джарвис», обученное в консоли Picovoice):
+            # Vosk-small-RU этого слова не знает вовсе.
+            try:
+                from core.wake_porcupine import PorcupineWake, configured
+                if configured():
+                    pw = PorcupineWake(_heard)
+                    if await asyncio.to_thread(pw.start):
+                        wake = pw
+            except Exception as exc:
+                logger.warning("Porcupine: %s", exc)
+            if wake is not None:
+                self._local_wake = wake
+                self.ui.write_log("SYS: слово «Джарвис» слушается на компьютере (Porcupine)")
+                return
             wake = LocalWake(_heard)
             if await asyncio.to_thread(wake.start):
                 self._local_wake = wake
