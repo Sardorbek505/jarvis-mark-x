@@ -79,6 +79,18 @@ logger = logging.getLogger('JARVIS')
 
 
 def _log_unhandled(exc_type, exc, tb):
+    if issubclass(exc_type, KeyboardInterrupt):
+        # Ctrl+C в консоли прилетает в обработчик Qt: раньше это писалось
+        # как «Необработанная ошибка», а окно продолжало жить. Это просьба выйти.
+        logger.info("Ctrl+C — завершаю работу")
+        try:
+            from PyQt6.QtWidgets import QApplication
+            app = QApplication.instance()
+        except Exception:
+            app = None
+        if app is not None:
+            app.quit()
+        return
     logger.critical("Необработанная ошибка", exc_info=(exc_type, exc, tb))
 
 

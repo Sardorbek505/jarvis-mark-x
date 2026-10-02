@@ -47,3 +47,13 @@ def test_request_still_being_spoken_counts(jarvis):
     j.last_user_text = "какая погода"
     j._heard_now = "Джарвис, разбуди меня в 7"
     assert "Будильник на" in _set(j)
+
+
+def test_ctrl_c_quits_instead_of_logging_crash(monkeypatch, caplog):
+    import main
+    from PyQt6.QtWidgets import QApplication
+    quit_called = []
+    monkeypatch.setattr(QApplication, "instance", staticmethod(lambda: SimpleNamespace(quit=lambda: quit_called.append(1))))
+    main._log_unhandled(KeyboardInterrupt, KeyboardInterrupt(), None)
+    assert quit_called == [1]
+    assert "Необработанная ошибка" not in caplog.text
