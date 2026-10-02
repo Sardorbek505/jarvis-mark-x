@@ -343,6 +343,30 @@ class CallSession:
             logger.warning("Звонок: запись голоса не сохранилась: %s", exc)
             return []
 
+    async def _connect_live(self):
+        """Подключить Gemini к взятой трубке. «1011 service unavailable» и обрывы —
+        временные сбои Google: раньше первый же такой сбой ронял весь звонок
+        (журнал 02.10, 21:00). Теперь — ещё две попытки с паузой; ключ и квоту
+        повторять бессмысленно."""
+        for attempt in range(3):
+            try:
+                live = self.live(self.prompt)
+                return live, await live.__aenter__()
+            except Exception as exc:
+                text = f"{type(exc).__name__}: {exc}"
+                msg = str(exc).lower()
+                fatal = any(k in msg for k in ("1008", "quota", "key", "permission", "invalid"))
+                transient = not fatal and (isinstance(exc, (TimeoutError, ConnectionError)) or any(
+                    k in msg for k in ("1011", "unavailable", "timeout", "timed out", "1006", "503", "internal")))
+                if not transient or attempt == 2:
+                    # Трубку взяли, а Gemini не подключился (ключ, квота, сеть) — человек
+                    # слышал тишину, а причина пропадала. Теперь — в журнал целиком.
+                    logger.error("Звонок: Gemini не подключился — %s", text)
+                    raise
+                logger.warning("Звонок: Gemini не ответил (%s) — пробую ещё раз", text)
+                await asyncio.sleep(0.8 * (attempt + 1))
+        raise RuntimeError("недостижимо")
+
     def _on_hangup(self):
         self._hung_up.set()
 
@@ -362,14 +386,7 @@ class CallSession:
         try:
             await self.tg.listen(self.peer)
             self._picked_up_at = time.monotonic()
-            try:
-                live = self.live(self.prompt)
-                session = await live.__aenter__()
-            except Exception as exc:
-                # Трубку взяли, а Gemini не подключился (ключ, квота, сеть) — человек
-                # слышал тишину, а причина пропадала. Теперь — в журнал целиком.
-                logger.error("Звонок: Gemini не подключился — %s: %s", type(exc).__name__, exc)
-                raise
+            live, session = await self._connect_live()
             logger.info("Звонок: Gemini на связи через %.1f с после ответа", time.monotonic() - self._picked_up_at)
             try:
                 await session.send_client_content(
@@ -404,8 +421,8 @@ class CallSession:
                     await self.tg.hangup(self.peer)
                 except Exception as exc:
                     logger.warning("Отбой не удался: %s: %s", type(exc).__name__, exc)
+            self.save_recording()                 # и после сбоя: запись нужнее всего именно тогда
         logger.info("Звонок: %s", self.audio_stats())
-        self.save_recording()
         for line in self.transcript[-40:]:
             logger.info("Звонок | %s", line[:200])
         if self.ended_by:
