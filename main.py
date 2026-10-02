@@ -3689,13 +3689,27 @@ class Jarvis:
             if _end:
                 _end(fc.name, ok)
         text = quick.reply_for(q, result)
-        logger.info("⚡ Мгновенно: «%s» → %s %s → «%s» (%d мс)", heard[:80], q.tool or "-",
-                    q.args, text, int((time.perf_counter() - started) * 1000))
+        silent = quick.silent(q, result)
+        logger.info("⚡ Мгновенно: «%s» → %s %s → «%s»%s (%d мс)", heard[:80], q.tool or "-",
+                    q.args, text, " [звуком]" if silent else "", int((time.perf_counter() - started) * 1000))
         self.ui.write_log(f"Вы: {heard}")
-        self.ui.write_log(f"Джарвис: {text}")
+        self.ui.write_log(f"Джарвис: {'✓ ' + text if silent else text}")
         self._remember_turn(heard, text)
-        if text:
+        if silent:
+            self._play_done_sound()               # сделано — звук и галочка, без «Есть, сэр»
+        elif text:
             await self._speak_fish(text)
+
+    def _play_done_sound(self):
+        """Короткое «готово» тем же путём, что голос Джарвиса (в выбранный динамик)."""
+        try:
+            from core.sounds import done_pcm
+            pcm = done_pcm(RECV_SAMPLE_RATE)
+            step = CHUNK_SIZE * 2
+            for j in range(0, len(pcm), step):
+                self.audio_in_queue.put_nowait(pcm[j:j + step])
+        except Exception as exc:
+            logger.debug("Звук «готово»: %s", exc)
 
     async def _voice_denied(self, name: str, args: dict) -> str:
         """Опасное подтверждено — но ВАШИМ ли голосом? '' — да (или проверить

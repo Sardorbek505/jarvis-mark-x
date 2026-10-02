@@ -49,6 +49,7 @@ OPTS = [
     Opt("briefing", "JARVIS_BRIEFING", True),
     Opt("island", "JARVIS_ISLAND", True, restart=True),
     Opt("animations", "JARVIS_ANIMATIONS", True),       # переходы, подсветка, волны (ui_anim)
+    Opt("quick_voice", "JARVIS_QUICK_VOICE", False),    # простые команды — голосом, а не звуком
 ]
 BY_KEY = {o.key: o for o in OPTS}
 
