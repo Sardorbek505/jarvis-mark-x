@@ -63,6 +63,10 @@ BANNER_SEC = 5.5
 IDLE_HIDE_SEC = 8.0            # в покое капсула уходит через столько секунд
 HOVER_IN_SEC = 0.22            # раскрытие по наведению — не от случайного пролёта мыши
 HOVER_OUT_SEC = 0.35
+POKE_WINDOW_SEC = 1.5          # тыки по лицу в этом окне считаются «подряд»
+POKES_DIZZY = 4                # столько тыков подряд — кружится голова
+EVENT_RGB = (96, 156, 255)     # событие, звонок — синее свечение
+DONE_RGB = (70, 232, 128)
 
 
 @dataclass
@@ -264,6 +268,7 @@ class IslandModel:
     drop_hover: bool = False       # над капсулой тащат файл
     upload: Upload | None = None   # брошенный файл читается / уходит Джарвису
     flash: tuple[str, float] = ("", 0.0)   # эмоция на миг: (имя, до какого времени)
+    pokes: list[float] = field(default_factory=list)   # когда тыкали в лицо
 
     def set_state(self, ui_state: str, now: float | None = None):
         new = _STATE_FROM_UI.get((ui_state or "").upper(), ui_state if ui_state in STATE_RGB else "idle")
@@ -389,6 +394,44 @@ class IslandModel:
         self.banners.insert(0, Banner("error", title, " ".join((text or "").split()), now + sec))
         del self.banners[4:]
         self.flash = ("dizzy", now + sec)
+
+    def poke(self, now: float | None = None) -> str:
+        """Тык по лицу. Один — радуется; много подряд — кружится голова
+        (пасхалка, как в Coucou, только по-джарвисовски)."""
+        now = time.monotonic() if now is None else now
+        self.pokes = [t for t in self.pokes if now - t <= POKE_WINDOW_SEC] + [now]
+        if len(self.pokes) >= POKES_DIZZY:
+            self.pokes = []
+            self.trouble("ОЙ-ОЙ", "Голова кружится… Дайте секунду, сэр.", now, sec=3.0)
+            return "dizzy"
+        if not (self.flash[0] == "dizzy" and self.flash[1] > now):
+            self.flash = ("happy", now + 0.9)
+        return "happy"
+
+    def glow(self, view: str, now: float | None = None) -> tuple[tuple[int, int, int], float]:
+        """Свечение за капсулой: (цвет, сила 0..1) по тому, что сейчас показано."""
+        now = time.monotonic() if now is None else now
+        flash = self.flash[0] if self.flash[1] > now else ""
+        b = self.banner(now)
+        if view == "confirm":
+            return AMBER_RGB, 1.0
+        if flash == "dizzy" or (b and b.kind == "error" and view == "banner"):
+            return TROUBLE_RGB, 1.0
+        if view == "drop" or self.drop_hover:
+            return DROP_RGB, 0.9
+        if flash == "happy":
+            return DONE_RGB, 0.85
+        if view == "listening":
+            return LISTEN_RGB, 0.8
+        if view in ("banner", "goal") and b and b.kind not in ("reply",):
+            return EVENT_RGB, 0.7
+        if self.state == "speaking":
+            return STATE_RGB["speaking"], 0.35 + 0.55 * min(1.0, self.level * 1.5)
+        if view in ("task", "upload", "chat", "expanded"):
+            return STATE_RGB.get(self.state, STATE_RGB["idle"]), 0.45
+        if view == "activity":
+            return STATE_RGB.get(self.state, STATE_RGB["idle"]), 0.25
+        return STATE_RGB.get(self.state, STATE_RGB["idle"]), 0.0
 
     def emotion(self, now: float | None = None) -> str:
         """Какое лицо у Джарвиса сейчас (ui_face.EMOTIONS)."""
@@ -595,11 +638,66 @@ def fullscreen_app_active() -> bool:
 
 from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, pyqtSignal  # noqa: E402
 from PyQt6.QtGui import (QBrush, QColor, QConicalGradient, QCursor, QFont, QLinearGradient, QPainter,  # noqa: E402
-                         QPainterPath, QPen)
+                         QPainterPath, QPen, QRadialGradient)
 from PyQt6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 
 from ui_icons import draw_icon  # noqa: E402  (иконки — общие с окном)
+
+
+class IslandGlow(QWidget):
+    """Цветной ореол позади капсулы — по настроению: слушает — зелёный, нужно
+    «да» — янтарный, сбой — розовый, событие — синий, говорит — пульсирует.
+
+    Отдельное окно, прозрачное для мыши (WindowTransparentForInput): на
+    Windows полупрозрачный пиксель ловит клики, и ореол в самом окне капсулы
+    перехватывал бы вкладки браузера под ним."""
+
+    MARGIN_X, MARGIN_Y = 150, 110
+
+    def __init__(self):
+        super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+                         | Qt.WindowType.Tool | Qt.WindowType.WindowTransparentForInput
+                         | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.cap = QRectF()
+        self.rgb = (48, 208, 190)
+        self.strength = 0.0
+
+    def follow(self, island: QWidget, cap: QRectF, rgb, strength: float):
+        """cap — капсула в координатах окна капсулы."""
+        w, h = island.width() + 2 * self.MARGIN_X, int(cap.height()) + 2 * self.MARGIN_Y
+        x, y = island.x() - self.MARGIN_X, island.y() - self.MARGIN_Y
+        if self.geometry().getRect() != (x, y, w, h):
+            self.setGeometry(x, y, w, h)
+        self.cap = cap.translated(self.MARGIN_X, self.MARGIN_Y)
+        self.rgb, self.strength = tuple(int(c) for c in rgb), strength
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        p.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        if self.strength <= 0.01 or self.cap.width() < 4:
+            return
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        c = self.cap.center()
+        rx = self.cap.width() / 2 + self.MARGIN_X * 0.75
+        ry = self.cap.height() / 2 + self.MARGIN_Y * 0.7
+        r, g, b = self.rgb
+        a = self.strength
+        grad = QRadialGradient(QPointF(0, 0), 1.0)
+        grad.setColorAt(0.0, QColor(r, g, b, int(120 * a)))
+        grad.setColorAt(0.45, QColor(r, g, b, int(55 * a)))
+        grad.setColorAt(1.0, QColor(r, g, b, 0))
+        p.translate(c.x(), c.y() + self.cap.height() * 0.15)
+        p.scale(rx, ry)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(grad))
+        p.drawEllipse(QPointF(0, 0), 1.0, 1.0)
 
 
 class Island(QWidget):
@@ -665,6 +763,12 @@ class Island(QWidget):
         if os.getenv("JARVIS_ISLAND_FACE", "1") != "0":
             from ui_face import Face
             self._face = Face()
+        self._face_rect = QRectF()                 # где нарисовано лицо — по нему тыкают
+        self._was_listening = False
+        self._glow = None
+        self._glow_rgb, self._glow_a = list(STATE_RGB["idle"]), 0.0
+        if os.getenv("JARVIS_ANIMATIONS", "1").strip().lower() not in ("0", "false", "no", "off"):
+            self._glow = IslandGlow()
 
         self._state_sig.connect(self.model.set_state)
         self._level_sig.connect(self._feed_level)
@@ -770,7 +874,13 @@ class Island(QWidget):
                 self._view, self._ca = self.model.mode(False), 0.0
                 self._place()
                 logger.info("Капсула: показ")
+                if self._face is not None:
+                    self._face.greet()             # проявиться из темноты и помахать
+                if self._glow is not None:
+                    self._glow_a = 0.0
+                    self._glow.show()
                 self.show()
+                self.raise_()
                 self._last = time.monotonic()
                 self._tmr.start(16)
         elif self.isVisible():
@@ -783,6 +893,8 @@ class Island(QWidget):
     def _hide_now(self):
         self._leaving = False
         self._r = self._vr = self._s = self._vs = 0.0
+        if self._glow is not None:
+            self._glow.hide()
         self.hide()
         self._tmr.stop()
 
@@ -895,9 +1007,21 @@ class Island(QWidget):
         self._orb.step(dt, m.level if m.state != "speaking" else max(m.level, 0.3 + 0.2 * math.sin(self._clock * 9)),
                        active=m.state in ("thinking", "speaking"))
         if self._face is not None:
+            listening = m.state == "listening"
+            if listening and not self._was_listening:
+                self._face.hello()                 # позвали «Джарвис» — машет
+            self._was_listening = listening
             self._face.set_emotion(m.emotion())
             self._face_look()
             self._face.step(dt, m.level)
+        if self._glow is not None:
+            rgb, a = m.glow(target)
+            a *= min(1.0, max(0.0, self._s)) if not self._leaving else max(0.0, self._s)
+            k = 1 - math.exp(-dt * 5)
+            for i in range(3):
+                self._glow_rgb[i] += (rgb[i] - self._glow_rgb[i]) * k
+            self._glow_a += (a - self._glow_a) * k
+            self._glow.follow(self, self.capsule_rect(), self._glow_rgb, self._glow_a)
         # Содержимое: другой вид — старое гаснет; тот же — проявляется, когда размер почти готов.
         if target != self._view:
             self._ca -= dt * 14.0
@@ -948,6 +1072,10 @@ class Island(QWidget):
 
     def mouseReleaseEvent(self, ev):
         pos = ev.position()
+        # Тык по лицу — лицо реагирует, а не открывает окно (много тыков — кружится).
+        if self._face_rect.contains(pos) and self._view != "confirm":
+            self.poke_face()
+            return
         for name, rect in self._buttons.items():
             if rect.contains(pos):
                 if name == "open":
@@ -963,6 +1091,13 @@ class Island(QWidget):
                 return
         if self.capsule_rect().contains(pos) and not self.hovered_expanded():
             self.on_open()
+
+    def poke_face(self) -> str:
+        res = self.model.poke()
+        if self._face is not None:
+            self._face.poke()
+        self._maybe_wake()
+        return res
 
     # ── файл, брошенный на капсулу ──────────────────────────────────────────
     @staticmethod
@@ -1013,6 +1148,7 @@ class Island(QWidget):
 
     def _avatar(self, p: QPainter, cx: float, cy: float, r: float):
         """Лицо Джарвиса (или шар из точек, если лицо выключено)."""
+        self._face_rect = QRectF(cx - r * 1.7, cy - r * 1.4, r * 3.4, r * 2.8)
         if self._face is None:
             self._mini_orb(p, cx, cy, r)
             return
@@ -1466,7 +1602,7 @@ class Island(QWidget):
         cy = cap.center().y()
         self._avatar(p, x0 + 26, cy, 14)
         dots = "." * (int(self._clock * 2.5) % 4)
-        self._text(p, QRectF(x0 + 50, 0, 120, h), "Слушаю" + dots, 10.5, white, bold=True)
+        self._text(p, QRectF(x0 + 56, 0, 120, h), "Слушаю" + dots, 10.5, white, bold=True)
         if self.model.eyes:
             self._eye(p, x0 + 157, cy)            # между «Слушаю…» и волной
         # Волна: живёт от голоса, а в тишине тихо «дышит» — видно, что микрофон открыт.

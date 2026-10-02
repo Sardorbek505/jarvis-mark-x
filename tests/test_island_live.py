@@ -263,3 +263,83 @@ def test_running_task_beats_reply_but_listening_beats_finished_task():
     m.tool_end("open_app", True, now=0.5)
     m.set_state("LISTENING")
     assert m.mode(False, now=0.6) == "listening"         # позвали — «Готово» уступает
+
+
+# ── живое лицо, свечение, тык-тык ────────────────────────────────────────────
+
+def test_face_greets_fades_in_and_waves():
+    from ui_face import DUST_SEC, Face
+    f = Face(seed=1)
+    f.greet()
+    assert f.intro == 0.0 and f.dust == DUST_SEC and f.wave > 0
+    for _ in range(30):
+        f.step(1 / 60)
+    _left, right = f.hand_pose()
+    assert right[1] < 0                                   # правая ручка поднята — машет
+    for _ in range(200):
+        f.step(1 / 60)
+    assert f.intro == 1.0 and f.dust == 0.0 and f.wave == 0.0
+    _left, right = f.hand_pose()
+    assert right[1] > 0                                   # помахал — опустил
+
+
+def test_hands_follow_emotion():
+    from ui_face import Face
+    f = Face(seed=2)
+    f.set_emotion("happy")
+    left, right = f.hand_pose()
+    assert left[1] < 0 and right[1] < 0                   # от радости обе вверх
+    f.set_emotion("alert")
+    left, right = f.hand_pose()
+    assert right[1] < 0 < left[1]                         # одна поднята — «!»
+
+
+def test_one_poke_makes_happy_many_make_dizzy():
+    m = ui.IslandModel()
+    assert m.poke(now=0.0) == "happy" and m.emotion(now=0.1) == "happy"
+    assert [m.poke(now=t) for t in (0.3, 0.6, 0.9)] == ["happy", "happy", "dizzy"]
+    assert m.emotion(now=1.0) == "dizzy" and m.banner(now=1.0).kind == "error"
+    assert m.pokes == []                                  # счёт начинается заново
+    assert m.poke(now=5.0) == "happy"                     # тыки с паузой — не «подряд»
+    assert m.poke(now=7.0) == "happy" and len(m.pokes) == 1
+
+
+def test_glow_color_follows_what_is_shown():
+    m = ui.IslandModel()
+    assert m.glow("compact", now=0.0)[1] == 0.0           # в покое — не светится
+    assert m.glow("listening", now=0.0)[0] == ui.LISTEN_RGB
+    m.ask_confirm("Выключить?", now=0.0)
+    assert m.glow("confirm", now=0.0) == (ui.AMBER_RGB, 1.0)
+    m.confirm = None
+    m.trouble("СБОЙ", "нет связи", now=0.0)
+    assert m.glow("banner", now=0.1)[0] == ui.TROUBLE_RGB
+    m.state, m.level = "speaking", 0.0
+    quiet = m.glow("compact", now=10.0)[1]
+    m.level = 1.0
+    assert m.glow("compact", now=10.0)[1] > quiet + 0.4                # пульс с голосом
+
+
+def test_glow_window_lets_clicks_through():
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])     # noqa: F841
+    g = ui.IslandGlow()
+    assert g.windowFlags() & Qt.WindowType.WindowTransparentForInput
+
+
+def test_click_on_face_pokes_instead_of_opening(monkeypatch):
+    from PyQt6.QtCore import QPointF, QRectF
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])     # noqa: F841
+    opened = []
+    isl = ui.Island(on_open=lambda: opened.append(1), poll=False)
+    isl._face_rect = QRectF(0, 0, 40, 30)
+
+    class Ev:
+        def __init__(self, x, y):
+            self._p = QPointF(x, y)
+
+        def position(self):
+            return self._p
+    isl.mouseReleaseEvent(Ev(20, 15))
+    assert opened == [] and isl.model.pokes
