@@ -56,6 +56,19 @@ def ensure_vosk_model():
     _fetch_model("[2c] Модель голоса владельца (Vosk spk)...", _SPK_URL, "vosk-spk", "final.ext.raw")
     _fetch_file("[2d] Модель голоса владельца (WeSpeaker)...", _WESPEAKER_URL, "voice-id",
                 "wespeaker_en_voxceleb_resnet34.onnx")
+    print("[2e] Слово «Джарвис» без ключей (sherpa-onnx KWS)...")
+    try:
+        from core import wake_kws
+        dst = _BASE_DIR / "models" / wake_kws.MODEL_DIRNAME
+        if all((dst / f).is_file() for f in wake_kws.FILES.values()):
+            print("  [OK] уже на месте")
+        else:
+            wake_kws.download(dst)
+            print("  [OK] скачана")
+    except Exception as exc:
+        print(f"  [WARN] модель не скачалась: {exc}")
+        if os.getenv("CI"):
+            raise
 
 
 _WESPEAKER_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"

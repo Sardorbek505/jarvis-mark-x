@@ -170,12 +170,47 @@ _RULES: list[tuple[str, str | None, dict, str]] = [
     # Глаза.
     (r"смотри на экран|будь моими глазами", "eyes", {"action": "open", "source": "screen"}, "eyes_open"),
     (r"закрой глаза|не смотри|хватит смотреть", "eyes", {"action": "close"}, ""),
+    # Как у Alfred: «открой», «включи», «найди на ютубе» — сразу, без раздумий
+    # облака и без слов. Только одна команда целиком: «открой хром и найди…»
+    # (союз «и») уходит в Gemini. Не вышло — инструмент скажет почему.
+    (r"(открой|запусти) (ютуб|youtube)", "browser", {"action": "go_to", "url": "youtube.com"}, ""),
+    (r"(найди|включи|поставь|покажи) (на |в )?(ютубе|ютуб|youtube) (?P<yq>.+)", "youtube_player",
+     {"action": "play", "query": "@yq"}, ""),
+    (r"(поставь |включи )?последнее видео (?P<ch>.+)", "youtube_player",
+     {"action": "latest", "channel": "@ch"}, ""),
+    (r"(открой|запусти) (программу |приложение )?(?P<app>.+)", "open_app", {"app_name": "@app"}, ""),
+    (r"(включи|поставь|сыграй|играй|запусти) (песню |трек |музыку |альбом )?(?P<song>.+)", "music_player",
+     {"action": "play", "query": "@song"}, ""),
     # Вежливость.
     (r"спасибо( большое| тебе)?|благодарю|спс", None, {}, "thanks"),
     (r"ты (тут|здесь)|ты меня слышишь|ты на связи", None, {}, "here"),
 ]
 _COMPILED = [(re.compile(p), tool, args, reply) for p, tool, args, reply in _RULES]
-_CHECK = {"v": _level, "v2": _level, "d": _duration}
+_NOT_APP = re.compile(r"\b(и|сайт|страниц\w*|ютуб\w*|youtube|гугл\w*|google|вк|вконтакте|окн\w*|глаза|"
+                      r"камер\w*|папк\w*|файл\w*|ссылк\w*|новост\w*|почт\w*|видео|фильм\w*)\b")
+_NOT_SONG = re.compile(r"^(музык\w*|что[- ]нибудь|видео|фильм\w*|клип\w*|ролик\w*|мульт\w*|сериал\w*|"
+                       r"звук|свет|камер\w*|микрофон|режим\b.*|таймер.*|будильник.*|секундомер|компьютер|комп|"
+                       r"вай[- ]?фай|wi-?fi|блютуз|bluetooth|экран.*|яркость.*|глаза|новост\w*|погод\w*|радио|"
+                       r"ютуб.*|youtube.*|программ\w*.*|приложени\w*.*)$|\bи\b|"
+                       r"\b(по)?(громче|тише)\b|\bпауз\w*|\bдальше\b|\bзаново\b|\bснова\b")
+
+
+def _app(v: str) -> str | None:
+    v = v.strip()
+    return v if 1 < len(v) <= 40 and not _NOT_APP.search(v) else None
+
+
+def _song(v: str) -> str | None:
+    v = v.strip()
+    return v if 1 < len(v) <= 80 and not _NOT_SONG.search(v) else None
+
+
+def _query(v: str) -> str | None:
+    v = v.strip()
+    return v if 1 < len(v) <= 100 and not re.search(r"\bи\b", v) else None
+
+
+_CHECK = {"v": _level, "v2": _level, "d": _duration, "app": _app, "song": _song, "yq": _query, "ch": _query}
 
 
 def match(text: str) -> Quick | None:

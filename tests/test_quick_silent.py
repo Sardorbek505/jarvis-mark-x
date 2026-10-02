@@ -61,3 +61,24 @@ def test_quick_run_plays_sound_instead_of_speaking(monkeypatch):
     assert logs[-1].startswith("Джарвис: ✓")
     asyncio.run(j._quick_run(quick.match("который час"), "который час"))
     assert spoken                                                   # ответ нужен — голосом
+
+
+@pytest.mark.parametrize("said,tool,args", [
+    ("открой телеграм", "open_app", {"app_name": "телеграм"}),
+    ("открой ютуб", "browser", {"action": "go_to", "url": "youtube.com"}),
+    ("найди на ютубе как собрать пк", "youtube_player", {"action": "play", "query": "как собрать пк"}),
+    ("поставь последнее видео mrbeast", "youtube_player", {"action": "latest", "channel": "mrbeast"}),
+    ("включи believer", "music_player", {"action": "play", "query": "believer"}),
+    ("поставь песню люби меня", "music_player", {"action": "play", "query": "люби меня"}),
+])
+def test_open_and_play_run_instantly_like_alfred(said, tool, args):
+    q = quick.match(said)
+    assert q and (q.tool, q.args) == (tool, args)
+    assert quick.silent(q, "Открыл.")
+
+
+@pytest.mark.parametrize("said", ["открой хром и найди погоду", "открой сайт вк", "включи музыку", "включи камеру",
+                                  "включи видео", "включи музыку погромче", "включи режим стрима"])
+def test_compound_or_unclear_still_goes_to_gemini(said):
+    q = quick.match(said)
+    assert q is None or q.tool not in ("open_app", "music_player") or q.args.get("query") != said
