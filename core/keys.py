@@ -261,7 +261,7 @@ SERVICES: list[Service] = [
             [Field("gemini_api_key", "API-ключ", placeholder="AIza…", env="GEMINI_API_KEY")],
             ["Откройте Google AI Studio и войдите в Google-аккаунт.",
              "Нажмите «Create API key» и скопируйте ключ целиком.",
-             "Вставьте его сюда и нажмите «Сохранить и проверить»."],
+             "Вставьте его сюда — он сохранится и проверится сам."],
             "https://aistudio.google.com/app/apikey", required=True, check=check_gemini),
     Service("fish", "Fish Audio — голос из фильма", "speak",
             "Настоящий голос Джарвиса. Без ключа он говорит стандартным голосом.",
@@ -373,6 +373,45 @@ def mask(value: str) -> str:
     if not value:
         return ""
     return "••••" + value[-4:] if len(value) > 8 else "••••"
+
+
+def preview(value: str) -> str:
+    """Сохранённый ключ так, чтобы узнать, но не подсмотреть: «AIza••••••Q7xF»."""
+    value = str(value or "").strip()
+    if len(value) <= 12:
+        return mask(value)
+    return value[:4] + "••••••" + value[-4:]
+
+
+# Чей это ключ — по виду: (название, как начинается, проверка).
+_KINDS = [
+    ("Gemini", "AIza…", re.compile(r"^AIza[\w-]{30,}$")),
+    ("Anthropic", "sk-ant-…", re.compile(r"^sk-ant-[\w-]{20,}$")),
+    ("OpenAI", "sk-…", re.compile(r"^sk-(proj-)?[\w-]{20,}$")),
+    ("Groq", "gsk_…", re.compile(r"^gsk_\w{20,}$")),
+    ("Telegram-бота", "123456789:AA…", re.compile(r"^\d{6,12}:[\w-]{30,}$")),
+]
+# Какой вид ждёт поле (только там, где он однозначный).
+_EXPECT = {"gemini_api_key": "Gemini", "groq_api_key": "Groq", "telegram_bot_token": "Telegram-бота"}
+
+
+def kind_of(value: str) -> str:
+    v = clean_key(value)
+    for name, _start, rx in _KINDS:
+        if rx.match(v):
+            return name
+    return ""
+
+
+def wrong_key_hint(field_key: str, value: str) -> str:
+    """Вставили ключ не того сервиса — подсказать, а не молча сохранить мусор.
+    «Похоже, это ключ OpenAI, а здесь нужен ключ Gemini (начинается с AIza…)»."""
+    want = _EXPECT.get(field_key)
+    got = kind_of(value)
+    if not want or not got or got == want:
+        return ""
+    start = next(st for name, st, _rx in _KINDS if name == want)
+    return f"Похоже, это ключ {got}, а здесь нужен ключ {want} (начинается с {start})."
 
 
 def status(s: Service, values: dict) -> str:
