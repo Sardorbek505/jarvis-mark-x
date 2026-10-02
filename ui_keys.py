@@ -2,7 +2,8 @@
 
 Каждый сервис — карточка: что он даёт, статус (работает / не задан /
 ошибка — после НАСТОЯЩЕЙ проверки), поля с «глазом», «Где взять» по
-шагам и кнопка «Сохранить и проверить». Вход в Spotify и в аккаунт для
+шагам. Ключ сохраняется сам, как только вы его вставили; полный набор
+полей сразу проверяется (кнопка «Проверить» — проверить ещё раз). Вход в Spotify и в аккаунт для
 звонков — кнопкой прямо в карточке, без командной строки.
 
 Логика и проверки — core/keys.py; вид — общий с окном команд (ui_kit).
@@ -21,7 +22,7 @@ from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QInputDialog, QLineEd
 from core import keys as K
 from ui import C
 from ui_icons import qicon
-from ui_kit import STYLE, IconBadge, Progress, _cap, _icon_btn, _label, _line, _small_icon
+from ui_kit import STYLE, Autosave, IconBadge, Progress, SavedNote, _cap, _icon_btn, _label, _line, _small_icon
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +50,13 @@ QFrame#head {{ background: transparent; border: none; }}
 class ServiceCard(QFrame):
     checked = pyqtSignal(str, str, str)          # id, состояние, текст (из потока проверки)
     changed = pyqtSignal()
+    saved = pyqtSignal()                         # ключ записан на диск (плашка «✓ Сохранено»)
 
     def __init__(self, service: K.Service, values: dict, parent=None):
         super().__init__(parent)
         self.s = service
         self.state = K.status(service, values)
+        self.autosave = Autosave(self, self._autosave)
         self.setObjectName("card")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 14, 18, 14)
@@ -105,6 +108,7 @@ class ServiceCard(QFrame):
                 e.setEnabled(False)
                 e.setToolTip(f"Задан переменной среды {f.env} — меняется там")
             e.textChanged.connect(lambda _t: self._dirty())
+            e.editingFinished.connect(lambda: self.autosave.flush())
             self.edits[f.key] = e
             row.addWidget(e, 1)
             if f.secret:
@@ -155,7 +159,7 @@ class ServiceCard(QFrame):
             self.action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.action_btn.clicked.connect(self.run_action)
             foot.addWidget(self.action_btn)
-        self.save_btn = QPushButton("Сохранить и проверить")
+        self.save_btn = QPushButton("Проверить")
         self.save_btn.setObjectName("primary")
         self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.save_btn.clicked.connect(self.save_and_check)
@@ -191,15 +195,30 @@ class ServiceCard(QFrame):
 
     def _dirty(self):
         self.msg.setText("")
+        self.autosave.touch()
+
+    def _autosave(self):
+        """Вставили ключ — он уже сохранён; все поля сервиса на месте — сразу проверяем."""
+        vals = self.values()
+        if not vals or vals == {k: v for k, v in K.load_values().items() if k in vals}:
+            return
+        K.save_values(vals)
+        self.saved.emit()
+        self.changed.emit()
+        if K.status(self.s, K.load_values()) == "set":
+            self.run_check()
 
     def values(self) -> dict:
         return {k: e.text().strip() for k, e in self.edits.items() if e.isEnabled()}
 
     # ── действия ─────────────────────────────────────────────────────────────
     def save_and_check(self):
+        """«Проверить»: несохранённое — на диск, затем проверка."""
+        self.autosave.cancel()
         vals = self.values()
         if vals:
             K.save_values(vals)
+            self.saved.emit()
         self.changed.emit()
         self.run_check()
 
@@ -283,6 +302,7 @@ class KeysDialog(QDialog):
         for s in K.SERVICES:
             card = ServiceCard(s, values)
             card.changed.connect(self._update_summary)
+            card.saved.connect(lambda: self.saved.show_note())
             self.cards[s.id] = card
             col.addWidget(card)
         col.addStretch(1)
@@ -307,8 +327,11 @@ class KeysDialog(QDialog):
         col.setSpacing(1)
         col.addWidget(_label("Джарвис", "brand"))
         col.addWidget(_label("Ключи и подключения", "h1", wrap=False))
+        col.addWidget(_label("Всё сохраняется сразу", "hint", wrap=False))
         lay.addLayout(col)
         lay.addStretch(1)
+        self.saved = SavedNote()
+        lay.addWidget(self.saved)
         self.check_all_btn = QPushButton("  Проверить все")
         self.check_all_btn.setIcon(qicon("reload", 14, C.TEXT_MED))
         self.check_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -346,6 +369,15 @@ class KeysDialog(QDialog):
         self.summary.setText(f"Подключено {done} из {total}")
         self.progress.value = done / total
         self.progress.update()
+
+    def flush(self):
+        """Ушли с экрана — сохранить то, что ещё не успело."""
+        for card in getattr(self, "cards", {}).values():
+            card.autosave.flush()
+
+    def hideEvent(self, ev):
+        self.flush()
+        super().hideEvent(ev)
 
     def check_all(self):
         vals = K.load_values()

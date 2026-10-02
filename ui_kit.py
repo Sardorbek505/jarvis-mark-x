@@ -5,9 +5,9 @@
 бирюзовый акцент. Новое окно берёт всё отсюда — и выглядит так же."""
 from __future__ import annotations
 
-from PyQt6.QtCore import QRect, QRectF, QSize, Qt
+from PyQt6.QtCore import QObject, QRect, QRectF, QSize, Qt, QTimer
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
-from PyQt6.QtWidgets import QAbstractButton, QFrame, QLabel, QLayout, QPushButton, QWidget
+from PyQt6.QtWidgets import QAbstractButton, QFrame, QLabel, QLayout, QPushButton, QSizePolicy, QWidget
 
 from ui import C
 from ui_icons import draw_icon, qicon
@@ -115,6 +115,9 @@ QLabel#h2 {{ color: {C.WHITE}; font-size: 15px; font-weight: 600; }}
 QLabel#brand {{ color: {C.PRI}; font-size: 12px; font-weight: 600; }}
 QLabel#stepTitle {{ color: {C.TEXT_MED}; font-size: 12px; font-weight: 600; }}
 QLabel#status {{ color: {C.TEXT_MED}; font-size: 12px; }}
+QLabel#saved {{ color: {C.GREEN}; font-size: 13px; font-weight: 600; background: rgba(70, 232, 128, 0.10);
+  border: 1px solid rgba(70, 232, 128, 0.35); border-radius: 13px; padding: 4px 12px; }}
+QLabel#saved[bad="true"] {{ color: {C.RED}; background: rgba(255, 70, 96, 0.10); border-color: rgba(255, 70, 96, 0.4); }}
 """
 
 
@@ -403,3 +406,71 @@ class ArtBanner(QWidget):
             p.drawText(QRectF(22, r.height() / 2 + 8, r.width() * 0.56, r.height() / 2 - 12),
                        int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap),
                        self.body)
+
+
+# ── автосохранение: одно поведение во всех экранах ────────────────────────────
+#
+# Изменение сохраняется само — без кнопки «Сохранить». Раньше в «Настройках»
+# и «Обо мне» сохранялось сразу, а в «Ключах», «Контактах», «Своих командах»
+# и «Футболе» — только по кнопке: ушёл с экрана, и введённое пропадало.
+
+class SavedNote(QLabel):
+    """Плашка в шапке экрана: «✓ Сохранено» (зелёная) или ошибка (красная)."""
+
+    def __init__(self, parent=None):
+        super().__init__("", parent)
+        self.setObjectName("saved")
+        self.setWordWrap(False)
+        # Пилюля по высоте текста, а не во всю шапку; пустая — не видна.
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.hide()
+        self._tmr = QTimer(self)
+        self._tmr.setSingleShot(True)
+        self._tmr.timeout.connect(self.clear)
+
+    def clear(self):
+        super().clear()
+        self.hide()
+
+    def show_note(self, text: str = "✓ Сохранено", bad: bool = False, ms: int = 2500):
+        self.setProperty("bad", bad)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.setText(text)
+        self.show()
+        self._tmr.start(ms)
+
+
+class Autosave(QObject):
+    """Отложенное сохранение: touch() после каждой правки — fn() вызовется,
+    когда человек перестанет печатать (delay мс); flush() — сразу, если есть
+    несохранённое (уход с экрана, закрытие окна)."""
+
+    def __init__(self, parent, fn, delay: int = 600):
+        super().__init__(parent)
+        self._fn = fn
+        self._pending = False
+        self._tmr = QTimer(self)
+        self._tmr.setSingleShot(True)
+        self._tmr.setInterval(delay)
+        self._tmr.timeout.connect(self.flush)
+
+    @property
+    def pending(self) -> bool:
+        return self._pending
+
+    def touch(self, *_):
+        self._pending = True
+        self._tmr.start()
+
+    def cancel(self):
+        self._pending = False
+        self._tmr.stop()
+
+    def flush(self, *_):
+        self._tmr.stop()
+        if not self._pending:
+            return
+        self._pending = False
+        self._fn()

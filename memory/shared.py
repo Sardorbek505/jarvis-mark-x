@@ -31,7 +31,6 @@ SHARED_FILE = _DIR / "shared.json"
 SYNC_SEC = 60
 TELEGRAM_IN_PROMPT = 10
 TELEGRAM_MAX_AGE_H = 24
-SHARED_CHARS = 3000
 
 _lock = threading.Lock()
 _KINDS = ("ops", "facts_add", "facts_remove", "forget", "turns", "episodes")
@@ -43,8 +42,22 @@ _MAX_LOCAL_DELETES = 0.2        # доля подтверждённых факт
 
 
 def fact_text(key: str, value: str) -> str:
-    """Факт с ПК в виде строки бота: «брат: Азиз, учится в Ташкенте»."""
-    return f"{str(key).replace('_', ' ').strip()}: {str(value).strip()}"
+    """Факт с ПК в виде строки бота: «брат: Азиз, учится в Ташкенте».
+    Факт без ключа (пришёл из Telegram просто текстом) — сам текст."""
+    key = str(key).replace('_', ' ').strip()
+    value = str(value if value is not None else "").strip()
+    return f"{key}: {value}" if value else key
+
+
+def split_fact(text: str) -> tuple[str, str]:
+    """Строка бота → (ключ, значение). Ключ — как у бота (memory_store._fact_key):
+    короткий, без точки; иначе это не «ключ: значение», а просто фраза."""
+    text = (text or "").strip()
+    key, sep, rest = text.partition(":")
+    key = key.strip()
+    if sep and rest.strip() and 0 < len(key) <= 40 and "." not in key:
+        return key, rest.strip()
+    return text, ""
 
 
 # ── очередь ───────────────────────────────────────────────────────────────────
@@ -184,6 +197,31 @@ def _apply_server_deletes(server_facts: list, shared: dict) -> list[str]:
     return [n for _c, _k, n in gone]
 
 
+def _merge_server_facts(server_facts: list, shared: dict) -> int:
+    """Одна память: что бот узнал в Telegram — в ту же память ПК (data.json).
+    Оттуда это видно в «Обо мне», идёт в промпт одним списком и удаляется
+    вместе со всем остальным. Раньше факты бота жили отдельно в shared.json."""
+    try:
+        from memory import memory_manager as mm
+        local = mm.all_facts()
+    except Exception:
+        return 0
+    with _lock:
+        pending = {_norm(split_fact(o.get("text", ""))[0])
+                   for o in _read(OUTBOX_FILE, {}).get("ops", []) if isinstance(o, dict)}
+    confirmed = set(shared.get("confirmed") or [])
+    added = 0
+    for f in shared_facts_not_local(local, server_facts):
+        key, value = split_fact(f)
+        if mm.put_from_server(key, value, pending=pending):
+            added += 1
+            confirmed.add(_norm(f))
+    if added:
+        shared["confirmed"] = sorted(confirmed)
+        logger.info("Общая память: из Telegram в память ПК — %d", added)
+    return added
+
+
 def sync_all(post=None) -> str:
     """Обмен пачками, пока очередь не опустеет (не больше _ROUNDS за раз)."""
     res = ""
@@ -258,6 +296,7 @@ def sync(post=None) -> str:
                    "synced_at": time.time(), "server_ops": bool(data.get("ops_ok"))})
     if data.get("ops_ok"):
         _apply_server_deletes(data.get("facts") or [], shared)
+        _merge_server_facts(data.get("facts") or [], shared)
     _write(SHARED_FILE, shared)
     return f"ок: +{data.get('added', 0)} −{data.get('removed', 0)}, фактов на сервере {len(data.get('facts') or [])}"
 
@@ -293,11 +332,11 @@ def _norm(s: str) -> str:
     return " ".join(s.lower().replace("_", " ").split())
 
 
-def shared_facts_not_local(local: list[tuple[str, str, str]]) -> list[str]:
+def shared_facts_not_local(local: list[tuple[str, str, str]], facts: list | None = None) -> list[str]:
     """Факты с сервера, которых нет в локальной памяти (свои не дублируем)."""
     mine = {_norm(fact_text(k, v)) for _, k, v in local}
     out = []
-    for f in _read(SHARED_FILE, {}).get("facts", []):
+    for f in (facts if facts is not None else _read(SHARED_FILE, {}).get("facts", [])):
         n = _norm(f)
         if n not in mine and not any(n in m or m in n for m in mine if len(m) > 8):
             out.append(f)
@@ -317,15 +356,8 @@ def prompt_block(local: list[tuple[str, str, str]], now: datetime | None = None)
         return ""
     now = now or datetime.now()
     parts = []
-    facts = shared_facts_not_local(local)
-    if facts:
-        text, size = [], 0
-        for f in reversed(facts):                 # новые важнее
-            if size + len(f) > SHARED_CHARS:
-                break
-            text.append(f)
-            size += len(f) + 2
-        parts.append("[ОБЩАЯ ПАМЯТЬ С TELEGRAM — это тоже ты знаешь о пользователе]\n  " + "\n  ".join(reversed(text)))
+    # Факты бота отдельным блоком больше не идут: они уже в памяти ПК
+    # (_merge_server_facts) и попадают в промпт вместе с остальными.
     # Часы сервера (UTC) и ПК расходятся на часовой пояс — берём с запасом.
     recent = [m for m in shared.get("telegram", [])
               if (_at(m.get("at", "")) or now) >= now - timedelta(hours=TELEGRAM_MAX_AGE_H + 14)]
@@ -336,13 +368,12 @@ def prompt_block(local: list[tuple[str, str, str]], now: datetime | None = None)
 
 
 def search(query: str, limit: int = 10) -> list[str]:
+    """Переписка в Telegram по теме (факты ищет memory_manager.search — они там же)."""
     from rapidfuzz import fuzz
     q = (query or "").strip().lower()
-    shared = _read(SHARED_FILE, {})
-    pool = list(shared.get("facts", [])) + [
-        ("Вы в Telegram: " if m["role"] == "user" else "Бот в Telegram: ") + m["text"]
-        for m in shared.get("telegram", [])]
     if not q:
-        return list(shared.get("facts", []))[:limit]
+        return []
+    pool = [("Вы в Telegram: " if m["role"] == "user" else "Бот в Telegram: ") + m["text"]
+            for m in _read(SHARED_FILE, {}).get("telegram", [])]
     scored = [(max(fuzz.partial_ratio(q, t.lower()), fuzz.token_set_ratio(q, t.lower())), t) for t in pool]
     return [t for s, t in sorted(scored, key=lambda x: -x[0]) if s >= 65][:limit]

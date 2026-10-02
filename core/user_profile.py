@@ -14,9 +14,53 @@ from core.storage import atomic_write_json, safe_read_json
 class UserProfile:
     """Управляет профилем пользователя для персонализации"""
 
-    def __init__(self, base_dir: Path):
+    def __init__(self, base_dir: Path, memory=None):
         self.profile_path = base_dir / "config" / "user_profile.json"
+        self._mem = memory
         self.profile = self._load_profile()
+        self._move_facts_to_memory()
+
+    # Имя, город и вкусы — это факты о человеке, им место в общей памяти
+    # (memory/memory_manager.py): оттуда они идут в промпт, видны в «Обо мне»
+    # и уезжают боту. Здесь раньше жила их вторая копия — на сервер не
+    # попадала и расходилась с памятью. Тут остаётся только рабочее
+    # состояние: чем занят сейчас, последние фильмы и команды.
+    _IDENTITY = ("name", "city")
+    _PREFS = ("favorite_comedy", "favorite_music", "favorite_movie", "music_genres", "movie_genres",
+              "work_style")
+
+    def _memory(self):
+        if self._mem is None:
+            from memory import memory_manager
+            self._mem = memory_manager
+        return self._mem
+
+    def _remember(self, category: str, key: str, value) -> bool:
+        if isinstance(value, list):
+            value = ", ".join(str(v) for v in value if v)
+        if value in (None, ""):
+            return False
+        try:
+            self._memory().update_memory({category: {key: value}})
+            return True
+        except Exception as e:
+            print(f"[UserProfile] Память недоступна: {e}")
+            return False
+
+    def _move_facts_to_memory(self):
+        """Один раз: старые имя/город/вкусы из user_profile.json — в память."""
+        moved = False
+        for key in self._IDENTITY:
+            if self._remember("identity", key, self.profile.get("identity", {}).get(key)):
+                self.profile["identity"][key] = None
+                moved = True
+        prefs = self.profile.get("preferences", {})
+        for key in self._PREFS:
+            if self._remember("preferences", key, prefs.get(key)):
+                prefs[key] = [] if isinstance(prefs.get(key), list) else None
+                moved = True
+        if moved:
+            self._save_profile()
 
     def _load_profile(self) -> Dict:
         """Загружает профиль из файла"""
@@ -64,16 +108,15 @@ class UserProfile:
             print(f"[UserProfile] Ошибка сохранения: {e}")
 
     def update_identity(self, name: Optional[str] = None, city: Optional[str] = None):
-        """Обновляет идентификационные данные"""
-        if name:
-            self.profile["identity"]["name"] = name
-        if city:
-            self.profile["identity"]["city"] = city
-        self._save_profile()
+        """Имя и город — в общую память."""
+        self._remember("identity", "name", name)
+        self._remember("identity", "city", city)
 
     def update_preference(self, key: str, value: any):
-        """Обновляет предпочтение"""
-        if key in self.profile["preferences"]:
+        """Вкусы — в общую память; break_duration и т.п. — настройки, остаются здесь."""
+        if key in self._PREFS:
+            self._remember("preferences", key, value)
+        elif key in self.profile["preferences"]:
             self.profile["preferences"][key] = value
             self._save_profile()
 
@@ -114,7 +157,15 @@ class UserProfile:
         self._save_profile()
 
     def get_preference(self, key: str, default: any = None) -> any:
-        """Получает предпочтение"""
+        """Получает предпочтение (вкусы — из общей памяти)."""
+        if key in self._PREFS:
+            try:
+                val = self._memory().load_memory().get("preferences", {}).get(key)
+                val = val.get("value") if isinstance(val, dict) else val
+                if val not in (None, ""):
+                    return val
+            except Exception:
+                pass
         return self.profile["preferences"].get(key, default)
 
     def get_recent(self, category: str, limit: int = 5) -> List[str]:
@@ -134,29 +185,9 @@ class UserProfile:
         """Форматирует профиль для включения в prompt"""
         parts = []
 
-        identity = self.profile["identity"]
-        if identity.get("creator"):
-            parts.append(f"Создатель: {identity['creator']}")
-        if identity.get("name"):
-            parts.append(f"Имя пользователя: {identity['name']}")
-        if identity.get("city"):
-            parts.append(f"Город: {identity['city']}")
-
-        preferences = self.profile["preferences"]
-        prefs = []
-        if preferences.get("favorite_comedy"):
-            prefs.append(f"Любимая комедия: {preferences['favorite_comedy']}")
-        if preferences.get("favorite_music"):
-            prefs.append(f"Любимая музыка: {preferences['favorite_music']}")
-        if preferences.get("favorite_movie"):
-            prefs.append(f"Любимый фильм: {preferences['favorite_movie']}")
-        if preferences.get("music_genres"):
-            prefs.append(f"Жанры музыки: {', '.join(preferences['music_genres'])}")
-        if preferences.get("movie_genres"):
-            prefs.append(f"Жанры фильмов: {', '.join(preferences['movie_genres'])}")
-
-        if prefs:
-            parts.append("Предпочтения:\n" + "\n".join(f"  - {p}" for p in prefs))
+        # Имя, город и вкусы приходят в промпт из общей памяти — здесь не повторяем.
+        if self.profile["identity"].get("creator"):
+            parts.append(f"Создатель: {self.profile['identity']['creator']}")
 
         context = self.profile["context"]
         if context.get("current_activity"):
