@@ -1947,6 +1947,10 @@ class Jarvis:
         self.ui.on_text_command = self._on_text_command
         self.ui.on_island_confirm = self._on_island_confirm
         self.ui.on_file_dropped = self._on_file_dropped
+        self.ui.on_wake_trained = self._on_wake_trained
+        # Обучение — на том микрофоне, которым Джарвис слушает (раньше — системный).
+        self.ui.wake_device = lambda: (getattr(self, "_input_device", None)
+                                       if isinstance(getattr(self, "_input_device", None), int) else None)
 
         # Глобальные системные горячие клавиши (F8 / Ctrl+Shift+J — вызов, Ctrl+Shift+M — мьют)
         try:
@@ -2308,6 +2312,32 @@ class Jarvis:
                 log_turn("jarvis", jarvis)
             except Exception as exc:
                 logger.warning("Журнал разговора: %s", exc)
+        threading.Thread(target=write, daemon=True).start()
+
+    # Служебное и сама память — не «действия», в журнал не пишем.
+    _NOT_ACTIONS = {"save_to_memory", "recall_memory", "forget_memory", "set_mode", "switch_voice"}
+
+    def _remember_action(self, name: str, args: dict, response):
+        """Что Джарвис сделал — в журнал разговора (и в общую память с ботом)."""
+        if name in self._NOT_ACTIONS:
+            return
+        result = str((response or {}).get("result", "") if isinstance(response, dict) else response or "")
+        if result.startswith("НЕ ВЫПОЛНЕНО"):
+            return                                   # ждёт «да» — это ещё не действие
+        outcome = for_speech(result)[:160]
+        text = _tool_human(name) + (f" — {outcome}" if outcome else "")
+        try:
+            from ui_island import tool_label
+            text = tool_label(name, args) + (f" — {outcome}" if outcome else "")
+        except Exception:
+            pass
+
+        def write():
+            try:
+                from memory.conversation import log_turn
+                log_turn("action", text)
+            except Exception as exc:
+                logger.debug("Журнал действий: %s", exc)
         threading.Thread(target=write, daemon=True).start()
 
     def _call_finished(self, result: str):
@@ -3041,6 +3071,38 @@ class Jarvis:
         else:
             logger.info("Speaker meter unavailable, capturing all audio")
 
+    def _put_frame(self, item):
+        try:
+            self.out_queue.put_nowait(item)
+        except asyncio.QueueFull:
+            pass  # Drop audio frame silently to avoid flooding event loop
+
+    async def _start_local_wake(self):
+        """Офлайн-детектор имени (после обучения на голосе владельца)."""
+        if self._local_wake is None and _WAKE_MODE == "wake_word" and not _local_wake_enabled():
+            self._local_wake = False         # имя ищется в расшифровке Gemini
+        if self._local_wake is None and _WAKE_MODE == "wake_word":
+            loop = asyncio.get_running_loop()
+
+            def _heard(text: str):
+                loop.call_soon_threadsafe(self._on_local_wake, self._put_frame)
+            wake = LocalWake(_heard)
+            if await asyncio.to_thread(wake.start):
+                self._local_wake = wake
+                self.ui.write_log("SYS: слово «Джарвис» слушается на компьютере — до него звук никуда не уходит")
+            else:
+                self._local_wake = False     # не пробовать при каждом переподключении
+                self.ui.write_log("SYS: нет модели слова «Джарвис» — слушаю через Gemini")
+
+    def _on_wake_trained(self):
+        """Обучили слову «Джарвис» — включить детектор сразу. Раньше флаг «нет
+        детектора» стоял до перезапуска, и обучение не действовало."""
+        if self._local_wake:
+            return
+        self._local_wake = None
+        if self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._start_local_wake(), self._loop)
+
     async def _listen_audio(self):
         print("[ДЖАРВИС] 🎤 Микрофон запущен")
         loop = asyncio.get_event_loop()
@@ -3054,18 +3116,7 @@ class Jarvis:
             except asyncio.QueueFull:
                 pass  # Drop audio frame silently to avoid flooding event loop
 
-        if self._local_wake is None and _WAKE_MODE == "wake_word" and not _local_wake_enabled():
-            self._local_wake = False         # имя ищется в расшифровке Gemini
-        if self._local_wake is None and _WAKE_MODE == "wake_word":
-            def _heard(text: str):
-                loop.call_soon_threadsafe(self._on_local_wake, _put_nowait_safe)
-            wake = LocalWake(_heard)
-            if await asyncio.to_thread(wake.start):
-                self._local_wake = wake
-                self.ui.write_log("SYS: слово «Джарвис» слушается на компьютере — до него звук никуда не уходит")
-            else:
-                self._local_wake = False     # не пробовать при каждом переподключении
-                self.ui.write_log("SYS: нет модели слова «Джарвис» — слушаю через Gemini")
+        await self._start_local_wake()
 
         preroll = collections.deque(maxlen=10)
 
@@ -3502,6 +3553,7 @@ class Jarvis:
             _end = getattr(self.ui, "tool_finished", None)
             if _end:
                 _end(fc.name, _tool_outcome(getattr(fr, "response", None)))
+            self._remember_action(fc.name, dict(fc.args or {}), getattr(fr, "response", None))
             responses.append(fr)
             self._show_card(fc, fr)
             if fc.name in _MEDIA_TOOLS and str((fc.args or {}).get("action", "play")).lower() in (

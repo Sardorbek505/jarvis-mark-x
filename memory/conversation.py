@@ -84,13 +84,19 @@ def _append_jsonl(path: Path, item: dict, keep: int | None = None):
 # ── журнал реплик ─────────────────────────────────────────────────────────────
 
 def log_turn(role: str, text: str, ts: float | None = None):
-    """role: "user" | "jarvis". Системные указания ([СИСТЕМА: …]) не пишем."""
+    """role: "user" | "jarvis" | "action" (что Джарвис сделал: открыл, написал,
+    нашёл). Системные указания ([СИСТЕМА: …]) не пишем.
+
+    Действия раньше не запоминались вовсе — «что ты вчера включал?» и «кому ты
+    писал?» оставались без ответа, хотя Джарвис сам это делал."""
     text = (text or "").strip()
     if not text or text.startswith("["):
         return
     ts = ts or time.time()
     _append_jsonl(DIALOG_FILE, {"ts": ts, "role": role, "text": text[:2000]}, KEEP_LINES)
-    _share(lambda sh: sh.queue_turn(role, text[:2000], ts))
+    # Бот знает роли user/jarvis — действие уходит как реплика Джарвиса.
+    shared_role, shared_text = ("jarvis", "Сделал: " + text) if role == "action" else (role, text)
+    _share(lambda sh: sh.queue_turn(shared_role, shared_text[:2000], ts))
 
 
 def turns_since(ts: float) -> list[dict]:
@@ -105,7 +111,8 @@ def _when(ts: float, now: float) -> str:
 
 
 def _line(r: dict) -> str:
-    return f"{'Вы' if r['role'] == 'user' else 'Джарвис'}: {r['text']}"
+    who = {"user": "Вы", "action": "Джарвис сделал"}.get(r.get("role"), "Джарвис")
+    return f"{who}: {r['text']}"
 
 
 def format_recent(now: float | None = None) -> str:

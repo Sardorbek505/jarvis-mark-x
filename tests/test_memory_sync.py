@@ -120,3 +120,13 @@ async def test_facts_learned_before_linking_are_uploaded(monkeypatch, mem):
     post = _link(monkeypatch, mem)
     await sync_(post, all_=True)
     assert "имя: Сардор" in await mem.get_facts(UID)
+
+
+async def test_actions_are_remembered_and_shared(monkeypatch, mem):
+    post = _link(monkeypatch, mem)
+    conv.log_turn("action", "Открываю Spotify — Включил «Blinding Lights»")
+    assert "Джарвис сделал: Открываю Spotify" in conv.format_recent()
+    assert "Spotify" in conv.recall("Spotify")
+    await sync_(post)
+    rows = await mem._fetchall("SELECT role, text FROM messages")
+    assert rows == [("pc_jarvis", "Сделал: Открываю Spotify — Включил «Blinding Lights»")]

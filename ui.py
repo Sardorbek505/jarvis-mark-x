@@ -1050,6 +1050,8 @@ class MainWindow(QMainWindow):
         self.on_text_command = None
         self.on_island_confirm = None      # кнопки «Разрешить / Отклонить» на капсуле (main.py)
         self.on_file_dropped = None        # файл брошен на капсулу (main.py)
+        self.on_wake_trained = None        # обучили слову «Джарвис» — включить детектор (main.py)
+        self.wake_device = None            # микрофон Джарвиса для обучения (main.py)
 
         # ── Системный трей Windows ──────────────────────────────────
         try:
@@ -1446,7 +1448,9 @@ class MainWindow(QMainWindow):
             def calibrate():
                 try:
                     from core.wake_calibrate import run_gui
-                    run_gui()
+                    device_fn = getattr(self, "wake_device", None)
+                    run_gui(device_fn() if callable(device_fn) else None)
+                    self._island_call("on_wake_trained")
                 except Exception as exc:
                     _logger.warning("Обучение слову: %s", exc)
 
