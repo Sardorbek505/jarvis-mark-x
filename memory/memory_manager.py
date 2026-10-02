@@ -49,14 +49,18 @@ def update_memory(patch: dict):
                     continue
                 value = val.get("value", val) if isinstance(val, dict) else val
                 old = cat.get(key)
-                if (old.get("value") if isinstance(old, dict) else old) != value:
-                    changed.append((key, value))
+                old_value = old.get("value") if isinstance(old, dict) else old
+                if old_value != value:
+                    changed.append((key, value, old_value))
                 cat[key] = {"value": value, "updated": now}
             if len(cat) > _PER_CATEGORY:
                 keep = sorted(cat, key=lambda k: _stamp(cat[k]), reverse=True)[:_PER_CATEGORY]
                 mem[category] = {k: cat[k] for k in cat if k in keep}
         atomic_write_json(_MEMORY_FILE, mem)
-    _share(lambda sh: [sh.queue_fact(k, v) for k, v in changed])
+    # Сменилось значение — на сервере сначала убрать старое: иначе там копились
+    # «город: Ташкент» и «город: Самарканд», и модель видела оба.
+    _share(lambda sh: [(old not in (None, "") and sh.queue_fact_removed(k, str(old)), sh.queue_fact(k, v))
+                       for k, v, old in changed])
 
 
 def _share(fn):
@@ -69,14 +73,16 @@ def _share(fn):
         logging.getLogger(__name__).debug("Общая память: %s", exc)
 
 
-def forget(category: str, key: str) -> bool:
+def forget(category: str, key: str, share: bool = True) -> bool:
+    """share=False — удаление пришло с сервера (бот/телефон): обратно не шлём."""
     with _LOCK:
         mem = load_memory()
         if key in mem.get(category, {}):
             val = mem[category].pop(key)
             atomic_write_json(_MEMORY_FILE, mem)
             value = val.get("value", val) if isinstance(val, dict) else val
-            _share(lambda sh: sh.queue_fact_removed(key, str(value)))
+            if share:
+                _share(lambda sh: sh.queue_fact_removed(key, str(value)))
             return True
     return False
 
