@@ -4,15 +4,16 @@
 слышит «из» или «джордж» — детектор то молчал, то срабатывал от чужих слов.
 Porcupine хорош, но нужен ключ и файл слова из консоли Picovoice.
 
-Здесь — потоковая модель распознавания ключевых слов (Zipformer, GigaSpeech,
-3,3 млн параметров, 5 МБ): слово задаётся текстом, а не обучением. «Джарвис»
-по-русски модель слышит как английское JARVIS — плюс близкие варианты
-произношения (JARVICE, JAR VIS, JERVIS, JARWIS). На синтезированной русской
-речи: 13 из 15 «Джарвис» узнано, 0 ложных из 27 похожих фраз («Джордж»,
-«Джорджия», «Чарльз Дарвин», «жар висит», «журнал»).
+Здесь — русская потоковая модель (Zipformer small от Vosk, 28 МБ): слово
+задаётся текстом по слогам модели, а не обучением. Первая версия стояла на
+английской модели KWS (GigaSpeech) — та слышала русское «Джарвис» как JARVIS
+через раз, а у владельца (микрофон ASUS с ИИ-шумодавом) не узнала ни разу.
+Русская на той же проверке: 15 из 15 «Джарвис» (громко, тихо, в сильном шуме),
+0 ложных из 12 похожих фраз («Джордж», «Чарльз Дарвин», «жар в доме») и 0 за
+35 с обычной речи без имени.
 
-Модель скачивается один раз (17 МБ архив → 5 МБ на диске) в
-<папка данных>/models/kws-jarvis; в установщик она кладётся при сборке.
+Модель скачивается один раз в <папка данных>/models/kws-jarvis-ru; в
+установщик она кладётся при сборке.
 
 Интерфейс — как у core/wake_vosk.LocalWake: start() → bool, feed(pcm 16 кГц
 int16), stop(); при срабатывании зовёт on_wake(текст).
@@ -34,25 +35,24 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-MODEL_DIRNAME = "kws-jarvis"
-ARCHIVE_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/"
-               "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2")
+MODEL_DIRNAME = "kws-jarvis-ru"
+ARCHIVE_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
+               "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16.tar.bz2")
 FILES = {
-    "encoder": "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
-    "decoder": "decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
-    "joiner": "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+    "encoder": "encoder.int8.onnx",
+    "decoder": "decoder.onnx",
+    "joiner": "joiner.int8.onnx",
     "tokens": "tokens.txt",
 }
-# Токены BPE модели (sentencepiece bpe.model) — заранее, чтобы на ПК не нужен был sentencepiece.
+# Слоги BPE модели (sentencepiece bpe.model) — заранее, чтобы на ПК не нужен был sentencepiece.
 KEYWORDS = (
-    "▁JA R VI S @JARVIS",
-    "▁JA R VI CE @JARVICE",
-    "▁JA R ▁VI S @JAR_VIS",
-    "▁JE R VI S @JERVIS",
-    "▁JA R W IS @JARWIS",
+    "▁д жа р ви с @ДЖАРВИС",
+    "▁д же р ви с @ДЖЕРВИС",
+    "▁д жа р ве с @ДЖАРВЕС",
+    "▁д жа р ви з @ДЖАРВИЗ",
 )
-THRESHOLD = float(os.getenv("JARVIS_KWS_THRESHOLD", "0.1"))   # ниже — чувствительнее
-SCORE = float(os.getenv("JARVIS_KWS_SCORE", "2.0"))           # выше — слову легче победить
+THRESHOLD = float(os.getenv("JARVIS_KWS_THRESHOLD", "0.25"))  # ниже — чувствительнее
+SCORE = float(os.getenv("JARVIS_KWS_SCORE", "1.0"))           # выше — слову легче победить
 COOLDOWN_SEC = 1.5
 RATE = 16000
 
@@ -87,7 +87,7 @@ def find_model() -> Path | None:
 
 
 def download(dest: Path | None = None, fetch=None) -> Path:
-    """Скачать архив модели и оставить только нужные 4 файла (5 МБ)."""
+    """Скачать архив модели и оставить только нужные 4 файла (28 МБ)."""
     if dest is None:
         from core.paths import get_data_root
         dest = Path(get_data_root()) / "models" / MODEL_DIRNAME
@@ -168,13 +168,30 @@ class KwsWake:
             pass                                    # отстаём — старый звук не ждём
 
     def _run(self):
+        # Поток детектора не должен умирать молча: раньше ошибка тут уходила в
+        # stderr, которого у оконного exe нет, и «Джарвис» просто переставал работать.
+        try:
+            self._loop()
+        except Exception:
+            logger.exception("Детектор слова (sherpa-onnx) упал")
+            self.ready = False
+
+    def _loop(self):
         stream = self._kws.create_stream()
+        started, peak, reported = time.monotonic(), 0.0, False
         while not self._stop.is_set():
             try:
                 pcm = self._q.get(timeout=0.2)
             except queue.Empty:
                 continue
             x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+            if not reported:
+                # Один раз в журнал: доходит ли звук и какой громкости. «Не слышит
+                # имя» при тишине здесь — это микрофон, а не детектор.
+                peak = max(peak, float(np.sqrt(np.mean(x * x))) * 32768 if len(x) else 0.0)
+                if time.monotonic() - started > 20:
+                    logger.info("Детектор слова: звук идёт, громкость до RMS %.0f", peak)
+                    reported = True
             stream.accept_waveform(RATE, x)
             while self._kws.is_ready(stream):
                 self._kws.decode_stream(stream)
