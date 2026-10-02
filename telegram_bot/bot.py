@@ -1742,6 +1742,9 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     user_id = update.effective_user.id
     msg = update.effective_message
+    # Пересланное голосовое — чужие слова, как и пересланный текст: отвечаем,
+    # но ПК, звонки и сообщения контактам по нему не выполняем.
+    untrusted = getattr(msg, "forward_origin", None) is not None
     try:
         # Show "recording audio…" the whole time — voice synthesis takes a while
         # and a one-shot indicator expires in 5s, making the bot look asleep.
@@ -1769,12 +1772,12 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await msg.reply_text(reply, parse_mode="Markdown")
                 return
 
-            call = _parse_call(transcript) if transcript else None
+            call = _parse_call(transcript) if transcript and not untrusted else None
             if call:
                 await _handle_call(msg, user_id, *call)
                 return
 
-            if transcript and _looks_like_pc_command(transcript):
+            if transcript and not untrusted and _looks_like_pc_command(transcript):
                 # Не команда (ПК не узнал) — продолжаем обычным разговором.
                 if await _run_pc(msg, transcript, user_id, quiet_if_unknown=True):
                     return
@@ -1799,12 +1802,16 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # памятью и запасными моделями. Сам звук модели нужен, только если
             # расшифровать не вышло.
             if transcript:
-                reply = await gemini.chat(user_id, transcript)
+                reply = await gemini.chat(
+                    user_id, f"[Переслано от другого человека]\n{transcript}" if untrusted else transcript)
             else:
                 reply = await gemini.chat_with_audio(user_id, audio)
             failed = getattr(gemini, "last_generate_failed", False)
+            if untrusted:
+                reply = _RE_ACTIONS.sub("", reply)
             reply, summary = await _apply_reminder_directives(user_id, reply)
-            reply = await _apply_send_directives(update, user_id, reply)
+            if not untrusted:
+                reply = await _apply_send_directives(update, user_id, reply)
             if summary:
                 reply += "\n\n✅ Добавил — " + ", ".join(summary)
             if not reply.strip():

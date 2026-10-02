@@ -1192,3 +1192,49 @@ async def test_хлопки_выключены_в_настройках(стен�
     j = стенд.jarvis
     j._on_double_clap()
     assert j._intro_task is None
+
+
+@pytest.mark.asyncio
+async def test_неверный_ключ_ждёт_новый_и_подключается_сам(стенд, monkeypatch):
+    """Было: «ключ недействителен» → break, Джарвис глох до перезапуска, хотя
+    просил вписать новый ключ на экране «Ключи». Теперь ждёт и подключается."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    сохранённый = {"key": "bad-key"}
+    monkeypatch.setattr(jarvis_main, "_get_api_key", lambda: "bad-key")
+    monkeypatch.setattr(jarvis_main, "ensure_gemini_key",
+                        lambda *a, **kw: сохранённый["key"])
+    monkeypatch.setattr(jarvis_main.Jarvis, "_build_config", lambda self: None)
+    подключились = asyncio.Event()
+    ключи = []
+
+    class _Live:
+        def __init__(self, key):
+            self.key = key
+
+        def connect(self, model, config):
+            ключи.append(self.key)
+            if self.key == "bad-key":
+                raise RuntimeError("1007 None. API key not valid. Please pass a valid API key.")
+            подключились.set()
+            raise asyncio.CancelledError
+
+    class _Client:
+        def __init__(self, api_key, http_options=None):
+            self.aio = SimpleNamespace(live=_Live(api_key))
+
+    monkeypatch.setattr(jarvis_main.genai, "Client", _Client)
+
+    task = asyncio.create_task(стенд.jarvis.run())
+    for _ in range(100):
+        if any("Ключи" in line for line in стенд.ui.logs):
+            break
+        await asyncio.sleep(0.01)
+    assert "НЕТ КЛЮЧА" in стенд.ui.states
+    assert not task.done(), "Джарвис не вышел из цикла, а ждёт ключ"
+
+    сохранённый["key"] = "good-key"          # вписали на экране «Ключи»
+    await asyncio.wait_for(подключились.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert ключи == ["bad-key", "good-key"]

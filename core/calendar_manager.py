@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import re
+import threading
+import time
 
 from core.storage import atomic_write_json, load_json_or_quarantine
 
@@ -30,88 +32,154 @@ CALENDAR_FILE = BASE_DIR / "config" / "calendar.json"
 
 
 # ─── Парсинг даты/времени ─────────────────────────────────────────────────────
+_NUM_WORDS = {
+    "ноль": 0, "один": 1, "одну": 1, "одна": 1, "два": 2, "две": 2, "три": 3, "четыре": 4,
+    "пять": 5, "шесть": 6, "семь": 7, "восемь": 8, "девять": 9, "десять": 10,
+    "одиннадцать": 11, "двенадцать": 12, "тринадцать": 13, "четырнадцать": 14,
+    "пятнадцать": 15, "шестнадцать": 16, "семнадцать": 17, "восемнадцать": 18,
+    "девятнадцать": 19, "двадцать": 20, "тридцать": 30, "сорок": 40, "пятьдесят": 50,
+}
+_NUM = r"\d+|(?:(?:" + "|".join(sorted(_NUM_WORDS, key=len, reverse=True)) + r")\s*)+"
+
+# Основы дней недели: «в пятницу», «в среду», «в воскресенье» — падеж не важен.
+_WEEKDAYS = {"понедельник": 0, "вторник": 1, "сред": 2, "четверг": 3,
+             "пятниц": 4, "суббот": 5, "воскресень": 6}
+
+
+def _number(token: str) -> Optional[int]:
+    """«25», «двадцать пять» → 25."""
+    token = token.strip()
+    if token.isdigit():
+        return int(token)
+    words = token.split()
+    if not words or any(w not in _NUM_WORDS for w in words):
+        return None
+    return sum(_NUM_WORDS[w] for w in words)
+
+
+def _relative(text: str, now: datetime) -> Optional[datetime]:
+    """«через 10 минут», «через десять минут», «через час», «через полчаса»,
+    «через полтора часа», «через 2 дня»."""
+    if not text.startswith("через"):
+        return None
+    rest = text[len("через"):].strip()
+    if rest.startswith("полчаса"):
+        return now + timedelta(minutes=30)
+    if rest.startswith("полтора час"):
+        return now + timedelta(minutes=90)
+    m = re.match(rf"({_NUM})?\s*(минут|мин|час|день|дня|дней|недел)", rest)
+    if not m:
+        return None
+    amount = _number(m.group(1)) if m.group(1) else 1
+    if amount is None:
+        return None
+    unit = m.group(2)
+    if unit.startswith("мин"):
+        return now + timedelta(minutes=amount)
+    if unit == "час":
+        return now + timedelta(hours=amount)
+    if unit == "недел":
+        return now + timedelta(weeks=amount)
+    return now + timedelta(days=amount)
+
+
+def _clock_time(text: str) -> Optional[tuple]:
+    """Час и минута: «в 14:00», «в 9.30», «в 7 вечера», «в 12 ночи», «в 16»."""
+    m = re.search(r"(?:^|\s)(?:в\s+)?(\d{1,2})[:.](\d{2})(?:\s+(утра|дня|вечера|ночи))?", text)
+    if not m:
+        m = re.search(r"(?:^|\s)в\s+(\d{1,2})()(?:\s*час\w*)?(?:\s+(утра|дня|вечера|ночи))?(?!\S)", text)
+    if not m:
+        return None
+    hour, minute = int(m.group(1)), int(m.group(2) or 0)
+    part = m.group(3)
+    if part in ("дня", "вечера") and hour < 12:
+        hour += 12
+    elif part == "ночи" and hour == 12:
+        hour = 0
+    elif part == "утра" and hour == 12:
+        hour = 0
+    if hour > 23 or minute > 59:
+        return None
+    return hour, minute
+
+
 def _parse_datetime(text: str, reference_date: Optional[datetime] = None) -> Optional[datetime]:
     """
-    Парсит дату/время из русского текста.
-    
+    Парсит дату/время из русского текста или ISO-строки.
+
     Примеры:
-    - "завтра в 14:00"
-    - "завтра утром"
-    - "через 30 минут"
-    - "завтра"
-    - "сегодня в 15:00"
-    - "в понедельник в 10:00"
-    - "на следующей неделе в среду"
+    - "2026-10-03T19:00:00" (так часто присылает Gemini)
+    - "через 30 минут", "через десять минут", "через час", "через полчаса"
+    - "завтра в 14:00", "послезавтра утром", "сегодня в 7 вечера"
+    - "в пятницу в 10:00", "на следующей неделе в среду"
+
+    Время без даты, которое сегодня уже прошло, — это завтра: «в 9 утра»,
+    сказанное вечером, не должно попадать в прошлое.
     """
     if reference_date is None:
         reference_date = datetime.now()
-    
-    text = text.lower().strip()
     now = reference_date
-    
-    # ── Относительные время ─────────────────────────────────────────────────
-    # "через 30 минут", "через 2 часа", "через 1 день"
-    relative_match = re.match(r'через\s+(\d+)\s+(минут|час|день|часа|часов|дня|дней)', text)
-    if relative_match:
-        amount = int(relative_match.group(1))
-        unit = relative_match.group(2)
-        
-        if 'минут' in unit:
-            return now + timedelta(minutes=amount)
-        elif 'час' in unit:
-            return now + timedelta(hours=amount)
-        elif 'день' in unit:
-            return now + timedelta(days=amount)
-    
-    # ── Относительные даты ────────────────────────────────────────────────────
-    # "завтра", "послезавтра", "сегодня"
-    if 'завтра' in text:
-        target_date = now + timedelta(days=1)
-    elif 'послезавтра' in text:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+
+    try:
+        iso = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if iso.tzinfo is not None:
+            iso = iso.astimezone().replace(tzinfo=None)
+        return iso
+    except ValueError:
+        pass
+
+    text = raw.lower().replace("ё", "е")
+
+    rel = _relative(text, now)
+    if rel is not None:
+        return rel
+
+    # ── Дата ─────────────────────────────────────────────────────────────────
+    date_given = True
+    same_weekday = False
+    if "послезавтра" in text:
         target_date = now + timedelta(days=2)
-    elif 'сегодня' in text:
+    elif "завтра" in text:
+        target_date = now + timedelta(days=1)
+    elif "сегодня" in text:
         target_date = now
-    elif 'на следующей неделе' in text:
+    elif "на следующей неделе" in text:
         target_date = now + timedelta(weeks=1)
     else:
         target_date = now
-    
-    # ── Дни недели ──────────────────────────────────────────────────────────
-    days_map = {
-        'понедельник': 0,
-        'вторник': 1,
-        'среда': 2,
-        'четверг': 3,
-        'пятница': 4,
-        'суббота': 5,
-        'воскресенье': 6,
-    }
-    
-    for day_name, day_num in days_map.items():
-        if day_name in text:
+        date_given = False
+
+    for stem, day_num in _WEEKDAYS.items():
+        if re.search(rf"\b{stem}", text):
             days_ahead = (day_num - now.weekday() + 7) % 7
-            if days_ahead == 0 and 'на следующей неделе' in text:
+            if days_ahead == 0 and "на следующей неделе" in text:
                 days_ahead = 7
             target_date = now + timedelta(days=days_ahead)
+            same_weekday = days_ahead == 0
+            date_given = True
             break
-    
+
     # ── Время ────────────────────────────────────────────────────────────────
-    # "в 14:00", "в 14:30", "в 9:00", "в 9 утра", "в 15:00"
-    time_match = re.search(r'в\s+(\d{1,2}):(\d{2})', text)
-    if time_match:
-        hour = int(time_match.group(1))
-        minute = int(time_match.group(2))
-        target_date = target_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    elif 'утром' in text:
-        target_date = target_date.replace(hour=9, minute=0, second=0, microsecond=0)
-    elif 'днём' in text or 'днем' in text:
-        target_date = target_date.replace(hour=14, minute=0, second=0, microsecond=0)
-    elif 'вечером' in text:
-        target_date = target_date.replace(hour=18, minute=0, second=0, microsecond=0)
-    else:
-        # Если время не указано, используем 9:00 по умолчанию
-        target_date = target_date.replace(hour=9, minute=0, second=0, microsecond=0)
-    
+    hm = _clock_time(text)
+    if hm is None:
+        if "утром" in text:
+            hm = (9, 0)
+        elif "днём" in text or "днем" in text:
+            hm = (14, 0)
+        elif "вечером" in text:
+            hm = (18, 0)
+        else:
+            hm = (9, 0)    # время не названо — 9:00 по умолчанию
+    target_date = target_date.replace(hour=hm[0], minute=hm[1], second=0, microsecond=0)
+
+    if target_date <= now:
+        if same_weekday:                   # «в пятницу», сказанное в пятницу вечером
+            target_date += timedelta(weeks=1)
+        elif not date_given:
+            target_date += timedelta(days=1)
     return target_date
 
 
@@ -471,6 +539,56 @@ def get_upcoming_reminders(minutes_ahead: int = 15) -> List[Dict[str, Any]]:
     
     except Exception:
         return []
+
+
+def take_due_reminders(now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """Напоминания, время которых пришло: отмечает их выполненными и отдаёт.
+
+    Отметка и выдача — за один проход, чтобы одно напоминание не прозвучало
+    дважды. Пропущенные, пока ПК был выключен, тоже отдаются (с флагом late).
+    """
+    now = now or datetime.now()
+    calendar = _load_calendar()
+    due = []
+    for reminder in calendar.get("reminders", []):
+        if reminder.get("completed"):
+            continue
+        try:
+            when = datetime.fromisoformat(reminder["datetime"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if when <= now:
+            reminder["completed"] = True
+            due.append({**reminder, "late": now - when > timedelta(minutes=5)})
+    if due:
+        _save_calendar(calendar)
+    return due
+
+
+_watch_thread: Optional[threading.Thread] = None
+
+
+def start_reminder_watch(say, notify, interval: float = 15.0) -> None:
+    """Фоновая проверка напоминаний: пришло время — голос Джарвиса и событие
+    в журнале. Раньше напоминания только записывались, и не звучали никогда."""
+    global _watch_thread
+    if _watch_thread is not None and _watch_thread.is_alive():
+        return
+
+    def run():
+        while True:
+            try:
+                for r in take_due_reminders():
+                    text = r.get("text") or "без текста"
+                    prefix = "Пропущенное напоминание" if r.get("late") else "Напоминаю"
+                    notify("Напоминание", text)
+                    say(f"{prefix}, сэр: {text}")
+            except Exception as exc:
+                _logger.warning("Проверка напоминаний: %s", exc, exc_info=True)
+            time.sleep(interval)
+
+    _watch_thread = threading.Thread(target=run, daemon=True, name="calendar-reminders")
+    _watch_thread.start()
 
 
 def get_upcoming_events(minutes_ahead: int = 60) -> List[Dict[str, Any]]:

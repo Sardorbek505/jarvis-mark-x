@@ -47,3 +47,54 @@ def test_config_save_and_load(tmp_path, monkeypatch):
     loaded = ui_setup.load_config_data()
     assert loaded["gemini_api_key"] == "test_isolated_key_123"
     assert loaded["gemini_model"] == "gemini-2.5-flash"
+
+
+_app = None
+
+
+def _wizard(tmp_path, monkeypatch, devices):
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    import sounddevice as sd
+    global _app
+    _app = QApplication.instance() or QApplication([])
+    user_dir = tmp_path / "user"
+    monkeypatch.setattr(core.paths, "get_user_data_dir", lambda: user_dir)
+    monkeypatch.setattr(core.paths, "get_app_dir", lambda: tmp_path / "app")
+    monkeypatch.setenv("JARVIS_SETTINGS", str(tmp_path / "settings.json"))
+    monkeypatch.delenv("MIC_DEVICE", raising=False)
+    monkeypatch.delenv("EDGE_VOICE", raising=False)
+    monkeypatch.setattr(sd, "query_devices", lambda *a, **kw: devices)
+    monkeypatch.setattr(ui_setup, "set_windows_autostart", lambda enable: True)
+    return ui_setup.SetupWizardDialog()
+
+
+def test_мастер_сохраняет_голос_и_микрофон(tmp_path, monkeypatch):
+    """Было: «Светлана» не сохранялась вовсе, микрофон — только до перезапуска."""
+    from core import settings
+    mics = [{"name": "Микрофон ноутбука", "max_input_channels": 2, "hostapi": 0},
+            {"name": "Гарнитура USB", "max_input_channels": 1, "hostapi": 0}]
+    w = _wizard(tmp_path, monkeypatch, mics)
+    w.edit_gemini.setText("AIzaSy-test-key-1234567890")
+    w.combo_edge.setCurrentIndex(w.combo_edge.findData("ru-RU-SvetlanaNeural"))
+    w.combo_mic.setCurrentIndex(w.combo_mic.findData("Гарнитура USB"))
+    w._save_and_start()
+
+    assert settings.get("edge_voice") == "ru-RU-SvetlanaNeural"
+    assert settings.get("mic") == "Гарнитура USB"
+    assert settings.get("voice") == "gemini"
+
+    # Повторное открытие мастера показывает сохранённое.
+    again = _wizard(tmp_path, monkeypatch, mics)
+    assert again.combo_edge.currentData() == "ru-RU-SvetlanaNeural"
+    assert again.combo_mic.currentData() == "Гарнитура USB"
+
+
+def test_мастер_fish_без_ключа_не_включает_fish(tmp_path, monkeypatch):
+    from core import settings
+    w = _wizard(tmp_path, monkeypatch, [])
+    w.edit_gemini.setText("AIzaSy-test-key-1234567890")
+    w.rb_fish.setChecked(True)
+    w._save_and_start()
+    assert settings.get("voice") == "gemini"

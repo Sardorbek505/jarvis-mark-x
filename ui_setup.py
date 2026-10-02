@@ -14,7 +14,7 @@ from pathlib import Path
 
 from core.paths import load_api_keys, save_api_keys
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -226,6 +226,8 @@ class SetupWizardDialog(QDialog):
         self._setup_style()
         self._init_ui()
         self._load_current_values()
+        for btn in self.findChildren(QPushButton):
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def _setup_style(self):
         self.setStyleSheet("""
@@ -271,17 +273,15 @@ class SetupWizardDialog(QDialog):
             }
             QLineEdit:focus {
                 border: 1px solid #22d3ee;
-                box-shadow: 0 0 8px rgba(34, 211, 238, 0.3);
             }
             QPushButton {
-                background: linear-gradient(135deg, #0284c7, #0369a1);
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0284c7, stop:1 #0369a1);
                 color: #ffffff;
                 border: none;
                 border-radius: 6px;
                 padding: 8px 16px;
                 font-weight: 600;
                 font-size: 13px;
-                cursor: pointer;
             }
             QPushButton:hover {
                 background: #0ea5e9;
@@ -510,14 +510,17 @@ class SetupWizardDialog(QDialog):
         return w
 
     def _populate_audio_devices(self):
+        self._mic_index = {}
         try:
             import sounddevice as sd
             devices = sd.query_devices()
             self.combo_mic.addItem("Автовыбор (рекомендуется — физический микрофон)", None)
             for i, d in enumerate(devices):
                 if d["max_input_channels"] > 0 and d.get("hostapi", 0) == 0:
-                    name = f"[{i}] {d['name']}"
-                    self.combo_mic.addItem(name, i)
+                    # Данные — имя: номера в Windows меняются после перезагрузки
+                    # и подключения наушников (так же хранит core/settings.py).
+                    self.combo_mic.addItem(d["name"], d["name"])
+                    self._mic_index.setdefault(d["name"], i)
         except Exception as e:
             self.combo_mic.addItem(f"Ошибка загрузки устройств: {e}", None)
 
@@ -528,7 +531,7 @@ class SetupWizardDialog(QDialog):
             self.progress_mic.setValue(0)
             self.btn_toggle_mic_test.setText("▶ Начать тест микрофона")
         else:
-            dev_idx = self.combo_mic.currentData()
+            dev_idx = self._mic_index.get(self.combo_mic.currentData())
             self.mic_worker = MicLevelWorker(device_index=dev_idx)
             self.mic_worker.level_signal.connect(self.progress_mic.setValue)
             self.mic_worker.start_listening()
@@ -543,13 +546,14 @@ class SetupWizardDialog(QDialog):
 
         tab_layout.addWidget(QLabel("<b>Основной голос Джарвиса:</b>"))
 
-        self.rb_edge_dmitry = QRadioButton("Microsoft Edge — Дмитрий (бесплатно, без задержек)")
-        self.rb_edge_svetlana = QRadioButton("Microsoft Edge — Светлана (женский, бесплатно)")
-        self.rb_fish = QRadioButton("Fish Audio — голос JARVIS из фильмов (нужен API-ключ)")
+        # Те же варианты, что на экране «Настройки» (core/settings.py): основной
+        # голос — Gemini или Fish, а Microsoft Edge — запасной. Раньше мастер
+        # предлагал «Дмитрия» и «Светлану» как основной голос и выбор не сохранял.
+        self.rb_gemini = QRadioButton("Быстрый — встроенный голос Gemini (бесплатно)")
+        self.rb_fish = QRadioButton("Как в фильме — Fish Audio (нужен API-ключ)")
 
-        self.rb_edge_dmitry.setChecked(True)
-        tab_layout.addWidget(self.rb_edge_dmitry)
-        tab_layout.addWidget(self.rb_edge_svetlana)
+        self.rb_gemini.setChecked(True)
+        tab_layout.addWidget(self.rb_gemini)
         tab_layout.addWidget(self.rb_fish)
 
         # Fish audio key box
@@ -565,10 +569,17 @@ class SetupWizardDialog(QDialog):
         self.rb_fish.toggled.connect(self.fish_box.setVisible)
         self.fish_box.setVisible(False)
 
+        tab_layout.addWidget(QLabel("<b>Запасной голос</b> (если основной недоступен, бесплатно):"))
+        self.combo_edge = QComboBox()
+        self.combo_edge.addItem("Microsoft — Дмитрий (мужской)", "ru-RU-DmitryNeural")
+        self.combo_edge.addItem("Microsoft — Светлана (женский)", "ru-RU-SvetlanaNeural")
+        tab_layout.addWidget(self.combo_edge)
+
         # Тест голоса
         test_btn_row = QHBoxLayout()
-        self.btn_test_voice = QPushButton("🔊 Прослушать образец голоса")
+        self.btn_test_voice = QPushButton(self._voice_btn_text())
         self.btn_test_voice.clicked.connect(self._test_voice_sample)
+        self.rb_fish.toggled.connect(self._reset_voice_btn)
         test_btn_row.addWidget(self.btn_test_voice)
         tab_layout.addLayout(test_btn_row)
 
@@ -585,12 +596,9 @@ class SetupWizardDialog(QDialog):
                 if self.rb_fish.isChecked() and self.edit_fish_key.text().strip():
                     from telegram_bot import tts_fish
                     pcm = asyncio.run(tts_fish.speak_pcm(phrase))
-                elif self.rb_edge_svetlana.isChecked():
-                    from telegram_bot import tts_edge
-                    pcm = asyncio.run(tts_edge.speak_pcm(phrase, voice="ru-RU-SvetlanaNeural"))
                 else:
                     from telegram_bot import tts_edge
-                    pcm = asyncio.run(tts_edge.speak_pcm(phrase, voice="ru-RU-DmitryNeural"))
+                    pcm = asyncio.run(tts_edge.speak_pcm(phrase, voice=self.combo_edge.currentData()))
 
                 if pcm:
                     import numpy as np
@@ -605,9 +613,13 @@ class SetupWizardDialog(QDialog):
 
         threading.Thread(target=play, daemon=True).start()
 
+    def _voice_btn_text(self) -> str:
+        # Голос Gemini без живой сессии не прослушать — образец будет запасным.
+        return "🔊 Прослушать голос Fish" if self.rb_fish.isChecked() else "🔊 Прослушать запасной голос"
+
     def _reset_voice_btn(self):
         self.btn_test_voice.setEnabled(True)
-        self.btn_test_voice.setText("🔊 Прослушать образец голоса")
+        self.btn_test_voice.setText(self._voice_btn_text())
 
     # ── Вкладка 4: Telegram ───────────────────────────────────────────────────
     def _tab_telegram(self) -> QWidget:
@@ -648,9 +660,17 @@ class SetupWizardDialog(QDialog):
             self.combo_model.setCurrentIndex(idx)
 
         self.edit_fish_key.setText(c.get("fish_api_key", os.getenv("FISH_API_KEY", "")))
-        if c.get("fish_api_key"):
+        from core import settings
+        saved = settings.load()
+        if saved["voice"] == "fish":
             self.rb_fish.setChecked(True)
             self.fish_box.setVisible(True)
+        idx = self.combo_edge.findData(saved["edge_voice"])
+        if idx >= 0:
+            self.combo_edge.setCurrentIndex(idx)
+        idx = self.combo_mic.findData(saved["mic"]) if saved["mic"] else -1
+        if idx >= 0:
+            self.combo_mic.setCurrentIndex(idx)
 
         self.edit_tg_token.setText(c.get("telegram_bot_token", os.getenv("TELEGRAM_BOT_TOKEN", "")))
         allowed = c.get("telegram_allowed_users", "")
@@ -700,10 +720,13 @@ class SetupWizardDialog(QDialog):
         # Обновляем автозапуск Windows
         set_windows_autostart(self.chk_autostart.isChecked())
 
-        # Устанавливаем выбранный микрофон в env
-        mic_idx = self.combo_mic.currentData()
-        if mic_idx is not None:
-            os.environ["MIC_DEVICE"] = str(mic_idx)
+        # Голос и микрофон — в settings.json, как на экране «Настройки»: раньше
+        # микрофон жил только в os.environ до перезапуска, а голос терялся сразу.
+        from core import settings
+        use_fish = self.rb_fish.isChecked() and bool(self.edit_fish_key.text().strip())
+        settings.set("voice", "fish" if use_fish else "gemini")
+        settings.set("edge_voice", self.combo_edge.currentData())
+        settings.set("mic", self.combo_mic.currentData() or "")
 
         self.accept()
 
