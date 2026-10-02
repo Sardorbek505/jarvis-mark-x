@@ -53,6 +53,7 @@ class HeadlessUI:
         self.on_island_file_action = None
         self.on_island_mic = None
         self.on_wake_trained = None
+        self.on_intro_skipped = None    # интро без окна не пропустить — звук доиграет
         self.wake_device = None
         self.on_voice_intro = None      # кнопка «Познакомиться голосом» (в окне; тут — нет)
         self.state = "INIT"
@@ -81,6 +82,15 @@ class HeadlessUI:
     def lock_on(self, tool: str) -> None:
         """Прицел на инструмент — в headless это просто строчка в логе."""
         _logger.debug("инструмент: %s", tool)
+
+    def play_intro(self, checks: dict | None = None) -> None:
+        """Интро на два хлопка — без окна показывать некому, звук играет main."""
+
+    def extend_intro(self, end: float) -> None:
+        """Продлить интро под фразу — без окна нечего продлевать."""
+
+    def intro_voice(self, lines, env) -> None:
+        """Субтитры интро — без окна показывать некому."""
 
     def set_subtitle(self, text: str) -> None:
         """Субтитр под шаром — без окна показывать некому."""

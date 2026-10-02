@@ -193,6 +193,9 @@ function connect() {
       item.el?.classList.remove('pending');
       ws.send(JSON.stringify(item.msg));
     }
+    // Вкладку открыли, пока связи не было (или до первого соединения), — её
+    // запрос молча пропал, и «Сводка» оставалась пустой. Догружаем сейчас.
+    requestTabData(activeTab);
   };
 
   ws.onclose = () => {
@@ -709,6 +712,9 @@ function switchTab(name) {
   placeGlider();
   const t = document.querySelector(`.tab[data-tab="${name}"]`);
   if (t && !reduceMotion) { t.classList.remove('pop'); void t.offsetWidth; t.classList.add('pop'); }
+  requestTabData(name);
+}
+function requestTabData(name) {
   if (['dashboard', 'tasks', 'habits', 'study'].includes(name)) send({ type: 'get_data', view: name });
   if (name === 'pc') send({ type: 'pc_macros' });
 }

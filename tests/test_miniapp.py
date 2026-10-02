@@ -285,6 +285,17 @@ def test_offline_message_waits_in_queue(page):
     assert t.eval("document.querySelector('#messages .msg.user.pending') === null")
 
 
+def test_tab_opened_offline_fills_once_connected(page):
+    """Вкладку открыли до соединения (или во время обрыва): её запрос пропадал,
+    и «Сводка» оставалась пустой — тест в CI падал от этой же гонки."""
+    t = page
+    t.eval("window.__online = false; window.__ws.readyState = 3; window.__ws.onclose()")
+    t.eval("switchTab('dashboard')")
+    assert not t.eval("document.getElementById('dash-body').textContent.includes('брат: Азиз')")
+    t.eval("window.__online = true; connect()")
+    assert t.wait("document.getElementById('dash-body').textContent.includes('брат: Азиз')", timeout=5)
+
+
 _CREST = ("data:image/svg+xml," + "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E"
           "%3Ccircle cx='5' cy='5' r='5' fill='%23ffcc00'/%3E%3C/svg%3E")
 

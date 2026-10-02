@@ -1003,6 +1003,9 @@ class MainWindow(QMainWindow):
     _welcome_sig = pyqtSignal(bool)
     # wait_for_api_key зовётся из рабочего потока: оверлей — только сигналом.
     _overlay_sig = pyqtSignal(str)
+    _intro_sig = pyqtSignal(object)             # интро на два хлопка (core/intro.py)
+    _intro_end_sig = pyqtSignal(float)          # продлить интро под фразу Джарвиса
+    _intro_voice_sig = pyqtSignal(object, object)   # реплики (субтитры) и громкость голоса
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1278,6 +1281,10 @@ class MainWindow(QMainWindow):
         self._page_sig.connect(self._open_page)
         self._welcome_sig.connect(self._show_welcome)
         self._overlay_sig.connect(self._show_overlay)
+        self._intro_sig.connect(self._show_intro)
+        self._intro_end_sig.connect(self._extend_intro)
+        self._intro_voice_sig.connect(self._set_intro_voice)
+        self.on_intro_skipped = None              # main.py: пропустили — заглушить звук
 
     # ── Публичный API ──────────────────────────────────────────────────────────
     def write_log(self, text: str):
@@ -1607,6 +1614,42 @@ class MainWindow(QMainWindow):
         self._overlay_sig.emit(reason)
         self._key_ready.wait()
         return reason
+
+    def play_intro(self, checks: dict | None = None):
+        """Интро на весь экран — из любого потока."""
+        self._intro_sig.emit(checks or {})
+
+    def extend_intro(self, end: float):
+        """Джарвис здоровается дольше сценария — интро ждёт конца фразы (из любого потока)."""
+        self._intro_end_sig.emit(float(end))
+
+    def intro_voice(self, lines, env):
+        """Реплики Джарвиса (начало, длительность, текст) и громкость голоса — в интро."""
+        self._intro_voice_sig.emit(list(lines), list(env))
+
+    def _set_intro_voice(self, lines, env):
+        ov = getattr(self, "_intro", None)
+        if ov is not None:
+            ov.scene.set_voice(lines, env)
+
+    def _extend_intro(self, end: float):
+        ov = getattr(self, "_intro", None)
+        if ov is not None:
+            ov.scene.extend_to(end)
+
+    def _show_intro(self, checks):
+        from ui_intro import IntroOverlay
+        if getattr(self, "_intro", None) is not None:
+            return                                  # уже идёт
+        ov = IntroOverlay(checks)
+        self._intro = ov
+
+        def done():
+            self._intro = None
+            if ov.skipped and callable(self.on_intro_skipped):
+                self.on_intro_skipped()
+        ov.finished.connect(done)
+        ov.play()
 
     def _show_overlay(self, reason="init"):
         self._overlay = SetupOverlay(self.centralWidget(), reason=reason)

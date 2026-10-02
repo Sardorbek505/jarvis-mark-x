@@ -1747,6 +1747,7 @@ TOOLS = [
 # ─── Ядро ДЖАРВИС ─────────────────────────────────────────────────────────────
 class Jarvis:
     _go_away_at: float | None = None      # Gemini прислал GoAway — переподключение плановое
+    _intro_skipped = False                # интро пропустили — его звук больше не подаём
 
     def __init__(self, ui: JarvisUI):
         self.ui = ui
@@ -1983,9 +1984,12 @@ class Jarvis:
         # Локальное слово «Джарвис». Запускается в _listen_audio: модели
         # нужен событийный цикл, чтобы будить Джарвиса из своего потока.
         self._local_wake: LocalWake | None = None
+        self._clap = None                         # два хлопка → интро (core/clap.py)
+        self._intro_task: asyncio.Task | None = None
         self._wake_ring = collections.deque(maxlen=_WAKE_PREROLL_FRAMES)
 
         self.ui.on_text_command = self._on_text_command
+        self.ui.on_intro_skipped = self._on_intro_skipped
         self.ui.on_island_confirm = self._on_island_confirm
         self.ui.on_file_dropped = self._on_file_dropped
         self.ui.on_island_file_action = self._on_island_file_action
@@ -3252,6 +3256,7 @@ class Jarvis:
                 pass  # Drop audio frame silently to avoid flooding event loop
 
         await self._start_local_wake()
+        self._start_clap(loop)
 
         preroll = collections.deque(maxlen=10)
 
@@ -3279,6 +3284,8 @@ class Jarvis:
                 return
 
             pcm_bytes = indata.tobytes()
+            if self._clap is not None:
+                self._clap.feed(pcm_bytes)
 
             # Спит — звук только в локальный детектор имени, в облако ничего.
             if self._local_wake and not self.is_awake():
@@ -3769,6 +3776,160 @@ class Jarvis:
                 await session.close()
             except Exception as exc:
                 logger.debug("Закрытие сессии перед переподключением: %s", exc)
+
+    def _start_clap(self, loop):
+        """Детектор двух хлопков: свой поток, звук из того же микрофона."""
+        if self._clap is not None:
+            return
+        try:
+            from core.clap import ClapDetector
+
+            def heard():
+                loop.call_soon_threadsafe(self._on_double_clap)
+            self._clap = ClapDetector(heard)
+            self._clap.start()
+        except Exception as exc:
+            logger.warning("Детектор хлопков не запустился: %s", exc)
+            self._clap = None
+            return
+        if os.getenv("JARVIS_CLAP_INTRO", "1") != "0":
+            self._spawn(self._prewarm_intro())
+
+    async def _prewarm_intro(self, delay: float = 20.0):
+        """Заранее: звук интро (его расчёт ~1 с) и реплики Джарвиса в кэш — чтобы
+        после хлопков голос и звук пошли сразу, без паузы и без сети."""
+        from core import intro
+        await asyncio.sleep(delay)
+        try:
+            self._intro_pcm = await asyncio.to_thread(intro.pcm16, 0.6, RECV_SAMPLE_RATE)
+            for text in intro.prewarm_texts():
+                if quick.voice_cache().get(text, RECV_SAMPLE_RATE) is None:
+                    await self._intro_voice(text)
+                    await asyncio.sleep(1.0)
+        except Exception as exc:
+            logger.debug("Подготовка интро: %s", exc)
+
+    def _on_double_clap(self):
+        if os.getenv("JARVIS_CLAP_INTRO", "1") == "0" or self.ui.muted:
+            return
+        if self._intro_task is not None and not self._intro_task.done():
+            return
+        self._intro_task = asyncio.ensure_future(self._clap_intro())
+
+    def _intro_checks(self) -> dict:
+        """Строки «Проверки систем» в интро — по-настоящему, а не для красоты."""
+        tg = False
+        try:
+            from core import tg_call
+            tg = not tg_call.ready()
+        except Exception:
+            pass
+        return {"Микрофон": True, "Голос": True, "Слово «Джарвис»": bool(self._local_wake),
+                "Gemini": self.session is not None, "Память": True, "Telegram": tg}
+
+    async def _clap_intro(self):
+        """Два хлопка: интро на экране; голос Джарвиса ведёт его тремя репликами
+        (субтитры внизу), под ними — звук интро; потом Джарвис слушает."""
+        from core import intro
+        logger.info("Интро: два хлопка")
+        self._intro_skipped = False
+        checks = self._intro_checks()
+        lines = intro.lines(checks)
+        voices = [asyncio.ensure_future(self._intro_voice(text)) for _, text in lines]   # синтез — сразу все
+        pcm = getattr(self, "_intro_pcm", None)
+        if pcm is None:
+            pcm = await asyncio.to_thread(intro.pcm16, 0.6, RECV_SAMPLE_RATE)
+            self._intro_pcm = pcm
+        started = time.monotonic()
+        self.ui.play_intro(checks)
+        rate = RECV_SAMPLE_RATE
+        q = self.audio_in_queue
+        if q is None:
+            for v in voices:
+                v.cancel()
+            await asyncio.sleep(intro.T_END)
+            self.wake()
+            return
+        mixed, fed = pcm, 0
+        voice_track = b""
+        done_lines: list[tuple[float, float, str]] = []
+        for k, ((at, text), task) in enumerate(zip(lines, voices)):
+            spoken = None
+            try:
+                wait = max(0.05, at - 0.3 - (time.monotonic() - started))
+                spoken = await asyncio.wait_for(task, wait)
+            except Exception as exc:
+                logger.info("Интро: реплика «%s» без голоса (%s)", text, exc or "не успела")
+            if spoken:
+                mixed = intro.mix_voice(mixed, spoken, rate, at=at)
+                pad = int(at * rate) * 2 - len(voice_track)
+                voice_track += bytes(max(0, pad)) + spoken
+                done_lines.append((at, len(spoken) / (2 * rate), text))
+            else:
+                done_lines.append((at, 0.0, text))
+            self.ui.intro_voice(done_lines + [(a, 0.0, tx) for a, tx in lines[k + 1:]],
+                                intro.envelope(voice_track, rate) if voice_track else [])
+            if k == len(lines) - 1 and spoken:      # картинка держится, пока Джарвис договаривает
+                self.ui.extend_intro(at + len(spoken) / (2 * rate) + 1.4)
+            # подаём звук до следующей реплики (с запасом на плавное приглушение)
+            upto = len(mixed) if k == len(lines) - 1 else int((lines[k + 1][0] - 0.2) * rate) * 2
+            await self._feed_intro(q, mixed[fed:upto])
+            fed = max(fed, upto)
+            if self._intro_skipped:
+                break
+        if not self._intro_skipped:
+            greeting = lines[-1][1]
+            self.ui.write_log(f"Джарвис: {greeting}")
+            self._remember_turn("", greeting)
+        while q.qsize() and not self._intro_skipped:
+            await asyncio.sleep(0.05)
+        self.wake()
+        self.ui.write_log("SYS: Джарвис онлайн — слушаю")
+
+    async def _feed_intro(self, q, pcm: bytes):
+        """Звук длиннее очереди (200 кусков) — подаём по мере проигрывания."""
+        step = CHUNK_SIZE * 2
+        for j in range(0, len(pcm), step):
+            if self._intro_skipped or self.audio_in_queue is not q:
+                return
+            await q.put(pcm[j:j + step])
+
+    async def _intro_voice(self, text: str) -> bytes | None:
+        """Фраза интро голосом Джарвиса: кэш → Fish → Edge. Кэш — чтобы со второго
+        раза голос звучал без сети и без задержки."""
+        rate = RECV_SAMPLE_RATE
+        cache = quick.voice_cache()
+        pcm = cache.get(text, rate)
+        if pcm:
+            return pcm
+        from telegram_bot import tts_edge, tts_fish
+        if tts_fish.is_configured():
+            try:
+                pcm = await tts_fish.speak_pcm(text, rate)
+            except Exception as exc:
+                logger.info("Интро: Fish не озвучил (%s) — Edge", exc)
+        if not pcm:
+            pcm = await tts_edge.speak_pcm(text, sample_rate=rate)
+        if pcm:
+            try:
+                cache.put(text, rate, pcm)
+            except Exception as exc:
+                logger.debug("Кэш голоса интро: %s", exc)
+        return pcm or None
+
+    def _on_intro_skipped(self):
+        """Интро пропустили кликом или Esc — его звук тоже обрываем."""
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._stop_intro_sound)
+
+    def _stop_intro_sound(self):
+        self._intro_skipped = True
+        q = self.audio_in_queue
+        while q is not None and not q.empty():
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
     def _play_done_sound(self):
         """Короткое «готово» тем же путём, что голос Джарвиса (в выбранный динамик)."""
