@@ -31,7 +31,29 @@ def test_service_tools_get_no_card():
 
 def test_unknown_tool_still_gets_a_readable_card():
     c = build_card("new_tool", {}, None)
-    assert c["title"] == "New tool" and c["address"] == "jarvis://new_tool"
+    assert c["title"] == "New tool" and c["address"] == "new tool"
+
+
+def test_card_header_is_human_not_a_tool_id():
+    """Живой случай: в шапке было «jarvis://look_at_screen» — человеку непонятно."""
+    asked = build_card("look_at_screen", {"prompt": "Где ошибка?", "source": "active_window"}, "…")
+    assert asked["address"] == "Где ошибка?"                              # вопрос пользователя
+    plain = build_card("look_at_screen", {}, "На экране браузер.")
+    assert plain["address"] == "что на экране" and plain["title"] == "Экран"
+    for name in ("look_at_camera", "morning_briefing", "calendar", "remember_screen"):
+        assert "jarvis://" not in build_card(name, {}, "ok")["address"], name
+
+
+def test_card_body_has_no_markdown_or_code_blocks():
+    c = build_card("look_at_screen", {}, "**Ошибка** в программе:\n```\nmax([])\n```\nНужна проверка.")
+    assert "**" not in c["body"] and "```" not in c["body"] and "max([])" not in c["body"]
+
+
+def test_vision_answers_without_code_unless_asked():
+    from actions.vision import wants_code
+    assert not wants_code("где ошибка в коде?") and not wants_code("что у меня на экране")
+    for ask in ("покажи код исправления", "на какой строке ошибка", "в каком файле", "напиши мне код"):
+        assert wants_code(ask), ask
 
 
 def test_no_window_shot_outside_windows():

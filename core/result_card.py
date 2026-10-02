@@ -34,6 +34,11 @@ _TITLES = {
     "computer_control": "Компьютер", "window_control": "Окна",
     "save_to_memory": "Память", "sleep_timer": "Таймер", "remember_screen": "Запомнил",
 }
+# Шапка карточки, когда у команды нет понятного аргумента (сайта, запроса).
+_ADDRESS = {
+    "look_at_screen": "что на экране", "look_at_camera": "что видит камера", "vision_review": "что на экране",
+    "remember_screen": "запомнил экран", "morning_briefing": "утренний брифинг",
+}
 # Служебное — карточка тут только мешала бы.
 _SKIP = {"set_mode", "shutdown_jarvis", "switch_voice", "team_collaboration"}
 _BODY_MAX = 420
@@ -46,12 +51,14 @@ def build_card(name: str, args: dict | None, result) -> dict | None:
     args = dict(args or {})
     if isinstance(result, dict):
         result = result.get("result", result)
-    body = " ".join(str(result or "").split())
+    from core.speech_text import for_chat
+    body = " ".join(for_chat(str(result or "")).split())
     if len(body) > _BODY_MAX:
         body = body[:_BODY_MAX].rsplit(" ", 1)[0] + "…"
 
     address = ""
-    for key in ("url", "query", "city", "app_name", "title", "name", "text", "path"):
+    # Вопрос пользователя («где ошибка?») — понятнее любого служебного имени.
+    for key in ("url", "query", "city", "app_name", "title", "name", "text", "path", "prompt"):
         val = args.get(key)
         if val:
             address = str(val)
@@ -60,7 +67,10 @@ def build_card(name: str, args: dict | None, result) -> dict | None:
         address = f"поиск: {address}"
     elif name == "weather" and address:
         address = f"погода: {address}"
-    address = address or f"jarvis://{name}"
+    # Раньше без аргумента в шапке было «jarvis://look_at_screen» — служебное
+    # имя инструмента, человеку непонятное. Теперь — по-русски, что это.
+    fallback = not address
+    address = address or _ADDRESS.get(name) or _TITLES.get(name, name.replace("_", " ")).lower()
 
     try:
         data = _card_data(name, args, str(result or ""))
@@ -70,7 +80,7 @@ def build_card(name: str, args: dict | None, result) -> dict | None:
     extra = json.dumps(data, ensure_ascii=False) if data else ""
     # Адрес без понятного аргумента — по смыслу карточки, а не служебное
     # «volume_up» / «set» / «get_events».
-    if address.startswith("jarvis://") or name in ("computer_control", "sleep_timer"):
+    if fallback or name in ("computer_control", "sleep_timer"):
         kind = (data or {}).get("card")
         address = {
             "meter": (data or {}).get("label", "").lower(),
