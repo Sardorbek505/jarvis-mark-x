@@ -33,6 +33,12 @@ DECAY_FRAMES = 12                    # через 120 мс должно зати
 DECAY_TO = 0.3                       # …до 30 % пика
 GAP = (0.12, 0.9)                    # пауза между хлопками, с
 QUIET = 0.6                          # тишина до первого и после второго, с
+# Что считать «другим хлопком» или «посторонним звуком» рядом с парой — по
+# громкости самих хлопков, а не фона. ИИ-шумодав ASUS отдаёт между звуками
+# чистый ноль (журнал 02.10: «фон 0»), порог от фона падал почти до нуля, и
+# шорох или слабое эхо хлопка отбраковывали пару. Тише этой доли от громкого
+# хлопка — не в счёт.
+REL = 0.35
 COOLDOWN = 3.0
 
 
@@ -55,8 +61,8 @@ class ClapCounter:
         self._buf = np.zeros(0, dtype=np.float64)
         self._hist = [0.0, 0.0, 0.0]
         self._cand: tuple[float, float, int] | None = None   # (время, пик, кадров после)
-        self.claps: list[float] = []   # подтверждённые хлопки (время начала)
-        self.other: list[float] = []   # прочие громкие звуки
+        self.claps: list[tuple[float, float]] = []   # подтверждённые хлопки (время начала, пик)
+        self.other: list[tuple[float, float]] = []   # прочие громкие звуки (время, громкость)
         self._cool_until = 0.0
         self.floor = 100.0             # фон комнаты (RMS)
 
@@ -88,35 +94,44 @@ class ClapCounter:
             if n >= DECAY_FRAMES:
                 self._cand = None
                 if rms < DECAY_TO * peak:
-                    self.claps.append(t0)
+                    self.claps.append((t0, peak))
                     # В журнал — каждый хлопок: «хлопаю, а интро нет» тогда видно сразу —
                     # хлопок не дошёл (шумодав вырезал) или их было не ровно два.
                     logger.info("Хлопок: громкость %.0f, фон %.0f", peak, self.floor)
                 else:
-                    self.other.append(t0)
+                    self.other.append((t0, peak))
             return
         if rms > loud and rms > JUMP * max(before, 1.0) and _hf_share(f) > HF_SHARE:
             self._cand = (self.t, rms, 0)
-        elif rms > loud * 0.5 and not any(0 <= self.t - c <= self.TAIL for c in self.claps):
-            self.other.append(self.t)
+        elif rms > loud * 0.5 and not any(0 <= self.t - c <= self.TAIL for c, _ in self.claps):
+            self.other.append((self.t, rms))
 
     def _decide(self) -> float | None:
         """Ровно два хлопка с нужной паузой и тишина вокруг — решаем, когда тишина после прошла."""
         horizon = self.t - (GAP[1] + 2 * QUIET + 1.0)
-        self.claps = [c for c in self.claps if c > horizon]
-        self.other = [o for o in self.other if o > horizon]
-        if len(self.claps) < 2 or self._cand is not None:
+        self.claps = [c for c in self.claps if c[0] > horizon]
+        self.other = [o for o in self.other if o[0] > horizon]
+        if not self.claps or self._cand is not None:
             return None
-        first, second = self.claps[-2], self.claps[-1]
-        if self.t - second < QUIET:
+        if self.t - self.claps[-1][0] < QUIET:
             return None                           # ждём: вдруг будет третий
-        lo, hi = first - QUIET, second + QUIET
-        ok = (GAP[0] <= second - first <= GAP[1]
-              and sum(lo <= c <= hi for c in self.claps) == 2
-              and not any(lo <= o <= hi for o in self.other)
-              and first >= self._cool_until)
+        last = self.claps[-1][0]                  # громкость — по хлопкам рядом, не по давнему одиночному
+        ref = max(p for c, p in self.claps if c >= last - GAP[1] - QUIET)
+        strong = [c for c, p in self.claps if p >= REL * ref]
+        if len(strong) < 2:
+            return None                           # пока один хлопок — ждём второй
         self.claps = []
-        if not ok:
+        first, second = strong[-2], strong[-1]
+        lo, hi = first - QUIET, second + QUIET
+        n = sum(lo <= c <= hi for c in strong)
+        why = ("пауза между хлопками %.2f с" % (second - first) if not GAP[0] <= second - first <= GAP[1]
+               else f"хлопков подряд: {n}" if n != 2
+               else "рядом другой громкий звук" if any(lo <= o <= hi and v >= REL * ref for o, v in self.other)
+               else "интро только что было" if first < self._cool_until
+               else "")
+        if why:
+            # «Хлопаю, а интро нет» — в журнале видно, почему пара не засчитана.
+            logger.info("Хлопки не засчитаны: %s", why)
             return None
         self._cool_until = self.t + COOLDOWN
         return second
