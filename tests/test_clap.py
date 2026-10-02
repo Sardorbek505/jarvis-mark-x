@@ -95,3 +95,42 @@ def test_each_clap_is_logged(caplog):
     with caplog.at_level(logging.INFO, logger=C.logger.name):
         _hits(_place(3, [(1.0, _clap())]))
     assert "Хлопок" in caplog.text
+
+
+def _murmur(amp, sec=0.3):
+    """Тихий долгий звук: шорох, дыхание, хвост шумодава."""
+    t = np.arange(int(sec * R)) / R
+    return np.sin(2 * np.pi * 300 * t) * amp * 1.41
+
+
+def test_denoised_microphone_with_digital_silence():
+    """Журнал 02.10, 23:05–23:19: ИИ-шумодав ASUS даёт между звуками чистый ноль
+    («фон 0»). Порог от фона падал до нуля — шорох рядом и слабое эхо хлопка
+    становились «третьим хлопком» и «другим звуком», и пара отбраковывалась."""
+    events = [(0.3, _murmur(80)), (0.8, _clap(4000)), (1.15, _clap(900, 0.02)), (1.5, _clap(3500)),
+              (2.0, _murmur(120))]
+    assert len(_hits(_place(3.5, events, noise=0))) == 1
+
+
+def test_denoised_microphone_still_rejects_three_claps():
+    events = [(0.8, _clap(4000)), (1.2, _clap(3800)), (1.6, _clap(4100))]
+    assert _hits(_place(3.5, events, noise=0)) == []
+
+
+def test_denoised_microphone_rejects_speech_between_claps():
+    t = np.arange(int(0.25 * R)) / R
+    word = np.sin(2 * np.pi * 220 * t) * 3000
+    events = [(0.8, _clap(4000)), (1.0, word), (1.5, _clap(4000))]
+    assert _hits(_place(3.5, events, noise=0)) == []
+
+
+def test_old_loud_clap_does_not_mute_a_quieter_pair():
+    events = [(0.3, _clap(20000)), (1.9, _clap(3000)), (2.2, _clap(3000))]
+    assert len(_hits(_place(4, events, noise=0))) == 1
+
+
+def test_rejected_pair_says_why(caplog):
+    import logging
+    with caplog.at_level(logging.INFO, logger=C.logger.name):
+        _hits(_place(4, [(0.8, _clap()), (1.1, _clap()), (1.4, _clap())], noise=0))
+    assert "Хлопки не засчитаны: хлопков подряд: 3" in caplog.text
