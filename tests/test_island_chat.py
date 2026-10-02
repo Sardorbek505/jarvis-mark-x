@@ -70,6 +70,7 @@ def test_chat_field_sends_text_and_file_question():
         assert not w._edit.isVisible() and w.model.chat is None
     finally:
         w.close()
+        w.deleteLater()
 
 
 def test_file_buttons():
@@ -97,6 +98,7 @@ def test_file_buttons():
         assert w.model.chat and w.model.chat.file == "quote.pdf"     # «Спросить» — чат с файлом
     finally:
         w.close()
+        w.deleteLater()
 
 
 def test_instruction_carries_question_or_summary():

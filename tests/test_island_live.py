@@ -325,6 +325,7 @@ def test_glow_window_lets_clicks_through():
     app = QApplication.instance() or QApplication([])     # noqa: F841
     g = ui.IslandGlow()
     assert g.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    g.deleteLater()
 
 
 def test_click_on_face_pokes_instead_of_opening(monkeypatch):
@@ -343,3 +344,25 @@ def test_click_on_face_pokes_instead_of_opening(monkeypatch):
             return self._p
     isl.mouseReleaseEvent(Ev(20, 15))
     assert opened == [] and isl.model.pokes
+    isl.close()
+    isl.deleteLater()
+
+
+def test_closed_capsule_stops_and_takes_its_glow_along():
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    w = ui.Island(poll=False)
+    w.set_wanted(True)
+    _settle(w, app, 0.4)
+    glow = w._glow
+    assert glow.isVisible() and w._tmr.isActive()
+    w.close()
+    assert not w._tmr.isActive() and not glow.isVisible()       # закрыли — ничего не крутится
+    destroyed = []
+    glow.destroyed.connect(lambda *_: destroyed.append(1))
+    w.deleteLater()
+    for _ in range(20):
+        app.processEvents()
+        from PyQt6.QtCore import QCoreApplication, QEvent
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    assert destroyed == [1]                                      # свечение ушло вместе с капсулой

@@ -736,6 +736,14 @@ class _ChatEdit(QLineEdit):
         super().keyPressEvent(ev)
 
 
+def _drop_glow(glow: QWidget):
+    try:
+        glow.hide()
+        glow.deleteLater()
+    except RuntimeError:                   # уже удалено Qt — нечего делать
+        pass
+
+
 class IslandGlow(QWidget):
     """Цветной ореол позади капсулы — по настроению: слушает — зелёный, нужно
     «да» — янтарный, сбой — розовый, событие — синий, говорит — пульсирует.
@@ -869,7 +877,10 @@ class Island(QWidget):
         self._glow = None
         self._glow_rgb, self._glow_a = list(STATE_RGB["idle"]), 0.0
         if os.getenv("JARVIS_ANIMATIONS", "1").strip().lower() not in ("0", "false", "no", "off"):
-            self._glow = IslandGlow()
+            glow = self._glow = IslandGlow()
+            # Свечение — отдельное окно без родителя: уходит вместе с капсулой,
+            # а не живёт после неё.
+            self.destroyed.connect(lambda *_: _drop_glow(glow))
 
         self._state_sig.connect(self.model.set_state)
         self._level_sig.connect(self._feed_level)
@@ -1234,6 +1245,14 @@ class Island(QWidget):
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.6)
         text_w = QFontMetricsF(f).horizontalAdvance(self._compact_label())
         return max(float(SIZES["compact"][0]), min(300.0, 36 + text_w + 18 + (18 if self.model.eyes else 0)))
+
+    def closeEvent(self, ev):
+        """Капсулу закрыли совсем — остановить анимацию и убрать свечение."""
+        self._tmr.stop()
+        self._poll_stop.set()
+        if self._glow is not None:
+            self._glow.hide()
+        super().closeEvent(ev)
 
     # ── мышь ────────────────────────────────────────────────────────────────
     def enterEvent(self, _):
@@ -1968,6 +1987,3 @@ class Island(QWidget):
             self._text(p, QRectF(x0, y, w, cap.bottom() - y - 10), "«" + m.last_reply + "»", 9, dim, wrap=True,
                        align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
-    def closeEvent(self, ev):
-        self._poll_stop.set()
-        super().closeEvent(ev)
