@@ -318,10 +318,31 @@ _SPEAKER_DEAF_MICS = ("noise-cancelling", "noise cancelling", "noise-canceling",
                       "hands-free")
 
 
+_HEADPHONE_OUTPUTS = ("headphone", "headset", "наушник", "гарнитур", "earphone", "buds", "airpods",
+                      "hands-free")
+
+
+def _output_is_headphones() -> bool:
+    """Звук идёт в наушники — до микрофона он не доходит, кто бы ни был микрофоном."""
+    try:
+        name = os.getenv("JARVIS_OUTPUT_DEVICE", "").strip()
+        if not name:
+            name = str(sd.query_devices(kind="output").get("name", ""))
+    except Exception:
+        return False
+    return any(k in name.lower() for k in _HEADPHONE_OUTPUTS)
+
+
 def _mic_hears_speakers(device) -> bool:
     """Слышит ли выбранный микрофон собственные динамики. Для тех, что не
     слышат, глушить микрофон по громкости динамиков незачем — а глушение
-    делало Джарвиса глухим на всё время музыки, фильма и игры."""
+    делало Джарвиса глухим на всё время музыки, фильма и игры.
+
+    Раньше смотрели только на имя микрофона: гарнитура, видная в Windows как
+    «Микрофон (USB Audio Device)», считалась слышащей колонки — и в игре в
+    наушниках Джарвис был глух. Теперь и на то, куда идёт звук."""
+    if _output_is_headphones():
+        return False
     try:
         info = sd.query_devices(device) if device is not None else sd.query_devices(kind="input")
         name = str(info.get("name", "")).lower()
@@ -2285,6 +2306,17 @@ class Jarvis:
         self.speak(f"Сэр, произошла ошибка в модуле {tool_name}. {short}")
 
     # ── Конфигурация Gemini ───────────────────────────────────────────────────
+    def _asr_config(self) -> dict:
+        """Расшифровка речи: русский, узбекский, казахский и само имя «Джарвис».
+
+        Без подсказок модель писала имя как «ჯარის» или терялось («, привет»),
+        и Джарвис решал, что обращались не к нему. Подсказки — новые поля
+        Live API; сессия их не приняла — run() отключает их (_asr_hints)."""
+        if not getattr(self, "_asr_hints", False):
+            return {}
+        return {"language_codes": ["ru-RU", "uz-UZ", "kk-KZ", "en-US"],
+                "custom_vocabulary": ["Джарвис", "Jarvis", "сэр"]}
+
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
         memory    = load_memory()
@@ -2335,7 +2367,7 @@ class Jarvis:
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             output_audio_transcription={},
-            input_audio_transcription={},  # Без language_code (Pydantic не принимает)
+            input_audio_transcription=self._asr_config(),
             system_instruction="\n".join(parts),
             # Встроенный Google Search: «кто выиграл», «курс доллара», новости —
             # модель ищет сама и отвечает по свежим данным. Сессия с ним не
@@ -2982,20 +3014,26 @@ class Jarvis:
         self._frame_was_loud = False
         return self._quiet_frames <= MIC_HANGOVER_FRAMES
 
+    async def _start_speaker_meter(self):
+        """Замер громкости колонок (для «Не слушать, пока играет звук»)."""
+        if self._speaker_meter is not None:
+            return
+        from speaker_meter import SpeakerMeter
+        meter = SpeakerMeter()
+        # start() ждёт рабочий поток до 5 с — не в событийном цикле:
+        # иначе на это время вставали бы голос и связь с Gemini.
+        if await asyncio.to_thread(meter.start):
+            self._speaker_meter = meter
+            logger.info("Speaker meter started successfully (loopback active)")
+        else:
+            logger.info("Speaker meter unavailable, capturing all audio")
+
     async def _listen_audio(self):
         print("[ДЖАРВИС] 🎤 Микрофон запущен")
         loop = asyncio.get_event_loop()
 
         if self._speaker_meter is None and _IGNORE_SPEAKERS:
-            from speaker_meter import SpeakerMeter
-            meter = SpeakerMeter()
-            # start() ждёт рабочий поток до 5 с — не в событийном цикле:
-            # иначе на это время вставали бы голос и связь с Gemini.
-            if await asyncio.to_thread(meter.start):
-                self._speaker_meter = meter
-                logger.info("Speaker meter started successfully (loopback active)")
-            else:
-                logger.info("Speaker meter unavailable, capturing all audio")
+            await self._start_speaker_meter()
 
         def _put_nowait_safe(item):
             try:
@@ -3062,7 +3100,9 @@ class Jarvis:
             # голос заметно громче эха — пропускаем, эхо — нет.
             meter = self._speaker_meter
             level = float(getattr(meter, "recent", getattr(meter, "peak", 0.0))) if meter is not None else 0.0
-            music = (meter is not None and getattr(self, "_mic_hears_speakers", True)
+            # _IGNORE_SPEAKERS — живая настройка «Не слушать, пока играет звук»:
+            # раньше её читали только при запуске, и выключатель ничего не менял.
+            music = (_IGNORE_SPEAKERS and meter is not None and getattr(self, "_mic_hears_speakers", True)
                      and self._echo.music(level))
             if music:
                 rms = _frame_rms(indata)
@@ -3881,6 +3921,8 @@ class Jarvis:
             MIC_RMS_THRESHOLD = float(value)
         elif key == "ignore_speakers":
             _IGNORE_SPEAKERS = bool(value)
+            if _IGNORE_SPEAKERS and self._speaker_meter is None and self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(self._start_speaker_meter(), self._loop)
         elif key == "wake_mode":
             _WAKE_MODE = str(value or "wake_word")
         elif key == "awake_sec":
@@ -4040,6 +4082,7 @@ class Jarvis:
         failures = 0
         first_connect = True
         self._grounding = os.getenv("JARVIS_GOOGLE_SEARCH", "1") != "0"
+        self._asr_hints = os.getenv("JARVIS_ASR_HINTS", "1") != "0"
 
         while True:
             connected = 0.0
@@ -4141,7 +4184,14 @@ class Jarvis:
                 delay = min(2 ** failures, _RECONNECT_MAX_SEC)
                 # Сессия с поиском Google падает сразу — значит, модель его
                 # не принимает: работаем без него, чем не работать вовсе.
-                if self._grounding and (failures >= 2 or "search" in low or "tool" in low):
+                # Подсказки распознаванию (языки, слово «Джарвис») — новые поля
+                # Live API: не примет — первыми отключаем их, а не поиск Google.
+                if getattr(self, "_asr_hints", False) and (failures >= 2 or any(
+                        k in low for k in ("transcription", "vocabulary", "language_code", "1007"))):
+                    self._asr_hints = False
+                    logger.warning("Подсказки распознаванию отключены: сессия с ними не подключается")
+                    delay = 0.5
+                elif self._grounding and (failures >= 3 or "search" in low or "tool" in low):
                     self._grounding = False
                     logger.warning("Встроенный поиск Google отключён: сессия с ним не подключается")
                     self.ui.write_log("SYS: встроенный поиск Google недоступен — ищу своим поиском")
