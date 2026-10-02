@@ -88,3 +88,10 @@ def test_detector_thread_calls_back():
     time.sleep(0.2)
     d.stop()
     assert heard == [1]
+
+
+def test_each_clap_is_logged(caplog):
+    import logging
+    with caplog.at_level(logging.INFO, logger=C.logger.name):
+        _hits(_place(3, [(1.0, _clap())]))
+    assert "Хлопок" in caplog.text

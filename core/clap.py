@@ -87,7 +87,13 @@ class ClapCounter:
             self._cand = (t0, peak, n)
             if n >= DECAY_FRAMES:
                 self._cand = None
-                (self.claps if rms < DECAY_TO * peak else self.other).append(t0)
+                if rms < DECAY_TO * peak:
+                    self.claps.append(t0)
+                    # В журнал — каждый хлопок: «хлопаю, а интро нет» тогда видно сразу —
+                    # хлопок не дошёл (шумодав вырезал) или их было не ровно два.
+                    logger.info("Хлопок: громкость %.0f, фон %.0f", peak, self.floor)
+                else:
+                    self.other.append(t0)
             return
         if rms > loud and rms > JUMP * max(before, 1.0) and _hf_share(f) > HF_SHARE:
             self._cand = (self.t, rms, 0)
