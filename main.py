@@ -79,6 +79,18 @@ logger = logging.getLogger('JARVIS')
 
 
 def _log_unhandled(exc_type, exc, tb):
+    if issubclass(exc_type, KeyboardInterrupt):
+        # Ctrl+C в консоли прилетает в обработчик Qt: раньше это писалось
+        # как «Необработанная ошибка», а окно продолжало жить. Это просьба выйти.
+        logger.info("Ctrl+C — завершаю работу")
+        try:
+            from PyQt6.QtWidgets import QApplication
+            app = QApplication.instance()
+        except Exception:
+            app = None
+        if app is not None:
+            app.quit()
+        return
     logger.critical("Необработанная ошибка", exc_info=(exc_type, exc, tb))
 
 
@@ -590,6 +602,18 @@ _NO_RE = re.compile(r"\b(нет|не|отмена|стоп|no|yo'q|жоқ)\b", r
 
 def _is_affirmative(text: str) -> bool:
     return bool(text) and bool(_YES_RE.search(text)) and not _NO_RE.search(text)
+
+
+# Будильник ставится только по просьбе владельца. Модель слышит всю комнату и
+# сама додумывала «разбужу вас в 7» из «Обо мне» или чужой речи — в капсуле
+# появлялся «Будильник 07:00», которого никто не заводил.
+_ALARM_ASK_RE = re.compile(
+    r"будильник|буди|подним|подъ[её]м|просн|встать|вставать|встаю|alarm|wake|uyg['ʻ’`]?ot|budilnik",
+    re.I)
+
+
+def _alarm_requested(*heard: str) -> bool:
+    return any(_ALARM_ASK_RE.search(h or "") for h in heard)
 
 
 def _is_destructive(name: str, args: dict) -> bool:
@@ -1752,6 +1776,7 @@ class Jarvis:
         self.team_engine = TeamCollaborationEngine(DATA_DIR)
         self.last_user_text = ""
         self._user_turn = 0      # номер последней реплики пользователя (для подтверждений)
+        self._heard_now = ""     # реплика, которую пользователь говорит прямо сейчас
         # Ждёт «да»: (ключ, когда спросили, номер реплики) и сами аргументы.
         # Без этого первое же «выключи компьютер» падало AttributeError
         # вместо вопроса «точно?» — проверялось только правило, не сам вопрос.
@@ -2461,6 +2486,13 @@ class Jarvis:
         args = dict(fc.args or {})
         logger.info(f"🔧 Tool: {name} {args}")
         self.ui.set_state("THINKING")
+
+        if name == "clock" and _action_of(args) == "alarm_set" \
+                and not _alarm_requested(getattr(self, "_heard_now", ""), getattr(self, "last_user_text", "")):
+            logger.warning("Будильник без просьбы не ставлю: %s", args)
+            return types.FunctionResponse(id=fc.id, name=name, response={"result": (
+                "НЕ ВЫПОЛНЕНО: пользователь не просил будильник. Не ставь будильники сам — "
+                "только когда он прямо скажет «разбуди» или «поставь будильник».")})
 
         # Необратимое — только после подтверждения.
         #
@@ -3839,6 +3871,7 @@ class Jarvis:
                             if quick_after:
                                 quick_lift("новая реплика")
                             in_buf.append(txt)
+                            self._heard_now = "".join(in_buf)
                             self._latency.mark_transcript()
                             if len(in_buf) == 1 and get_voice_provider() == "fish":
                                 # Сэр ещё говорит — TLS до Fish уже открываем:
@@ -3928,6 +3961,7 @@ class Jarvis:
                             full_out = _clean_dialog_text("".join(out_buf))
                             by_name = named.is_set()
                             in_buf, out_buf, held = [], [], []
+                            self._heard_now = ""
                             was_addressed, addressed = addressed, None
                             named = asyncio.Event()
 
@@ -4354,6 +4388,8 @@ def main():
     def runner():
         ui.wait_for_api_key()
         jarvis = Jarvis(ui)
+        # Крестик закрывает программу целиком: вернуть громкость, снять хоткеи, погасить бота.
+        ui.on_quit = [*getattr(ui, "on_quit", []), jarvis.cleanup]
         try:
             asyncio.run(jarvis.run())
         except KeyboardInterrupt:
