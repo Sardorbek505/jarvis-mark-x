@@ -13,7 +13,7 @@ import math
 import sys
 import threading
 
-from PyQt6.QtCore import QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import (QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
                              QSlider, QVBoxLayout, QWidget)
@@ -21,15 +21,12 @@ from PyQt6.QtWidgets import (QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QP
 from core import settings as S
 from ui import C
 from ui_icons import qicon
-from ui_kit import STYLE, IconBadge, Toggle, _cap, _label, _line
+from ui_kit import STYLE, IconBadge, SavedNote, Toggle, _cap, _label, _line
 
 logger = logging.getLogger(__name__)
 
 EXTRA = f"""
 QLabel#name {{ color: {C.WHITE}; font-weight: 600; }}
-QLabel#saved {{ color: {C.GREEN}; font-size: 13px; font-weight: 600; background: rgba(70, 232, 128, 0.10);
-  border: 1px solid rgba(70, 232, 128, 0.35); border-radius: 13px; padding: 4px 12px; }}
-QLabel#saved[bad="true"] {{ color: {C.RED}; background: rgba(255, 70, 96, 0.10); border-color: rgba(255, 70, 96, 0.4); }}
 QLabel#scale {{ color: {C.TEXT_DIM}; font-size: 12px; }}
 QSlider::groove:horizontal {{ height: 4px; background: {C.BORDER_B}; border-radius: 2px; }}
 QSlider::sub-page:horizontal {{ background: {C.PRI_DIM}; border-radius: 2px; }}
@@ -197,9 +194,6 @@ class SettingsDialog(QDialog):
         outer.addStretch(1)
         scroll.setWidget(canvas)
         root.addWidget(scroll, 1)
-        self._saved_tmr = QTimer(self)
-        self._saved_tmr.setSingleShot(True)
-        self._saved_tmr.timeout.connect(self.saved.clear)
 
     # ── вид ─────────────────────────────────────────────────────────────────
     def _header(self) -> QWidget:
@@ -215,7 +209,7 @@ class SettingsDialog(QDialog):
         col.addWidget(_label("Всё сохраняется сразу", "hint", wrap=False))
         lay.addLayout(col)
         lay.addStretch(1)
-        self.saved = _label("", "saved", wrap=False)
+        self.saved = SavedNote()
         lay.addWidget(self.saved)
         return w
 
@@ -397,11 +391,7 @@ class SettingsDialog(QDialog):
     # ── действия ────────────────────────────────────────────────────────────
     def _note(self, text: str, bad: bool = False, ms: int = 2500):
         """Плашка в шапке: «✓ Сохранено» (зелёная) или ошибка (красная)."""
-        self.saved.setProperty("bad", bad)
-        self.saved.style().unpolish(self.saved)
-        self.saved.style().polish(self.saved)
-        self.saved.setText(text)
-        self._saved_tmr.start(ms)
+        self.saved.show_note(text, bad, ms)
 
     def save(self, key: str, value):
         try:

@@ -116,6 +116,10 @@ def put_from_server(key: str, value: str, pending: set[str] | None = None) -> bo
         return False
     now = datetime.now().isoformat(timespec="seconds")
     nk = _norm_key(key)
+    if pending and nk in pending:
+        # Своё изменение или удаление этого факта ещё в очереди на сервер —
+        # серверная старая копия его не перетирает и не воскрешает.
+        return False
     with _LOCK:
         mem = load_memory()
         for cat, items in mem.items():
@@ -124,8 +128,6 @@ def put_from_server(key: str, value: str, pending: set[str] | None = None) -> bo
                     continue
                 val = items[k]
                 if str(val.get("value", val) if isinstance(val, dict) else val).strip() == value:
-                    return False
-                if pending and nk in pending:
                     return False
                 items[k] = {"value": value, "updated": now, "src": "telegram"}
                 atomic_write_json(_MEMORY_FILE, mem)

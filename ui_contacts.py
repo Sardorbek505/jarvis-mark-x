@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QInputDialog, QLineEd
 from core import contacts as CT
 from ui import C
 from ui_icons import qicon
-from ui_kit import STYLE, EmptyArt, FlowLayout, IconBadge, Toggle, _cap, _icon_btn, _label, _line, _small_icon
+from ui_kit import STYLE, Autosave, EmptyArt, FlowLayout, IconBadge, SavedNote, Toggle, _cap, _icon_btn, _label, _line, _small_icon
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,8 @@ class ContactsDialog(QDialog):
         self.open_keys = open_keys or _open_keys
         self.current: CT.Contact | None = None
         self._aliases: list[str] = []
+        self._loading = False            # форма заполняется из записи — это не правка
+        self.autosave = Autosave(self, self._autosave)
         self.setWindowTitle("ДЖАРВИС — контакты")
         self.setStyleSheet(STYLE + EXTRA)
         self.resize(1060, 720)
@@ -156,8 +158,11 @@ class ContactsDialog(QDialog):
         col.setSpacing(1)
         col.addWidget(_label("Джарвис", "brand"))
         col.addWidget(_label("Контакты", "h1", wrap=False))
+        col.addWidget(_label("Всё сохраняется сразу", "hint", wrap=False))
         lay.addLayout(col)
         lay.addStretch(1)
+        self.saved = SavedNote()
+        lay.addWidget(self.saved)
         self.import_btn = QPushButton("  Подтянуть из Telegram")
         self.import_btn.setIcon(qicon("plane", 14, C.TEXT_MED))
         self.import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -188,7 +193,7 @@ class ContactsDialog(QDialog):
         self.people.setIconSize(QSize(34, 34))
         self.people.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.people.currentItemChanged.connect(
-            lambda cur, _p: cur and self.show_contact(cur.data(Qt.ItemDataRole.UserRole)))
+            lambda cur, _p: cur and (self.autosave.flush(), self.show_contact(cur.data(Qt.ItemDataRole.UserRole))))
         sl.addWidget(self.people, 1)
         self.empty = EmptyArt("contacts", "Пока пусто.\n\nПодключите свой Telegram и нажмите\n"
                                           "«Подтянуть из Telegram» — или добавьте человека вручную.")
@@ -346,6 +351,16 @@ class ContactsDialog(QDialog):
         self.note = QLineEdit(placeholderText="Необязательно")
         self.form.addWidget(self.note)
 
+        # Автосохранение: имя и заметка — когда перестали печатать, Telegram —
+        # когда вышли из поля (недопечатанный номер не ругаем), переключатели — сразу.
+        for e in (self.name, self.note):
+            e.textChanged.connect(self._touched)
+            e.editingFinished.connect(self.autosave.flush)
+        self.telegram.textChanged.connect(lambda _t: None if self._loading else self.status.setText(""))
+        self.telegram.editingFinished.connect(self._touch_now)
+        for t in (self.can_message, self.can_call, self.read_aloud):
+            t.toggled.connect(self._touch_now)
+
     def _footer(self) -> QWidget:
         w = QFrame()
         w.setObjectName("bar")
@@ -358,13 +373,8 @@ class ContactsDialog(QDialog):
         self.del_btn.setObjectName("danger")
         self.del_btn.setIcon(qicon("trash", 14, C.TEXT_DIM))
         self.del_btn.clicked.connect(self.delete_contact)
-        save = QPushButton("Сохранить")
-        save.setObjectName("primary")
-        save.setFixedWidth(130)
-        save.clicked.connect(self.save_contact)
-        for b in (self.del_btn, save):
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            lay.addWidget(b)
+        self.del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay.addWidget(self.del_btn)
         return w
 
     # ── список ───────────────────────────────────────────────────────────────
@@ -391,6 +401,8 @@ class ContactsDialog(QDialog):
 
     def show_contact(self, cid):
         c = next((x for x in self.book.contacts if x.id == cid), None)
+        self.autosave.cancel()
+        self._loading = True
         self.current = c
         c = c or CT.Contact(name="")
         self.name.setText(c.name)
@@ -404,8 +416,10 @@ class ContactsDialog(QDialog):
         self.note.setText(c.note)
         self.del_btn.setVisible(self.current is not None)
         self.status.setText("")
+        self._loading = False
 
     def new_contact(self):
+        self.autosave.flush()
         self.people.clearSelection()
         self.show_contact(None)
         self.name.setFocus()
@@ -415,11 +429,13 @@ class ContactsDialog(QDialog):
         if text and text not in self._aliases:
             self._aliases.append(text)
             self._render_chips()
+            self._touch_now()
         self.alias_in.clear()
 
     def _remove_alias(self, text: str):
         self._aliases = [a for a in self._aliases if a != text]
         self._render_chips()
+        self._touch_now()
 
     def _render_chips(self):
         while self.chips.count():
@@ -435,6 +451,27 @@ class ContactsDialog(QDialog):
     def _say(self, text: str, ok: bool = True):
         self.status.setStyleSheet(f"color: {C.PRI if ok else C.ACC};")
         self.status.setText(text)
+
+    def _touched(self, *_):
+        if not self._loading:
+            self.autosave.touch()
+
+    def _touch_now(self, *_):
+        if not self._loading:
+            self.autosave.touch()
+            self.autosave.flush()
+
+    def _autosave(self):
+        blank = not (self.name.text().strip() or self.telegram.text().strip() or self._aliases
+                     or self.note.text().strip())
+        if self.current is None and blank:
+            return                                   # пустая новая форма — сохранять нечего
+        if self.save_contact():
+            self.saved.show_note()
+
+    def hideEvent(self, ev):
+        self.autosave.flush()                        # ушли с экрана — ничего не теряем
+        super().hideEvent(ev)
 
     def save_contact(self) -> bool:
         name = self.name.text().strip()
@@ -458,12 +495,15 @@ class ContactsDialog(QDialog):
                        id=cur.id if cur else CT.Contact(name="").id)
         self.book.upsert(c)
         self.current = c
-        self.telegram.setText(tg)
+        self._loading = True
+        if self.telegram.text() != tg:
+            self.telegram.setText(tg)
+        self._loading = False
         self.reload()
         self.del_btn.setVisible(True)
         call = self.aliases_hint(c)
-        self._say(f"✓  Сохранено. Скажите: «Джарвис, напиши {call}…»" if tg
-                  else "✓  Сохранено. Добавьте Telegram — без него писать и звонить некуда.", bool(tg))
+        self._say(f"Скажите: «Джарвис, напиши {call}…»" if tg
+                  else "Добавьте Telegram — без него писать и звонить некуда.", bool(tg))
         return True
 
     @staticmethod
@@ -471,6 +511,7 @@ class ContactsDialog(QDialog):
         return (c.aliases[0] if c.aliases else c.name.split()[0]).lower()
 
     def delete_contact(self):
+        self.autosave.cancel()
         if self.current and self.book.delete(self.current.id):
             name = self.current.name
             self.new_contact()

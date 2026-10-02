@@ -128,3 +128,16 @@ def test_user_profile_keeps_facts_in_memory_not_its_own_file(tmp_path):
     assert ("preferences", "favorite_movie", "Интерстеллар") in mm.all_facts()
     prompt = up.format_for_prompt()
     assert "Сардор" not in prompt and "Интерстеллар" not in prompt and "Sardarbek" in prompt
+
+
+async def test_pending_delete_is_not_resurrected_by_server_copy(monkeypatch, mem):
+    post = _link(monkeypatch, mem)
+    await sync_(post)
+    await mem.add_fact(UID, "собака: Рекс")
+    await sync_(post)
+    assert mm.forget("relationships", "собака") or mm.forget("notes", "собака")
+    # удаление ещё не дошло до сервера, а там старая копия
+    shared._merge_server_facts(["собака: Рекс"], shared._read(shared.SHARED_FILE, {}))
+    assert not any(k == "собака" for _c, k, _v in mm.all_facts())
+    await sync_(post)
+    assert await mem.get_facts(UID) == []
