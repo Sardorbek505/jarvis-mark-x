@@ -1639,6 +1639,9 @@ class MainWindow(QMainWindow):
             self._key_ready.set()
 
     def _apply_state(self, state: str):
+        tray = getattr(self, "tray", None)
+        if tray is not None and hasattr(tray, "update_state"):
+            tray.update_state(state)
         state_map = {
             "IDLE":       "ОЖИДАЕТ",
             "LISTENING":  "СЛУШАЕТ",
@@ -1656,6 +1659,9 @@ class MainWindow(QMainWindow):
     def _toggle_mute(self):
         self.muted = not self.muted
         self._hud.muted = self.muted
+        tray = getattr(self, "tray", None)
+        if tray is not None and hasattr(tray, "update_state"):
+            tray.update_state(muted=self.muted)
         self._style_mute_btn()
         if self.muted:
             self.write_log("SYS: Микрофон отключён.")

@@ -173,7 +173,8 @@ class Face:
         self.look[1] += (ty - self.look[1]) * b
 
     # ── рисование ───────────────────────────────────────────────────────────
-    def paint(self, p: QPainter, cx: float, cy: float, size: float, rgb=(48, 208, 190), glow: float = 1.0):
+    def paint(self, p: QPainter, cx: float, cy: float, size: float, rgb=(48, 208, 190), glow: float = 1.0,
+              hands: bool = True):
         """size — высота тельца. Рисует вокруг (cx, cy)."""
         t_emo = self.clock - self.since
         p.save()
@@ -222,7 +223,8 @@ class Face:
         lg = QLinearGradient(body.topLeft(), body.bottomLeft())
         lg.setColorAt(0.0, top)
         lg.setColorAt(1.0, bot)
-        self._paint_hands(p, size, bw, bh, top, bot, behind=True)
+        if hands:
+            self._paint_hands(p, size, bw, bh, top, bot, behind=True)
         p.fillPath(path, lg)
         # Блик сверху — объём, как у гладкого камешка.
         p.setPen(QPen(QColor(255, 255, 255, int(170 * k)), max(0.8, size * 0.03)))
@@ -231,7 +233,8 @@ class Face:
         p.drawArc(hl, 30 * 16, 120 * 16)
         self._eyes(p, size)
         self._extras(p, size, body)
-        self._paint_hands(p, size, bw, bh, top, bot, behind=False)
+        if hands:
+            self._paint_hands(p, size, bw, bh, top, bot, behind=False)
         p.restore()
 
     # ── ручки и пыль ────────────────────────────────────────────────────────
