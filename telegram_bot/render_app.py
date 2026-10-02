@@ -164,7 +164,7 @@ async def _build_tg_app():
         cmd_habit, cmd_habits, cmd_check,
         cmd_morning, cmd_evening, cmd_mode, cmd_profile, cmd_memstats, cmd_reindex,
         cmd_journal,
-        cmd_ask, cmd_curiosity, cmd_remember, cmd_forget, cmd_facts,
+        cmd_ask, cmd_curiosity, cmd_remember, cmd_forget, cmd_facts, cmd_macros,
         on_callback,
         handle_text, handle_voice, handle_photo, handle_document,
         _on_notification, _BOT_COMMANDS,
@@ -218,6 +218,7 @@ async def _build_tg_app():
     app.add_handler(CommandHandler("curiosity",  cmd_curiosity))
     app.add_handler(CommandHandler("remember",   cmd_remember))
     app.add_handler(CommandHandler("facts",      cmd_facts))
+    app.add_handler(CommandHandler("macros",     cmd_macros))      # было в меню, но не отвечало
     app.add_handler(CommandHandler("forget",     cmd_forget))
     app.add_handler(CommandHandler("pc",         cmd_pc))
     app.add_handler(CommandHandler("screenshot", cmd_screenshot))
@@ -438,11 +439,9 @@ async def lifespan(app: FastAPI):
 
     # _tg_app stays None while Telegram is unreachable — shutdown must cope.
     if _tg_app is not None:
-        if cfg.miniapp_url:
-            try:
-                await _tg_app.bot.delete_webhook()
-            except Exception as exc:
-                logger.debug("Подавлено исключение: %s", exc, exc_info=True)
+        # Вебхук НЕ снимаем: новый контейнер при деплое уже поставил его, а
+        # старый, выключаясь позже, снимал — и бот глох до 90 с. Telegram и так
+        # копит обновления, новый запуск ставит вебхук сам.
         await _tg_app.stop()
         await _tg_app.shutdown()
     await memory.close()
@@ -478,7 +477,8 @@ async def telegram_webhook(request: Request):
 @miniapp_server.app.get("/health")
 async def health():
     """Keep-alive endpoint — ping every 5 min to prevent Render sleep."""
-    return JSONResponse({"status": "ok", "pc": bridge.connected})
+    # tg — запустился ли бот: раньше /health был «ok», даже когда Telegram не поднялся.
+    return JSONResponse({"status": "ok", "pc": bridge.connected, "tg": _tg_app is not None})
 
 
 # Export for uvicorn

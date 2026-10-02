@@ -701,6 +701,18 @@ async def _handle_userbot(msg: dict) -> dict:
     return {"ok": False, "text": f"❌ Не отправлено: {res.get('error')}"}
 
 
+def _auth_header(token: str) -> dict:
+    """Заголовок с токеном: в websockets ≥14 — additional_headers, раньше — extra_headers.
+    Не-ASCII токен (кириллица) в заголовок не влезает — тогда только адрес."""
+    if not token.isascii():
+        return {}
+    try:
+        major = int(str(websockets.__version__).split(".")[0])
+    except (AttributeError, ValueError):
+        major = 14
+    return {("additional_headers" if major >= 14 else "extra_headers"): {"Authorization": f"Bearer {token}"}}
+
+
 # Текущее соединение с сервером — чтобы ПК мог сам написать владельцу в
 # Telegram (итог звонка, заказанного из бота). Сервер такие сообщения уже
 # понимает (pc_bridge: type=notification → бот).
@@ -883,7 +895,11 @@ async def run_client(url: str, token: str):
         base = "ws://" + base[len("http://"):]
 
     sep = "&" if "?" in base else "?"
-    uri = f"{base}/pc-link{sep}token={token}"
+    # Токен — заголовком (в адресе его видят логи прокси и сервера) и, для
+    # старого сервера, в адресе — закодированным: «+» иначе читался как пробел,
+    # и токен из base64 не совпадал никогда.
+    from urllib.parse import quote
+    uri = f"{base}/pc-link{sep}token={quote(token, safe='')}"
     safe_uri = uri.split("token=")[0] + "token=***"
     logger.info(f"Подключаюсь к JARVIS: {safe_uri}")
 
@@ -896,6 +912,7 @@ async def run_client(url: str, token: str):
         try:
             async with websockets.connect(
                 uri,
+                **_auth_header(token),
                 # 10/10 вместо 20/20: тихо оборванная связь замечается за ~20 с,
                 # а не за ~40 — мост на сервере ждёт переподключения только 20.
                 ping_interval=10,

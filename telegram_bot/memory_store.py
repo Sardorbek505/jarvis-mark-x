@@ -657,6 +657,29 @@ class MemoryStore:
     async def mark_reminder_sent(self, reminder_id: int):
         await self._exec("UPDATE reminders SET sent=1 WHERE id=?", (reminder_id,))
 
+    async def claim_reminder(self, reminder_id: int) -> bool:
+        """Забронировать напоминание под отправку (sent 0 → 2). True — оно наше.
+        Два экземпляра бота на одной базе (передеплой, локальный запуск) раньше
+        оба видели sent=0 и оба слали — и оба звонили на ПК."""
+        if self._backend == "off":
+            return True
+        sql = "UPDATE reminders SET sent=2 WHERE id=? AND sent=0"
+        if self._pg:
+            async with self._pool.acquire() as con:
+                status = await con.execute(_pg(sql), reminder_id)
+            return str(status).endswith(" 1")
+        cur = await self._sqlite.execute(sql, (reminder_id,))
+        await self._sqlite.commit()
+        return cur.rowcount == 1
+
+    async def release_reminder(self, reminder_id: int):
+        """Не доставилось — вернуть в очередь (повторится через полминуты)."""
+        await self._exec("UPDATE reminders SET sent=0 WHERE id=? AND sent=2", (reminder_id,))
+
+    async def release_stale_claims(self):
+        """При запуске: брони, оставшиеся от упавшего процесса, — снова в очередь."""
+        await self._exec("UPDATE reminders SET sent=0 WHERE sent=2", ())
+
     async def delete_reminder(self, uid: int, reminder_id: int) -> bool:
         owner = await self._fetchone(
             "SELECT 1 FROM reminders WHERE id=? AND user_id=?", (reminder_id, uid)

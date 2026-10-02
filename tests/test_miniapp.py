@@ -357,3 +357,31 @@ def test_tab_glider_and_cascade(page):
     time.sleep(0.2)
     assert t.eval("document.querySelector('#dash-body.enter') === null")                # без повторного каскада
     assert json.loads(_js(t, "window.__errors")) == []
+
+
+def test_bad_message_does_not_drop_the_socket(client, monkeypatch):
+    """Одно кривое сообщение раньше рвало соединение — мини-апп «отваливалась»."""
+    async def boom(*a, **k):
+        raise ValueError("сбой базы")
+    monkeypatch.setattr(ms, "_handle_action", boom)
+    with client.websocket_connect("/ws?init_data=ok") as ws:
+        _drain(ws, "history")
+        ws.send_text("[1, 2, 3]")                                  # не объект
+        ws.send_json({"type": "task_add", "text": "x"})            # обработчик упал
+        assert "Не получилось" in _drain(ws, "text")["text"]
+        ws.send_json({"type": "text", "text": "Привет", "tts": False})
+        assert _drain(ws, "text")["text"] == "Готово, сэр."        # соединение живо
+
+
+async def test_failed_reply_is_not_saved(client, mem, monkeypatch):
+    class Gemini:
+        last_generate_failed = True
+
+        async def chat(self, uid, text):
+            return "Лимит исчерпан, попробуй позже."
+    monkeypatch.setattr(ms, "_gemini", Gemini())
+    with client.websocket_connect("/ws?init_data=ok") as ws:
+        _drain(ws, "history")
+        ws.send_json({"type": "text", "text": "Привет", "tts": False})
+        assert "Лимит" in _drain(ws, "text")["text"]
+    assert await mem.recent_messages(UID, 10) == []               # сбой — не в историю
