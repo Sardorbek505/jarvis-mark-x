@@ -150,8 +150,9 @@ class KwsWake:
         except Exception as exc:
             logger.warning("Детектор слова (sherpa-onnx) не запустился: %s", exc)
             return False
-        threading.Thread(target=self._run, daemon=True, name="wake-kws").start()
+        # ready — до старта потока: упади он сразу, его ready=False не затрётся.
         self.ready = True
+        threading.Thread(target=self._run, daemon=True, name="wake-kws").start()
         logger.info("Слово «Джарвис» слушает sherpa-onnx (порог %.2f, вес %.1f)", THRESHOLD, SCORE)
         return True
 

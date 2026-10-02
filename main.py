@@ -1113,7 +1113,9 @@ TOOLS = [
             "плейлист под настроение («спокойное», «для работы»); pause, resume, next, previous; "
             "now_playing — «что играет», «кто поёт»; volume_* — громкость САМОГО Spotify, когда "
             "речь про музыку: «громкость музыки на 100», «музыку тише», «сделай Spotify громче». "
-            "Просто «громче/тише/громкость» без слова «музыка» — computer_control."
+            "Просто «громче/тише/громкость» без слова «музыка» — computer_control. "
+            "НЕ переспрашивай «какая именно песня/исполнитель?»: сразу play с тем, что сказали "
+            "(«safe sound» → query «safe sound»), Spotify сам найдёт лучшее совпадение."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -1744,6 +1746,8 @@ TOOLS = [
 
 # ─── Ядро ДЖАРВИС ─────────────────────────────────────────────────────────────
 class Jarvis:
+    _go_away_at: float | None = None      # Gemini прислал GoAway — переподключение плановое
+
     def __init__(self, ui: JarvisUI):
         self.ui = ui
         self.session = None
@@ -2150,6 +2154,13 @@ class Jarvis:
             self.last_user_text = text
             self._user_turn += 1
             self._typed_turn = self._user_turn
+            # Набранная частая команда («поставь музыку safe sound») — сразу на ПК,
+            # как сказанная голосом. Раньше текст всегда шёл в Gemini, и тот
+            # переспрашивал «какая именно музыка?» вместо того, чтобы включить.
+            q = quick.match(text) if getattr(self, "_pending_destructive", None) is None else None
+            if q is not None and self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(self._quick_run(q, text, echo=False), self._loop)
+                return
             self._remember_turn(text, "")
             self._send_text_to_session(text)
 
@@ -3708,7 +3719,7 @@ class Jarvis:
                     show(card["title"], card["address"], card["body"], png, card["extra"])
             threading.Thread(target=_shot, daemon=True, name="card-shot").start()
 
-    async def _quick_run(self, q, heard: str):
+    async def _quick_run(self, q, heard: str, echo: bool = True):
         """Мгновенная команда: выполнить на ПК и сразу ответить готовой
         фразой (или ответом инструмента, если не вышло) — без круга через
         Gemini (core/quick.py)."""
@@ -3736,13 +3747,28 @@ class Jarvis:
         silent = quick.silent(q, result)
         logger.info("⚡ Мгновенно: «%s» → %s %s → «%s»%s (%d мс)", heard[:80], q.tool or "-",
                     q.args, text, " [звуком]" if silent else "", int((time.perf_counter() - started) * 1000))
-        self.ui.write_log(f"Вы: {heard}")
+        if echo:                                  # набранное окно чата уже показало само
+            self.ui.write_log(f"Вы: {heard}")
         self.ui.write_log(f"Джарвис: {'✓ ' + text if silent else text}")
         self._remember_turn(heard, text)
         if silent:
             self._play_done_sound()               # сделано — звук и галочка, без «Есть, сэр»
         elif text:
             await self._speak_fish(text)
+
+    async def _reconnect_when_quiet(self, session, deadline: float, mid_turn):
+        """GoAway: ждём, пока Джарвис договорит (и ход закончится), но не
+        дольше срока сервера, — и закрываем сессию сами. run() переподключится
+        с handle'ом возобновления, без строки «связь оборвалась» в чате.
+        Закрываем именно ту сессию, что прислала GoAway: если сервер успел
+        закрыть её сам и Джарвис уже переподключился, новую не трогаем."""
+        while time.monotonic() < deadline and (mid_turn() or self._is_speaking) and self.session is session:
+            await asyncio.sleep(0.1)
+        if session is not None and self.session is session:
+            try:
+                await session.close()
+            except Exception as exc:
+                logger.debug("Закрытие сессии перед переподключением: %s", exc)
 
     def _play_done_sound(self):
         """Короткое «готово» тем же путём, что голос Джарвиса (в выбранный динамик)."""
@@ -3936,10 +3962,20 @@ class Jarvis:
                         self._resume_handle = upd.new_handle
 
                     if response.go_away:
-                        # Сервер скоро закроет сессию. Уходим сами, пока
-                        # handle свежий, — реконнект в run() займёт полсекунды.
-                        logger.info("Gemini просит переподключиться (GoAway)")
-                        raise ConnectionResetError("GoAway от сервера")
+                        # Плановое: Google закрывает голосовую сессию примерно
+                        # раз в 10 минут. Раньше уходили сразу — обрывая ответ
+                        # на полуслове — и писали в чат «связь оборвалась».
+                        # Теперь договариваем и переподключаемся молча, с тем
+                        # же handle'ом: разговор продолжается.
+                        if self._go_away_at is None:
+                            left = _go_away_seconds(response.go_away.time_left)
+                            self._go_away_at = time.monotonic()
+                            logger.info("Gemini: плановое переподключение (GoAway, осталось %.0f с) — "
+                                        "после ответа", left)
+                            self._spawn(self._reconnect_when_quiet(
+                                self.session, time.monotonic() + max(0.5, left - 1.5),
+                                lambda: bool(in_buf or out_buf)))
+                        continue
 
                     sc = response.server_content
 
@@ -4115,7 +4151,12 @@ class Jarvis:
                         else:
                             self._spawn(self._deferred_tool_calls(calls, named))
 
+                if self._go_away_at is not None:          # сессию закрыли сами — после ответа
+                    raise _PlannedReconnect("GoAway: ответ договорён")
         except Exception as e:
+            if self._go_away_at is not None:
+                logger.info("Плановое переподключение к Gemini (%s)", e)
+                raise _PlannedReconnect(str(e)) from e
             logger.error("Приём оборвался: %s", e)
             # Пробрасываем наверх: TaskGroup свернётся, и сработает
             # реконнект в `run()` — с handle'ом возобновления, так что
@@ -4312,6 +4353,7 @@ class Jarvis:
                     asyncio.TaskGroup() as tg,
                 ):
                     connected = time.monotonic()
+                    self._go_away_at = None
                     self.session            = session
                     self._loop              = asyncio.get_event_loop()
                     # maxsize защищает от unbounded роста памяти
@@ -4370,7 +4412,10 @@ class Jarvis:
                     raise
                 reason = _root_error_text(e)
                 low = reason.lower()
-                logger.error("Сессия Gemini оборвалась: %s", reason)
+                if self._go_away_at is not None:
+                    logger.info("Сессия Gemini закрыта по плану (GoAway) — переподключаюсь")
+                else:
+                    logger.error("Сессия Gemini оборвалась: %s", reason)
                 logger.debug("Подробности разрыва", exc_info=True)
 
                 if "1008" in low or "leaked" in low:
@@ -4421,8 +4466,21 @@ class Jarvis:
                     self.ui.write_log(f"SYS: 😵 Слишком много запросов: Gemini просит паузу — "
                                       f"вернусь через {delay:.0f} с")
             logger.info("Переподключение через %.1f с", delay)
-            self.ui.set_state("RECONNECTING")
+            if self._go_away_at is None:          # плановое — без «переподключаюсь» на экране
+                self.ui.set_state("RECONNECTING")
             await asyncio.sleep(delay)
+
+
+class _PlannedReconnect(ConnectionResetError):
+    """Google сам попросил переподключиться (GoAway) — не сбой."""
+
+
+def _go_away_seconds(time_left) -> float:
+    """time_left из GoAway: «50s», «1.5s» или None → секунды (по умолчанию 10)."""
+    try:
+        return max(0.0, float(str(time_left).strip().rstrip("s")))
+    except (TypeError, ValueError):
+        return 10.0
 
 
 def _root_error_text(exc: BaseException) -> str:

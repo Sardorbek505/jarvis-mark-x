@@ -1048,3 +1048,95 @@ async def test_выключили_не_слушать_при_звуке_голо
     monkeypatch.setattr(jarvis_main, "_IGNORE_SPEAKERS", False)
     session = await _прогнать(стенд, [_loud()] * 5, _SPOKEN, timeout=2.0)
     assert _audio_sent(session)
+
+
+# ─── GoAway: Google закрывает голосовую сессию раз в ~10 минут ────────────────
+
+class _GoAwaySession(_Session):
+    """Посреди ответа сервер шлёт GoAway, ответ продолжается, потом close()."""
+
+    def __init__(self, script):
+        super().__init__(script)
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
+
+    async def receive(self):
+        for item in self._script:
+            await asyncio.sleep(0)
+            if self.closed:
+                return
+            yield item
+        while not self.closed:
+            await asyncio.sleep(0.02)
+
+
+def _go_away(left="20s"):
+    return SimpleNamespace(data=None, server_content=None, tool_call=None,
+                           session_resumption_update=None, go_away=SimpleNamespace(time_left=left))
+
+
+@pytest.mark.asyncio
+async def test_goaway_посреди_ответа_договаривает_и_переподключается_молча(стенд):
+    j = стенд.jarvis
+    j.session = _GoAwaySession([
+        _resp(heard="расскажи анекдот"),
+        _resp(data=b"\x01\x02" * 100),
+        _go_away("20s"),
+        _resp(said="Штирлиц шёл по лесу. "),              # ответ после GoAway не потерян
+        _resp(data=b"\x03\x04" * 100),
+        _resp(said="Конец.", turn_complete=True),
+    ])
+    j.audio_in_queue = asyncio.Queue()
+    j._turn_done_event = asyncio.Event()
+    with pytest.raises(jarvis_main._PlannedReconnect):
+        await asyncio.wait_for(j._receive_audio(), timeout=5)
+    assert j.session.closed, "сессию закрыли сами, не дожидаясь обрыва сервером"
+    chunks = []
+    while not j.audio_in_queue.empty():
+        chunks.append(j.audio_in_queue.get_nowait())
+    assert b"\x03\x04" * 100 in chunks, "хвост ответа после GoAway дошёл до динамиков"
+    assert not any("оборвалась" in line for line in стенд.ui.logs), "плановое — не сбой"
+
+
+def test_время_из_goaway():
+    assert jarvis_main._go_away_seconds("50s") == 50
+    assert jarvis_main._go_away_seconds("1.5s") == 1.5
+    assert jarvis_main._go_away_seconds(None) == 10
+
+
+@pytest.mark.asyncio
+async def test_набранная_команда_включает_музыку_сразу(стенд, monkeypatch):
+    """«ПОСТАВЬ МУЗЫКУ SAFE SOUND» в чате: раньше уходило в Gemini, и тот
+    трижды переспрашивал «какая именно?» вместо того, чтобы включить."""
+    выполнено, в_gemini = [], []
+
+    async def поддельный_инструмент(self, fc):
+        выполнено.append((fc.name, dict(fc.args)))
+        return jarvis_main.types.FunctionResponse(id=fc.id, name=fc.name, response={"result": "Играет."})
+    monkeypatch.setattr(jarvis_main.Jarvis, "_execute_tool", поддельный_инструмент)
+    j = стенд.jarvis
+    j._loop = asyncio.get_running_loop()
+    j.session = _Session([])
+    j.audio_in_queue = asyncio.Queue()
+    j._send_text_to_session = в_gemini.append
+    await asyncio.to_thread(j._on_text_command, "ПОСТАВЬ МУЗЫКУ SAFE SOUND")
+    for _ in range(100):
+        if выполнено:
+            break
+        await asyncio.sleep(0.01)
+    assert выполнено == [("music_player", {"action": "play", "query": "safe sound"})]
+    assert в_gemini == []
+    assert not any(line.startswith("Вы:") for line in стенд.ui.logs), "окно чата уже показало набранное"
+
+
+@pytest.mark.asyncio
+async def test_goaway_не_закрывает_уже_новую_сессию(стенд):
+    """Сервер закрыл старую сессию раньше нас, Джарвис переподключился —
+    запоздалый сторож GoAway не должен убить новую."""
+    j = стенд.jarvis
+    old, new = _GoAwaySession([]), _GoAwaySession([])
+    j.session = new
+    await j._reconnect_when_quiet(old, time.monotonic() + 0.2, lambda: False)
+    assert not new.closed and not old.closed
