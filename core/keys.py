@@ -236,6 +236,23 @@ def check_groq(v: dict) -> tuple[str, str]:
     return "warn", f"Groq не дал проверить ключ (ошибка {code}) — ключ сохранён, бот попробует его сам."
 
 
+def check_wake(v: dict) -> tuple[str, str]:
+    """Файлы на месте и Porcupine принимает ключ — тогда слово заработает после перезапуска."""
+    from core import wake_porcupine as W
+    why = W.problem(v)
+    if why:
+        return "bad", why[:1].upper() + why[1:] + "."
+    try:
+        engine = W.create_engine(*W.find_files(v))
+        engine.delete()
+    except Exception as exc:
+        msg = str(exc)
+        if "AccessKey" in msg or "activation" in msg.lower():
+            return "bad", "Ключ Picovoice не принят — проверьте AccessKey."
+        return "bad", "Porcupine не открыл файлы — .ppn и .pv должны быть одной версии и одного языка."
+    return "ok", "Слово «Джарвис» готово — заработает после перезапуска Джарвиса."
+
+
 # ── сервисы ──────────────────────────────────────────────────────────────────
 
 SERVICES: list[Service] = [
@@ -291,6 +308,19 @@ SERVICES: list[Service] = [
             ["Адрес — там же, где работает бот (Hugging Face Space).",
              "Секрет — придумайте длинную строку и впишите её и сюда, и в секреты сервера (PC_LINK_TOKEN)."],
             "", check=check_pc_link),
+    Service("wake", "Слово «Джарвис» — офлайн", "mic",
+            "Джарвис слышит своё имя прямо на компьютере — даже под музыку и в игре. Необязательно: "
+            "без этого имя ищется в расшифровке Gemini.",
+            [Field("picovoice_access_key", "AccessKey", env="PICOVOICE_ACCESS_KEY"),
+             Field("porcupine_keyword", "Файл слова (.ppn)", secret=False, optional=True,
+                   placeholder="или положите .ppn и .pv в папку wake", env="PORCUPINE_KEYWORD"),
+             Field("porcupine_model", "Файл модели (.pv)", secret=False, optional=True,
+                   placeholder="porcupine_params_ru.pv — найдётся рядом с .ppn", env="PORCUPINE_MODEL")],
+            ["Зарегистрируйтесь на console.picovoice.ai (бесплатно) и скопируйте AccessKey.",
+             "Porcupine → Create Wake Word: язык Russian, слово «Джарвис», платформа Windows → Download.",
+             "Скачайте файл русской модели porcupine_params_ru.pv (ссылка в документации Porcupine).",
+             "Положите .ppn и .pv в папку wake рядом с данными Джарвиса (или укажите пути) и сохраните."],
+            "https://console.picovoice.ai/", check=check_wake),
     Service("groq", "Groq — запасной мозг бота", "bolt",
             "Если у Gemini кончилась квота, бот в Telegram отвечает через Groq. Необязательно.",
             [Field("groq_api_key", "API-ключ", placeholder="gsk_…", env="GROQ_API_KEY")],
