@@ -46,7 +46,8 @@ _STATE_FROM_UI = {"IDLE": "idle", "LISTENING": "listening", "THINKING": "thinkin
 # Размеры видов (ширина, высота) в точках экрана.
 SIZES = {"compact": (168, 34), "activity": (292, 34), "listening": (312, 48), "banner": (420, 66),
          "expanded": (440, 196), "match": (300, 34), "goal": (420, 84),
-         "task": (380, 56), "confirm": (440, 106), "drop": (420, 92), "upload": (380, 56)}
+         "task": (380, 56), "confirm": (440, 106), "drop": (420, 92), "upload": (380, 56),
+         "chat": (460, 196), "file": (420, 92)}
 EXPANDED_MATCH_EXTRA = 40      # строка матча в развёрнутой панели
 EXPANDED_STEP_H = 21           # строка шага задачи в развёрнутой панели
 TASK_STEPS_SHOWN = 4
@@ -63,6 +64,12 @@ BANNER_SEC = 5.5
 IDLE_HIDE_SEC = 8.0            # в покое капсула уходит через столько секунд
 HOVER_IN_SEC = 0.22            # раскрытие по наведению — не от случайного пролёта мыши
 HOVER_OUT_SEC = 0.35
+POKE_WINDOW_SEC = 1.5          # тыки по лицу в этом окне считаются «подряд»
+POKES_DIZZY = 4                # столько тыков подряд — кружится голова
+EVENT_RGB = (96, 156, 255)     # событие, звонок — синее свечение
+DONE_RGB = (70, 232, 128)
+CHAT_IDLE_SEC = 45.0           # чат в капсуле сам закрывается после тишины
+FILE_CHOICE_SEC = 40.0         # «что сделать с файлом?» висит столько
 
 
 @dataclass
@@ -244,6 +251,23 @@ def tool_label(name: str, args: dict | None = None) -> str:
 
 
 @dataclass
+class Chat:
+    """Чат прямо в капсуле: последний вопрос и ответ Джарвиса."""
+    file: str = ""                 # чип файла: первый вопрос уйдёт вместе с ним
+    file_sent: bool = False
+    question: str = ""
+    answer: str = ""
+    waiting: bool = False
+    since: float = 0.0             # последняя активность (для автозакрытия)
+
+
+@dataclass
+class FileChoice:
+    name: str
+    since: float
+
+
+@dataclass
 class IslandModel:
     state: str = "idle"
     level: float = 0.0
@@ -264,6 +288,9 @@ class IslandModel:
     drop_hover: bool = False       # над капсулой тащат файл
     upload: Upload | None = None   # брошенный файл читается / уходит Джарвису
     flash: tuple[str, float] = ("", 0.0)   # эмоция на миг: (имя, до какого времени)
+    pokes: list[float] = field(default_factory=list)   # когда тыкали в лицо
+    chat: Chat | None = None       # открыт чат в капсуле
+    file_choice: FileChoice | None = None   # файл прочитан — что с ним сделать?
 
     def set_state(self, ui_state: str, now: float | None = None):
         new = _STATE_FROM_UI.get((ui_state or "").upper(), ui_state if ui_state in STATE_RGB else "idle")
@@ -278,6 +305,10 @@ class IslandModel:
             return
         if kind == "reply":
             self.last_reply = text
+            if self.chat and (self.chat.waiting or self.chat.question):
+                # Открыт чат — ответ печатается в нём, а не отдельным баннером.
+                self.chat.answer, self.chat.waiting, self.chat.since = text, False, now
+                return
             # Ответ дописывается по ходу речи — обновляем тот же баннер, а не копим.
             for b in self.banners:
                 if b.kind == "reply":
@@ -390,6 +421,82 @@ class IslandModel:
         del self.banners[4:]
         self.flash = ("dizzy", now + sec)
 
+    # ── чат в капсуле ───────────────────────────────────────────────────────
+    def open_chat(self, file: str = "", now: float | None = None):
+        now = time.monotonic() if now is None else now
+        self.chat = Chat(file=file, since=now)
+        self.file_choice = None
+
+    def chat_send(self, text: str, now: float | None = None) -> bool:
+        """Вопрос ушёл. True — вместе с файлом (первый вопрос по нему)."""
+        now = time.monotonic() if now is None else now
+        c = self.chat or Chat()
+        self.chat = c
+        with_file = bool(c.file and not c.file_sent)
+        c.file_sent = c.file_sent or with_file
+        c.question, c.answer, c.waiting, c.since = " ".join(text.split()), "", True, now
+        return with_file
+
+    def close_chat(self):
+        self.chat = None
+
+    def chat_view(self, now: float | None = None) -> Chat | None:
+        now = time.monotonic() if now is None else now
+        c = self.chat
+        if c and not c.waiting and now - c.since > CHAT_IDLE_SEC:
+            self.chat = c = None
+        return c
+
+    def file_ready(self, name: str, now: float | None = None):
+        """Файл прочитан — спросить, что с ним сделать."""
+        now = time.monotonic() if now is None else now
+        self.upload = None
+        self.file_choice = FileChoice(name, now)
+
+    def file_choice_view(self, now: float | None = None) -> FileChoice | None:
+        now = time.monotonic() if now is None else now
+        if self.file_choice and now - self.file_choice.since > FILE_CHOICE_SEC:
+            self.file_choice = None
+        return self.file_choice
+
+    def poke(self, now: float | None = None) -> str:
+        """Тык по лицу. Один — радуется; много подряд — кружится голова
+        (пасхалка, как в Coucou, только по-джарвисовски)."""
+        now = time.monotonic() if now is None else now
+        self.pokes = [t for t in self.pokes if now - t <= POKE_WINDOW_SEC] + [now]
+        if len(self.pokes) >= POKES_DIZZY:
+            self.pokes = []
+            self.trouble("ОЙ-ОЙ", "Голова кружится… Дайте секунду, сэр.", now, sec=3.0)
+            return "dizzy"
+        if not (self.flash[0] == "dizzy" and self.flash[1] > now):
+            self.flash = ("happy", now + 0.9)
+        return "happy"
+
+    def glow(self, view: str, now: float | None = None) -> tuple[tuple[int, int, int], float]:
+        """Свечение за капсулой: (цвет, сила 0..1) по тому, что сейчас показано."""
+        now = time.monotonic() if now is None else now
+        flash = self.flash[0] if self.flash[1] > now else ""
+        b = self.banner(now)
+        if view == "confirm":
+            return AMBER_RGB, 1.0
+        if flash == "dizzy" or (b and b.kind == "error" and view == "banner"):
+            return TROUBLE_RGB, 1.0
+        if view in ("drop", "file") or self.drop_hover:
+            return DROP_RGB, 0.9 if view == "drop" else 0.6
+        if flash == "happy":
+            return DONE_RGB, 0.85
+        if view == "listening":
+            return LISTEN_RGB, 0.8
+        if view in ("banner", "goal") and b and b.kind not in ("reply",):
+            return EVENT_RGB, 0.7
+        if self.state == "speaking":
+            return STATE_RGB["speaking"], 0.35 + 0.55 * min(1.0, self.level * 1.5)
+        if view in ("task", "upload", "chat", "expanded"):
+            return STATE_RGB.get(self.state, STATE_RGB["idle"]), 0.45
+        if view == "activity":
+            return STATE_RGB.get(self.state, STATE_RGB["idle"]), 0.25
+        return STATE_RGB.get(self.state, STATE_RGB["idle"]), 0.0
+
     def emotion(self, now: float | None = None) -> str:
         """Какое лицо у Джарвиса сейчас (ui_face.EMOTIONS)."""
         now = time.monotonic() if now is None else now
@@ -400,6 +507,9 @@ class IslandModel:
         if self.flash[1] > now:
             return self.flash[0]
         if self.upload_view(now):
+            return "think"
+        c = self.chat_view(now)
+        if c and c.waiting and self.state not in ("speaking", "listening"):
             return "think"
         return {"listening": "listen", "thinking": "think", "speaking": "talk",
                 "offline": "sad", "muted": "sleep"}.get(self.state, "calm")
@@ -426,7 +536,8 @@ class IslandModel:
         live_timer = bool(self.timer_end) or self.timer_label.startswith(("Секундомер", "Сон"))
         return (self.state == "idle" and not self.banner(now) and not (self.media and self.media.playing)
                 and not live_timer and not self.match and not self.task_view(now)
-                and not self.confirm_view(now) and not self.upload_view(now) and not self.drop_hover)
+                and not self.confirm_view(now) and not self.upload_view(now) and not self.drop_hover
+                and not self.chat_view(now) and not self.file_choice_view(now))
 
     def mode(self, hovered: bool, now: float | None = None) -> str:
         # Вопрос «точно выключить?» и файл над капсулой важнее наведения:
@@ -435,6 +546,10 @@ class IslandModel:
             return "confirm"
         if self.drop_hover:
             return "drop"
+        if self.chat_view(now):
+            return "chat"
+        if self.file_choice_view(now):
+            return "file"
         if hovered:
             return "expanded"
         if self.upload_view(now):
@@ -595,11 +710,93 @@ def fullscreen_app_active() -> bool:
 
 from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, pyqtSignal  # noqa: E402
 from PyQt6.QtGui import (QBrush, QColor, QConicalGradient, QCursor, QFont, QLinearGradient, QPainter,  # noqa: E402
-                         QPainterPath, QPen)
-from PyQt6.QtWidgets import QApplication, QWidget  # noqa: E402
+                         QPainterPath, QPen, QRadialGradient)
+from PyQt6.QtWidgets import QApplication, QLineEdit, QWidget  # noqa: E402
 
 
 from ui_icons import draw_icon  # noqa: E402  (иконки — общие с окном)
+
+
+class _ChatEdit(QLineEdit):
+    """Поле чата в капсуле: Esc — закрыть чат."""
+
+    def __init__(self, parent, on_escape):
+        super().__init__(parent)
+        self._on_escape = on_escape
+        self.setPlaceholderText("Спросите что-нибудь…")
+        self.setFrame(False)
+        self.setStyleSheet("QLineEdit { background: transparent; color: #eef3f6; border: none;"
+                           " font-family: 'Segoe UI'; font-size: 10pt; selection-background-color: #2f6f68; }")
+        self.hide()
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key.Key_Escape:
+            self._on_escape()
+            return
+        super().keyPressEvent(ev)
+
+
+def _drop_glow(glow: QWidget):
+    try:
+        glow.hide()
+        glow.deleteLater()
+    except RuntimeError:                   # уже удалено Qt — нечего делать
+        pass
+
+
+class IslandGlow(QWidget):
+    """Цветной ореол позади капсулы — по настроению: слушает — зелёный, нужно
+    «да» — янтарный, сбой — розовый, событие — синий, говорит — пульсирует.
+
+    Отдельное окно, прозрачное для мыши (WindowTransparentForInput): на
+    Windows полупрозрачный пиксель ловит клики, и ореол в самом окне капсулы
+    перехватывал бы вкладки браузера под ним."""
+
+    MARGIN_X, MARGIN_Y = 150, 110
+
+    def __init__(self):
+        super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+                         | Qt.WindowType.Tool | Qt.WindowType.WindowTransparentForInput
+                         | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.cap = QRectF()
+        self.rgb = (48, 208, 190)
+        self.strength = 0.0
+
+    def follow(self, island: QWidget, cap: QRectF, rgb, strength: float):
+        """cap — капсула в координатах окна капсулы."""
+        w, h = island.width() + 2 * self.MARGIN_X, int(cap.height()) + 2 * self.MARGIN_Y
+        x, y = island.x() - self.MARGIN_X, island.y() - self.MARGIN_Y
+        if self.geometry().getRect() != (x, y, w, h):
+            self.setGeometry(x, y, w, h)
+        self.cap = cap.translated(self.MARGIN_X, self.MARGIN_Y)
+        self.rgb, self.strength = tuple(int(c) for c in rgb), strength
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        p.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        if self.strength <= 0.01 or self.cap.width() < 4:
+            return
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        c = self.cap.center()
+        rx = self.cap.width() / 2 + self.MARGIN_X * 0.75
+        ry = self.cap.height() / 2 + self.MARGIN_Y * 0.7
+        r, g, b = self.rgb
+        a = self.strength
+        grad = QRadialGradient(QPointF(0, 0), 1.0)
+        grad.setColorAt(0.0, QColor(r, g, b, int(120 * a)))
+        grad.setColorAt(0.45, QColor(r, g, b, int(55 * a)))
+        grad.setColorAt(1.0, QColor(r, g, b, 0))
+        p.translate(c.x(), c.y() + self.cap.height() * 0.15)
+        p.scale(rx, ry)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(grad))
+        p.drawEllipse(QPointF(0, 0), 1.0, 1.0)
 
 
 class Island(QWidget):
@@ -619,12 +816,15 @@ class Island(QWidget):
     _confirm_done_sig = pyqtSignal()
     _upload_sig = pyqtSignal(str, float, str)
     _trouble_sig = pyqtSignal(str, str)
+    _file_ready_sig = pyqtSignal(str)
+    _chat_sig = pyqtSignal(str)
 
     W, H = 480, 340                 # окно с запасом под самый большой вид
     TOP = 16                        # отступ от верхнего края экрана
     DROP_SPREAD = 0.97              # капля выросла — начинает растекаться
 
-    def __init__(self, on_open=None, poll: bool = True, on_confirm=None, on_file=None):
+    def __init__(self, on_open=None, poll: bool = True, on_confirm=None, on_file=None, on_text=None,
+                 on_file_action=None, on_mic=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
                          | Qt.WindowType.Tool | Qt.WindowType.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -635,6 +835,13 @@ class Island(QWidget):
         self.on_open = on_open or (lambda: None)
         self.on_confirm = on_confirm or (lambda ok: None)    # кнопки «Разрешить / Отклонить»
         self.on_file = on_file                             # файл брошен на капсулу (путь)
+        self.on_text = on_text or (lambda text: None)      # вопрос из чата в капсуле
+        # что сделать с прочитанным файлом: ("summary" | "ask" | "cancel", вопрос)
+        self.on_file_action = on_file_action or (lambda action, question: None)
+        self.on_mic = on_mic or (lambda: None)             # «сказать голосом» из чата
+        self._edit = _ChatEdit(self, self.close_chat)
+        self._edit.returnPressed.connect(self._chat_submit)
+        self._focusable = False
         self.setAcceptDrops(on_file is not None)
         self.hovered = False                       # наведение с задержкой (HOVER_IN/OUT_SEC)
         self._hover_raw, self._hover_t = False, 0.0
@@ -665,6 +872,15 @@ class Island(QWidget):
         if os.getenv("JARVIS_ISLAND_FACE", "1") != "0":
             from ui_face import Face
             self._face = Face()
+        self._face_rect = QRectF()                 # где нарисовано лицо — по нему тыкают
+        self._was_listening = False
+        self._glow = None
+        self._glow_rgb, self._glow_a = list(STATE_RGB["idle"]), 0.0
+        if os.getenv("JARVIS_ANIMATIONS", "1").strip().lower() not in ("0", "false", "no", "off"):
+            glow = self._glow = IslandGlow()
+            # Свечение — отдельное окно без родителя: уходит вместе с капсулой,
+            # а не живёт после неё.
+            self.destroyed.connect(lambda *_: _drop_glow(glow))
 
         self._state_sig.connect(self.model.set_state)
         self._level_sig.connect(self._feed_level)
@@ -680,8 +896,11 @@ class Island(QWidget):
         self._confirm_done_sig.connect(lambda: setattr(self.model, "confirm", None))
         self._upload_sig.connect(lambda name, frac, stage: self.model.set_upload(name, frac, stage))
         self._trouble_sig.connect(lambda title, text: self.model.trouble(title, text))
+        self._file_ready_sig.connect(lambda name: self.model.file_ready(name))
+        self._chat_sig.connect(self._open_chat)
         for sig in (self._state_sig, self._reply_sig, self._event_sig, self._media_sig, self._match_sig,
-                    self._football_sig, self._tool_sig, self._confirm_sig, self._upload_sig, self._trouble_sig):
+                    self._football_sig, self._tool_sig, self._confirm_sig, self._upload_sig, self._trouble_sig,
+                    self._file_ready_sig, self._chat_sig):
             sig.connect(self._maybe_wake)
 
         self._tmr = QTimer(self)
@@ -741,6 +960,53 @@ class Island(QWidget):
         """Сбой или лимит запросов — глаза-спирали и розовый баннер."""
         self._trouble_sig.emit(str(title), str(text))
 
+    def file_ready(self, name: str):
+        """Брошенный файл прочитан — спросить: кратко, спросить про него, отмена."""
+        self._file_ready_sig.emit(str(name))
+
+    def open_chat(self, file: str = ""):
+        """Открыть чат в капсуле (из трея, из панели, после файла)."""
+        self._chat_sig.emit(str(file))
+
+    # ── чат ─────────────────────────────────────────────────────────────────
+    def _open_chat(self, file: str = ""):
+        self.model.open_chat(file)
+        self.dormant, self._quiet_since = False, 0.0
+        if not self.wanted:                # окно Джарвиса развёрнуто — капсула всё равно нужна
+            self.wanted = True
+        self._apply_visibility()
+        self._set_focusable(True)
+        self._edit.clear()
+
+    def close_chat(self):
+        self.model.close_chat()
+        self._edit.hide()
+        self._set_focusable(False)
+
+    def _set_focusable(self, on: bool):
+        """Поле чата должно принимать клавиатуру — на это время капсула берёт фокус."""
+        if on == self._focusable:
+            return
+        self._focusable = on
+        visible = self.isVisible()
+        self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, not on)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, not on)
+        if visible:
+            self.show()                    # смена флагов прячет окно — вернуть
+        if on:
+            self.activateWindow()
+            self._edit.setFocus()
+
+    def _chat_submit(self):
+        text = self._edit.text().strip()
+        if not text:
+            return
+        self._edit.clear()
+        if self.model.chat_send(text):
+            self.on_file_action("ask", text)
+        else:
+            self.on_text(text)
+
     # ── показ ───────────────────────────────────────────────────────────────
     def _place(self):
         scr = QApplication.primaryScreen()
@@ -750,6 +1016,8 @@ class Island(QWidget):
 
     def set_wanted(self, on: bool):
         """Окно Джарвиса свёрнуто (on=True) или развёрнуто."""
+        if not on and self.model.chat_view():
+            return                         # открыт чат — капсула остаётся, пока его не закроют
         if on and not self.wanted:
             self.dormant, self._quiet_since = False, 0.0      # свернули — показаться хотя бы на миг
         self.wanted = on
@@ -770,7 +1038,13 @@ class Island(QWidget):
                 self._view, self._ca = self.model.mode(False), 0.0
                 self._place()
                 logger.info("Капсула: показ")
+                if self._face is not None:
+                    self._face.greet()             # проявиться из темноты и помахать
+                if self._glow is not None:
+                    self._glow_a = 0.0
+                    self._glow.show()
                 self.show()
+                self.raise_()
                 self._last = time.monotonic()
                 self._tmr.start(16)
         elif self.isVisible():
@@ -783,6 +1057,8 @@ class Island(QWidget):
     def _hide_now(self):
         self._leaving = False
         self._r = self._vr = self._s = self._vs = 0.0
+        if self._glow is not None:
+            self._glow.hide()
         self.hide()
         self._tmr.stop()
 
@@ -895,9 +1171,22 @@ class Island(QWidget):
         self._orb.step(dt, m.level if m.state != "speaking" else max(m.level, 0.3 + 0.2 * math.sin(self._clock * 9)),
                        active=m.state in ("thinking", "speaking"))
         if self._face is not None:
+            listening = m.state == "listening"
+            if listening and not self._was_listening:
+                self._face.hello()                 # позвали «Джарвис» — машет
+            self._was_listening = listening
             self._face.set_emotion(m.emotion())
             self._face_look()
             self._face.step(dt, m.level)
+        if self._glow is not None:
+            rgb, a = m.glow(target)
+            a *= min(1.0, max(0.0, self._s)) if not self._leaving else max(0.0, self._s)
+            k = 1 - math.exp(-dt * 5)
+            for i in range(3):
+                self._glow_rgb[i] += (rgb[i] - self._glow_rgb[i]) * k
+            self._glow_a += (a - self._glow_a) * k
+            self._glow.follow(self, self.capsule_rect(), self._glow_rgb, self._glow_a)
+        self._place_edit()
         # Содержимое: другой вид — старое гаснет; тот же — проявляется, когда размер почти готов.
         if target != self._view:
             self._ca -= dt * 14.0
@@ -906,6 +1195,24 @@ class Island(QWidget):
         elif abs(self._w - tw) < 10 and abs(self._h - th) < 6:
             self._ca = min(1.0, self._ca + dt * 7.0)
         self.update()
+
+    def _input_rect(self) -> QRectF:
+        cap = self.capsule_rect()
+        return QRectF(cap.x() + 62, cap.bottom() - 46, cap.width() - 62 - 92, 32)
+
+    def _place_edit(self):
+        show = self._view == "chat" and self._ca > 0.6 and self.model.chat is not None and self._s > 0.9
+        if show:
+            r = self._input_rect().adjusted(14, 2, -6, -2)
+            self._edit.setGeometry(int(r.x()), int(r.y()), int(r.width()), int(r.height()))
+            if not self._edit.isVisible():
+                self._edit.show()
+                if self._focusable:
+                    self._edit.setFocus()
+        elif self._edit.isVisible():
+            self._edit.hide()
+        if self.model.chat is None and self._focusable:
+            self._set_focusable(False)     # чат закрылся сам (тишина)
 
     def _expanded_extra(self) -> int:
         m = self.model
@@ -939,6 +1246,14 @@ class Island(QWidget):
         text_w = QFontMetricsF(f).horizontalAdvance(self._compact_label())
         return max(float(SIZES["compact"][0]), min(300.0, 36 + text_w + 18 + (18 if self.model.eyes else 0)))
 
+    def closeEvent(self, ev):
+        """Капсулу закрыли совсем — остановить анимацию и убрать свечение."""
+        self._tmr.stop()
+        self._poll_stop.set()
+        if self._glow is not None:
+            self._glow.hide()
+        super().closeEvent(ev)
+
     # ── мышь ────────────────────────────────────────────────────────────────
     def enterEvent(self, _):
         self._hover_raw = True
@@ -948,10 +1263,29 @@ class Island(QWidget):
 
     def mouseReleaseEvent(self, ev):
         pos = ev.position()
+        # Тык по лицу — лицо реагирует, а не открывает окно (много тыков — кружится).
+        if self._face_rect.contains(pos) and self._view != "confirm":
+            self.poke_face()
+            return
         for name, rect in self._buttons.items():
             if rect.contains(pos):
                 if name == "open":
                     self.on_open()
+                elif name == "chat":
+                    self._open_chat()
+                elif name == "chat_close":
+                    self.close_chat()
+                elif name == "chat_send":
+                    self._chat_submit()
+                elif name == "chat_mic":
+                    self.on_mic()
+                elif name in ("f_sum", "f_ask", "f_cancel"):
+                    fc = self.model.file_choice
+                    self.model.file_choice = None
+                    if name == "f_ask" and fc:
+                        self._open_chat(fc.name)
+                    else:
+                        self.on_file_action("summary" if name == "f_sum" else "cancel", "")
                 elif name in ("allow", "deny"):
                     self.model.confirm = None
                     self.on_confirm(name == "allow")
@@ -963,6 +1297,13 @@ class Island(QWidget):
                 return
         if self.capsule_rect().contains(pos) and not self.hovered_expanded():
             self.on_open()
+
+    def poke_face(self) -> str:
+        res = self.model.poke()
+        if self._face is not None:
+            self._face.poke()
+        self._maybe_wake()
+        return res
 
     # ── файл, брошенный на капсулу ──────────────────────────────────────────
     @staticmethod
@@ -1013,6 +1354,7 @@ class Island(QWidget):
 
     def _avatar(self, p: QPainter, cx: float, cy: float, r: float):
         """Лицо Джарвиса (или шар из точек, если лицо выключено)."""
+        self._face_rect = QRectF(cx - r * 1.7, cy - r * 1.4, r * 3.4, r * 2.8)
         if self._face is None:
             self._mini_orb(p, cx, cy, r)
             return
@@ -1089,6 +1431,12 @@ class Island(QWidget):
             return
         if mode == "drop" and h > 64:
             self._paint_drop(p, cap, white, dim)
+            return
+        if mode == "chat" and h > 120:
+            self._paint_chat(p, cap, white, dim)
+            return
+        if mode == "file" and h > 64:
+            self._paint_file(p, cap, white, dim)
             return
         if mode == "upload" and h > 44:
             self._paint_upload(p, cap, white, dim)
@@ -1252,6 +1600,89 @@ class Island(QWidget):
         left = max(0.0, 1.0 - (time.monotonic() - c.since) / CONFIRM_SEC)
         self._text(p, QRectF(x0 + 70, by, w - 300, 28), "или скажите «да»", 8, dim)
         self._bar(p, QRectF(x0 + 18, h - 5, w - 36, 2), left, AMBER_RGB)
+
+    def _chip(self, p: QPainter, rect: QRectF, text: str, white: QColor, primary: bool = False):
+        p.setPen(Qt.PenStyle.NoPen if primary else QPen(QColor(255, 255, 255, 60), 1.0))
+        p.setBrush(QColor(245, 247, 250) if primary else QColor(255, 255, 255, 18))
+        p.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
+        self._text(p, rect, text, 9, QColor(18, 20, 24) if primary else white, bold=primary,
+                   align=Qt.AlignmentFlag.AlignCenter)
+
+    def _paint_file(self, p: QPainter, cap: QRectF, white: QColor, dim: QColor):
+        """Файл прочитан: «quote.pdf — что сделать?» Кратко · Спросить · Отмена."""
+        fc = self.model.file_choice_view()
+        if not fc:
+            return
+        x0, w, h = cap.x(), cap.width(), cap.height()
+        self._tint(p, cap, DROP_RGB, 0.6)
+        self._avatar(p, x0 + 40, h / 2, 16)
+        self._text(p, QRectF(x0 + 76, 12, w - 92, 20), fc.name, 10.5, white, bold=True)
+        self._text(p, QRectF(x0 + 76, 31, w - 92, 16), "Что с ним сделать?", 8.5, dim)
+        by = h - 36
+        x = x0 + 76
+        for key, label, bw, primary in (("f_ask", "Спросить про него", 150, True),
+                                        ("f_sum", "Кратко", 74, False), ("f_cancel", "Отмена", 74, False)):
+            r = QRectF(x, by, bw, 26)
+            self._chip(p, r, label, white, primary)
+            self._buttons[key] = r
+            x += bw + 8
+
+    def _paint_chat(self, p: QPainter, cap: QRectF, white: QColor, dim: QColor):
+        """Чат в капсуле: файл-чип, вопрос справа, ответ слева, поле внизу."""
+        c = self.model.chat_view()
+        if not c:
+            return
+        x0, y0, w = cap.x(), cap.y(), cap.width()
+        self._tint(p, cap, self._rgb_int(), 0.35)
+        # Шапка: «ЧАТ», чип файла, закрыть.
+        self._text(p, QRectF(x0 + 18, y0 + 10, 60, 18), "ЧАТ", 7.5, self._col(235, 0.25), bold=True, spacing=1.6)
+        if c.file:
+            chip = QRectF(x0 + 64, y0 + 9, min(220.0, 34 + len(c.file) * 6.2), 20)
+            p.setPen(QPen(QColor(255, 255, 255, 50), 1.0))
+            p.setBrush(QColor(255, 255, 255, 14))
+            p.drawRoundedRect(chip, 10, 10)
+            self._text(p, chip.adjusted(10, 0, -8, 0), "📄 " + c.file, 8, white)
+        close = QRectF(x0 + w - 34, y0 + 8, 22, 22)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 26))
+        p.drawEllipse(close)
+        draw_icon(p, "close", close.center(), 9, white)
+        self._buttons["chat_close"] = close
+        # Разговор: вопрос — пузырём справа, ответ — текстом слева.
+        y = y0 + 38
+        if c.question:
+            f = QFont("Segoe UI", 1)
+            f.setPointSizeF(9)
+            p.setFont(f)
+            qw = min(w * 0.62, p.fontMetrics().horizontalAdvance(c.question) + 24)
+            bub = QRectF(x0 + w - 18 - qw, y, qw, 24)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 30))
+            p.drawRoundedRect(bub, 12, 12)
+            self._text(p, bub.adjusted(12, 0, -10, 0), c.question, 9, white)
+            y += 32
+        ans = c.answer or ("…" if c.waiting else "")
+        if not c.question and not ans:
+            ans = "Спросите что угодно — отвечу здесь и голосом."
+        self._text(p, QRectF(x0 + 20, y, w - 40, cap.bottom() - 54 - y), ans, 9.5,
+                   white if c.answer else dim, wrap=True,
+                   align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        # Низ: лицо, поле, микрофон, отправить.
+        self._avatar(p, x0 + 34, cap.bottom() - 30, 13)
+        ir = self._input_rect()
+        p.setPen(QPen(QColor(255, 255, 255, 46), 1.0))
+        p.setBrush(QColor(255, 255, 255, 12))
+        p.drawRoundedRect(ir, 16, 16)
+        mic = QRectF(ir.right() + 8, ir.y() + 2, 28, 28)
+        send = QRectF(mic.right() + 8, ir.y() + 2, 28, 28)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 26))
+        p.drawEllipse(mic)
+        draw_icon(p, "mic", mic.center(), 12, white)
+        p.setBrush(QColor(245, 247, 250))
+        p.drawEllipse(send)
+        draw_icon(p, "send", send.center(), 12, QColor(18, 20, 24))
+        self._buttons["chat_mic"], self._buttons["chat_send"] = mic, send
 
     def _paint_drop(self, p: QPainter, cap: QRectF, white: QColor, dim: QColor):
         """Над капсулой тащат файл: пунктирная рамка, лицо «открыло рот»."""
@@ -1466,7 +1897,7 @@ class Island(QWidget):
         cy = cap.center().y()
         self._avatar(p, x0 + 26, cy, 14)
         dots = "." * (int(self._clock * 2.5) % 4)
-        self._text(p, QRectF(x0 + 50, 0, 120, h), "Слушаю" + dots, 10.5, white, bold=True)
+        self._text(p, QRectF(x0 + 56, 0, 120, h), "Слушаю" + dots, 10.5, white, bold=True)
         if self.model.eyes:
             self._eye(p, x0 + 157, cy)            # между «Слушаю…» и волной
         # Волна: живёт от голоса, а в тишине тихо «дышит» — видно, что микрофон открыт.
@@ -1495,6 +1926,11 @@ class Island(QWidget):
         p.drawEllipse(open_r)
         draw_icon(p, "expand", open_r.center(), 12, white)
         self._buttons["open"] = open_r
+        chat_r = QRectF(open_r.x() - 34, y0 - 1, 26, 26)     # «Написать» — чат прямо здесь
+        p.setBrush(QColor(255, 255, 255, 34))
+        p.drawEllipse(chat_r)
+        draw_icon(p, "speak", chat_r.center(), 12, white)
+        self._buttons["chat"] = chat_r
         y = y0 + 38
         t = m.task_view()
         if t:
@@ -1551,6 +1987,3 @@ class Island(QWidget):
             self._text(p, QRectF(x0, y, w, cap.bottom() - y - 10), "«" + m.last_reply + "»", 9, dim, wrap=True,
                        align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
-    def closeEvent(self, ev):
-        self._poll_stop.set()
-        super().closeEvent(ev)

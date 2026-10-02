@@ -61,12 +61,19 @@ def prepare(path: str | Path) -> Prepared:
     raise Unsupported(f"не умею читать {ext or 'такие файлы'}")
 
 
-def instruction(f: Prepared) -> str:
-    """Что сказать модели вместе с файлом."""
+def instruction(f: Prepared, question: str = "", summary: bool = False) -> str:
+    """Что сказать модели вместе с файлом. question — вопрос владельца из
+    чата в капсуле; summary — «Кратко»: пересказать главное."""
     what = "картинку" if f.kind == "image" else "файл"
     cut = " Файл длинный — ниже только начало." if f.truncated else ""
-    return (f"Владелец перетащил на тебя {what} «{f.name}».{cut} Посмотри и коротко, в одну-две фразы, "
-            "скажи, что это, и спроси, что с ним сделать. Дальше отвечай на вопросы по нему.")
+    head = f"Владелец перетащил на тебя {what} «{f.name}».{cut} "
+    tail = " Дальше отвечай на вопросы по нему."
+    if question.strip():
+        return head + f"Он спрашивает: «{' '.join(question.split())}». Ответь по содержимому, коротко." + tail
+    if summary:
+        return head + "Кратко, в две-три фразы, перескажи главное: что это и что в нём важного." + tail
+    return (head + "Посмотри и коротко, в одну-две фразы, скажи, что это, и спроси, что с ним сделать."
+            + tail)
 
 
 def _text(name: str, text: str) -> Prepared:

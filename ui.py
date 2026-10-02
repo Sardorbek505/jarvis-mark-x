@@ -1051,6 +1051,8 @@ class MainWindow(QMainWindow):
         self.on_text_command = None
         self.on_island_confirm = None      # кнопки «Разрешить / Отклонить» на капсуле (main.py)
         self.on_file_dropped = None        # файл брошен на капсулу (main.py)
+        self.on_island_file_action = None  # «Спросить / Кратко / Отмена» для файла (main.py)
+        self.on_island_mic = None          # «сказать голосом» из чата в капсуле (main.py)
         self.on_wake_trained = None        # обучили слову «Джарвис» — включить детектор (main.py)
         self.wake_device = None            # микрофон Джарвиса для обучения (main.py)
 
@@ -1342,7 +1344,11 @@ class MainWindow(QMainWindow):
             from ui_island import Island
             self._island = Island(on_open=self._restore_from_island,
                                   on_confirm=lambda ok: self._island_call("on_island_confirm", ok),
-                                  on_file=lambda path: self._island_call("on_file_dropped", path))
+                                  on_file=lambda path: self._island_call("on_file_dropped", path),
+                                  on_text=lambda text: self._island_call("on_text_command", text),
+                                  on_file_action=lambda action, q: self._island_call("on_island_file_action",
+                                                                                     action, q),
+                                  on_mic=lambda: self._island_call("on_island_mic"))
         except Exception as exc:
             _logger.warning("Капсула недоступна: %s", exc)
             return
@@ -1367,6 +1373,20 @@ class MainWindow(QMainWindow):
         isl = getattr(self, "_island", None)
         if isl is not None:
             getattr(isl, method)(*args)
+
+    def file_ready(self, name: str) -> bool:
+        """Файл прочитан: спросить на капсуле, что с ним сделать. False — капсулы нет."""
+        if getattr(self, "_island", None) is None:
+            return False
+        self._island_do("file_ready", name)
+        return True
+
+    def open_island_chat(self):
+        """«Написать Джарвису» (трей): чат в капсуле; капсулы нет — поле в окне."""
+        if getattr(self, "_island", None) is not None:
+            self._island_do("open_chat", "")
+            return
+        self.bring_to_front()
 
     # Из любого потока: капсула принимает всё через сигналы.
     def tool_started(self, name: str, args: dict | None = None):
@@ -1619,6 +1639,9 @@ class MainWindow(QMainWindow):
             self._key_ready.set()
 
     def _apply_state(self, state: str):
+        tray = getattr(self, "tray", None)
+        if tray is not None and hasattr(tray, "update_state"):
+            tray.update_state(state)
         state_map = {
             "IDLE":       "ОЖИДАЕТ",
             "LISTENING":  "СЛУШАЕТ",
@@ -1636,6 +1659,9 @@ class MainWindow(QMainWindow):
     def _toggle_mute(self):
         self.muted = not self.muted
         self._hud.muted = self.muted
+        tray = getattr(self, "tray", None)
+        if tray is not None and hasattr(tray, "update_state"):
+            tray.update_state(muted=self.muted)
         self._style_mute_btn()
         if self.muted:
             self.write_log("SYS: Микрофон отключён.")

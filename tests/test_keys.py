@@ -224,3 +224,45 @@ def test_keys_window(monkeypatch):
         dlg.repaint()
     finally:
         dlg.close()
+
+
+def test_key_preview_and_wrong_service_hint():
+    assert K.preview("AIzaSyD1234567890abcdefghijklmnopqQ7xF") == "AIza••••••Q7xF"
+    assert K.kind_of("sk-proj-abcdefghijklmnopqrstuvwx") == "OpenAI"
+    assert K.kind_of("sk-ant-api03-abcdefghijklmnopqrstu") == "Anthropic"
+    assert "OpenAI" in K.wrong_key_hint("gemini_api_key", "sk-proj-abcdefghijklmnopqrstuvwx")
+    assert "AIza" in K.wrong_key_hint("gemini_api_key", "sk-proj-abcdefghijklmnopqrstuvwx")
+    assert K.wrong_key_hint("gemini_api_key", GOOD_GEMINI) == ""
+    assert K.wrong_key_hint("fish_api_key", "sk-proj-abcdefghijklmnopqrstuvwx") == ""   # вид не однозначный
+
+
+def test_wrong_key_is_not_saved_and_field_says_why(monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    store = {"gemini_api_key": ""}
+    monkeypatch.setattr(K, "load_values", lambda: dict(store))
+    monkeypatch.setattr(K, "save_values", lambda d: store.update(d) or True)
+    monkeypatch.setattr(K, "check", lambda sid, v: ("ok", "Ключ работает."))
+    import ui_keys
+    dlg = ui_keys.KeysDialog()
+    try:
+        card = dlg.cards["gemini"]
+        assert card.chips["gemini_api_key"].text() == "Нет ключа"
+        card.edits["gemini_api_key"].setText("sk-proj-abcdefghijklmnopqrstuvwx")
+        card.autosave.flush()
+        assert store["gemini_api_key"] == ""                                 # чужой ключ не сохранён
+        assert card.chips["gemini_api_key"].text() == "Не тот ключ"
+        assert "OpenAI" in card.notes["gemini_api_key"].text()
+        card.edits["gemini_api_key"].setText(GOOD_GEMINI)
+        card.autosave.flush()
+        for _ in range(100):
+            app.processEvents()
+            if card.state == "ok":
+                break
+            time.sleep(0.01)
+        assert store["gemini_api_key"] == GOOD_GEMINI
+        assert card.chips["gemini_api_key"].text() == "✓ Работает"
+        assert card.notes["gemini_api_key"].text() == "Сохранён: " + K.preview(GOOD_GEMINI)
+    finally:
+        dlg.close()

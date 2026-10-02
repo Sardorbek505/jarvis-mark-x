@@ -16,7 +16,8 @@ import webbrowser
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QGuiApplication
-from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QInputDialog, QLineEdit, QPushButton, QScrollArea,
+from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QPushButton,
+                             QScrollArea,
                              QVBoxLayout, QWidget)
 
 from core import keys as K
@@ -96,6 +97,8 @@ class ServiceCard(QFrame):
         bl.setSpacing(10)
         bl.addWidget(_line())
         self.edits: dict[str, QLineEdit] = {}
+        self.chips: dict[str, QLabel] = {}         # статус у поля: «Нет ключа» → «✓ Работает»
+        self.notes: dict[str, QLabel] = {}         # под полем: «AIza••••Q7xF» или «не тот ключ»
         for f in service.fields:
             bl.addWidget(_cap(f.label + ("  · необязательно" if f.optional else "")))
             row = QHBoxLayout()
@@ -113,14 +116,23 @@ class ServiceCard(QFrame):
             row.addWidget(e, 1)
             if f.secret:
                 eye = _icon_btn("eye", "Показать / скрыть")
-                eye.clicked.connect(lambda _=False, w=e: w.setEchoMode(
+                eye.clicked.connect(lambda _=False, w=e: (w.setEchoMode(
                     QLineEdit.EchoMode.Normal if w.echoMode() == QLineEdit.EchoMode.Password
-                    else QLineEdit.EchoMode.Password))
+                    else QLineEdit.EchoMode.Password), self._paint_fields()))
                 row.addWidget(eye)
             paste = _icon_btn("copy", "Вставить из буфера")
             paste.clicked.connect(lambda _=False, w=e: w.setText(QGuiApplication.clipboard().text().strip()))
             row.addWidget(paste)
+            chip = _label("", "fchip", wrap=False)
+            chip.setMinimumWidth(96)
+            chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.chips[f.key] = chip
+            row.addWidget(chip)
             bl.addLayout(row)
+            note = _label("", "hint", wrap=True)
+            note.hide()
+            self.notes[f.key] = note
+            bl.addWidget(note)
 
         how = QFrame()
         how.setObjectName("howto")
@@ -187,6 +199,8 @@ class ServiceCard(QFrame):
                                 f" border: 1px solid rgba({c.red()}, {c.green()}, {c.blue()}, 90);")
         border = {"ok": C.BORDER, "bad": "#3a1a22", "warn": "#2c2c14"}.get(self.state, C.BORDER)
         self.setStyleSheet(f"QFrame#card {{ border-color: {border}; }}")
+        if hasattr(self, "chips"):
+            self._paint_fields()
 
     def _say(self, text: str, state: str):
         color = {"ok": C.PRI, "warn": C.ACC2, "bad": C.RED}.get(state, C.TEXT_MED)
@@ -195,11 +209,47 @@ class ServiceCard(QFrame):
 
     def _dirty(self):
         self.msg.setText("")
+        self._paint_fields()
         self.autosave.touch()
 
+    def _paint_fields(self):
+        """Статус и подсказка у каждого поля."""
+        busy = self.state == "busy"
+        for key, e in self.edits.items():
+            v = e.text().strip()
+            f = next(x for x in self.s.fields if x.key == key)
+            wrong = K.wrong_key_hint(key, v)
+            if not v:
+                text, fg, bg = ("Не нужно" if f.optional else "Нет ключа"), C.TEXT_DIM, C.DARK
+            elif wrong:
+                text, fg, bg = "Не тот ключ", C.ACC2, "#15160a"
+            elif busy:
+                text, fg, bg = "Проверяю…", C.TEXT_MED, C.DARK
+            elif self.state == "ok":
+                text, fg, bg = "✓ Работает", C.PRI, C.PRI_GHO
+            elif self.state in ("bad", "warn"):
+                text, fg, bg = "✕ Ошибка", C.RED, "#1a0a0e"
+            else:
+                text, fg, bg = "Сохранено", C.TEXT_MED, C.DARK
+            chip = self.chips[key]
+            chip.setText(text)
+            chip.setStyleSheet(f"color: {fg}; background: {bg}; border: 1px solid {C.BORDER_B};"
+                               " border-radius: 10px; padding: 3px 10px; font-size: 11px; font-weight: 600;")
+            note = self.notes[key]
+            if wrong:
+                note.setStyleSheet(f"color: {C.ACC2};")
+                note.setText(wrong)
+            elif v and f.secret and e.echoMode() == QLineEdit.EchoMode.Password:
+                note.setStyleSheet(f"color: {C.TEXT_DIM};")
+                note.setText("Сохранён: " + K.preview(v))
+            else:
+                note.setText("")
+            note.setVisible(bool(note.text()))
+
     def _autosave(self):
-        """Вставили ключ — он уже сохранён; все поля сервиса на месте — сразу проверяем."""
-        vals = self.values()
+        """Вставили ключ — он уже сохранён; все поля сервиса на месте — сразу проверяем.
+        Ключ не того сервиса не сохраняем — под полем подсказка, чей он."""
+        vals = {k: v for k, v in self.values().items() if not K.wrong_key_hint(k, v)}
         if not vals or vals == {k: v for k, v in K.load_values().items() if k in vals}:
             return
         K.save_values(vals)

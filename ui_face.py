@@ -19,6 +19,15 @@
 моргание: глаза закрываются в одной форме и открываются в другой — без
 «перетекания» фигур, как у живого.
 
+Живость (как у Coucou, только свой характер):
+  • ручки — две маленькие капли по бокам: машет при появлении и когда
+    позвали, обе вверх от радости, одна поднята при «!», у «подбородка»,
+    когда думает, двигаются в такт голосу;
+  • появление — тельце проявляется из темноты, вокруг мерцает пыль;
+  • моргая, тельце чуть сплющивается; в покое иногда оглядывается
+    или подпрыгивает;
+  • тык по лицу — радуется; много тыков подряд — кружится голова.
+
 Логика (Face.step) отдельно от рисования (Face.paint): что сейчас с глазами —
 проверяется тестами без экрана.
 """
@@ -55,6 +64,9 @@ EMOTIONS: dict[str, Emo] = {
 }
 BLINK_SEC = 0.16          # обычное моргание
 SWITCH_SEC = 0.24         # моргание со сменой формы глаз — чуть медленнее
+INTRO_SEC = 0.55         # проявление из темноты
+DUST_SEC = 1.3           # сколько мерцает пыль
+WAVE_SEC = 1.6           # сколько машет ручкой
 EYE_RGB = (20, 24, 31)
 AMBER = (255, 176, 46)
 
@@ -76,6 +88,15 @@ class Face:
         self._blink_len = BLINK_SEC
         self._switch_to: str | None = None
         self._next_blink = 2.0 + self._rng.uniform(0.0, 2.0)
+        # Живость
+        self.intro = 1.0                      # 0 → 1: проявление из темноты
+        self.dust = 0.0                       # >0 — ещё мерцает пыль (секунд осталось)
+        self.wave = 0.0                       # >0 — машет ручкой (секунд осталось)
+        self._hop_at = -1e9                   # когда подпрыгнул от тыка
+        self._idle_at = 12.0 + self._rng.uniform(0.0, 8.0)    # следующий «оглядеться/прыжок»
+        self._peek: tuple[float, float, float] | None = None  # (x, y, до когда) — оглядывается
+        self._dust_seed = [(self._rng.uniform(0, 2 * math.pi), self._rng.uniform(0.75, 1.55),
+                            self._rng.uniform(0.6, 1.6), self._rng.uniform(0, 6.3)) for _ in range(28)]
 
     # ── вход ────────────────────────────────────────────────────────────────
     def set_emotion(self, name: str):
@@ -86,6 +107,19 @@ class Face:
         if fam != self.family or self._switch_to:
             self._switch_to = fam
             self._blink_t, self._blink_len = 0.0, SWITCH_SEC
+
+    def greet(self):
+        """Появление: проявиться из темноты, пыль вокруг, помахать ручкой."""
+        self.intro, self.dust, self.wave = 0.0, DUST_SEC, WAVE_SEC
+
+    def hello(self):
+        """Позвали «Джарвис» — помахать (без проявления заново)."""
+        self.wave = max(self.wave, WAVE_SEC * 0.7)
+        self.dust = max(self.dust, DUST_SEC * 0.6)
+
+    def poke(self):
+        """Тык по лицу — подпрыгнуть."""
+        self._hop_at = self.clock
 
     def look_at(self, x: float, y: float):
         """Куда смотреть: -1..1 по каждой оси (курсор слева/справа, выше/ниже)."""
@@ -113,12 +147,25 @@ class Face:
                 if self._rng.random() < 0.15:     # иногда — двойное моргание
                     gap = 0.18
                 self._next_blink = self.clock + gap
+        self.intro = min(1.0, self.intro + dt / INTRO_SEC)
+        self.dust = max(0.0, self.dust - dt)
+        self.wave = max(0.0, self.wave - dt)
+        # В покое иногда оглядывается или подпрыгивает — живой, а не картинка.
+        if self.emotion == "calm" and self.clock >= self._idle_at:
+            self._idle_at = self.clock + self._rng.uniform(10.0, 20.0)
+            if self._rng.random() < 0.6:
+                side = self._rng.choice((-1.0, 1.0))
+                self._peek = (side * 0.9, self._rng.uniform(-0.3, 0.2), self.clock + 1.1)
+            else:
+                self._hop_at = self.clock
+        if self._peek and (self.clock > self._peek[2] or self.emotion != "calm"):
+            self._peek = None
         e = EMOTIONS[self.emotion]
         a = 1 - math.exp(-dt * 14)
         self.eye_w += (e.w - self.eye_w) * a
         self.eye_h += (e.h - self.eye_h) * a
         self.eye_dy += (e.dy - self.eye_dy) * a
-        tx, ty = e.look if e.look is not None else self._look_target
+        tx, ty = e.look if e.look is not None else (self._peek[:2] if self._peek else self._look_target)
         if self.emotion == "think":               # думает — взгляд медленно бродит
             tx += 0.25 * math.sin(self.clock * 1.3)
         b = 1 - math.exp(-dt * 9)
@@ -126,7 +173,8 @@ class Face:
         self.look[1] += (ty - self.look[1]) * b
 
     # ── рисование ───────────────────────────────────────────────────────────
-    def paint(self, p: QPainter, cx: float, cy: float, size: float, rgb=(48, 208, 190), glow: float = 1.0):
+    def paint(self, p: QPainter, cx: float, cy: float, size: float, rgb=(48, 208, 190), glow: float = 1.0,
+              hands: bool = True):
         """size — высота тельца. Рисует вокруг (cx, cy)."""
         t_emo = self.clock - self.since
         p.save()
@@ -143,8 +191,17 @@ class Face:
             rot = 7.0 * math.sin(self.clock * 5.0)
         elif self.emotion == "hungry":
             squash = -0.05 * (0.5 + 0.5 * math.sin(self.clock * 8))
+        t_hop = self.clock - self._hop_at
+        if 0 <= t_hop < 0.6:                       # тык или прыжок от скуки
+            hop = math.sin(math.pi * t_hop / 0.6)
+            dy -= size * 0.14 * hop
+            squash += 0.06 * (1 - hop) * (1 - t_hop / 0.6)
+        if self._blink_t >= 0:                     # моргая, чуть сплющивается
+            squash += 0.07 * (1 - self.open)
         bw, bh = size * 1.16 * (1 + squash), size * (1 - squash)
         p.translate(cx, cy + dy)
+        if self.dust > 0:
+            self._paint_dust(p, size)
         if rot:
             p.rotate(rot)
         r, g, b = rgb
@@ -159,18 +216,89 @@ class Face:
         body = QRectF(-bw / 2, -bh / 2, bw, bh)
         path = QPainterPath()
         path.addRoundedRect(body, size * 0.40, size * 0.40)
+        # Проявление: из тёмно-серого — в белое (как включается экранчик).
+        k = _ease(self.intro)
+        top = _mix((72, 76, 84), _mix((252, 253, 255), rgb, 0.04).getRgb()[:3], k)
+        bot = _mix((52, 56, 64), _mix((206, 213, 222), rgb, 0.12).getRgb()[:3], k)
         lg = QLinearGradient(body.topLeft(), body.bottomLeft())
-        lg.setColorAt(0.0, _mix((252, 253, 255), rgb, 0.04))
-        lg.setColorAt(1.0, _mix((206, 213, 222), rgb, 0.12))
+        lg.setColorAt(0.0, top)
+        lg.setColorAt(1.0, bot)
+        if hands:
+            self._paint_hands(p, size, bw, bh, top, bot, behind=True)
         p.fillPath(path, lg)
         # Блик сверху — объём, как у гладкого камешка.
-        p.setPen(QPen(QColor(255, 255, 255, 170), max(0.8, size * 0.03)))
+        p.setPen(QPen(QColor(255, 255, 255, int(170 * k)), max(0.8, size * 0.03)))
         p.setBrush(Qt.BrushStyle.NoBrush)
         hl = body.adjusted(size * 0.16, size * 0.07, -size * 0.16, 0)
         p.drawArc(hl, 30 * 16, 120 * 16)
         self._eyes(p, size)
         self._extras(p, size, body)
+        if hands:
+            self._paint_hands(p, size, bw, bh, top, bot, behind=False)
         p.restore()
+
+    # ── ручки и пыль ────────────────────────────────────────────────────────
+    def hand_pose(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        """Где ручки: ((x, y) левой, (x, y) правой) в долях высоты тельца от
+        центра; y < 0 — выше. Отдельно от рисования — проверяется тестами."""
+        t, e = self.clock, self.emotion
+        down = 0.20 + 0.015 * math.sin(t * 1.7)
+        left, right = (-0.70, down), (0.70, down + 0.01 * math.sin(t * 1.9 + 1))
+        if e == "happy":
+            jig = 0.04 * math.sin(t * 16)
+            left, right = (-0.70, -0.32 + jig), (0.70, -0.32 - jig)
+        elif e == "alert":
+            right = (0.66, -0.36 + 0.03 * math.sin(t * 9))
+        elif e == "think":
+            right = (0.32, 0.36)                       # у «подбородка»
+        elif e == "talk":
+            bob = 0.10 * min(1.0, self.level * 1.6)
+            left, right = (-0.71, down - bob), (0.71, down - bob * 0.7)
+        elif e == "dizzy":
+            sw = 0.12 * math.sin(t * 5.0)
+            left, right = (-0.72, 0.12 + sw), (0.72, 0.12 - sw)
+        elif e == "sleep":
+            left, right = (-0.62, 0.30), (0.62, 0.30)
+        elif e == "hungry":
+            left, right = (-0.66, 0.05), (0.66, 0.05)
+        if self.wave > 0 and e not in ("dizzy", "sleep"):
+            u = self.wave / WAVE_SEC                   # 1 → 0
+            lift = min(1.0, (1 - u) * 6, u * 5)        # поднял — помахал — опустил
+            wag = 0.10 * math.sin(t * 15) * lift
+            right = (right[0] + (0.02 + wag) * lift, right[1] + (-0.52 - right[1]) * lift)
+        return left, right
+
+    def _paint_hands(self, p: QPainter, s: float, bw: float, bh: float, top: QColor, bot: QColor,
+                     behind: bool):
+        """Опущенные ручки — за тельцем (видны краешком), поднятые — перед."""
+        r = s * 0.10
+        for (x, y) in self.hand_pose():
+            if (y > 0.05) != behind:
+                continue
+            c = QPointF(x * s, y * s)
+            g = QLinearGradient(QPointF(c.x(), c.y() - r), QPointF(c.x(), c.y() + r))
+            g.setColorAt(0.0, top)
+            g.setColorAt(1.0, bot)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(g)
+            p.drawEllipse(c, r * 1.05, r * 0.92)
+
+    def _paint_dust(self, p: QPainter, s: float):
+        """Мерцающая пыль вокруг — при появлении и когда позвали."""
+        u = self.dust / DUST_SEC                       # 1 → 0
+        fade = min(1.0, (1 - u) * 5) * min(1.0, u * 2.5)
+        for ang, rad, spd, ph in self._dust_seed:
+            a = ang + self.clock * 0.6 * spd
+            rr = s * rad * (1.0 + 0.35 * (1 - u))      # кольцо медленно расходится
+            x, y = math.cos(a) * rr * 1.35, math.sin(a) * rr * 0.72
+            tw = 0.5 + 0.5 * math.sin(self.clock * 9 * spd + ph)
+            al = int(220 * fade * tw)
+            if al <= 4:
+                continue
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, al))
+            d = max(0.8, s * 0.035 * (0.6 + tw))
+            p.drawEllipse(QPointF(x, y), d, d)
 
     def _eyes(self, p: QPainter, s: float):
         ink = QColor(*EYE_RGB)
@@ -245,6 +373,11 @@ class Face:
                 a = int(230 * math.sin(math.pi * u))
                 c = QPointF(body.right() + s * (0.05 + 0.25 * u), body.top() + s * (0.1 - 0.45 * u))
                 _glyph(p, c, "z", s * (0.26 + 0.12 * u), QColor(255, 255, 255, a))
+
+
+def _ease(u: float) -> float:
+    u = max(0.0, min(1.0, u))
+    return u * u * (3 - 2 * u)
 
 
 def _mix(a, b, k: float) -> QColor:

@@ -1978,6 +1978,8 @@ class Jarvis:
         self.ui.on_text_command = self._on_text_command
         self.ui.on_island_confirm = self._on_island_confirm
         self.ui.on_file_dropped = self._on_file_dropped
+        self.ui.on_island_file_action = self._on_island_file_action
+        self.ui.on_island_mic = self._on_island_mic
         self.ui.on_wake_trained = self._on_wake_trained
         # Обучение — на том микрофоне, которым Джарвис слушает (раньше — системный).
         self.ui.wake_device = lambda: (getattr(self, "_input_device", None)
@@ -2166,7 +2168,8 @@ class Jarvis:
         threading.Thread(target=self._send_dropped_file, args=(path,), daemon=True, name="drop-file").start()
 
     def _send_dropped_file(self, path: str):
-        """Файл с капсулы — в разговор: прочитать, отдать Gemini, ответ придёт голосом."""
+        """Файл с капсулы: прочитать и спросить, что с ним сделать («Спросить
+        про него» / «Кратко» / «Отмена»). Нет капсулы — сразу в разговор."""
         from core import dropped_file
         progress = getattr(self.ui, "file_progress", None) or (lambda *_a: None)
         name = os.path.basename(path)
@@ -2181,20 +2184,44 @@ class Jarvis:
             logger.warning("Файл с капсулы: %s", exc, exc_info=True)
             progress(name, -1.0, "не получилось прочитать")
             return
+        self._dropped = f
+        ready = getattr(self.ui, "file_ready", None)
+        if not (ready and ready(f.name)):
+            self._send_prepared_file(f)
+
+    def _on_island_file_action(self, action: str, question: str = ""):
+        """Кнопка на капсуле: «summary» — кратко, «ask» — вопрос из чата, «cancel»."""
+        f, self._dropped = getattr(self, "_dropped", None), None
+        if action == "cancel" or f is None:
+            return
+        threading.Thread(target=self._send_prepared_file, args=(f, question, action == "summary"),
+                         daemon=True, name="drop-file").start()
+
+    def _on_island_mic(self):
+        """«Сказать голосом» из чата в капсуле — как F8, но окно не разворачиваем."""
+        if self.ui.muted:
+            self.ui.toggle_mute()
+        self.wake()
+
+    def _send_prepared_file(self, f, question: str = "", summary: bool = False):
+        """Прочитанный файл — в разговор; ответ придёт голосом и в чат капсулы."""
+        from core import dropped_file
+        progress = getattr(self.ui, "file_progress", None) or (lambda *_a: None)
+        name = f.name
         if not self._loop or not self.session or not self._loop.is_running():
             progress(name, -1.0, "нет связи с Gemini")
             return
         progress(name, 0.6, "Отправляю")
-        parts = [types.Part.from_text(text=dropped_file.instruction(f))]
+        parts = [types.Part.from_text(text=dropped_file.instruction(f, question, summary))]
         if f.kind == "image":
             parts.append(types.Part.from_bytes(data=f.data, mime_type=f.mime))
         else:
             parts.append(types.Part.from_text(text=f"Содержимое «{f.name}»:\n{f.text}"))
         self.wake()
-        self.last_user_text = f"[файл {name}]"
+        self.last_user_text = question or f"[файл {name}]"
         self._user_turn += 1
         self._typed_turn = self._user_turn
-        self.ui.write_log(f"Вы: 📎 {name}")
+        self.ui.write_log(f"Вы: 📎 {name}" + (f" — {question}" if question else ""))
         fut = asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(turns=[types.Content(role="user", parts=parts)], turn_complete=True),
             self._loop)
