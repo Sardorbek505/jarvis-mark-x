@@ -76,7 +76,9 @@ async def test_empty_server_does_not_wipe_pc(monkeypatch, mem):
         await mem.del_fact_text(UID, f)
     await mem.add_fact(UID, "что-то новое из бота")
     await sync_(post)
-    assert len(mm.all_facts()) == 10
+    keys = [k for _c, k, _v in mm.all_facts()]
+    assert [k for k in keys if k.startswith("факт_")] == [f"факт_{i}" for i in range(10)]   # ничего не стёрто
+    assert "что-то новое из бота" in keys                    # а новое от бота — в той же памяти
 
 
 async def test_resend_after_lost_response_does_not_duplicate(monkeypatch, mem):

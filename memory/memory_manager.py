@@ -73,6 +73,69 @@ def _share(fn):
         logging.getLogger(__name__).debug("Общая память: %s", exc)
 
 
+# Факт из Telegram приходит строкой «город: Шымкент» — без категории. Её
+# угадываем по ключу, чтобы в «Обо мне» он лёг рядом с такими же.
+_GUESS = (
+    ("dates", ("день рожд", "дата", "годовщин", "birthday")),
+    ("relationships", ("брат", "сестр", "мама", "мать", "папа", "отец", "жена", "муж", "друг", "подруг",
+                       "девушк", "парень", "сын", "доч", "дедушк", "бабушк", "семь")),
+    ("identity", ("имя", "зовут", "город", "живёт", "живет", "возраст", "страна", "язык", "name",
+                  "city", "age")),
+    ("work", ("работ", "учёб", "учеб", "учит", "универ", "профес", "должност", "студент", "колледж", "школ")),
+    ("health", ("здоров", "аллерг", "болез", "болит", "спорт", "лекарств")),
+    ("habits", ("подъём", "подъем", "встаёт", "встает", "отбой", "ложится", "привычк", "распорядок", "режим")),
+    ("preferences", ("любит", "любим", "нравит", "музык", "фильм", "клуб", "еда", "блюд", "игр", "favorite")),
+    ("projects", ("проект",)),
+    ("wishes", ("хочет", "мечта", "план", "цель", "мечтает")),
+)
+
+
+def guess_category(key: str) -> str:
+    k = (key or "").lower()
+    for cat, words in _GUESS:
+        if any(w in k for w in words):
+            return cat
+    return "notes"
+
+
+def _norm_key(key: str) -> str:
+    return " ".join(str(key).replace("_", " ").lower().split())
+
+
+def put_from_server(key: str, value: str, pending: set[str] | None = None) -> bool:
+    """Факт, который знает сервер (бот узнал в Telegram), — в эту же память.
+
+    Одна память на всё: раньше такие факты жили отдельно (shared.json), шли в
+    промпт вторым блоком и не были видны в «Обо мне». Обратно на сервер не
+    отправляем — он и есть источник. Тот же ключ уже есть с другим значением
+    — значение сменилось там (бот заменяет «город: …» целиком); но если
+    своё изменение ещё не ушло (pending — ключи в очереди), оставляем своё.
+    """
+    key, value = str(key).strip(), str(value).strip()
+    if not key:
+        return False
+    now = datetime.now().isoformat(timespec="seconds")
+    nk = _norm_key(key)
+    with _LOCK:
+        mem = load_memory()
+        for cat, items in mem.items():
+            for k in list(items or {}):
+                if _norm_key(k) != nk:
+                    continue
+                val = items[k]
+                if str(val.get("value", val) if isinstance(val, dict) else val).strip() == value:
+                    return False
+                if pending and nk in pending:
+                    return False
+                items[k] = {"value": value, "updated": now, "src": "telegram"}
+                atomic_write_json(_MEMORY_FILE, mem)
+                return True
+        cat = guess_category(key)
+        mem.setdefault(cat, {})[key] = {"value": value, "updated": now, "src": "telegram"}
+        atomic_write_json(_MEMORY_FILE, mem)
+    return True
+
+
 def forget(category: str, key: str, share: bool = True) -> bool:
     """share=False — удаление пришло с сервера (бот/телефон): обратно не шлём."""
     with _LOCK:
@@ -94,6 +157,12 @@ _CAT_RU = {
     "notes": "Заметки",
 }
 CATEGORIES = tuple(_CAT_RU)
+
+
+def fact_line(key: str, value) -> str:
+    """«ключ: значение»; у факта без ключа из Telegram — просто текст."""
+    value = str(value if value is not None else "").strip()
+    return f"{key}: {value}" if value else str(key)
 
 
 def all_facts(memory: dict | None = None) -> list[tuple[str, str, str]]:
@@ -155,7 +224,7 @@ def format_memory_for_prompt(memory: dict) -> str:
         head = f"\n{_CAT_RU.get(category, category)}:"
         for n, key in enumerate(sorted(items, key=lambda k: _stamp(items[k]), reverse=True)):
             val = items[key]
-            line = f"  {key}: {val.get('value', val) if isinstance(val, dict) else val}"
+            line = "  " + fact_line(key, val.get("value", val) if isinstance(val, dict) else val)
             add = (head + "\n" if n == 0 else "") + line
             if size + len(add) + 1 > _PROMPT_CHARS:      # +1 — перевод строки при склейке
                 lines.append("")

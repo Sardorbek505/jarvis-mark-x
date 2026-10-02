@@ -386,12 +386,12 @@ def prompt_context(resuming: bool) -> str:
 
 def recall(query: str = "") -> str:
     """Ответ инструмента recall_memory: факты, итоги и реплики по теме."""
-    from memory.memory_manager import _CAT_RU, all_facts, search
+    from memory.memory_manager import _CAT_RU, all_facts, fact_line, search
     q = (query or "").strip()
     facts = search(q, limit=15) if q else all_facts()
     out = []
     if facts:
-        out.append("Факты: " + "; ".join(f"{_CAT_RU.get(c, c).lower()} — {k}: {v}" for c, k, v in facts[:40]))
+        out.append("Факты: " + "; ".join(f"{_CAT_RU.get(c, c).lower()} — {fact_line(k, v)}" for c, k, v in facts[:40]))
     eps = search_episodes(q)
     if eps:
         out.append("Разговоры: " + " | ".join(eps))
@@ -403,7 +403,7 @@ def recall(query: str = "") -> str:
         from memory import shared
         more = shared.search(q)
         if more:
-            out.append("Общая память с Telegram: " + " | ".join(more))
+            out.append("Переписка в Telegram: " + " | ".join(more))
     except Exception as exc:
         logger.debug("Общая память: %s", exc)
     return "\n".join(out) or (f"В памяти ничего про «{q}»." if q else "Память пока пуста.")
