@@ -51,7 +51,7 @@ def test_raw_pcm_streams_in_whole_samples(fish):
     sent = fish(pcm, block=5)                               # куски нечётной длины
     chunks = _collect()
     assert b"".join(chunks) == pcm and len(chunks) > 10 and all(len(c) % 2 == 0 for c in chunks)
-    assert sent == {"fmt": "pcm", "latency": "balanced", "rate": 24000}
+    assert sent == {"fmt": "pcm", "latency": "low", "rate": 24000}          # первый звук важнее
 
 
 def test_wav_header_split_across_chunks_is_removed(fish):
@@ -134,3 +134,56 @@ def test_sound_plays_before_synthesis_finishes(monkeypatch, tmp_path):
     asyncio.run(go())
     assert seen["early"] > 0, "звук ждал конца синтеза"
     assert seen["total"] >= 2 * len(loud)
+
+
+# ── соединения: переиспользуются, мёртвый сокет из пула — один повтор ──────────
+class _FakeHTTPResp:
+    def __init__(self, data, status=200):
+        self._d, self.status, self.reason, self.headers, self.will_close = data, status, "OK", {}, False
+
+    def read(self, n=-1):
+        out, self._d = (self._d, b"") if n is None or n < 0 else (self._d[:n], self._d[n:])
+        return out
+
+    def read1(self, n=-1):
+        return self.read(n)
+
+    def isclosed(self):
+        return not self._d
+
+
+class _FakeConn:
+    made = 0
+
+    def __init__(self, dead=False):
+        _FakeConn.made += 1
+        self.dead, self.closed, self.requests = dead, False, 0
+
+    def request(self, *a, **k):
+        if self.dead:
+            raise ConnectionResetError("сервер закрыл простой сокет")
+        self.requests += 1
+
+    def getresponse(self):
+        return _FakeHTTPResp(b"\x01\x02" * 10)
+
+    def close(self):
+        self.closed = True
+
+
+def test_connection_is_reused_and_dead_pooled_socket_is_retried(monkeypatch):
+    for k in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(tts_fish, "_key", lambda: "k")
+    monkeypatch.setattr(tts_fish, "_pool", [])
+    _FakeConn.made = 0
+    monkeypatch.setattr(tts_fish, "_new_conn", lambda: _FakeConn())
+    with tts_fish._open("раз", "pcm", "low", 24000) as r:
+        assert r.read() == b"\x01\x02" * 10
+    with tts_fish._open("два", "pcm", "low", 24000) as r:
+        r.read()
+    assert _FakeConn.made == 1                              # второй раз — то же соединение
+    import time
+    tts_fish._pool[:] = [(time.monotonic(), _FakeConn(dead=True))]
+    with tts_fish._open("три", "pcm", "low", 24000) as r:
+        assert r.read()                                     # повтор на свежем — без ошибки

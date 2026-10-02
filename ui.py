@@ -81,10 +81,12 @@ class C:
     GREEN_D  = "#2aa05a"
     RED      = "#ff4660"
     MUTED_C  = "#ff4660"
-    TEXT     = "#d6dee5"
-    TEXT_DIM = "#5c6873"
-    TEXT_MED = "#8a96a1"
-    WHITE    = "#eef3f6"
+    # Текст — «холодный HUD»: с голубым оттенком в тон бирюзе. Самый тусклый
+    # (TEXT_DIM) — не ниже 4.5:1 к панелям: раньше подсказки сливались с фоном.
+    TEXT     = "#e6f3fa"
+    TEXT_DIM = "#6f8ca0"
+    TEXT_MED = "#8fb0c4"
+    WHITE    = "#f4fbff"
     DARK     = "#05090d"
     BAR_BG   = "#0f161d"
 
@@ -635,7 +637,15 @@ class HeaderBar(QWidget):
             vw = p.fontMetrics().horizontalAdvance(val)
             parts.append((lab, val, lw, vw))
         gap = 22
-        total = sum(lw + vw for _, _, lw, vw in parts) + gap * max(0, len(parts) - 1)
+
+        def width(ps):
+            return sum(lw + vw for _, _, lw, vw in ps) + gap * max(0, len(ps) - 1)
+        # Не влезают между именем и кнопками справа — последние цифры уходят,
+        # а не наезжают на «JARVIS» (на узком окне так и было).
+        left_end, right_start = 180, W - 270
+        while parts and (W - width(parts)) / 2 < left_end or parts and (W + width(parts)) / 2 > right_start:
+            parts.pop()
+        total = width(parts)
         x = (W - total) / 2
         for i, (lab, val, lw, vw) in enumerate(parts):
             p.setFont(lab_f)
@@ -891,8 +901,18 @@ class SetupOverlay(QWidget):
 PAGES = [
     ("home", "Джарвис", "spark"), ("commands", "Команды", "bolt"), ("study", "Учёба", "book"),
     ("football", "Футбол", "ball"), ("contacts", "Контакты", "phone"), ("about", "Обо мне", "person"), ("keys", "Ключи", "key"),
-    ("backup", "Копия", "lock"), ("help", "Что умею", "grid"), ("settings", "Настройки", "gear"),
+    ("backup", "Копия", "copy"), ("help", "Что умею", "grid"), ("settings", "Настройки", "gear"),
 ]
+
+
+_NAV_SYSTEM_FIRST = {"keys"}
+
+
+def _nav_sep() -> QFrame:
+    ln = QFrame()
+    ln.setFixedSize(40, 1)
+    ln.setStyleSheet(f"background: {C.BORDER_B}; border: none;")
+    return ln
 
 
 class NavRail(QFrame):
@@ -931,10 +951,17 @@ class NavRail(QFrame):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _=False, k=key: on_pick(k))
             self.buttons[key] = b
+            if key in _NAV_SYSTEM_FIRST:
+                # Системное (ключи, копия, справка, настройки) — внизу, отдельно от
+                # своих экранов, как в macOS; раньше было 10 одинаковых пунктов подряд.
+                lay.addStretch(1)
+                lay.addWidget(_nav_sep(), 0, Qt.AlignmentFlag.AlignHCenter)
+                lay.addSpacing(4)
             lay.addWidget(b, 0, Qt.AlignmentFlag.AlignHCenter)
             if key == "home":
-                lay.addSpacing(6)
-        lay.addStretch(1)
+                lay.addSpacing(2)
+                lay.addWidget(_nav_sep(), 0, Qt.AlignmentFlag.AlignHCenter)
+                lay.addSpacing(2)
 
     def select(self, key: str):
         for k, b in self.buttons.items():
@@ -1013,13 +1040,18 @@ class MainWindow(QMainWindow):
         self.move(screen.x() + (screen.width() - w0) // 2, screen.y() + (screen.height() - h0) // 2)
 
         self.setStyleSheet(f"""
-            QMainWindow, QWidget {{ background: {C.BG}; color: {C.TEXT}; }}
+            QMainWindow, QWidget#central {{ background: {C.BG}; }}
+            QWidget {{ color: {C.TEXT}; }}
             QSplitter::handle {{ background: {C.BORDER}; }}
         """)
 
         self.muted = False        # см. комментарий выше — микрофон слушает сразу
         self.current_file: str | None = None
         self.on_text_command = None
+        self.on_island_confirm = None      # кнопки «Разрешить / Отклонить» на капсуле (main.py)
+        self.on_file_dropped = None        # файл брошен на капсулу (main.py)
+        self.on_wake_trained = None        # обучили слову «Джарвис» — включить детектор (main.py)
+        self.wake_device = None            # микрофон Джарвиса для обучения (main.py)
 
         # ── Системный трей Windows ──────────────────────────────────
         try:
@@ -1035,6 +1067,9 @@ class MainWindow(QMainWindow):
         # Шапка во всю ширину, под ней шар и чат. Левой колонки с полосками
         # больше нет: цифры уехали в шапку, статус — в плашку над шаром.
         central = QWidget()
+        # Фон — только у окна и центра. Правило «QWidget {background}» красило
+        # каждую обёртку внутри карточек: на экранах были тёмные прямоугольники.
+        central.setObjectName("central")
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1268,6 +1303,9 @@ class MainWindow(QMainWindow):
             elif text.startswith("SYS: ⏰") and ":" in text[7:]:
                 title, _, body = text[len("SYS: ⏰"):].strip().partition(":")
                 island.notify(title.strip(), body.strip())
+            elif text.startswith("SYS: 😵") and ":" in text[7:]:
+                title, _, body = text[len("SYS: 😵"):].strip().partition(":")
+                island.trouble(title.strip().upper(), body.strip())
         # Готовый ответ (в том числе на текстовую команду) — ещё и субтитром.
         if text[:8].lower() == "джарвис:":
             self._sub_sig.emit(text.split(":", 1)[1])
@@ -1301,7 +1339,9 @@ class MainWindow(QMainWindow):
             return
         try:
             from ui_island import Island
-            self._island = Island(on_open=self._restore_from_island)
+            self._island = Island(on_open=self._restore_from_island,
+                                  on_confirm=lambda ok: self._island_call("on_island_confirm", ok),
+                                  on_file=lambda path: self._island_call("on_file_dropped", path))
         except Exception as exc:
             _logger.warning("Капсула недоступна: %s", exc)
             return
@@ -1312,6 +1352,36 @@ class MainWindow(QMainWindow):
             self._island_tmr = QTimer(self)
             self._island_tmr.timeout.connect(lambda: self._island_wanted(self._out_of_sight()))
             self._island_tmr.start(700)
+
+    def _island_call(self, attr: str, *args):
+        """Кнопка или файл на капсуле → обработчик, который поставил main.py."""
+        handler = getattr(self, attr, None)
+        if callable(handler):
+            try:
+                handler(*args)
+            except Exception as exc:
+                _logger.warning("Капсула: %s не сработал: %s", attr, exc, exc_info=True)
+
+    def _island_do(self, method: str, *args):
+        isl = getattr(self, "_island", None)
+        if isl is not None:
+            getattr(isl, method)(*args)
+
+    # Из любого потока: капсула принимает всё через сигналы.
+    def tool_started(self, name: str, args: dict | None = None):
+        self._island_do("tool_started", name, args)
+
+    def tool_finished(self, name: str, ok: bool | None = True):
+        self._island_do("tool_finished", name, ok)
+
+    def ask_confirm(self, question: str):
+        self._island_do("ask_confirm", question)
+
+    def confirm_done(self):
+        self._island_do("confirm_done")
+
+    def file_progress(self, name: str, frac: float, stage: str):
+        self._island_do("file_progress", name, frac, stage)
 
     def _out_of_sight(self) -> bool:
         if not self.isVisible() or self.isMinimized():
@@ -1378,7 +1448,9 @@ class MainWindow(QMainWindow):
             def calibrate():
                 try:
                     from core.wake_calibrate import run_gui
-                    run_gui()
+                    device_fn = getattr(self, "wake_device", None)
+                    run_gui(device_fn() if callable(device_fn) else None)
+                    self._island_call("on_wake_trained")
                 except Exception as exc:
                     _logger.warning("Обучение слову: %s", exc)
 

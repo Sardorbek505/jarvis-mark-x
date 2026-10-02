@@ -310,6 +310,7 @@ def test_pc_call_contact_needs_yes(store, monkeypatch):
     placed = []
     monkeypatch.setattr(ct.contacts(), "call_fn", lambda target, name, text, **kw: placed.append((name, text)) or "ок")
     monkeypatch.setattr(ct.contacts().me, "linked", lambda: False)
+    monkeypatch.setattr(book, "quiet_now", lambda: False)          # тест не зависит от часов
     res = pc_macros.call_contact("Ибрагиму", "опоздаю")
     assert res["need_confirm"] and "Ибрагим" in res["text"] and placed == []
     res = pc_macros.call_contact("Ибрагиму", "опоздаю", confirmed=True)
@@ -321,3 +322,16 @@ def test_pc_call_contact_needs_yes(store, monkeypatch):
         time.sleep(0.01)
     assert placed == [("Ибрагим", "опоздаю")]
     assert not pc_macros.call_contact("соседу", "x")["ok"]
+
+
+
+def test_pc_call_from_bot_respects_quiet_hours_unless_urgent(store, monkeypatch):
+    """Раньше звонок из бота всегда был «срочным» и мог разбудить человека ночью."""
+    from core import contacts as ct
+    book = ct.contacts().book
+    book.upsert(ct.Contact(name="Ибрагим", telegram="+998901112233", can_call=True))
+    monkeypatch.setattr(ct.contacts(), "call_fn", lambda target, name, text, **kw: "ок")
+    monkeypatch.setattr(ct.contacts().me, "linked", lambda: False)
+    monkeypatch.setattr(book, "quiet_now", lambda: True)
+    assert not pc_macros.call_contact("Ибрагиму", "опоздаю")["ok"]
+    assert pc_macros.call_contact("Ибрагиму", "срочно перезвони")["need_confirm"]

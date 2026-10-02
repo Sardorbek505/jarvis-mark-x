@@ -121,7 +121,7 @@ def validate_gemini_key(key: str) -> tuple[bool, str]:
     except Exception as e:
         err_msg = str(e)
         if "API_KEY_INVALID" in err_msg or "400" in err_msg:
-            return False, "Неверный API ключ (API_KEY_INVALID)"
+            return False, "Неверный API-ключ"
         if "RESOURCE_EXHAUSTED" in err_msg or "429" in err_msg:
             return False, "Превышена квота запросов (429)"
         return False, f"Ошибка проверки: {err_msg[:120]}"
@@ -376,9 +376,9 @@ class SetupWizardDialog(QDialog):
         # Tabs
         self.tabs = QTabWidget()
         self.tabs.addTab(self._tab_ai(), "🧠 Мозг (Gemini)")
-        self.tabs.addTab(self._tab_audio(), "🎙️ Микрофон и Звук")
+        self.tabs.addTab(self._tab_audio(), "🎙️ Микрофон и звук")
         self.tabs.addTab(self._tab_voice(), "🔊 Голос")
-        self.tabs.addTab(self._tab_telegram(), "📱 Telegram (Опц.)")
+        self.tabs.addTab(self._tab_telegram(), "📱 Telegram (по желанию)")
         main_layout.addWidget(self.tabs)
 
         # Autostart checkbox
@@ -408,7 +408,7 @@ class SetupWizardDialog(QDialog):
         tab_layout.setSpacing(12)
         _art_banner(tab_layout, "setup/setup_keys.jpg", "Мозг Джарвиса", "Бесплатный ключ Google AI Studio — одна минута.")
 
-        lbl = QLabel("<b>Ключ Google Gemini API</b> (обязательно для работы ума):")
+        lbl = QLabel("<b>Ключ Google Gemini API</b> (без него Джарвис не работает):")
         tab_layout.addWidget(lbl)
 
         key_row = QHBoxLayout()
@@ -513,7 +513,7 @@ class SetupWizardDialog(QDialog):
         try:
             import sounddevice as sd
             devices = sd.query_devices()
-            self.combo_mic.addItem("Автовыбор (Рекомендуется — физический микрофон)", None)
+            self.combo_mic.addItem("Автовыбор (рекомендуется — физический микрофон)", None)
             for i, d in enumerate(devices):
                 if d["max_input_channels"] > 0 and d.get("hostapi", 0) == 0:
                     name = f"[{i}] {d['name']}"
@@ -543,9 +543,9 @@ class SetupWizardDialog(QDialog):
 
         tab_layout.addWidget(QLabel("<b>Основной голос Джарвиса:</b>"))
 
-        self.rb_edge_dmitry = QRadioButton("Microsoft Edge — Дмитрий (100% Бесплатно, без задержек)")
-        self.rb_edge_svetlana = QRadioButton("Microsoft Edge — Светлана (Женский, бесплатно)")
-        self.rb_fish = QRadioButton("Fish Audio — Каноничный голос JARVIS из фильмов (Требует API ключ)")
+        self.rb_edge_dmitry = QRadioButton("Microsoft Edge — Дмитрий (бесплатно, без задержек)")
+        self.rb_edge_svetlana = QRadioButton("Microsoft Edge — Светлана (женский, бесплатно)")
+        self.rb_fish = QRadioButton("Fish Audio — голос JARVIS из фильмов (нужен API-ключ)")
 
         self.rb_edge_dmitry.setChecked(True)
         tab_layout.addWidget(self.rb_edge_dmitry)
@@ -556,7 +556,7 @@ class SetupWizardDialog(QDialog):
         self.fish_box = QWidget()
         fb_layout = QVBoxLayout(self.fish_box)
         fb_layout.setContentsMargins(16, 4, 0, 4)
-        fb_layout.addWidget(QLabel("API ключ Fish Audio:"))
+        fb_layout.addWidget(QLabel("API-ключ Fish Audio:"))
         self.edit_fish_key = QLineEdit()
         self.edit_fish_key.setPlaceholderText("Вставьте ключ Fish Audio...")
         fb_layout.addWidget(self.edit_fish_key)
@@ -667,8 +667,8 @@ class SetupWizardDialog(QDialog):
         if not gemini_key:
             QMessageBox.warning(
                 self,
-                "Не указан API ключ",
-                "Пожалуйста, введите Gemini API Key на первой вкладке.\nБез него ассистент не сможет отвечать.",
+                "Не указан API-ключ",
+                "Пожалуйста, введите API-ключ Gemini на первой вкладке.\nБез него ассистент не сможет отвечать.",
             )
             self.tabs.setCurrentIndex(0)
             return

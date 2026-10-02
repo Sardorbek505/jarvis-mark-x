@@ -100,6 +100,20 @@ USER_TABLES = (
 )
 
 
+def _has_words(hay: str, needle: str) -> bool:
+    """needle целыми словами внутри hay («имя: сардор» не в «имя: сардорбек»)."""
+    import re
+    return bool(needle) and re.search(r"(?<!\w)" + re.escape(needle) + r"(?!\w)", hay) is not None
+
+
+def _fact_key(fact: str) -> str:
+    """«город: ташкент» → «город». Ключ — только короткий (до 40 знаков), без
+    точек: «напомнил: завтра в 10» — не ключ-значение."""
+    key, sep, rest = fact.partition(":")
+    key = key.strip()
+    return key if sep and rest.strip() and 0 < len(key) <= 40 and "." not in key else ""
+
+
 class MemoryStore:
     def __init__(self):
         self._url = os.getenv("DATABASE_URL", "").strip()
@@ -462,12 +476,16 @@ class MemoryStore:
         # Уже известное (целиком содержится в сохранённом) — пропускаем.
         # Более полное («…Сардор, ему 21 год» при «…Сардор») раньше тоже
         # отбрасывалось как «дубль» — теперь оно заменяет короткую версию.
+        # Сравниваем ЦЕЛЫМИ словами: «имя: Сардор» не дубль «имя: Сардорбек».
+        # Тот же ключ («город: …») с другим значением — значение сменилось:
+        # заменяем, а не копим «город: Ташкент» рядом с «город: Самарканд».
         low = fact.lower()
+        key = _fact_key(low)
         for i, f in enumerate(existing):
             fl = f.lower()
-            if low == fl or low in fl:
+            if low == fl or _has_words(fl, low):
                 return False
-            if fl in low:
+            if _has_words(low, fl) or (key and key == _fact_key(fl)):
                 await self._exec(
                     "UPDATE facts SET fact=?, ts=? WHERE user_id=? AND fact=?",
                     (fact, datetime.now().isoformat(), uid, f),
@@ -638,6 +656,29 @@ class MemoryStore:
 
     async def mark_reminder_sent(self, reminder_id: int):
         await self._exec("UPDATE reminders SET sent=1 WHERE id=?", (reminder_id,))
+
+    async def claim_reminder(self, reminder_id: int) -> bool:
+        """Забронировать напоминание под отправку (sent 0 → 2). True — оно наше.
+        Два экземпляра бота на одной базе (передеплой, локальный запуск) раньше
+        оба видели sent=0 и оба слали — и оба звонили на ПК."""
+        if self._backend == "off":
+            return True
+        sql = "UPDATE reminders SET sent=2 WHERE id=? AND sent=0"
+        if self._pg:
+            async with self._pool.acquire() as con:
+                status = await con.execute(_pg(sql), reminder_id)
+            return str(status).endswith(" 1")
+        cur = await self._sqlite.execute(sql, (reminder_id,))
+        await self._sqlite.commit()
+        return cur.rowcount == 1
+
+    async def release_reminder(self, reminder_id: int):
+        """Не доставилось — вернуть в очередь (повторится через полминуты)."""
+        await self._exec("UPDATE reminders SET sent=0 WHERE id=? AND sent=2", (reminder_id,))
+
+    async def release_stale_claims(self):
+        """При запуске: брони, оставшиеся от упавшего процесса, — снова в очередь."""
+        await self._exec("UPDATE reminders SET sent=0 WHERE sent=2", ())
 
     async def delete_reminder(self, uid: int, reminder_id: int) -> bool:
         owner = await self._fetchone(
@@ -929,6 +970,12 @@ class MemoryStore:
             return
         await self.ensure_loaded(uid)
         ts = created_at or datetime.now().isoformat()
+        # Повторная отправка (ответ сервера потерялся — ПК шлёт ту же пачку)
+        # раньше удваивала реплики. Реплика с тем же временем и текстом — та же.
+        if created_at and await self._fetchone(
+                "SELECT 1 FROM messages WHERE user_id=? AND role=? AND created_at=? AND text=? LIMIT 1",
+                (uid, role, ts, text[:2000])):
+            return
         await self._exec(
             "INSERT INTO messages(user_id, role, text, created_at) VALUES(?,?,?,?)",
             (uid, role, text[:2000], ts),
@@ -938,13 +985,16 @@ class MemoryStore:
         del voice[:-30]
 
     async def messages_after(self, uid: int, after_id: int, limit: int = 30) -> list:
-        """Переписка в Telegram после сообщения after_id (для ПК)."""
+        """Переписка в Telegram после сообщения after_id (для ПК) — по порядку.
+
+        Раньше брались 30 САМЫХ НОВЫХ, и курсор перескакивал через более старые
+        непрочитанные: ПК их не видел никогда. Теперь — следующие 30 от курсора."""
         rows = await self._fetchall(
             "SELECT id, role, text, created_at FROM messages WHERE user_id=? AND id>? "
-            "AND role IN ('user', 'model') ORDER BY id DESC LIMIT ?",
+            "AND role IN ('user', 'model') ORDER BY id ASC LIMIT ?",
             (uid, int(after_id or 0), limit),
         )
-        return [{"id": r[0], "role": r[1], "text": r[2], "created_at": r[3]} for r in reversed(rows)]
+        return [{"id": r[0], "role": r[1], "text": r[2], "created_at": r[3]} for r in rows]
 
     async def del_fact_text(self, uid: int, fact: str) -> bool:
         """Удалить факт по точному тексту (без учёта регистра)."""

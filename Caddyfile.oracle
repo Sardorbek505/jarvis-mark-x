@@ -18,7 +18,7 @@
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
-		X-Frame-Options "SAMEORIGIN"
+		Content-Security-Policy "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org"
 	}
 
 	log {

@@ -484,7 +484,7 @@ async def _reply_pc_result(message, result: dict | None) -> None:
     """
     if result is None:
         await message.reply_text(
-            "❌ ПК не ответил. Убедись что pc_server запущен и попробуй ещё раз."
+            "❌ ПК не ответил. Убедись, что Джарвис на компьютере запущен, и попробуй ещё раз."
         )
         return
     text = result.get("text") or "Готово"
@@ -703,7 +703,7 @@ async def cmd_memstats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
            "Записи этого периода в неё не попадут."
            if s["degraded"]
            else "" if s["backend"] == "Postgres"
-           else " ⚠️ (эфемерно — задай DATABASE_URL!)"),
+           else " ⚠️ (память временная — после перезапуска пропадёт)"),
         f"💬 Сообщений в логе: *{c.get('messages', 0)}*",
         f"🧠 В семантической памяти: *{c.get('embeddings', 0)}* "
         + ("(/reindex чтобы доиндексировать историю)" if c.get('embeddings', 0) < c.get('messages', 0) else "✓"),
@@ -720,7 +720,7 @@ async def cmd_memstats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if s["facts_total"] > s["facts_in_context"]:
         lines.append(
             f"\n⚠️ {s['facts_total'] - s['facts_in_context']} старых фактов хранятся, "
-            "но НЕ попадают в контекст (лимит). Фаза 2 это исправит.")
+            "но не попадают в контекст (лимит) — Джарвис помнит их, но вспоминает только по запросу.")
     await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -1144,7 +1144,7 @@ async def cmd_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     mid = personas.resolve(arg)
     if not mid:
         await update.effective_message.reply_text(
-            "Не знаю такой режим 🤔\n\n" + personas.list_text(await memory.get_mode(uid)),
+            "Не знаю такого режима 🤔\n\n" + personas.list_text(await memory.get_mode(uid)),
             parse_mode="Markdown",
         )
         return
@@ -1331,9 +1331,8 @@ async def cmd_findnote(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 _PC_OFFLINE = (
-    "❌ ПК офлайн.\n"
-    "Запусти на компьютере `scripts\\start_pc.bat` "
-    "(или `python -m telegram_bot.pc_server`)."
+    "❌ Компьютер не в сети.\n"
+    "Включи на нём Джарвиса — связь поднимется сама."
 )
 
 
@@ -1511,7 +1510,7 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     confirm = await _store_reminder(update.effective_user.id, text)
     if not confirm:
         await update.effective_message.reply_text(
-            "Не понял когда напомнить. Попробуй:\n"
+            "Не понял, когда напомнить. Попробуй:\n"
             "• через 30 минут\n"
             "• в 15:00\n"
             "• завтра в 9:00"

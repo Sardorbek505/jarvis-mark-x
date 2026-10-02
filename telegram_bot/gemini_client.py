@@ -1,5 +1,6 @@
 """Gemini API wrapper for Telegram bot — text, voice and image responses."""
 import asyncio
+import contextvars
 import os
 import time
 import logging
@@ -179,6 +180,8 @@ def _unavailable_message(err: Exception | None) -> str:
     return "Извини, ИИ сейчас недоступен (проблема с моделью Gemini). Проверь API-ключ и квоту."
 
 
+_FAILED: contextvars.ContextVar[bool] = contextvars.ContextVar("gemini_generate_failed", default=False)
+
 class GeminiClient:
     # Значения по умолчанию на классе: без запасных моделей и без отдыха
     # (см. __init__) — клиент ведёт себя как раньше.
@@ -187,12 +190,24 @@ class GeminiClient:
     # Последний _generate вернул не ответ, а сообщение о сбое. По нему
     # вызывающие не сохраняют «ответ» в заметки и историю: раньше «Лимит
     # Gemini исчерпан…» становился заметкой и подмешивался в каждый промпт.
-    last_generate_failed = False
+    # Флаг «ответ — это сбой» свой у каждого запроса (contextvars: у каждой
+    # задачи asyncio своя копия). Общий на синглтоне он гонялся: сбой у одного
+    # пользователя помечал провалом удачный ответ другому — тот не попадал в
+    # историю и память.
+    @property
+    def last_generate_failed(self) -> bool:
+        return _FAILED.get()
+
+    @last_generate_failed.setter
+    def last_generate_failed(self, value: bool):
+        _FAILED.set(bool(value))
 
     def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
         self._client = genai.Client(
             api_key=api_key,
-            http_options={"api_version": "v1beta"},
+            # Без таймаута повисший запрос ждал вечно: четыре таких — и бот
+            # (concurrent_updates=4) молчал, а пул потоков был занят. Миллисекунды.
+            http_options={"api_version": "v1beta", "timeout": 60_000},
         )
         self._model = model
         self._history: dict = {}  # user_id -> list of Content dicts

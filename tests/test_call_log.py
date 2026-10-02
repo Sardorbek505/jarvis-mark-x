@@ -56,3 +56,67 @@ def test_dialog_panel_shows_call_lines():
     w._handle_append("CALL: Азиз: Иду, буду через 10 минут")
     text = w.toPlainText()
     assert "📞 АЗИЗ" in text and "Иду, буду через 10 минут" in text and "CALL" not in text
+
+
+# ── расписание и история звонков — разные файлы ────────────────────────────────
+def test_schedule_and_history_do_not_corrupt_each_other(tmp_path, monkeypatch):
+    import json
+
+    from core import call_log as CL
+    from core import tg_call as T
+    monkeypatch.setattr("core.paths.get_data_root", lambda: tmp_path)
+    monkeypatch.delenv("JARVIS_CALL_LOG", raising=False)
+    # Старый общий calls.json с расписанием (списком) — переносится в call_schedule.json.
+    (tmp_path / "calls.json").write_text(json.dumps(
+        [{"id": 1, "time": "06:00", "repeat": "daily", "date": "2026-10-01", "topic": "отчёт", "last": ""}]),
+        encoding="utf-8")
+    monkeypatch.setattr(T, "_schedule", None)
+    monkeypatch.setattr(CL, "_log", None)
+    sch = T.schedule()
+    assert [i["time"] for i in sch.items] == ["06:00"]
+    log = CL.call_log()
+    assert log.calls == []                                    # список — не история, но и не падение
+    log.add("Мама", "ужин", "Сказала: приду в семь", ["Вы: при", "Вы: ду в семь"], started=1_700_000_000)
+    sch.add("07:30", "напомнить про зал")
+    # Перезапуск: обе стороны читаются, ничего не потерялось.
+    monkeypatch.setattr(T, "_schedule", None)
+    monkeypatch.setattr(CL, "_log", None)
+    assert {i["time"] for i in T.schedule().items} == {"06:00", "07:30"}
+    assert [c["who"] for c in CL.call_log().calls] == ["Мама"]
+    assert T.schedule().describe()                            # раньше — TypeError
+
+
+def test_what_they_said_glues_word_pieces():
+    from core.tg_call import _what_they_said
+    # Формат как в TgCall: f"{who}:{кусок}" — пробел в начале куска = новое слово.
+    said = _what_they_said(["Вы:При", "Вы:вет, Джар", "Вы:вис", "Джарвис: Здравствуйте", "Вы: я при", "Вы:ду в семь"])
+    assert said.startswith("Привет, Джарвис") and "приду в семь" in said
+
+
+# ── звонок по заданию: разговор, вопросы, язык собеседника ─────────────────────
+def test_contact_call_is_a_conversation_with_questions():
+    from core.tg_call import instruction_contact
+    p = instruction_contact("Сардор", "Ибрагим", "ужин в семь", ask="придёт ли он", note="друг детства")
+    assert "ужин в семь" in p and "придёт ли он" in p and "друг детства" in p
+    assert "узбекский" in p and "не обещай" in p                    # язык собеседника; без обещаний
+    assert "ничего не добавляя от себя" not in p                    # больше не автоответчик
+
+
+def test_contacts_call_passes_question_and_note(monkeypatch):
+    from core import contacts as CT
+    api = CT.Contacts.__new__(CT.Contacts)
+    got = {}
+    c = CT.Contact(name="Ибрагим", telegram="@ibr", note="друг детства")
+    monkeypatch.setattr(api, "precheck", lambda *a, **k: (c, ""), raising=False)
+    api.me = type("Me", (), {"linked": lambda self: False})()
+    api.log = lambda s: None
+    api.call_fn = lambda target, name, text, **kw: got.update(kw, text=text) or "Поговорили"
+    import threading
+    done = threading.Event()
+    api.call("Ибрагим", "ужин в семь", done=lambda r: done.set(), ask="во сколько придёт")
+    assert done.wait(3) and got == {"ask": "во сколько придёт", "note": "друг детства", "text": "ужин в семь"}
+
+
+def test_notify_owner_without_link_is_quiet():
+    from telegram_bot import pc_server
+    assert pc_server.notify_owner("📞 тест") is False

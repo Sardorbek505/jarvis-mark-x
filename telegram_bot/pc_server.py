@@ -701,6 +701,39 @@ async def _handle_userbot(msg: dict) -> dict:
     return {"ok": False, "text": f"❌ Не отправлено: {res.get('error')}"}
 
 
+def _auth_header(token: str) -> dict:
+    """Заголовок с токеном: в websockets ≥14 — additional_headers, раньше — extra_headers.
+    Не-ASCII токен (кириллица) в заголовок не влезает — тогда только адрес."""
+    if not token.isascii():
+        return {}
+    try:
+        major = int(str(websockets.__version__).split(".")[0])
+    except (AttributeError, ValueError):
+        major = 14
+    return {("additional_headers" if major >= 14 else "extra_headers"): {"Authorization": f"Bearer {token}"}}
+
+
+# Текущее соединение с сервером — чтобы ПК мог сам написать владельцу в
+# Telegram (итог звонка, заказанного из бота). Сервер такие сообщения уже
+# понимает (pc_bridge: type=notification → бот).
+_live_ws = None
+_live_loop: asyncio.AbstractEventLoop | None = None
+
+
+def notify_owner(text: str, user_id=None) -> bool:
+    """Из любого потока: сообщение владельцу в Telegram. False — нет связи."""
+    ws, loop = _live_ws, _live_loop
+    if ws is None or loop is None or not loop.is_running() or not text:
+        return False
+    payload = json.dumps({"type": "notification", "text": text, "user_id": user_id})
+    try:
+        asyncio.run_coroutine_threadsafe(ws.send(payload), loop).result(timeout=10)
+        return True
+    except Exception as exc:
+        logger.warning("Сообщение владельцу не ушло: %s", exc)
+        return False
+
+
 def _handle_action(action: str, msg: dict) -> dict:
     """Свои команды и контакты ПК для пульта (telegram_bot/pc_macros.py)."""
     from telegram_bot import pc_macros
@@ -712,7 +745,7 @@ def _handle_action(action: str, msg: dict) -> dict:
                 "data": {"need_confirm": bool(res.get("need_confirm")), "name": res.get("name", "")}}
     if action == "call_contact":
         res = pc_macros.call_contact(str(msg.get("alias") or ""), str(msg.get("message") or ""),
-                                     bool(msg.get("confirmed")))
+                                     bool(msg.get("confirmed")), user_id=msg.get("user_id"))
         return {"ok": res["ok"], "text": res["text"],
                 "data": {"need_confirm": bool(res.get("need_confirm")), "name": res.get("name", "")}}
     res = pc_macros.resolve_contact(str(msg.get("alias") or ""))
@@ -862,7 +895,11 @@ async def run_client(url: str, token: str):
         base = "ws://" + base[len("http://"):]
 
     sep = "&" if "?" in base else "?"
-    uri = f"{base}/pc-link{sep}token={token}"
+    # Токен — заголовком (в адресе его видят логи прокси и сервера) и, для
+    # старого сервера, в адресе — закодированным: «+» иначе читался как пробел,
+    # и токен из base64 не совпадал никогда.
+    from urllib.parse import quote
+    uri = f"{base}/pc-link{sep}token={quote(token, safe='')}"
     safe_uri = uri.split("token=")[0] + "token=***"
     logger.info(f"Подключаюсь к JARVIS: {safe_uri}")
 
@@ -875,6 +912,7 @@ async def run_client(url: str, token: str):
         try:
             async with websockets.connect(
                 uri,
+                **_auth_header(token),
                 # 10/10 вместо 20/20: тихо оборванная связь замечается за ~20 с,
                 # а не за ~40 — мост на сервере ждёт переподключения только 20.
                 ping_interval=10,
@@ -898,6 +936,8 @@ async def run_client(url: str, token: str):
                         f"{_OPEN_TIMEOUT_SEC:.0f} с — событийный цикл простаивал."
                     )
                 delay, fails, last_reason = _RECONNECT_MIN_SEC, 0, ""
+                global _live_ws, _live_loop
+                _live_ws, _live_loop = ws, asyncio.get_running_loop()
                 logger.info("✅ Подключено. Жду команды с телефона/Telegram…")
                 async for raw in ws:
                     try:

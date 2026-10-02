@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import json
+import contextlib
 import logging
 import os
 import re
@@ -160,10 +161,43 @@ async def broadcast_pc_status(online: bool):
 
 # ── PC link — home PC connects OUT to here (works behind NAT) ──────────────────
 
+_SECRET_RE = re.compile(r"((?:token|init_data)=)[^ &\"']+")
+
+
+class _MaskSecrets(logging.Filter):
+    """uvicorn пишет путь WebSocket целиком — с ?token=… и ?init_data=…: кто
+    читал логи Space/Caddy, получал вечный токен ПК (полный доступ к компьютеру)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        if "token=" in msg or "init_data=" in msg:
+            record.msg, record.args = _SECRET_RE.sub(r"\1***", msg), ()
+        return True
+
+
+def install_log_mask():
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        lg = logging.getLogger(name)
+        if not any(isinstance(f, _MaskSecrets) for f in lg.filters):
+            lg.addFilter(_MaskSecrets())
+
+
+install_log_mask()
+
+
+def _bearer(ws) -> str:
+    auth = ws.headers.get("authorization", "")
+    return auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+
+
 @app.websocket("/pc-link")
 async def pc_link(ws: WebSocket):
     import hmac
-    token = ws.query_params.get("token", "")
+    # Сначала заголовок (новый ПК), потом адрес (старый ПК — совместимость).
+    token = _bearer(ws) or ws.query_params.get("token", "")
     expected = _pc_link_token()
     # Без настроенного токена — не пускаем никого. Раньше пустой токен значил
     # «без проверки»: чужой «ПК» получал все команды и исходящие сообщения.
@@ -453,67 +487,80 @@ async def ws_endpoint(ws: WebSocket):
             except json.JSONDecodeError:
                 continue
 
-            mtype = msg.get("type", "")
-
-            if mtype == "client_info":
-                # Phone reports its timezone + location so JARVIS knows where
-                # the user is and the correct local time — wherever they travel.
-                user_context.update(
-                    user_id,
-                    tz=msg.get("tz"),
-                    city=msg.get("city"),
-                    lat=msg.get("lat"),
-                    lon=msg.get("lon"),
-                )
+            if not isinstance(msg, dict):
                 continue
+            # Одно кривое сообщение (не тот тип поля, сбой базы) раньше рвало
+            # соединение целиком — мини-апп «отваливалась». Теперь — в лог, дальше.
+            try:
+                mtype = msg.get("type", "")
 
-            if mtype == "get_data":
-                await _send_view(ws, user_id, msg.get("view", "dashboard"))
-                continue
-
-            if mtype in ("study_add", "study_done", "about_answer", "football_watch"):
-                _spawn(_pc_edit(ws, user_id, msg))
-                continue
-
-            if mtype in ("pc_macros", "pc_macro"):
-                # Долгая команда не должна держать остальной чат — отдельной задачей.
-                _spawn(_pc_macros(ws, user_id, msg))
-                continue
-
-            if mtype in ("habit_add", "habit_toggle", "habit_delete",
-                         "task_add", "task_done", "task_delete",
-                         "reminder_add", "reminder_delete", "reminder_done",
-                         "fact_delete"):
-                await _handle_action(ws, user_id, msg)
-                continue
-
-            if mtype == "text":
-                text = (msg.get("text") or "").strip()
-                if not text:
+                if mtype == "client_info":
+                    # Phone reports its timezone + location so JARVIS knows where
+                    # the user is and the correct local time — wherever they travel.
+                    user_context.update(
+                        user_id,
+                        tz=msg.get("tz"),
+                        city=msg.get("city"),
+                        lat=msg.get("lat"),
+                        lon=msg.get("lon"),
+                    )
                     continue
-                want_audio = bool(msg.get("tts", True))
-                await ws.send_text(json.dumps({"type": "thinking"}))
-                await _handle_text(ws, user_id, text, want_audio=want_audio)
 
-            elif mtype == "start_voice":
-                _audio_buffers[user_id] = b""
-                await ws.send_text(json.dumps({"type": "status", "state": "listening"}))
+                if mtype == "get_data":
+                    await _send_view(ws, user_id, msg.get("view", "dashboard"))
+                    continue
 
-            elif mtype == "audio":
-                chunk_b64 = msg.get("data", "")
-                if chunk_b64:
-                    # get/set (not +=) so hands-free streaming never KeyErrors
-                    # after a segment boundary reset the buffer.
-                    _audio_buffers[user_id] = _audio_buffers.get(user_id, b"") + base64.b64decode(chunk_b64)
+                if mtype in ("study_add", "study_done", "about_answer", "football_watch"):
+                    _spawn(_pc_edit(ws, user_id, msg))
+                    continue
 
-            elif mtype == "stop_voice":
-                want_audio = bool(msg.get("tts", True))
-                # Reset (not pop) so continued streaming keeps a valid buffer.
-                pcm = _audio_buffers.get(user_id, b"")
-                _audio_buffers[user_id] = b""
-                if len(pcm) >= 3200:
-                    await ws.send_text(json.dumps({"type": "status", "state": "processing"}))
-                    await _handle_voice(ws, user_id, pcm, want_audio=want_audio)
+                if mtype in ("pc_macros", "pc_macro"):
+                    # Долгая команда не должна держать остальной чат — отдельной задачей.
+                    _spawn(_pc_macros(ws, user_id, msg))
+                    continue
+
+                if mtype in ("habit_add", "habit_toggle", "habit_delete",
+                             "task_add", "task_done", "task_delete",
+                             "reminder_add", "reminder_delete", "reminder_done",
+                             "fact_delete"):
+                    await _handle_action(ws, user_id, msg)
+                    continue
+
+                if mtype == "text":
+                    text = (msg.get("text") or "").strip()
+                    if not text:
+                        continue
+                    want_audio = bool(msg.get("tts", True))
+                    await ws.send_text(json.dumps({"type": "thinking"}))
+                    await _handle_text(ws, user_id, text, want_audio=want_audio)
+
+                elif mtype == "start_voice":
+                    _audio_buffers[user_id] = b""
+                    await ws.send_text(json.dumps({"type": "status", "state": "listening"}))
+
+                elif mtype == "audio":
+                    chunk_b64 = msg.get("data", "")
+                    if chunk_b64:
+                        # get/set (not +=) so hands-free streaming never KeyErrors
+                        # after a segment boundary reset the buffer.
+                        buf = _audio_buffers.get(user_id, b"") + base64.b64decode(chunk_b64)
+                    # Не больше ~10 МБ (≈5 мин речи): бесконечный поток не съест память сервера.
+                    _audio_buffers[user_id] = buf[-_AUDIO_MAX:]
+
+                elif mtype == "stop_voice":
+                    want_audio = bool(msg.get("tts", True))
+                    # Reset (not pop) so continued streaming keeps a valid buffer.
+                    pcm = _audio_buffers.get(user_id, b"")
+                    _audio_buffers[user_id] = b""
+                    if len(pcm) >= 3200:
+                        await ws.send_text(json.dumps({"type": "status", "state": "processing"}))
+                        await _handle_voice(ws, user_id, pcm, want_audio=want_audio)
+            except WebSocketDisconnect:
+                raise
+            except Exception as e:
+                logger.exception("Mini App: сообщение %r не обработано: %s", msg.get("type"), e)
+                with contextlib.suppress(Exception):
+                    await ws.send_text(json.dumps({"type": "text", "text": "⚠️ Не получилось — попробуй ещё раз."}))
 
     except WebSocketDisconnect:
         pass
@@ -523,6 +570,8 @@ async def ws_endpoint(ws: WebSocket):
         _miniapp_clients.discard(ws)
         _audio_buffers.pop(user_id, None)
 
+
+_AUDIO_MAX = 10 * 1024 * 1024
 
 _SPEECH_STRIP = re.compile(
     r"[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF"
@@ -628,7 +677,7 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
             # PC connected but didn't respond — never fall through to Gemini
             await _send_text(
                 ws,
-                "❌ ПК не ответил. Убедись что pc_server запущен на компьютере (`scripts\\start_pc.bat`).",
+                "❌ ПК не ответил. Убедись, что Джарвис на компьютере запущен, и попробуй ещё раз.",
                 want_audio=False,
             )
         return
@@ -636,7 +685,7 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
     if _bridge and not _bridge.connected and is_pc_cmd:
         await _send_text(
             ws,
-            "❌ ПК офлайн. Запусти `scripts\\start_pc.bat` на своём компьютере.",
+            "❌ Компьютер не в сети. Включи на нём Джарвиса — связь поднимется сама.",
             want_audio=False,
         )
         return
@@ -646,6 +695,10 @@ async def _handle_text(ws: WebSocket, user_id: int, text: str, want_audio: bool 
         if _memory:
             await _memory.ensure_loaded(user_id)
         reply = await _gemini.chat(user_id, text)
+        if getattr(_gemini, "last_generate_failed", False):
+            # Текст сбоя («лимит исчерпан») — не ответ: не в историю и не в факты.
+            await _send_text(ws, reply, want_audio=False)
+            return
         # SEND/FETCH Mini App не выполняет — и показывать/зачитывать их
         # сырыми блоками не должен (раньше «[[SEND]] брат | …» звучало вслух).
         import re as _re

@@ -327,7 +327,7 @@ class FootballDialog(QDialog):
         lay.addWidget(IconBadge("ball", 38))
         col = QVBoxLayout()
         col.setSpacing(1)
-        col.addWidget(_label("ДЖАРВИС", "brand"))
+        col.addWidget(_label("Джарвис", "brand"))
         self.title = _label("Футбол", "h1", wrap=False)
         col.addWidget(self.title)
         lay.addLayout(col)

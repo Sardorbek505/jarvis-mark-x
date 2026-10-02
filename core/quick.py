@@ -235,6 +235,12 @@ def reply_for(q: Quick, result) -> str:
         return q.phrase()
     if q.reply and not failed(text):
         return q.phrase()
+    # Ответ инструмента бывает с кодом ошибки, путём или ссылкой — вслух и в
+    # чат идёт только человеческая часть.
+    from core.speech_text import for_speech
+    text = for_speech(text).strip()
+    if text.startswith("Ошибка:"):
+        text = "Не получилось, сэр: " + text[len("Ошибка:"):].strip()
     return text or q.phrase() or random.choice(ACK)
 
 

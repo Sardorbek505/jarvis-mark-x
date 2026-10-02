@@ -84,13 +84,19 @@ def _append_jsonl(path: Path, item: dict, keep: int | None = None):
 # ── журнал реплик ─────────────────────────────────────────────────────────────
 
 def log_turn(role: str, text: str, ts: float | None = None):
-    """role: "user" | "jarvis". Системные указания ([СИСТЕМА: …]) не пишем."""
+    """role: "user" | "jarvis" | "action" (что Джарвис сделал: открыл, написал,
+    нашёл). Системные указания ([СИСТЕМА: …]) не пишем.
+
+    Действия раньше не запоминались вовсе — «что ты вчера включал?» и «кому ты
+    писал?» оставались без ответа, хотя Джарвис сам это делал."""
     text = (text or "").strip()
     if not text or text.startswith("["):
         return
     ts = ts or time.time()
     _append_jsonl(DIALOG_FILE, {"ts": ts, "role": role, "text": text[:2000]}, KEEP_LINES)
-    _share(lambda sh: sh.queue_turn(role, text[:2000], ts))
+    # Бот знает роли user/jarvis — действие уходит как реплика Джарвиса.
+    shared_role, shared_text = ("jarvis", "Сделал: " + text) if role == "action" else (role, text)
+    _share(lambda sh: sh.queue_turn(shared_role, shared_text[:2000], ts))
 
 
 def turns_since(ts: float) -> list[dict]:
@@ -105,7 +111,8 @@ def _when(ts: float, now: float) -> str:
 
 
 def _line(r: dict) -> str:
-    return f"{'Вы' if r['role'] == 'user' else 'Джарвис'}: {r['text']}"
+    who = {"user": "Вы", "action": "Джарвис сделал"}.get(r.get("role"), "Джарвис")
+    return f"{who}: {r['text']}"
 
 
 def format_recent(now: float | None = None) -> str:
@@ -402,8 +409,32 @@ def recall(query: str = "") -> str:
     return "\n".join(out) or (f"В памяти ничего про «{q}»." if q else "Память пока пуста.")
 
 
+def _purge(path: Path, field: str, query: str) -> int:
+    """Убрать из журнала строки про это (сходство ≥ 85) — «забудь» значит забудь:
+    раньше факт стирался, а recall_memory всё равно находил его в репликах."""
+    from rapidfuzz import fuzz
+    q = (query or "").strip().lower()
+    if len(q) < 3:
+        return 0
+    with _lock:
+        rows = _read_jsonl(path)
+        keep = [r for r in rows
+                if max(fuzz.partial_ratio(q, str(r.get(field, "")).lower()),
+                       fuzz.token_set_ratio(q, str(r.get(field, "")).lower())) < 85]
+        if len(keep) == len(rows):
+            return 0
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            for r in keep:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        os.replace(tmp, path)
+        return len(rows) - len(keep)
+
+
 def forget_about(query: str) -> str:
     from memory.memory_manager import forget_matching
     gone = forget_matching(query)
-    return (f"Забыл: {', '.join(k for _, k, _ in gone)}." if gone
-            else f"В памяти нет фактов про «{query}».")
+    lines = _purge(DIALOG_FILE, "text", query) + _purge(EPISODES_FILE, "summary", query)
+    if gone:
+        return f"Забыл: {', '.join(k for _, k, _ in gone)}."
+    return "Забыл, сэр." if lines else f"В памяти нет фактов про «{query}»."

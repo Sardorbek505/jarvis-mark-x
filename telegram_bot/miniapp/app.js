@@ -659,7 +659,7 @@ voiceBtn.addEventListener('click', () => {
 
 // ── Вкладки ───────────────────────────────────────────────────────────────────
 let activeTab = 'chat';
-const TAB_TITLES = { chat: 'J.A.R.V.I.S', dashboard: 'СВОДКА', tasks: 'ДЕЛА', study: 'УЧЁБА', habits: 'ПРИВЫЧКИ', pc: 'ПК-ПУЛЬТ' };
+const TAB_TITLES = { chat: 'Джарвис', dashboard: 'Сводка', tasks: 'Дела', study: 'Учёба', habits: 'Привычки', pc: 'ПК-пульт' };
 // ── Анимации: подсветка вкладки переезжает, карточки каскадом, числа набегают ──
 // Только transform/opacity (их рисует видеокарта) и только при смене вкладки —
 // обновления данных раз в 30 с не перезапускают каскад и не мигают.
@@ -705,7 +705,7 @@ function switchTab(name) {
   activeTab = name;
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  $('screen-title').textContent = TAB_TITLES[name] || 'J.A.R.V.I.S';
+  $('screen-title').textContent = TAB_TITLES[name] || 'Джарвис';
   placeGlider();
   const t = document.querySelector(`.tab[data-tab="${name}"]`);
   if (t && !reduceMotion) { t.classList.remove('pop'); void t.offsetWidth; t.classList.add('pop'); }
@@ -736,11 +736,22 @@ const ICON_PATHS = {
   phone: '<path d="M21.5 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 1.6 4.2 2 2 0 0 1 3.6 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L7.6 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.8 2z"/>',
   ball: '<circle cx="12" cy="12" r="9.5"/><polygon points="12 7.6 15.6 10.2 14.2 14.4 9.8 14.4 8.4 10.2" fill="currentColor"/><path d="M12 7.6V2.6M15.6 10.2l4.6-1.6M14.2 14.4l2.9 4.1M9.8 14.4l-2.9 4.1M8.4 10.2 3.8 8.6"/>',
   play: '<polygon points="7 4.5 19 12 7 19.5" fill="currentColor"/>',
+  chevron: '<polyline points="6 9 12 15 18 9"/>',
   tray: '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1z"/>',
 };
 function icon(name, cls = '') {
   return `<svg class="ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" `
        + `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ''}</svg>`;
+}
+
+// ── Сворачиваемые карточки «Сводки» (как группы в настройках iPhone) ──────────
+// «Сводка» перерисовывается раз в 30 с — открытость храним сами, иначе карточка
+// закрывалась бы посреди чтения.
+let foldOpen = {};
+try { foldOpen = JSON.parse(localStorage.getItem('jarvis-fold') || '{}') || {}; } catch { foldOpen = {}; }
+function fold(key, title, body, cls = '') {
+  return `<details class="card fold ${cls}" data-fold="${key}" ${foldOpen[key] ? 'open' : ''}>`
+       + `<summary><h3>${title}${icon('chevron', 'chev')}</h3></summary>${body}</details>`;
 }
 
 // ── Данные вкладок ────────────────────────────────────────────────────────────
@@ -778,7 +789,6 @@ function renderDashboard(p) {
         <div><div class="stat-num" data-count="${Number(p.open_tasks) || 0}">${p.open_tasks ?? 0}</div><div class="stat-lbl">задач открыто</div></div>
       </button>
     </div>
-    ${renderFootball(p.football || {}, p.pc_online)}
     <div class="card"><h3>На сегодня</h3>
       ${today.length ? `<div class="list">${today.map(t => `<div>${esc(t)}</div>`).join('')}</div>`
                      : `<div class="sub">Планов нет — добавь в «Дела» или скажи Джарвису</div>`}
@@ -786,6 +796,7 @@ function renderDashboard(p) {
     <div class="card"><h3>Ближайшее напоминание</h3>
       <div class="sub">${p.next_reminder ? esc(p.next_reminder) : 'Напоминаний нет'}</div>
     </div>
+    ${renderFootball(p.football || {}, p.pc_online)}
     ${renderMe(p.me || {}, p.pc_online)}
     ${renderCalls(p.calls || {})}
     ${renderMemory(p)}
@@ -897,7 +908,7 @@ function renderFootball(f, online) {
 // ── С ПК: «Обо мне», звонки, «Что умею» ──────────────────────────────────────
 function renderMe(me, online) {
   if (!me.has) return `<div class="card"><h3>Обо мне</h3><div class="sub">Анкета приходит с ПК — включи компьютер с Джарвисом.</div></div>`;
-  let html = `<div class="card me"><h3>Обо мне <span class="count">${Number(me.known)}/${Number(me.total)}</span></h3>`;
+  let html = '';
   for (const g of me.groups || []) {
     html += `<div class="me-group">${esc(g.title)}</div>`;
     html += g.questions.map(q => `
@@ -907,7 +918,8 @@ function renderMe(me, online) {
         <span class="me-value ${q.value ? '' : 'unset'}">${esc(q.value || 'не указано')}</span>
       </button>`).join('');
   }
-  return html + `<div class="sub small">Нажми, чтобы изменить — сохранится на ПК.</div></div>`;
+  return fold('me', `Обо мне <span class="count">${Number(me.known)}/${Number(me.total)}</span>`,
+              html + `<div class="sub small">Нажми, чтобы изменить — сохранится на ПК.</div>`, 'me');
 }
 
 function renderCalls(c) {
@@ -926,11 +938,18 @@ function renderCalls(c) {
 
 function renderAbilities(list) {
   if (!list.length) return '';
-  return `<div class="card"><h3>Что я умею</h3><div class="sub small">Нажми — отправлю Джарвису.</div>` +
+  return fold('abilities', 'Что я умею', `<div class="sub small">Нажми — отправлю Джарвису.</div>` +
     list.map(s => `<div class="me-group">${esc(s.title)}</div><div class="ability-chips">` +
-      s.phrases.map(ph => `<button class="chip" data-try="${esc(ph)}">${esc(ph)}</button>`).join('') + `</div>`).join('') +
-    `</div>`;
+      s.phrases.map(ph => `<button class="chip" data-try="${esc(ph)}">${esc(ph)}</button>`).join('') + `</div>`).join(''));
 }
+
+// toggle не всплывает — ловим на погружении.
+$('dash-body').addEventListener('toggle', (e) => {
+  const d = e.target;
+  if (!d.dataset || !d.dataset.fold) return;
+  foldOpen[d.dataset.fold] = d.open;
+  try { localStorage.setItem('jarvis-fold', JSON.stringify(foldOpen)); } catch { /* приватный режим */ }
+}, true);
 
 $('dash-body').addEventListener('click', (e) => {
   const tryBtn = e.target.closest('[data-try]');
@@ -1037,7 +1056,7 @@ function renderMemory(p) {
   const a = p.about || {}, facts = a.facts || [];
   const voice = p.pc_voice || [], eps = p.pc_episodes || [];
   const shown = showAllFacts ? facts : facts.slice(0, 8);
-  let html = `<div class="card"><h3>Что я о тебе знаю <span class="count">${facts.length}</span></h3>`;
+  let html = '';
   if (a.about) html += `<div class="sub" style="color:var(--text);margin-bottom:6px">${esc(a.about)}</div>`;
   if (a.goals) html += `<div class="sub" style="margin-bottom:6px">${icon('target')}${esc(a.goals)}</div>`;
   if (facts.length) {
@@ -1047,12 +1066,11 @@ function renderMemory(p) {
   } else {
     html += `<div class="sub">Пока пусто — расскажи о себе, я запомню. Память общая с Джарвисом на ПК.</div>`;
   }
-  html += `</div>`;
+  html = fold('memory', `Что я о тебе знаю <span class="count">${facts.length}</span>`, html);
   if (eps.length || voice.length) {
-    html += `<div class="card"><h3>Недавно голосом на ПК</h3>`;
-    html += eps.map(e => `<div class="voice-line">${icon('archive')}${esc(e)}</div>`).join('');
-    html += voice.map(v => `<div class="voice-line"><b>${esc(v.who)}:</b> ${esc(v.text)}</div>`).join('');
-    html += `</div>`;
+    html += fold('voice', 'Недавно голосом на ПК',
+      eps.map(e => `<div class="voice-line">${icon('archive')}${esc(e)}</div>`).join('') +
+      voice.map(v => `<div class="voice-line"><b>${esc(v.who)}:</b> ${esc(v.text)}</div>`).join(''));
   }
   return html;
 }
