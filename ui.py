@@ -1003,6 +1003,7 @@ class MainWindow(QMainWindow):
     _welcome_sig = pyqtSignal(bool)
     # wait_for_api_key зовётся из рабочего потока: оверлей — только сигналом.
     _overlay_sig = pyqtSignal(str)
+    _intro_sig = pyqtSignal(object)             # интро на два хлопка (core/intro.py)
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1278,6 +1279,8 @@ class MainWindow(QMainWindow):
         self._page_sig.connect(self._open_page)
         self._welcome_sig.connect(self._show_welcome)
         self._overlay_sig.connect(self._show_overlay)
+        self._intro_sig.connect(self._show_intro)
+        self.on_intro_skipped = None              # main.py: пропустили — заглушить звук
 
     # ── Публичный API ──────────────────────────────────────────────────────────
     def write_log(self, text: str):
@@ -1607,6 +1610,24 @@ class MainWindow(QMainWindow):
         self._overlay_sig.emit(reason)
         self._key_ready.wait()
         return reason
+
+    def play_intro(self, checks: dict | None = None):
+        """Интро на весь экран — из любого потока."""
+        self._intro_sig.emit(checks or {})
+
+    def _show_intro(self, checks):
+        from ui_intro import IntroOverlay
+        if getattr(self, "_intro", None) is not None:
+            return                                  # уже идёт
+        ov = IntroOverlay(checks)
+        self._intro = ov
+
+        def done():
+            self._intro = None
+            if ov.skipped and callable(self.on_intro_skipped):
+                self.on_intro_skipped()
+        ov.finished.connect(done)
+        ov.play()
 
     def _show_overlay(self, reason="init"):
         self._overlay = SetupOverlay(self.centralWidget(), reason=reason)

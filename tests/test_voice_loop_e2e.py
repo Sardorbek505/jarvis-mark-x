@@ -1140,3 +1140,35 @@ async def test_goaway_не_закрывает_уже_новую_сессию(с�
     j.session = new
     await j._reconnect_when_quiet(old, time.monotonic() + 0.2, lambda: False)
     assert not new.closed and not old.closed
+
+
+# ─── Два хлопка → интро ───────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_два_хлопка_интро_звук_и_джарвис_слушает(стенд, monkeypatch):
+    from core import intro
+    monkeypatch.setattr(intro, "T_END", 0.2)
+    j = стенд.jarvis
+    played = []
+    стенд.ui.play_intro = lambda checks=None: played.append(checks)
+    j.audio_in_queue = asyncio.Queue(maxsize=200)
+
+    async def динамики():                       # колонки забирают звук, как _play_audio
+        while True:
+            await j.audio_in_queue.get()
+            await asyncio.sleep(0)
+    speaker = asyncio.create_task(динамики())
+    j._on_double_clap()
+    await asyncio.wait_for(j._intro_task, 10)
+    speaker.cancel()
+    assert played and "Gemini" in played[0]
+    assert j.is_awake(), "после интро Джарвис слушает"
+    assert any("онлайн" in line for line in стенд.ui.logs)
+
+
+@pytest.mark.asyncio
+async def test_хлопки_выключены_в_настройках(стенд, monkeypatch):
+    monkeypatch.setenv("JARVIS_CLAP_INTRO", "0")
+    j = стенд.jarvis
+    j._on_double_clap()
+    assert j._intro_task is None

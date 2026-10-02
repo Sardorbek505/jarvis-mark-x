@@ -1,0 +1,89 @@
+"""Интро на два хлопка: звук по сценарию, кадры без накладок, пропуск."""
+import numpy as np
+import pytest
+
+from core import intro as S
+
+
+def test_sound_follows_the_script():
+    x = S.render()
+    assert len(x) == int((S.T_END + 0.6) * S.RATE)
+    assert np.max(np.abs(x)) <= 0.9                               # без перегруза
+    env = np.array([np.sqrt(np.mean(x[i:i + 2400] ** 2)) for i in range(0, len(x) - 2400, 2400)])
+    loudest = int(np.argmax(env)) * 0.1
+    assert abs(loudest - S.T_HIT) < 0.3, "самый громкий момент — удар"
+    assert env[int(S.T_FINAL * 10)] > 3 * env[int((S.T_FINAL - 0.3) * 10)], "финальный аккорд слышен"
+    assert env[-2] < 0.05 * env.max(), "к концу затихает, не обрывается"
+
+
+def test_pcm_for_speakers():
+    pcm = S.pcm16(0.6, 24000)
+    assert len(pcm) == 2 * int((S.T_END + 0.6) * 24000)
+
+
+def test_timeline_is_in_order():
+    assert S.T_DARK < S.T_TYPE < S.T_RING < S.T_HIT < S.T_NODES < S.T_CHECKS < S.T_FINAL < S.T_FADE < S.T_END
+    assert S.type_times()[-1] < S.T_RING + 0.2
+    assert S.node_times()[-1] + 0.6 < S.T_FINAL
+    assert S.check_times()[-1] < S.T_FINAL
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    from PyQt6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])
+
+
+def _lit(img, x0, y0, x1, y1):
+    """Сколько ярких точек в прямоугольнике (доли кадра)."""
+    from PyQt6.QtGui import QColor
+    w, h = img.width(), img.height()
+    n = 0
+    for x in range(int(x0 * w), int(x1 * w), 3):
+        for y in range(int(y0 * h), int(y1 * h), 3):
+            if QColor(img.pixel(x, y)).lightness() > 140:
+                n += 1
+    return n
+
+
+def test_frames_show_each_stage(qapp):
+    from ui_intro import IntroScene
+    sc = IntroScene()
+    frames = {t: sc.render(t, 640, 360) for t in (0.2, 1.5, 2.6, 4.0, 6.0, 7.0, S.T_END)}
+    assert _lit(frames[1.5], 0.2, 0.08, 0.8, 0.2) > 0, "печатается заголовок"
+    assert _lit(frames[0.2], 0.3, 0.3, 0.7, 0.7) == 0 and _lit(frames[2.6], 0.3, 0.3, 0.7, 0.7) > 0, "загорается кольцо"
+    assert _lit(frames[6.0], 0.0, 0.3, 0.2, 0.7) > 0, "проверка систем слева"
+    assert _lit(frames[7.0], 0.2, 0.03, 0.8, 0.13) > _lit(frames[6.0], 0.2, 0.03, 0.8, 0.13), "«ДЖАРВИС — ОНЛАЙН» наверху"
+    assert _lit(frames[S.T_END], 0, 0, 1, 1) == 0, "в конце — снова рабочий стол"
+
+
+def test_title_leaves_before_top_node_arrives(qapp):
+    """Верхний узел «Музыка» и заголовок не должны наезжать друг на друга."""
+    from ui_intro import IntroScene
+    sc = IntroScene()
+    sc.render(S.T_NODES + 0.35, 640, 360)
+    img = sc.render(S.T_NODES + 0.9, 640, 360)
+    title_band = _lit(img, 0.3, 0.1, 0.7, 0.165)
+    sc2 = IntroScene()
+    sc2.render(S.T_RING + 0.5, 640, 360)
+    assert title_band < _lit(sc2.render(S.T_RING + 0.6, 640, 360), 0.3, 0.1, 0.7, 0.165)
+
+
+def test_failed_check_is_shown_red(qapp):
+    from PyQt6.QtGui import QColor
+
+    from ui_intro import IntroScene
+    img = IntroScene({"Gemini": False}).render(S.T_FINAL - 0.1, 640, 360)
+    reds = sum(1 for x in range(0, 120) for y in range(100, 300)
+               if (c := QColor(img.pixel(x, y))).red() > 180 and c.green() < 120)
+    assert reds > 0
+
+
+def test_click_skips_intro(qapp):
+    from ui_intro import IntroOverlay
+    ov = IntroOverlay()
+    done = []
+    ov.finished.connect(lambda: done.append(ov.skipped))
+    ov.play()
+    ov.skip()
+    assert done == [True]

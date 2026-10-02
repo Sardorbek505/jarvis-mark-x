@@ -381,6 +381,10 @@ class SettingsDialog(QDialog):
         self._row(lay, "Отвечать голосом на простые команды",
                   "Выключено — «пауза», «громче», «следующий трек» выполняются сразу и подтверждаются "
                   "коротким звуком, без «Есть, сэр».", self.quick_voice)
+        self.clap_intro = self._toggle("clap_intro", v["clap_intro"])
+        self._row(lay, "Два хлопка — интро",
+                  "Хлопните дважды: экран гаснет, Джарвис проходит проверку систем и слушает. "
+                  "Клик или Esc — пропустить.", self.clap_intro)
         self.anims = self._toggle("animations", v["animations"])
         self._row(lay, "Анимации", "Плавные переходы и подсветка. Выключите, если компьютер тормозит.",
                   self.anims)
