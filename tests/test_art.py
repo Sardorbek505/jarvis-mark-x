@@ -87,3 +87,13 @@ def test_screens_draw_art():
     w = WelcomeDialog(None)
     w.refresh()
     assert w._thumb("gemini", False) is not None and w._thumb("нет", False) is None
+
+
+def test_installer_closes_running_jarvis_first():
+    """Обновление поверх запущенного Джарвиса падало: «DeleteFile: сбой; код 32 —
+    файл занят другим процессом» (base_library.zip). Установщик и удаление
+    сначала закрывают JARVIS.exe."""
+    iss = (ROOT / "scripts" / "installer.iss").read_text(encoding="utf-8")
+    prepare = re.search(r"function PrepareToInstall\(.*?\nend;", iss, re.S)
+    assert prepare and "taskkill.exe" in prepare.group(0) and "{#MyAppExeName}" in prepare.group(0)
+    assert re.search(r"^\[UninstallRun\]\s*\n(;.*\n)*Filename: \"\{sys\}\\taskkill\.exe\".*/IM \{#MyAppExeName\}", iss, re.M)

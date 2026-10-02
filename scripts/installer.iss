@@ -56,6 +56,10 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: autostart
 
+[UninstallRun]
+; Запущенный Джарвис держит свои файлы — удаление оставило бы половину папки.
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM {#MyAppExeName}"; Flags: runhidden; RunOnceId: "StopJarvis"
+
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
@@ -141,6 +145,20 @@ begin
   CreditDot.SetBounds(X, Y, CreditDot.Width, CreditDot.Height);
   X := X + CreditDot.Width;
   CreditIg.SetBounds(X, Y, CreditIg.Width, CreditIg.Height);
+end;
+
+// Запущенный Джарвис (часто — свёрнутый в трей) держит свои файлы, и установка
+// обновления падала на «DeleteFile: сбой; код 32 … файл занят другим процессом».
+// Закрываем его перед копированием; настройки и память уже сохранены на диск.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Code: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM {#MyAppExeName}', '', SW_HIDE,
+       ewWaitUntilTerminated, Code);
+  if Code = 0 then
+    Sleep(1500);                      // Windows отпускает файлы не мгновенно
+  Result := '';
 end;
 
 procedure InitializeWizard;
