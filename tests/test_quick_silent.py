@@ -78,7 +78,8 @@ def test_open_and_play_run_instantly_like_alfred(said, tool, args):
 
 
 @pytest.mark.parametrize("said", ["открой хром и найди погоду", "открой сайт вк", "включи музыку", "включи камеру",
-                                  "включи видео", "включи музыку погромче", "включи режим стрима"])
+                                  "включи видео", "включи музыку погромче", "включи режим стрима",
+                                  "включи голос джемини", "включи субтитры", "включи ночной режим"])
 def test_compound_or_unclear_still_goes_to_gemini(said):
     q = quick.match(said)
     assert q is None or q.tool not in ("open_app", "music_player") or q.args.get("query") != said

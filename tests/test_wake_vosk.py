@@ -176,6 +176,8 @@ def test_calibration_saves_and_enables_local_wake(tmp_path, monkeypatch):
     from core import wake_calibrate
     monkeypatch.setenv("JARVIS_WAKE_ALIASES", str(tmp_path / "w.json"))
     monkeypatch.delenv("JARVIS_LOCAL_WAKE", raising=False)
+    from core import wake_kws
+    monkeypatch.setattr(wake_kws, "available", lambda: False)    # без sherpa-onnx
     assert jarvis_main._local_wake_enabled() is False            # без калибровки — Gemini
     monkeypatch.setattr(wv, "calibrate", lambda model, n, x: {"aliases": ["дар вис"], "names": 8,
                                                              "negatives": 5, "hits": 7, "false": 0})
