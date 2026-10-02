@@ -41,9 +41,9 @@ if (BASE_DIR / "models" / "vosk-spk").exists():
     datas.append((str(BASE_DIR / "models" / "vosk-spk"), "models/vosk-spk"))
 if (BASE_DIR / "models" / "voice-id").exists():
     datas.append((str(BASE_DIR / "models" / "voice-id"), "models/voice-id"))
-# Слово «Джарвис» без ключей (core/wake_kws.py, 5 МБ); нет — докачается при запуске.
-if (BASE_DIR / "models" / "kws-jarvis").exists():
-    datas.append((str(BASE_DIR / "models" / "kws-jarvis"), "models/kws-jarvis"))
+# Слово «Джарвис» без ключей (core/wake_kws.py, русская модель 28 МБ); нет — докачается при запуске.
+if (BASE_DIR / "models" / "kws-jarvis-ru").exists():
+    datas.append((str(BASE_DIR / "models" / "kws-jarvis-ru"), "models/kws-jarvis-ru"))
 
 if (BASE_DIR / "telegram_bot" / "miniapp").exists():
     datas.append((str(BASE_DIR / "telegram_bot" / "miniapp"), "telegram_bot/miniapp"))

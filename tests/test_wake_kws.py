@@ -4,6 +4,7 @@ import tarfile
 import time
 
 import numpy as np
+import pytest
 
 from core import wake_kws as K
 
@@ -51,8 +52,35 @@ def test_wake_fires_once_per_word_with_cooldown():
 
 def test_keywords_cover_russian_pronunciation():
     words = [k.split("@")[1] for k in K.KEYWORDS]
-    assert "JARVIS" in words and len(words) >= 4
+    assert "ДЖАРВИС" in words and len(words) >= 4
     assert all(" " in k.split("@")[0].strip() for k in K.KEYWORDS)      # токены BPE, не сырой текст
+
+
+def test_keywords_use_only_tokens_the_russian_model_knows(tmp_path):
+    """Слог не из словаря модели — и слово молча никогда не сработает."""
+    model = K.find_model()
+    if model is None:
+        pytest.skip("модели нет — её качает сборка")
+    vocab = {line.split()[0] for line in (model / K.FILES["tokens"]).read_text(encoding="utf-8").splitlines()}
+    for kw in K.KEYWORDS:
+        assert set(kw.split("@")[0].split()) <= vocab, kw
+
+
+def test_crash_in_detector_is_logged_not_silent(caplog):
+    import logging
+
+    class Broken:
+        def create_stream(self):
+            raise RuntimeError("модель сломалась")
+
+    w = K.KwsWake(lambda t: None, spotter_factory=Broken)
+    with caplog.at_level(logging.ERROR, logger=K.logger.name):
+        assert w.start()
+        for _ in range(40):
+            if not w.ready:
+                break
+            time.sleep(0.05)
+    assert not w.ready and "упал" in caplog.text
 
 
 def test_download_keeps_only_needed_files(tmp_path):
