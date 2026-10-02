@@ -67,7 +67,9 @@ class CallLog:
     def load(self):
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            self.calls = [c for c in data.get("calls", []) if isinstance(c, dict)]
+            # Старый calls.json мог содержать расписание звонков (список) — это не история.
+            calls = data.get("calls", []) if isinstance(data, dict) else []
+            self.calls = [c for c in calls if isinstance(c, dict)]
         except FileNotFoundError:
             self.calls = []
         except Exception as exc:

@@ -531,7 +531,8 @@ def _confirm_question(name: str, args: dict) -> str:
         return ""
     try:
         from core.contacts import contacts
-        return contacts().confirm_text(_action_of(args), str(args.get("name", "")), str(args.get("text", "")))
+        return contacts().confirm_text(_action_of(args), str(args.get("name", "")), str(args.get("text", "")),
+                                       str(args.get("ask", "")))
     except Exception:
         return ""
 
@@ -1574,6 +1575,7 @@ TOOLS = [
                 "text": {"type": "STRING", "description": "message: текст сообщения; call: что передать"},
                 "as_voice": {"type": "BOOLEAN"},
                 "urgent": {"type": "BOOLEAN", "description": "call: сказал «срочно» — можно и ночью"},
+                "ask": {"type": "STRING", "description": "call: что спросить у человека и запомнить ответ («во сколько придёт»)"},
                 "telegram": {"type": "STRING", "description": "add: @username или номер"},
                 "aliases": {"type": "STRING", "description": "add: как ещё называет, через запятую"},
             },

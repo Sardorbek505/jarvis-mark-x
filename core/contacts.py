@@ -304,14 +304,15 @@ class Contacts:
                               "Если срочно — скажите «срочно».")
         return c, ""
 
-    def confirm_text(self, action: str, who: str, text: str = "") -> str:
+    def confirm_text(self, action: str, who: str, text: str = "", ask: str = "") -> str:
         c, problem = self.precheck(action, who, text, urgent=True)
         if not c:
             return problem
         if action == "message":
             return f"Отправить {c.label()} от вашего имени: «{text}»?"
         who_calls = "с вашего Telegram" if self.me.linked() else "с аккаунта Джарвиса"
-        return f"Позвонить {c.label()} {who_calls} и сказать: «{text or 'просто позвонить'}»?"
+        q = f"Позвонить {c.label()} {who_calls} и сказать: «{text or 'просто позвонить'}»"
+        return q + (f" и спросить: «{ask}»?" if ask else "?")
 
     def message(self, who: str, text: str, as_voice: bool = False) -> str:
         c, problem = self.precheck("message", who, text)
@@ -350,7 +351,8 @@ class Contacts:
         self.log(f"SYS: 💬 → {c.name}: {text}")
         return f"Отправил {c.name}" + (" голосовым" if voiced else "") + "."
 
-    def call(self, who: str, text: str, urgent: bool = False, done: Callable[[str], None] | None = None) -> str:
+    def call(self, who: str, text: str, urgent: bool = False, done: Callable[[str], None] | None = None,
+             ask: str = "") -> str:
         c, problem = self.precheck("call", who, text, urgent)
         if not c:
             return problem
@@ -361,10 +363,14 @@ class Contacts:
         via = self.me if self.me.linked() else None
         target = f"id:{c.tg_id}" if c.tg_id and (via or not c.telegram) else c.telegram
 
+        # Задание звонка: что спросить и кто это — только если есть (старые
+        # call_fn принимают лишь target, name, text[, via]).
+        extra = {k: v for k, v in (("ask", ask), ("note", c.note)) if v}
+
         def run():
             try:
-                result = (self.call_fn(target, c.name, text, via=via) if via
-                          else self.call_fn(target, c.name, text))
+                result = (self.call_fn(target, c.name, text, via=via, **extra) if via
+                          else self.call_fn(target, c.name, text, **extra))
             except Exception as exc:
                 logger.warning("Звонок %s: %s", c.name, exc)
                 result = f"Звонок не удался: {exc}"
@@ -532,7 +538,7 @@ def contacts_tool(p: dict, done: Callable[[str], None] | None = None) -> str:
     if a == "message":
         return c.message(who, text, bool(p.get("as_voice")))
     if a == "call":
-        return c.call(who, text, bool(p.get("urgent")), done)
+        return c.call(who, text, bool(p.get("urgent")), done, ask=str(p.get("ask") or "").strip())
     if a == "read":
         return c.unread(who)
     if a == "add":

@@ -175,20 +175,32 @@ def instruction(topic: str, context: str = "", name: str = "сэр") -> str:
     )
 
 
-def instruction_contact(owner: str, contact: str, message: str) -> str:
-    """Звонок НЕ хозяину, а его контакту — по его просьбе."""
+def instruction_contact(owner: str, contact: str, message: str, ask: str = "", note: str = "") -> str:
+    """Звонок НЕ хозяину, а его контакту — по его просьбе. Живой разговор по
+    заданию: передать, спросить, выслушать, ответить — а не зачитать фразу.
+
+    Раньше было «по-русски, ничего не добавляя от себя»: Джарвис зачитывал
+    сообщение и не умел поддержать разговор, а узбекоязычному собеседнику
+    всё равно отвечал по-русски."""
     now = datetime.now().strftime("%A, %d %B %Y, %H:%M")
     return (
-        f"Ты — ДЖАРВИС, голосовой ИИ-ассистент {owner}. Вежливый, спокойный, тёплый.\n"
+        f"Ты — ДЖАРВИС, голосовой ИИ-ассистент {owner}. Вежливый, спокойный, тёплый, с лёгким юмором.\n"
         f"Сейчас {now}. Ты САМ позвонил человеку по имени {contact} по Telegram по просьбе {owner}, "
         "и он только что взял трубку.\n"
-        f"Что {owner} просил передать: «{message or 'просто узнать, как дела'}».\n"
-        "Говори по-русски, коротко и живо. Начни сам: поздоровайся, представься («Это Джарвис, "
-        f"ассистент {owner}») и передай сообщение своими словами, ничего не добавляя от себя.\n"
-        f"Ответь на вопросы, если знаешь ответ из сообщения; чего не знаешь — не выдумывай и не "
-        f"обещай ничего за {owner}: скажи, что передашь. Если попросят что-то передать — запомни дословно.\n"
-        "Не клади трубку сразу после сообщения: дай ответить. end_call — когда собеседник "
-        "попрощался или всё сказано и вы попрощались."
+        + (f"Кто это для {owner}: {note}.\n" if note else "")
+        + f"ЗАДАНИЕ. Передать: «{message or 'просто узнать, как дела'}».\n"
+        + (f"Спросить и запомнить ответ: «{ask}».\n" if ask else "")
+        + "КАК ГОВОРИТЬ. Это телефонный разговор: коротко, живо, по одной мысли, без списков. Начни сам: "
+        f"поздоровайся, представься («Это Джарвис, ИИ-ассистент {owner}») и передай сообщение своими "
+        "словами. Говори на том языке, на котором отвечает собеседник (русский, узбекский, казахский, "
+        "английский) и переключайся вслед за ним.\n"
+        + ("Задай вопросы из задания по одному и дождись ответа на каждый; не понял — переспроси.\n" if ask else "")
+        + "Это живой разговор, а не автоответчик: отвечай на то, что тебе говорят, поддержи small talk, "
+        "уточни, если ответ неясен. Отвечай по сути из задания; чего не знаешь — не выдумывай и не обещай "
+        f"ничего за {owner} (встречи, деньги, сроки): скажи, что передашь. Попросят что-то передать — "
+        "запомни дословно и повтори вслух, чтобы подтвердить.\n"
+        "Не клади трубку сразу после сообщения: дай ответить. Перед прощанием коротко повтори, что "
+        f"передашь {owner}. end_call — когда собеседник попрощался или всё сказано и вы попрощались."
     )
 
 
@@ -704,13 +716,18 @@ def call(topic: str = "просто позвонить", context: str = "", log=
 
 
 def _what_they_said(transcript: list[str], limit: int = 400) -> str:
-    """Реплики собеседника (в расшифровке — «Вы:») — одной строкой."""
-    said = " ".join(t.split(":", 1)[1].strip() for t in transcript if t.startswith("Вы:"))
+    """Реплики собеседника (в расшифровке — «Вы:») — одной строкой.
+
+    Склейка — как в истории звонков (call_log.merge): расшифровка приходит
+    кусками посреди слова, и простое " ".join давало «При вет, Джар вис»."""
+    from core.call_log import merge
+    said = " ".join(ln["text"] for ln in merge(transcript, "Собеседник") if ln["who"] == "Собеседник")
     said = re.sub(r"\s+", " ", said).strip()
     return said if len(said) <= limit else said[:limit - 1] + "…"
 
 
-def call_contact(target: str, contact: str, message: str, log=None, via=None) -> str:
+def call_contact(target: str, contact: str, message: str, log=None, via=None, ask: str = "",
+                 note: str = "") -> str:
     """Позвонить контакту хозяина, передать сообщение, вернуть пересказ ответа.
     via — ваш Telegram (core/contacts.Me): звонок с вашего аккаунта; иначе —
     с аккаунта Джарвиса."""
@@ -729,7 +746,7 @@ def call_contact(target: str, contact: str, message: str, log=None, via=None) ->
     try:
         owner = (_keys().get("user_name") or "моего владельца")
         log = log or (lambda s: logger.info("Звонок %s: %s", contact, s))
-        prompt = instruction_contact(owner, contact, message)
+        prompt = instruction_contact(owner, contact, message, ask, note)
         if via is not None:
             result = via.run(lambda client: _call_via(client, via, target, prompt, log, heard, contact, message),
                              timeout=MAX_CALL_SEC + ANSWER_TIMEOUT + 60)
@@ -979,7 +996,10 @@ class Schedule:
             try:
                 import json
                 with open(path, encoding="utf-8") as f:
-                    self.items = list(json.load(f))
+                    data = json.load(f)
+                # Только записи расписания: в calls.json жила ещё и история
+                # звонков ({"version", "calls"}) — её ключи становились «звонками».
+                self.items = [i for i in data if isinstance(i, dict) and "time" in i] if isinstance(data, list) else []
             except Exception as exc:
                 logger.warning("Расписание звонков: %s", exc)
 
@@ -1052,12 +1072,37 @@ def parse_hhmm(s: str) -> tuple[int, int]:
 _schedule: Schedule | None = None
 
 
+def _migrate_schedule(legacy: str, path: str) -> None:
+    """Расписание и история звонков писали в один calls.json разными форматами
+    и портили друг друга: расписание падало (TypeError), история обнулялась.
+    Теперь расписание — в call_schedule.json; старое расписание переносим один раз.
+    История (словарь {"calls": …}) остаётся в calls.json нетронутой."""
+    if os.path.exists(path) or not os.path.isfile(legacy):
+        return
+    try:
+        import json
+        with open(legacy, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return
+    if isinstance(data, list):
+        items = [i for i in data if isinstance(i, dict) and "time" in i]
+        if items:
+            from pathlib import Path
+
+            from core.storage import atomic_write_json
+            atomic_write_json(Path(path), items)
+            logger.info("Расписание звонков перенесено в %s (%d)", path, len(items))
+
+
 def schedule() -> Schedule:
     global _schedule
     if _schedule is None:
         try:
             from core.paths import get_data_root
-            path = os.path.join(str(get_data_root()), "calls.json")
+            root = str(get_data_root())
+            path = os.path.join(root, "call_schedule.json")
+            _migrate_schedule(os.path.join(root, "calls.json"), path)
         except Exception:
             path = None
         _schedule = Schedule(path)
