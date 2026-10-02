@@ -51,7 +51,7 @@ def _white(img):
     from PyQt6.QtGui import QColor
     w, h = img.width(), img.height()
     return sum(1 for x in range(int(w * 0.42), int(w * 0.58), 2) for y in range(int(h * 0.38), int(h * 0.62), 2)
-               if (c := QColor(img.pixel(x, y))).lightness() > 200 and c.hslSaturation() < 60)
+               if (c := QColor(img.pixel(x, y))).lightness() > 170 and c.hslSaturation() < 140)
 
 
 def test_frames_show_each_stage(qapp):
@@ -61,7 +61,7 @@ def test_frames_show_each_stage(qapp):
     assert _lit(frames[1.5], 0.3, 0.08, 0.7, 0.16) > 0, "заполняется полоса-сканер"
     assert _lit(frames[0.2], 0.3, 0.3, 0.7, 0.7) == 0 and _lit(frames[2.6], 0.3, 0.3, 0.7, 0.7) > 0, "загорается кольцо"
     assert _lit(frames[6.0], 0.0, 0.3, 0.2, 0.7) > 0, "проверка систем слева"
-    assert _white(frames[7.0]) > 50 and _white(frames[6.0]) < 5, "в финале в кольце — белое лицо Джарвиса вместо шара"
+    assert _white(frames[7.0]) > 300 and _white(frames[6.0]) < 30, "в финале в кольце — белое лицо Джарвиса вместо шара"
     assert _lit(frames[S.T_END], 0, 0, 1, 1) == 0, "в конце — снова рабочий стол"
 
 
@@ -113,3 +113,36 @@ def test_no_text_on_screen(qapp, monkeypatch):
     for i in range(0, int(S.T_END * 10)):
         sc.render(i / 10, 320, 180)
     assert calls == []
+
+
+@pytest.mark.parametrize("hour,hello", [(3, "Доброй ночи"), (8, "Доброе утро"), (14, "Добрый день"), (20, "Добрый вечер")])
+def test_greeting_by_time_of_day(hour, hello):
+    assert S.greeting({}, hour) == f"{hello}, сэр. Все системы в норме. Слушаю."
+
+
+def test_greeting_names_what_is_broken():
+    assert "кроме Telegram." in S.greeting({"Telegram": False}, 10)
+    assert "кроме Gemini и памяти." in S.greeting({"Gemini": False, "Память": False}, 10)
+
+
+def test_voice_is_mixed_in_and_music_ducks_under_it():
+    rate = 24000
+    music = (np.ones(int(9 * rate)) * 10000).astype("<i2").tobytes()
+    voice = (np.ones(int(3 * rate)) * 5000).astype("<i2").tobytes()          # голос дольше конца музыки
+    out = np.frombuffer(S.mix_voice(music, voice, rate, at=7.0), "<i2").astype(int)
+    assert len(out) == int(10 * rate), "звук удлинился под голос"
+    assert out[int(5 * rate)] == 10000, "до голоса музыка как была"
+    assert out[int(8 * rate)] == int(10000 * 0.35) + 5000, "под голосом музыка тише"
+    silent = np.frombuffer(S.mix_voice(music, bytes(2 * rate), rate, at=7.0), "<i2").astype(int)   # 1 с «голоса»
+    assert np.abs(np.diff(silent[int(6.7 * rate):int(8.9 * rate)])).max() < 200, "музыка стихает и возвращается плавно"
+    assert silent[int(8.5 * rate)] == 10000, "после голоса музыка снова в полную силу"
+
+
+def test_intro_waits_for_long_greeting(qapp):
+    """Фраза Джарвиса длиннее сценария — лицо не исчезает посреди «…Слушаю»."""
+    from ui_intro import IntroScene
+    sc = IntroScene()
+    sc.extend_to(12.0)
+    sc.render(S.T_FINAL + 0.5, 640, 360)
+    assert _white(sc.render(S.T_END + 0.5, 640, 360)) > 300, "лицо ещё на экране"
+    assert _lit(sc.render(12.0, 640, 360), 0, 0, 1, 1) == 0, "к концу фразы — рабочий стол"

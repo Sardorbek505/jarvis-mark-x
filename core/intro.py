@@ -10,7 +10,9 @@
   3,4  от кольца расходятся узлы-умения (иконки) — по ноте на каждый, под ними — пэд
   5,6  слева — проверка систем: иконки загораются зелёным, тик на каждую
   6,6  шар собирается в лицо Джарвиса, оно машет — финальный аккорд и колокольчик
-  7,8  картинка тает, к 8,4 — обычный Джарвис
+  6,9  голос Джарвиса: «Добрый вечер, сэр. Все системы в норме. Слушаю.» —
+       музыка под ним стихает (greeting, mix_voice)
+  9,6  картинка тает, к 10,2 — обычный Джарвис
 """
 from __future__ import annotations
 
@@ -21,7 +23,8 @@ TITLE = "СИСТЕМНАЯ ПРОВЕРКА"
 FINAL = "ДЖАРВИС — ОНЛАЙН"
 
 T_DARK, T_TYPE, T_RING, T_HIT, T_NODES, T_CHECKS, T_FINAL, T_FADE, T_END = (
-    0.0, 0.4, 2.0, 3.2, 3.4, 5.6, 6.6, 7.8, 8.4)
+    0.0, 0.4, 2.0, 3.2, 3.4, 5.6, 6.6, 9.6, 10.2)     # лицо держится, пока Джарвис здоровается
+T_VOICE = T_FINAL + 0.3              # голос — когда лицо уже машет
 TYPE_STEP = 0.08                     # секунд на букву
 NODE_STEP = 0.2                      # между узлами
 CHECK_STEP = 0.16                    # между строками проверки
@@ -148,3 +151,47 @@ def pcm16(volume: float = 0.6, rate: int = RATE) -> bytes:
         n = int(len(x) * rate / RATE)
         x = np.interp(np.arange(n) * RATE / rate, np.arange(len(x)), x)
     return (np.clip(x * volume, -1, 1) * 32767).astype("<i2").tobytes()
+
+
+def greeting(checks: dict | None = None, hour: int | None = None) -> str:
+    """Что скажет Джарвис в конце: приветствие по времени суток и итог проверки."""
+    if hour is None:
+        from datetime import datetime
+        hour = datetime.now().hour
+    hello = ("Доброй ночи" if hour < 5 else "Доброе утро" if hour < 12
+             else "Добрый день" if hour < 18 else "Добрый вечер" if hour < 23 else "Доброй ночи")
+    failed = [name for name in CHECKS if (checks or {}).get(name) is False]
+    if not failed:
+        state = "Все системы в норме."
+    elif len(failed) == 1:
+        state = f"Всё работает, кроме {_genitive(failed[0])}."
+    else:
+        state = "Всё работает, кроме " + ", ".join(_genitive(n) for n in failed[:-1]) + \
+                f" и {_genitive(failed[-1])}."
+    return f"{hello}, сэр. {state} Слушаю."
+
+
+def _genitive(name: str) -> str:
+    return {"Микрофон": "микрофона", "Голос": "голоса", "Слово «Джарвис»": "слова «Джарвис»",
+            "Память": "памяти"}.get(name, name)
+
+
+def mix_voice(intro_pcm: bytes, voice_pcm: bytes, rate: int, at: float = T_VOICE, duck: float = 0.35) -> bytes:
+    """Голос поверх звука интро с момента at: музыка под голосом приглушается
+    (плавно, без щелчков), а если голос длиннее — звук удлиняется."""
+    a = np.frombuffer(intro_pcm, "<i2").astype(np.float32)
+    v = np.frombuffer(voice_pcm[: len(voice_pcm) // 2 * 2], "<i2").astype(np.float32)
+    i = int(at * rate)
+    n = max(len(a), i + len(v))
+    out = np.zeros(n, dtype=np.float32)
+    out[: len(a)] = a
+    gain = np.ones(n, dtype=np.float32)
+    ramp = int(0.15 * rate)
+    lo, hi = i, i + len(v)
+    gain[lo:hi] = duck
+    gain[max(0, lo - ramp):lo] = np.linspace(1, duck, min(ramp, lo), dtype=np.float32)
+    tail = min(ramp, n - hi)
+    gain[hi:hi + tail] = np.linspace(duck, 1, tail, dtype=np.float32)
+    out *= gain
+    out[lo:hi] += v
+    return np.clip(out, -32768, 32767).astype("<i2").tobytes()

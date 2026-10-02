@@ -84,13 +84,14 @@ class IntroScene:
         self.orb = DotOrb(n=900, seed=11)
         self.orb.set_shape("sphere")
         self.face = Face(seed=3)
+        self.fade, self.end = S.T_FADE, S.T_END   # продлевается под длину фразы (extend_to)
         self._greeted = False
         self._last_t = 0.0
 
     def paint_at(self, p: QPainter, w: int, h: int, t: float):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         dt, self._last_t = max(0.0, t - self._last_t), t
-        fade_out = 1 - _clamp((t - S.T_FADE) / (S.T_END - S.T_FADE))
+        fade_out = 1 - _clamp((t - self.fade) / (self.end - self.fade))
         dark = _ease_out(t / 0.5) * fade_out
         p.fillRect(0, 0, w, h, _c(QColor("#02050a"), 0.94 * dark))
         if fade_out <= 0:
@@ -284,6 +285,11 @@ class IntroScene:
         self.face.paint(p, cx, cy, r * 0.9)
         p.restore()
 
+    def extend_to(self, end: float):
+        """Джарвис ещё говорит — лицо остаётся, картинка тает к end."""
+        if end > self.end:
+            self.end, self.fade = end, end - (S.T_END - S.T_FADE)
+
     def render(self, t: float, w: int = 1280, h: int = 720) -> QImage:
         img = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
         img.fill(QColor("#0b1a26"))                          # «рабочий стол» под затемнением
@@ -324,7 +330,7 @@ class IntroOverlay(QWidget):
         return self._clock() - self._t0
 
     def _tick(self):
-        if self.elapsed() >= S.T_END:
+        if self.elapsed() >= self.scene.end:
             self._done()
         else:
             self.update()

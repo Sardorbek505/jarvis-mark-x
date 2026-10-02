@@ -3811,26 +3811,73 @@ class Jarvis:
                 "Gemini": self.session is not None, "Память": True, "Telegram": tg}
 
     async def _clap_intro(self):
-        """Два хлопка: интро на экране, его звук — в колонки, потом Джарвис слушает."""
+        """Два хлопка: интро на экране, его звук — в колонки, в конце Джарвис
+        здоровается своим голосом, потом слушает."""
         from core import intro
         logger.info("Интро: два хлопка")
         self._intro_skipped = False
-        self.ui.play_intro(self._intro_checks())
-        pcm = intro.pcm16(0.6, RECV_SAMPLE_RATE)
-        step = CHUNK_SIZE * 2
+        checks = self._intro_checks()
+        text = intro.greeting(checks)
+        voice = asyncio.ensure_future(self._intro_voice(text))      # синтез — пока идёт интро
+        started = time.monotonic()
+        self.ui.play_intro(checks)
+        rate = RECV_SAMPLE_RATE
+        pcm = intro.pcm16(0.6, rate)
+        split = int((intro.T_VOICE - 0.2) * rate) * 2              # до голоса (с запасом на плавное приглушение)
         q = self.audio_in_queue
-        if q is not None:
-            # Звук длиннее очереди (200 кусков) — подаём по мере проигрывания.
-            for j in range(0, len(pcm), step):
-                if self._intro_skipped or self.audio_in_queue is not q:
-                    break
-                await q.put(pcm[j:j + step])
+        if q is None:
+            voice.cancel()
+            await asyncio.sleep(intro.T_END)
+        else:
+            await self._feed_intro(q, pcm[:split])
+            spoken = None
+            try:
+                wait = max(0.1, intro.T_VOICE - 0.4 - (time.monotonic() - started))
+                spoken = await asyncio.wait_for(voice, wait)
+            except Exception as exc:
+                logger.info("Интро без голоса: %s", exc or "не успел синтезироваться")
+            if spoken:                           # лицо на экране — пока Джарвис договаривает
+                self.ui.extend_intro(intro.T_VOICE + len(spoken) / (2 * rate) + 0.8)
+            rest = intro.mix_voice(pcm, spoken, rate)[split:] if spoken else pcm[split:]
+            await self._feed_intro(q, rest)
+            if spoken and not self._intro_skipped:
+                self.ui.write_log(f"Джарвис: {text}")
+                self._remember_turn("", text)
             while q.qsize() and not self._intro_skipped:
                 await asyncio.sleep(0.05)
-        else:
-            await asyncio.sleep(intro.T_END)
         self.wake()
         self.ui.write_log("SYS: Джарвис онлайн — слушаю")
+
+    async def _feed_intro(self, q, pcm: bytes):
+        """Звук длиннее очереди (200 кусков) — подаём по мере проигрывания."""
+        step = CHUNK_SIZE * 2
+        for j in range(0, len(pcm), step):
+            if self._intro_skipped or self.audio_in_queue is not q:
+                return
+            await q.put(pcm[j:j + step])
+
+    async def _intro_voice(self, text: str) -> bytes | None:
+        """Фраза интро голосом Джарвиса: кэш → Fish → Edge. Кэш — чтобы со второго
+        раза голос звучал без сети и без задержки."""
+        rate = RECV_SAMPLE_RATE
+        cache = quick.voice_cache()
+        pcm = cache.get(text, rate)
+        if pcm:
+            return pcm
+        from telegram_bot import tts_edge, tts_fish
+        if tts_fish.is_configured():
+            try:
+                pcm = await tts_fish.speak_pcm(text, rate)
+            except Exception as exc:
+                logger.info("Интро: Fish не озвучил (%s) — Edge", exc)
+        if not pcm:
+            pcm = await tts_edge.speak_pcm(text, sample_rate=rate)
+        if pcm:
+            try:
+                cache.put(text, rate, pcm)
+            except Exception as exc:
+                logger.debug("Кэш голоса интро: %s", exc)
+        return pcm or None
 
     def _on_intro_skipped(self):
         """Интро пропустили кликом или Esc — его звук тоже обрываем."""

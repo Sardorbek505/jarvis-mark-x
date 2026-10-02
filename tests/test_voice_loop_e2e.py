@@ -1149,19 +1149,30 @@ async def test_два_хлопка_интро_звук_и_джарвис_слу�
     from core import intro
     monkeypatch.setattr(intro, "T_END", 0.2)
     j = стенд.jarvis
-    played = []
+    played, heard = [], bytearray()
     стенд.ui.play_intro = lambda checks=None: played.append(checks)
+    продлено = []
+    стенд.ui.extend_intro = продлено.append
     j.audio_in_queue = asyncio.Queue(maxsize=200)
+    голос = (b"\x10\x27" * 2400)                # 0,1 с «голоса» (10000)
+
+    async def озвучка(self, text):
+        assert text.endswith("Слушаю.")
+        return голос
+    monkeypatch.setattr(jarvis_main.Jarvis, "_intro_voice", озвучка)
 
     async def динамики():                       # колонки забирают звук, как _play_audio
         while True:
-            await j.audio_in_queue.get()
+            heard.extend(await j.audio_in_queue.get())
             await asyncio.sleep(0)
     speaker = asyncio.create_task(динамики())
     j._on_double_clap()
     await asyncio.wait_for(j._intro_task, 10)
     speaker.cancel()
     assert played and "Gemini" in played[0]
+    assert bytes(голос[:400]) in bytes(heard), "в конце интро звучит голос Джарвиса"
+    assert продлено and продлено[0] > intro.T_VOICE, "лицо на экране, пока Джарвис говорит"
+    assert any("Слушаю." in line for line in стенд.ui.logs)
     assert j.is_awake(), "после интро Джарвис слушает"
     assert any("онлайн" in line for line in стенд.ui.logs)
 

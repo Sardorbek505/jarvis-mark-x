@@ -86,6 +86,9 @@ class HeadlessUI:
     def play_intro(self, checks: dict | None = None) -> None:
         """Интро на два хлопка — без окна показывать некому, звук играет main."""
 
+    def extend_intro(self, end: float) -> None:
+        """Продлить интро под фразу — без окна нечего продлевать."""
+
     def set_subtitle(self, text: str) -> None:
         """Субтитр под шаром — без окна показывать некому."""
 
