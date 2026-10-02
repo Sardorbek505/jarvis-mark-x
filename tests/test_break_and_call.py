@@ -238,10 +238,19 @@ def test_interrupt_drops_queued_speech():
 @pytest.mark.parametrize("err,text", [("TimedOutAnswer", "не взяли"), ("CallDeclined", "сбросили"),
                                       ("CallBusy", "занята")])
 def test_not_answered(err, text):
-    tg = FakeTg(error=type(err, (Exception,), {})())
-    live = FakeLive([])
-    assert text in asyncio.run(tc.CallSession(tg, live, 42, "x").run())
-    assert not hasattr(live, "prompt")                    # Gemini даже не открывали
+    class Ringing(FakeTg):
+        async def ring(self, peer):
+            await asyncio.sleep(0.05)                     # гудки, Gemini тем временем подключился
+            raise type(err, (Exception,), {})()
+
+    class Live(FakeLive):
+        closed = False
+
+        async def __aexit__(self, *a):
+            Live.closed = True
+    live = Live([])
+    assert text in asyncio.run(tc.CallSession(Ringing(), live, 42, "x").run())
+    assert Live.closed                                    # трубку не взяли — Gemini закрыт
 
 
 def test_user_hangs_up():
@@ -729,3 +738,124 @@ def test_call_gemini_connect_failure_is_logged_and_hung_up(caplog):
         asyncio.run(sess.run())
     assert "Gemini не подключился — ConnectionError: 1008 quota" in caplog.text
     assert tg.hung                                              # трубку положили, а не молчим
+
+
+# ── голос Fish и подключение во время гудков ────────────────────────────────
+
+def _fish(level=3000, delay=0.0, spoken=None, fail=False):
+    """Подмена tts_fish.stream_pcm: 0,1 с ровного тона на каждый кусок."""
+    async def speak(text):
+        if spoken is not None:
+            spoken.append(text)
+        await asyncio.sleep(delay)
+        if fail:
+            raise RuntimeError("402 Payment Required")
+        yield (np.ones(2400) * level).astype("<i2").tobytes()
+    return speak
+
+
+def _levels(tg):
+    return {int(np.abs(np.frombuffer(f, "<i2")).max()) for f in tg.sent if any(f)}
+
+
+def test_call_speaks_with_fish_voice_not_gemini():
+    """«Почему он на Fish Audio не говорит при звонке» — говорит Fish по расшифровке
+    ответа, звук Gemini (Charon) в трубку не идёт."""
+    tg, spoken = FakeTg(), []
+    gemini = sine(24000, 0.5).tobytes()
+    live = FakeLive([Msg(gemini), _said("Добрый день, сэр. ", "output_transcription"),
+                     _said("Чем могу помочь?", "output_transcription", done=True), Msg(end=True)])
+    sess = tc.CallSession(tg, live, 42, "x", max_sec=5, speaker=_fish(spoken=spoken))
+    asyncio.run(sess.run())
+    assert spoken == ["Добрый день, сэр.", "Чем могу помочь?"]
+    voiced = [f for f in tg.sent if any(f)]
+    assert len(voiced) == 20                              # 2 куска по 0,1 с; 0,5 с Gemini выброшены
+    assert _levels(tg) <= {3000, 1500}                    # только тон Fish (1500 — сглаживание на стыке)
+    assert sess.first_voice_sec > 0
+
+
+def test_fish_starts_on_first_sentence_before_turn_ends():
+    tg, spoken = FakeTg(), []
+
+    class Slow(FakeLive):
+        def receive(self):
+            async def gen():
+                yield _said("Секунду, сэр. ", "output_transcription")
+                await asyncio.sleep(0.4)                  # модель ещё «проговаривает» остальное
+                spoken.append("—ход ещё идёт—")
+                yield _said("Сейчас посмотрю.", "output_transcription", done=True)
+                yield Msg(end=True)
+                await asyncio.sleep(5)
+            return gen()
+    asyncio.run(tc.CallSession(tg, Slow([]), 42, "x", max_sec=5, speaker=_fish(spoken=spoken)).run())
+    assert spoken[0] == "Секунду, сэр." and spoken[1] == "—ход ещё идёт—"
+
+
+def test_fish_failure_falls_back_to_edge_then_gemini():
+    tg, edge = FakeTg(), []
+
+    async def fallback(text):
+        edge.append(text)
+        return (np.ones(2400) * 2000).astype("<i2").tobytes()
+    gemini = (np.ones(2400) * 1000).astype("<i2").tobytes()
+    live = FakeLive([_said("Слушаю, сэр.", "output_transcription", done=True),
+                     _said("Привет"), Msg(gemini), _said("Я тут.", "output_transcription", done=True),
+                     Msg(end=True)])
+    sess = tc.CallSession(tg, live, 42, "x", max_sec=5, speaker=_fish(fail=True), fallback=fallback)
+    asyncio.run(sess.run())
+    assert edge == ["Слушаю, сэр."]                       # этот ход договорил Edge
+    assert {2000, 1000} <= _levels(tg)                    # следующий — голосом Gemini
+
+
+def test_interrupt_stops_fish():
+    tg = FakeTg()
+
+    async def long_speech(text):
+        for _ in range(40):                               # 4 с речи кусками по 0,1 с
+            await asyncio.sleep(0.01)
+            yield (np.ones(2400) * 3000).astype("<i2").tobytes()
+    live = FakeLive([_said("Длинный рассказ про погоду на неделю.", "output_transcription"),
+                     *[Msg() for _ in range(10)], Msg(interrupted=True), Msg(end=True)])
+    asyncio.run(tc.CallSession(tg, live, 42, "x", max_sec=5, speaker=long_speech).run())
+    assert len([f for f in tg.sent if any(f)]) < 150      # из 400 кадров большая часть сброшена
+
+
+def test_goodbye_is_spoken_before_hanging_up():
+    """end_call пришёл, а Fish ещё синтезирует «До свидания» — трубку кладём после него."""
+    tg = FakeTg()
+    live = FakeLive([_said("До свидания, сэр.", "output_transcription"), Msg(end=True)])
+    sess = tc.CallSession(tg, live, 42, "x", max_sec=5, speaker=_fish(delay=0.3))
+    asyncio.run(sess.run())
+    assert tg.hung and len([f for f in tg.sent if any(f)]) == 10
+
+
+def test_gemini_connects_while_phone_rings(caplog):
+    """Журнал 02.10: Gemini подключался 1,2–2,2 с ПОСЛЕ ответа — человек слушал тишину.
+    Теперь подключение идёт во время гудков."""
+    import logging
+    order = []
+
+    class Ringing(FakeTg):
+        async def ring(self, peer):
+            await asyncio.sleep(0.3)
+            order.append("взял трубку")
+
+    class Live(FakeLive):
+        async def __aenter__(self):
+            await asyncio.sleep(0.1)
+            order.append("Gemini")
+            return self
+    with caplog.at_level(logging.INFO, logger="core.tg_call"):
+        asyncio.run(tc.CallSession(Ringing(), Live([Msg(end=True)]), 42, "x", max_sec=5).run())
+    assert order == ["Gemini", "взял трубку"]
+    assert "Gemini на связи через 0.0 с" in caplog.text
+
+
+@pytest.mark.parametrize("setting,fish_key,voice", [("", True, "fish"), ("gemini", True, "gemini"),
+                                                    ("fish", False, "gemini")])
+def test_call_voice_follows_desktop_setting(monkeypatch, setting, fish_key, voice):
+    from telegram_bot import tts_fish
+    monkeypatch.delenv("JARVIS_VOICE", raising=False)
+    monkeypatch.setattr(tc, "_keys", lambda: {"jarvis_voice": setting})
+    monkeypatch.setattr(tts_fish, "is_configured", lambda: fish_key)
+    assert tc.call_voice() == voice
