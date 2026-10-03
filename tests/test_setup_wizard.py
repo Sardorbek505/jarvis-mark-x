@@ -107,3 +107,22 @@ def test_глаз_показывает_ключ_с_первого_нажатия
     assert w.edit_gemini.echoMode() == QLineEdit.EchoMode.Normal
     w.btn_toggle_key.click()
     assert w.edit_gemini.echoMode() == QLineEdit.EchoMode.Password
+
+
+def test_username_вместо_id_не_теряется_молча(tmp_path, monkeypatch):
+    w = _wizard(tmp_path, monkeypatch, [])
+    warned = []
+    monkeypatch.setattr(ui_setup.QMessageBox, "warning", lambda *a, **kw: warned.append(a))
+    w.edit_gemini.setText("AIzaSy-test-key-1234567890")
+    w.edit_tg_user.setText("@myname")
+    w._save_and_start()
+    assert warned and w.tabs.currentIndex() == 3
+    assert "telegram_allowed_users" not in ui_setup.load_config_data()
+
+
+def test_ошибка_400_не_всегда_неверный_ключ():
+    with patch("google.genai.Client") as mock_client:
+        mock_client.return_value.models.generate_content.side_effect = Exception(
+            "400 FAILED_PRECONDITION. User location is not supported for the API use.")
+        ok, msg = ui_setup.validate_gemini_key("AIzaSyD-dummy-valid-looking-key-123456789")
+    assert not ok and "регион" in msg

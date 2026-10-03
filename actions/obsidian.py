@@ -112,8 +112,9 @@ def _find(title: str, vault: Path) -> Path | None:
     notes = list(_iter_notes(vault))
     if not notes:
         return None
-    if not needle or any(w in needle for w in _LATEST_WORDS):
+    if not needle:
         return max(notes, key=lambda p: p.stat().st_mtime)
+    # Сначала имя: «Новая квартира» — это заметка, а не «самая новая».
     best = None
     for path in notes:
         stem = path.stem.lower()
@@ -121,7 +122,11 @@ def _find(title: str, vault: Path) -> Path | None:
             return path
         if needle in stem and best is None:
             best = path
-    return best
+    if best is not None:
+        return best
+    if any(w in needle for w in _LATEST_WORDS):
+        return max(notes, key=lambda p: p.stat().st_mtime)
+    return None
 
 
 # ── Под-действия ───────────────────────────────────────────────────────────

@@ -75,6 +75,34 @@ def test_key_is_saved_without_button(monkeypatch):
         dlg.close()
 
 
+def test_cleared_key_is_no_longer_working(monkeypatch):
+    """Стёрли ключ Gemini — карточка не должна оставаться «● Работает»."""
+    store = {"gemini_api_key": ""}
+    monkeypatch.setattr(K, "load_values", lambda: dict(store))
+    monkeypatch.setattr(K, "save_values", lambda d: store.update(d) or True)
+    monkeypatch.setattr(K, "check", lambda sid, v: ("ok", "Ключ работает."))
+    import ui_keys
+    dlg = ui_keys.KeysDialog()
+    dlg.show()
+    try:
+        card = dlg.cards["gemini"]
+        card.edits["gemini_api_key"].setText("AIza-test-key")
+        wait()
+        for _ in range(100):
+            app.processEvents()
+            if card.state == "ok":
+                break
+            time.sleep(0.01)
+        assert card.state == "ok"
+        card.edits["gemini_api_key"].setText("")
+        wait()
+        assert store["gemini_api_key"] == ""
+        assert card.state == "missing"
+        assert "Работает" not in card.pill.text()
+    finally:
+        dlg.close()
+
+
 @pytest.fixture
 def book(tmp_path):
     b = CT.Book(tmp_path / "contacts.json", now=lambda: datetime(2026, 9, 27, 14, 0))

@@ -71,9 +71,20 @@ def clock_face(sec: float) -> str:
 
 
 _WORD_NUM = {"одну": 1, "одна": 1, "один": 1, "две": 2, "два": 2, "три": 3, "четыре": 4, "пять": 5,
-             "шесть": 6, "семь": 7, "восемь": 8, "девять": 9, "десять": 10, "пятнадцать": 15,
+             "шесть": 6, "семь": 7, "восемь": 8, "девять": 9, "десять": 10, "одиннадцать": 11,
+             "двенадцать": 12, "тринадцать": 13, "четырнадцать": 14, "пятнадцать": 15,
+             "шестнадцать": 16, "семнадцать": 17, "восемнадцать": 18, "девятнадцать": 19,
              "двадцать": 20, "тридцать": 30, "сорок": 40, "пятьдесят": 50, "полтора": 1.5,
              "полторы": 1.5}
+_UNITS = (("час", 3600), ("мин", 60), ("сек", 1))
+# «половина восьмого» — 7:30: час в родительном падеже, порядковый.
+_ORDINAL_GEN = {"первого": 1, "второго": 2, "третьего": 3, "четвертого": 4, "пятого": 5,
+                "шестого": 6, "седьмого": 7, "восьмого": 8, "девятого": 9, "десятого": 10,
+                "одиннадцатого": 11, "двенадцатого": 12}
+
+
+def _unit(token: str) -> int | None:
+    return next((k for u, k in _UNITS if token.startswith(u)), None)
 
 
 def parse_duration(p: dict) -> float | None:
@@ -99,21 +110,41 @@ def parse_duration(p: dict) -> float | None:
     if m:                                        # «1:30» — минуты:секунды, «1:30:00» — часы
         a, b, c = int(m[1]), int(m[2]), m[3]
         return float(a * 3600 + b * 60 + int(c)) if c else float(a * 60 + b)
-    total = 0.0
-    for num, unit in re.findall(r"(\d+(?:\.\d+)?|[а-я]+)?\s*(час|мин|сек)", text):
-        n = float(num) if num and num[0].isdigit() else _WORD_NUM.get(num, 1.0)
-        total += n * {"час": 3600, "мин": 60, "сек": 1}[unit]
+    # Число копится из всех слов перед единицей: «двадцать пять минут» — 25,
+    # а не 5 (раньше бралось только последнее слово).
+    total, acc = 0.0, None
+    for tok in re.findall(r"\d+(?:\.\d+)?|[а-яё]+", text):
+        unit = _unit(tok)
+        if unit is None and tok.startswith("пол") and _unit(tok[3:]):
+            total += 0.5 * _unit(tok[3:])           # «полминуты», «полчаса»
+            acc = None
+        elif unit is not None:
+            total += (1.0 if acc is None else acc) * unit
+            acc = None
+        elif tok[0].isdigit():
+            acc = (acc or 0.0) + float(tok)
+        elif tok in _WORD_NUM:
+            acc = (acc or 0.0) + _WORD_NUM[tok]
     return total or None
 
 
 def parse_hhmm(text: str) -> tuple[int, int]:
     """«7», «07:30», «7.30», «19 30», «7 утра», «8 вечера» → (часы, минуты)."""
-    t = str(text or "").lower()
+    t = str(text or "").lower().replace("ё", "е")
     m = re.search(r"(\d{1,2})(?:[:.\s](\d{2}))?", t)
-    if not m:
-        raise ValueError(f"не понял время «{text}»")
-    h, mi = int(m.group(1)), int(m.group(2) or 0)
-    if re.search(r"веч|ночи|pm", t) and h < 12 and not ("ночи" in t and h <= 4):
+    half = re.search(r"половин[аеу]\s+([а-я]+)", t)
+    if m:
+        h, mi = int(m.group(1)), int(m.group(2) or 0)
+    elif half and half.group(1) in _ORDINAL_GEN:      # «половина восьмого»
+        h, mi = _ORDINAL_GEN[half.group(1)] - 1, 30
+    else:                                              # «семь тридцать», «семь утра»
+        words = [w for w in re.findall(r"[а-я]+", t) if w in _WORD_NUM and w not in ("полтора", "полторы")]
+        if not words:
+            raise ValueError(f"не понял время «{text}»")
+        h, mi = int(_WORD_NUM[words[0]]), int(sum(_WORD_NUM[w] for w in words[1:]))
+    if "ночи" in t and h == 12:                        # «12 ночи» — полночь, а не полдень
+        h = 0
+    elif re.search(r"веч|ночи|pm", t) and h < 12 and not ("ночи" in t and h <= 4):
         h += 12
     if not (0 <= h <= 23 and 0 <= mi <= 59):
         raise ValueError(f"не понял время «{text}»")

@@ -120,8 +120,11 @@ def validate_gemini_key(key: str) -> tuple[bool, str]:
         return False, "Модель не вернула ответ. Проверьте статус ключа в Google AI Studio."
     except Exception as e:
         err_msg = str(e)
-        if "API_KEY_INVALID" in err_msg or "400" in err_msg:
+        low = err_msg.lower()
+        if "api_key_invalid" in low or "api key not valid" in low or "api key expired" in low:
             return False, "Неверный API-ключ"
+        if "location is not supported" in low or "failed_precondition" in low:
+            return False, "Gemini недоступен в вашем регионе (нужен VPN)"
         if "RESOURCE_EXHAUSTED" in err_msg or "429" in err_msg:
             return False, "Превышена квота запросов (429)"
         return False, f"Ошибка проверки: {err_msg[:120]}"
@@ -378,7 +381,7 @@ class SetupWizardDialog(QDialog):
         self.tabs.addTab(self._tab_ai(), "🧠 Мозг (Gemini)")
         self.tabs.addTab(self._tab_audio(), "🎙️ Микрофон и звук")
         self.tabs.addTab(self._tab_voice(), "🔊 Голос")
-        self.tabs.addTab(self._tab_telegram(), "📱 Telegram (по желанию)")
+        self.tabs.addTab(self._tab_telegram(), "📱 Telegram")
         main_layout.addWidget(self.tabs)
 
         # Autostart checkbox
@@ -425,7 +428,8 @@ class SetupWizardDialog(QDialog):
         tab_layout.addLayout(key_row)
 
         actions_row = QHBoxLayout()
-        self.btn_get_key = QPushButton("🔗 Получить бесплатный ключ (Google AI Studio)")
+        self.btn_get_key = QPushButton("🔗 Получить бесплатный ключ")
+        self.btn_get_key.setToolTip("Откроет Google AI Studio")
         self.btn_get_key.setProperty("class", "secondary")
         self.btn_get_key.clicked.connect(lambda: webbrowser.open("https://aistudio.google.com/app/apikey"))
         actions_row.addWidget(self.btn_get_key)
@@ -440,9 +444,11 @@ class SetupWizardDialog(QDialog):
         tab_layout.addWidget(self.lbl_key_status)
 
         # Модель
-        tab_layout.addWidget(QLabel("Модель Gemini:"))
+        # Голосом Джарвис всегда говорит через Gemini Live — эта модель только для
+        # Telegram-бота. Были gemini-2.0-flash-exp и 1.5-pro: их уже нет в API.
+        tab_layout.addWidget(QLabel("Модель для Telegram-бота (голос на ПК от неё не зависит):"))
         self.combo_model = QComboBox()
-        self.combo_model.addItems(["gemini-2.5-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro"])
+        self.combo_model.addItems(["gemini-2.5-flash", "gemini-2.5-flash-lite"])
         tab_layout.addWidget(self.combo_model)
 
         tab_layout.addStretch()
@@ -630,7 +636,7 @@ class SetupWizardDialog(QDialog):
         tab_layout.setSpacing(12)
         _art_banner(tab_layout, "setup/setup_telegram.jpg", "Telegram", "Пульт с телефона: писать, звонить, управлять ПК.")
 
-        tab_layout.addWidget(QLabel("<b>Связь с Telegram (для управления с телефона):</b>"))
+        tab_layout.addWidget(QLabel("<b>Связь с Telegram</b> — по желанию, можно пропустить (управление с телефона):"))
 
         tab_layout.addWidget(QLabel("Токен бота (Telegram Bot Token):"))
         self.edit_tg_token = QLineEdit()
@@ -695,14 +701,21 @@ class SetupWizardDialog(QDialog):
             self.tabs.setCurrentIndex(0)
             return
 
-        # Парсим Telegram allowed users
+        # Парсим Telegram allowed users. Не число (например, @username) раньше
+        # молча выбрасывалось — бот потом не пускал самого владельца.
         raw_users = self.edit_tg_user.text().strip()
-        allowed = []
-        if raw_users:
-            for u in raw_users.split(","):
-                u = u.strip()
-                if u.isdigit():
-                    allowed.append(int(u))
+        allowed, wrong = [], []
+        for u in filter(None, (x.strip() for x in raw_users.split(","))):
+            (allowed.append(int(u)) if u.isdigit() else wrong.append(u))
+        if wrong:
+            QMessageBox.warning(
+                self,
+                "Нужен числовой ID",
+                f"«{', '.join(wrong)}» — это не ID. Нужно число вроде 123456789: "
+                "напишите @userinfobot в Telegram, он пришлёт ваш ID.",
+            )
+            self.tabs.setCurrentIndex(3)
+            return
 
         data = {
             "gemini_api_key": gemini_key,

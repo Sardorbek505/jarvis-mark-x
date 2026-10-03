@@ -187,3 +187,28 @@ def test_editor_window(store):
         dlg.repaint()
     finally:
         dlg.close()
+
+
+def test_одноимённая_команда_не_затирает_старую(store):
+    """Было: новая «Стрим» молча удаляла прежнюю «Стрим»."""
+    m, *_ = store
+    first = m.upsert(mc.Command("Стрим", ["режим стрима"], [{"do": "open_url", "value": "twitch.tv"}]))
+    second = m.upsert(mc.Command("Стрим", ["открой ютуб"], [{"do": "open_url", "value": "youtube.com"}]))
+    names = [c.name for c in m.commands]
+    assert "Стрим" in names and "Стрим (2)" in names
+    assert first.name == "Стрим" and second.name == "Стрим (2)"
+    # Повторное сохранение той же команды не плодит «(3)».
+    assert m.upsert(second).name == "Стрим (2)"
+
+
+def test_своя_команда_не_затирает_встроенную_из_пака(store):
+    m, *_ = store
+    pack_back = [c for c in m.commands if c.pack and _norm_name(c.name) == "назад"]
+    assert pack_back, "в паке браузера есть «Назад»"
+    app = pack_back[0].app
+    m.upsert(mc.Command("Назад", ["назад пожалуйста"], [{"do": "keys", "value": "alt+left"}], app=app))
+    assert pack_back[0] in m.commands
+
+
+def _norm_name(s):
+    return " ".join(s.lower().split())

@@ -242,3 +242,23 @@ def test_notes_append_delete_latest(tmp_path, monkeypatch):
     assert "корзине" in act({"action": "delete", "title": "Список покупок"})
     assert act({"action": "list"}) == "В базе знаний пока нет заметок."
     assert (tmp_path / "vault" / ".trash" / "Список покупок.md").exists()   # можно вернуть
+
+
+@pytest.mark.parametrize("duration, sec", [
+    ("двадцать пять минут", 1500), ("тридцать пять минут", 2100), ("сорок пять секунд", 45),
+    ("полминуты", 30), ("полчаса", 1800), ("полтора часа", 5400), ("1 час 30 минут", 5400),
+    ("две минуты", 120), ("час", 3600), ("1:30", 90),
+])
+def test_длительность_словами_целиком(duration, sec):
+    """Было: «двадцать пять минут» → 5 минут (бралось последнее слово)."""
+    from core.clock import parse_duration
+    assert parse_duration({"duration": duration}) == sec
+
+
+@pytest.mark.parametrize("text, hm", [
+    ("12 ночи", (0, 0)), ("2 ночи", (2, 0)), ("7 вечера", (19, 0)), ("половина восьмого", (7, 30)),
+    ("семь тридцать", (7, 30)), ("семь утра", (7, 0)), ("07:30", (7, 30)),
+])
+def test_время_будильника(text, hm):
+    from core.clock import parse_hhmm
+    assert parse_hhmm(text) == hm

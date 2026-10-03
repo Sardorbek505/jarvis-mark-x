@@ -679,6 +679,7 @@ class MacrosDialog(QDialog):
     def _remove_phrase(self, text: str):
         self._phrases = [p for p in self._phrases if p != text]
         self._render_chips()
+        self._touch_now()              # иначе удаление фразы не доходило до диска
 
     def _render_chips(self):
         while self.chips.count():
@@ -831,6 +832,7 @@ class MacrosDialog(QDialog):
         if not c.steps:
             self._say("Добавьте хотя бы один шаг.", False)
             return False
+        typed = c.name
         self.store.upsert(c)
         self.current = c
         if not self._typing_phrase:
@@ -841,7 +843,8 @@ class MacrosDialog(QDialog):
         self.del_btn.setVisible(True)
         how = [f"скажите «Джарвис, {c.phrases[0]}»"] if c.phrases else []
         how += [mt.describe_when(w) for w in c.when]
-        self._say("Запуск: " + ", ".join(how) + ".")
+        renamed = f"Имя «{typed}» уже занято — сохранил как «{c.name}». " if c.name != typed else ""
+        self._say(renamed + "Запуск: " + ", ".join(how) + ".")
         return True
 
     def delete_command(self):
