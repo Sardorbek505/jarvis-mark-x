@@ -366,3 +366,28 @@ def test_closed_capsule_stops_and_takes_its_glow_along():
         from PyQt6.QtCore import QCoreApplication, QEvent
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
     assert destroyed == [1]                                      # свечение ушло вместе с капсулой
+
+
+def test_mascot_eyes_wrap_around_the_sphere_and_springs_settle():
+    """Объём: взгляд вбок — глаза едут по шару, у края сжимаются, дальний уже ближнего.
+    Смена состояния — пружина «желе», которая успокаивается; значок выпрыгивает."""
+    from ui_face import Face
+    f = Face(seed=1)
+    f.look = [0.0, 0.0]
+    (lx, _, lw, _), (rx, _, rw, _) = f.eye_layout(100)
+    assert abs(lw - rw) < 1e-6 and lx < 0 < rx
+    f.look = [1.0, 0.0]                                   # смотрит вправо
+    (lx2, _, lw2, _), (rx2, _, rw2, _) = f.eye_layout(100)
+    assert lx2 > lx and rx2 > rx and rw2 < rw and rw2 < lw2   # правый глаз ушёл к краю — сжался
+    f.set_emotion("think")
+    f.step(0.05)
+    assert abs(f.squish) > 0.01                            # дрогнул
+    for _ in range(120):
+        f.step(1 / 60)
+    assert abs(f.squish) < 0.005                          # и успокоился
+    f.set_emotion("hungry")
+    peak = 0.0
+    for _ in range(90):
+        f.step(1 / 60)
+        peak = max(peak, f.box)
+    assert peak > 1.0 and abs(f.box - 1.0) < 0.02          # в коробку — с отскоком, и встал
