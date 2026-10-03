@@ -115,3 +115,15 @@ def test_translation_message_memory_app():
 def test_failure_becomes_error_card():
     assert _data("files", {"path": "C:/Windows"}, "Ошибка: защищено")["card"] == "error"
     assert _data("send_to_telegram", {}, "Сэр, произошла ошибка при отправке")["card"] == "error"
+
+
+def test_every_tool_card_has_a_russian_title():
+    """Карточки подписывались именем инструмента по-английски: «Clock», «Study», «Macro»."""
+    import re
+    from pathlib import Path
+    names = set(re.findall(r'"name":\s*"([a-z_]+)"', (Path(__file__).parent.parent / "main.py").read_text(encoding="utf-8")))
+    assert names, "не нашёл инструменты в main.py"
+    for name in sorted(names):
+        c = build_card(name, {}, "Готово")
+        if c is not None:  # своя подпись, а не запасная из имени инструмента
+            assert c["title"] != name.replace("_", " ").capitalize(), (name, c["title"])

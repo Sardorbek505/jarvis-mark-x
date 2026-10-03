@@ -33,6 +33,11 @@ _TITLES = {
     "look_at_camera": "Камера", "send_to_telegram": "Telegram",
     "computer_control": "Компьютер", "window_control": "Окна",
     "save_to_memory": "Память", "sleep_timer": "Таймер", "remember_screen": "Запомнил",
+    # без этих строк карточка подписывалась английским именем инструмента: «Clock», «Study»…
+    "clock": "Время", "study": "Учёба", "contacts": "Люди", "phone_call": "Звонок",
+    "macro": "Команда", "football": "Футбол", "app_window": "Окна", "location": "Где я",
+    "about_me": "Обо мне", "recall_memory": "Память", "forget_memory": "Память",
+    "eyes": "Глаза", "break_reminder": "Перерыв",
 }
 # Шапка карточки, когда у команды нет понятного аргумента (сайта, запроса).
 _ADDRESS = {
