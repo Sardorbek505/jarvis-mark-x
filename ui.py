@@ -1082,7 +1082,7 @@ class MainWindow(QMainWindow):
         outer.setSpacing(0)
 
         head_row = QHBoxLayout()
-        head_row.setContentsMargins(0, 0, 12, 0)
+        head_row.setContentsMargins(0, 0, 6, 0)
         head_row.setSpacing(8)
         self._header = HeaderBar()
         head_row.addWidget(self._header, stretch=1)
@@ -1105,10 +1105,18 @@ class MainWindow(QMainWindow):
         self._mute_btn.clicked.connect(self._toggle_mute)
         self._style_mute_btn()
         head_row.addWidget(self._mute_btn)
+        # Системной полосы Windows нет (ui_frame.py): свернуть / развернуть /
+        # закрыть — здесь, окно тащится за шапку, размер — за края.
+        from ui_frame import Frameless, caption_buttons
+        head_row.addSpacing(6)
+        for b in caption_buttons(self, {"text": C.TEXT_MED, "white": C.WHITE,
+                                        "hover": "rgba(255, 255, 255, 0.08)"}):
+            head_row.addWidget(b)
         head_wrap = QWidget()
         head_wrap.setStyleSheet(f"background: {C.BG}; border-bottom: 1px solid {C.BORDER};")
         head_wrap.setLayout(head_row)
         outer.addWidget(head_wrap)
+        self._frameless = Frameless(self, [head_wrap, self._header, self._clock])
 
         # ── Под шапкой: панель экранов слева, справа — открытый экран ──
         # Шар с разговором — первый экран; команды, учёба, контакты и прочие —
