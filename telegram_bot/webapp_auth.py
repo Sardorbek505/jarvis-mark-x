@@ -1,7 +1,7 @@
 """Проверка подписи данных Telegram Mini App (initData). Без внешних зависимостей."""
 
 
-def verify_init_data(init_data: str, bot_token: str, max_age_sec: int = 7 * 86400) -> int | None:
+def verify_init_data(init_data: str, bot_token: str, max_age_sec: int = 86400) -> int | None:
     """id пользователя из initData Telegram, если подпись верна; иначе None.
 
     Раньше user_id брался из строки запроса как есть: любой, кто знал адрес

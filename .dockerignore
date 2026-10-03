@@ -1,0 +1,19 @@
+# Секреты и личные данные — не в образ (COPY . . в Dockerfile).
+config/api_keys.json
+*.session
+*.session-journal
+.env
+.env.*
+memory/*.json
+memory/*.jsonl
+*.db
+*.sqlite
+*.sqlite3
+.git
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+tests/
+dist/
+build/

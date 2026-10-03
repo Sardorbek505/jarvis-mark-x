@@ -3,10 +3,11 @@
 # pip install -r telegram_bot/requirements.txt
 
 # Gemini
-google-genai>=1.0.0
+google-genai>=2.26.0
 
 # Telegram
-python-telegram-bot>=20.0
+# ≥21: forward_origin (с 20.8) — иначе пересланное выглядело бы как своё
+python-telegram-bot>=21,<23
 
 # Mini App сервер
 fastapi>=0.110.0

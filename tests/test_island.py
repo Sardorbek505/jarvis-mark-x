@@ -167,7 +167,7 @@ def test_click_opens_jarvis_and_player_buttons_work(island, monkeypatch):
     w.enterEvent(None)                                          # наведение — с задержкой
     _settle(w, app, 1.4)
     w.repaint()
-    assert set(w._buttons) == {"open", "previous", "toggle", "next"}
+    assert set(w._buttons) == {"open", "chat", "previous", "toggle", "next"}   # «Написать» — чат в капсуле
     for name in ("next", "toggle"):
         r = w._buttons[name].center()
         QTest.mouseClick(w, Qt.MouseButton.LeftButton, pos=QPoint(int(r.x()), int(r.y())))

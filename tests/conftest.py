@@ -59,6 +59,7 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     import core.contacts as contacts_mod
     monkeypatch.setenv("JARVIS_CONTACTS", str(d / "contacts.json"))
     monkeypatch.setenv("JARVIS_CONTACTS_LISTEN", "0")
+    monkeypatch.setenv("JARVIS_CALL_REC_DIR", str(d))     # голос из трубки — не в настоящую папку
     monkeypatch.setenv("JARVIS_ABOUT_STATE", str(d / "about_me_state.json"))
     monkeypatch.setenv("JARVIS_BRIEFING_STATE", str(d / "briefing_state.json"))
     monkeypatch.setenv("JARVIS_BRIEFING", "0")            # утром сам не срабатывает посреди чужих тестов
@@ -84,6 +85,7 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     import core.macros as macros_mod
     monkeypatch.setenv("JARVIS_MACROS", str(d / "macros.json"))
     monkeypatch.setenv("JARVIS_SETTINGS", str(d / "settings.json"))
+    monkeypatch.setenv("JARVIS_PC_LINK", "0")   # тесты не звонят на сервер бота
     monkeypatch.setattr(macros_mod, "_macros", None)
     monkeypatch.setattr(mm, "_MEMORY_FILE", d / "data.json")
     monkeypatch.setattr(conv, "DIALOG_FILE", d / "dialog.jsonl")

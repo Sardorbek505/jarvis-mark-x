@@ -50,9 +50,10 @@ async def test_fact_said_on_pc_reaches_bot_and_bot_fact_reaches_pc(monkeypatch, 
     block = server.cached_block(UID)
     assert "Азиз" in block and "плов" in block                        # бот знает оба
 
-    pc = conv.prompt_context(resuming=True)
-    assert "Любит плов по субботам" in pc                              # ПК знает факт бота
-    assert pc.count("Азиз") == 0                                      # свой факт не дублируется в общем блоке
+    # Одна память: факт бота лежит в памяти ПК и идёт в промпт вместе со своими, без второго блока.
+    pc = mm.format_memory_for_prompt(mm.load_memory()) + conv.prompt_context(resuming=True)
+    assert pc.count("Любит плов по субботам") == 1                     # ПК знает факт бота
+    assert pc.count("Азиз") == 1                                      # и свой — ровно один раз
     assert "плов" in conv.recall("плов")
 
 

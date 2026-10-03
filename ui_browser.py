@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLineEdit, QPushButton, QVBoxLa
 logger = logging.getLogger(__name__)
 
 BG, PANEL, LINE, LINE2 = "#030609", "#070c11", "#151e27", "#243240"
-PRI, TEXT, DIM = "#3fd0bd", "#d6dee5", "#5c6873"
+PRI, TEXT, DIM = "#3fd0bd", "#e6f3fa", "#6f8ca0"
 
 
 class PageView(QWidget):

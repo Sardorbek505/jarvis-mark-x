@@ -54,10 +54,22 @@ async def delivery_loop(bot, memory, logger, every: float = 30.0, call=None):
     call(uid, topic) -> (ok, почему_нет) — звонок через ПК для «📞 …».
     """
     import asyncio
+    claim = getattr(memory, "claim_reminder", None)
+    release = getattr(memory, "release_reminder", None)
+    try:
+        stale = getattr(memory, "release_stale_claims", None)
+        if stale:
+            await stale()
+    except Exception as e:
+        logger.warning(f"Reminder claims reset: {e}")
     while True:
         try:
             await asyncio.sleep(every)
             for r in await memory.get_due_reminders(now_utc_iso()):
+                # Сначала бронь: второй экземпляр бота на той же базе это
+                # напоминание уже не возьмёт (и не позвонит второй раз).
+                if claim and not await claim(r["id"]):
+                    continue
                 text = await _delivery_text(r, call)
                 try:
                     await bot.send_message(chat_id=r["user_id"], text=text)
@@ -66,6 +78,8 @@ async def delivery_loop(bot, memory, logger, every: float = 30.0, call=None):
                     # Звонок уже состоялся — повтор через полминуты позвонил
                     # бы снова. Такое напоминание считаем доставленным.
                     if not text.startswith(CALL_MARK):
+                        if release:
+                            await release(r["id"])
                         continue
                 try:
                     await memory.mark_reminder_sent(r["id"])

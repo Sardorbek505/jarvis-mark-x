@@ -206,3 +206,132 @@ async def test_bot_send_uses_pc_contacts_when_not_whitelisted(monkeypatch):
         await t
     assert asked == [("resolve_contact", {"alias": "маме"})]
     assert staged == [("@mama_tg", "маме", "Задержусь")]
+
+
+# ── Звонки из бота ────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("text,expect", [
+    ("Позвони мне", ("мне", "")),
+    ("позвони ибрагиму", ("ибрагиму", "")),
+    ("Джарвис, позвони Ибрагиму и скажи, что я опоздаю на 10 минут", ("Ибрагиму", "я опоздаю на 10 минут")),
+    ("набери маме, передай что ужин готов!", ("маме", "ужин готов")),
+    ("позвони мне завтра в 7", None),                   # это напоминание звонком — решит модель
+    ("позвони мне через 20 минут", None),
+    ("я забыл позвонить Ибрагиму", None),
+    ("напомни позвонить маме", None),
+])
+def test_parse_call(text, expect):
+    from telegram_bot import bot as bot_mod
+    assert bot_mod._parse_call(text) == expect
+
+
+class _CallMsg:
+    def __init__(self):
+        self.replies = []
+
+    async def reply_text(self, text, **kw):
+        self.replies.append((text, kw.get("reply_markup")))
+        return self
+
+    async def edit_message_text(self, text, **kw):
+        self.replies.append((text, None))
+
+    async def answer(self, *a, **k):
+        pass
+
+
+class _CallBridge:
+    def __init__(self, connected=True, answers=None):
+        self.connected = connected
+        self.calls = []
+        self.answers = answers or {}
+
+    async def send_command_full(self, text, uid, timeout=25.0):
+        self.calls.append(("command", text))
+        return {"text": "📞 Звоню в Telegram."}
+
+    async def send_action(self, action, uid, timeout=25.0, **kw):
+        self.calls.append((action, kw))
+        return self.answers.get(kw.get("confirmed"))
+
+
+@pytest.mark.asyncio
+async def test_call_me_goes_to_pc(monkeypatch):
+    from telegram_bot import bot as bot_mod
+    br = _CallBridge()
+    monkeypatch.setattr(bot_mod, "bridge", br)
+    m = _CallMsg()
+    await bot_mod._handle_call(m, 1, "мне", "")
+    assert br.calls == [("command", "позвони мне: ")] and m.replies[-1][0] == "📞 Звоню в Telegram."
+
+
+@pytest.mark.asyncio
+async def test_call_contact_asks_then_calls(monkeypatch):
+    from telegram_bot import bot as bot_mod
+    br = _CallBridge(answers={
+        False: {"ok": True, "text": "📞 Позвонить Ибрагиму с вашего Telegram и сказать: «опоздаю»?",
+                "data": {"need_confirm": True, "name": "Ибрагим"}},
+        True: {"ok": True, "text": "📞 Звоню Ибрагим. Когда поговорю — перескажу.", "data": {}}})
+    monkeypatch.setattr(bot_mod, "bridge", br)
+    m = _CallMsg()
+    await bot_mod._handle_call(m, 1, "Ибрагиму", "опоздаю")
+    text, kb = m.replies[-1]
+    assert "Позвонить Ибрагиму" in text and kb is not None
+    assert br.calls == [("call_contact", {"alias": "Ибрагиму", "message": "опоздаю", "confirmed": False})]
+    ok = kb.inline_keyboard[0][0].callback_data
+    q = _CallMsg()
+    await bot_mod._on_call_button(q, 1, ok)                    # «📞 Позвонить»
+    assert br.calls[-1] == ("call_contact", {"alias": "Ибрагиму", "message": "опоздаю", "confirmed": True})
+    assert q.replies[-1][0].startswith("📞 Звоню Ибрагим")
+    await bot_mod._on_call_button(q, 1, ok)                    # повторное нажатие — не звоним второй раз
+    assert len(br.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_call_cancel_and_offline(monkeypatch):
+    from telegram_bot import bot as bot_mod
+    br = _CallBridge(answers={False: {"ok": True, "text": "?", "data": {"need_confirm": True}}})
+    monkeypatch.setattr(bot_mod, "bridge", br)
+    m = _CallMsg()
+    await bot_mod._handle_call(m, 1, "маме", "")
+    no = m.replies[-1][1].inline_keyboard[0][1].callback_data
+    q = _CallMsg()
+    await bot_mod._on_call_button(q, 1, no)
+    assert q.replies[-1][0] == "✖ Не звоню." and len(br.calls) == 1
+    monkeypatch.setattr(bot_mod, "bridge", _CallBridge(connected=False))
+    await bot_mod._handle_call(m, 1, "мне", "")
+    assert "офлайн" in m.replies[-1][0]
+
+
+def test_pc_call_contact_needs_yes(store, monkeypatch):
+    from core import contacts as ct
+    book = ct.contacts().book
+    book.upsert(ct.Contact(name="Ибрагим", telegram="+998901112233", can_call=True))
+    book.upsert(ct.Contact(name="Сосед", telegram="@sosed", can_call=False))
+    placed = []
+    monkeypatch.setattr(ct.contacts(), "call_fn", lambda target, name, text, **kw: placed.append((name, text)) or "ок")
+    monkeypatch.setattr(ct.contacts().me, "linked", lambda: False)
+    monkeypatch.setattr(book, "quiet_now", lambda: False)          # тест не зависит от часов
+    res = pc_macros.call_contact("Ибрагиму", "опоздаю")
+    assert res["need_confirm"] and "Ибрагим" in res["text"] and placed == []
+    res = pc_macros.call_contact("Ибрагиму", "опоздаю", confirmed=True)
+    assert res["ok"] and "Звоню Ибрагим" in res["text"]
+    import time
+    for _ in range(100):
+        if placed:
+            break
+        time.sleep(0.01)
+    assert placed == [("Ибрагим", "опоздаю")]
+    assert not pc_macros.call_contact("соседу", "x")["ok"]
+
+
+
+def test_pc_call_from_bot_respects_quiet_hours_unless_urgent(store, monkeypatch):
+    """Раньше звонок из бота всегда был «срочным» и мог разбудить человека ночью."""
+    from core import contacts as ct
+    book = ct.contacts().book
+    book.upsert(ct.Contact(name="Ибрагим", telegram="+998901112233", can_call=True))
+    monkeypatch.setattr(ct.contacts(), "call_fn", lambda target, name, text, **kw: "ок")
+    monkeypatch.setattr(ct.contacts().me, "linked", lambda: False)
+    monkeypatch.setattr(book, "quiet_now", lambda: True)
+    assert not pc_macros.call_contact("Ибрагиму", "опоздаю")["ok"]
+    assert pc_macros.call_contact("Ибрагиму", "срочно перезвони")["need_confirm"]

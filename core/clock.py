@@ -441,11 +441,9 @@ class Clock:
                 return (t.label or "Таймер"), t.end
             if self.stopwatch.started:
                 return f"Секундомер · {clock_face(self.stopwatch.value(self.now()))}", 0.0
-            nxt = [(self.next_ring(a), a) for a in self.alarms]
-            nxt = [(d, a) for d, a in nxt if d]
-            if nxt:
-                d, a = min(nxt, key=lambda x: x[0])
-                return f"Будильник {d:%H:%M}", 0.0
+            # Ближайший будильник в капсуле не показываем: владелец — «этот текст
+            # бесполезен». Видно только то, что идёт сейчас: таймер, секундомер,
+            # звенящий будильник.
         return "", 0.0
 
     # ── ход часов ─────────────────────────────────────────────────────────────

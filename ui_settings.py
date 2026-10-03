@@ -13,7 +13,7 @@ import math
 import sys
 import threading
 
-from PyQt6.QtCore import QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import (QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
                              QSlider, QVBoxLayout, QWidget)
@@ -21,23 +21,33 @@ from PyQt6.QtWidgets import (QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QP
 from core import settings as S
 from ui import C
 from ui_icons import qicon
-from ui_kit import STYLE, IconBadge, Toggle, _cap, _label, _line
+from ui_kit import STYLE, IconBadge, SavedNote, Toggle, _cap, _label, _line
 
 logger = logging.getLogger(__name__)
 
 EXTRA = f"""
 QLabel#name {{ color: {C.WHITE}; font-weight: 600; }}
-QLabel#saved {{ color: {C.GREEN}; font-size: 12px; }}
+QLabel#scale {{ color: {C.TEXT_DIM}; font-size: 12px; }}
 QSlider::groove:horizontal {{ height: 4px; background: {C.BORDER_B}; border-radius: 2px; }}
 QSlider::sub-page:horizontal {{ background: {C.PRI_DIM}; border-radius: 2px; }}
 QSlider::handle:horizontal {{ background: {C.PRI}; width: 16px; height: 16px; margin: -6px 0; border-radius: 8px; }}
 """
 
-VOICES = [("fish", "Fish Audio — голос JARVIS из фильмов"), ("gemini", "Gemini — быстрее, встроенный голос")]
+VOICES = [("fish", "Как в фильме (Fish Audio, нужен ключ)"), ("gemini", "Быстрый (встроенный Gemini)")]
 EDGE_VOICES = [("ru-RU-DmitryNeural", "Дмитрий (мужской)"), ("ru-RU-SvetlanaNeural", "Светлана (женский)")]
-WAKE = [("wake_word", "Только когда зовут «Джарвис»"), ("always_on", "Отвечать на всё, без имени")]
+WAKE = [("wake_word", "Только когда зовут «Джарвис»"), ("always_on", "На любую речь — если вы один в комнате")]
 AWAKE = [(15, "15 секунд"), (30, "30 секунд"), (60, "1 минуту"), (120, "2 минуты")]
 CAMERAS = [(i, f"Камера {i + 1}" + (" — обычно встроенная" if i == 0 else "")) for i in range(4)]
+
+
+def cameras() -> list[tuple[int, str]]:
+    """Настоящие камеры по именам (Qt Multimedia); нет модуля или камер — «Камера 1…4»."""
+    try:
+        from PyQt6.QtMultimedia import QMediaDevices
+        names = [d.description() for d in QMediaDevices.videoInputs()]
+    except Exception:
+        names = []
+    return [(i, n) for i, n in enumerate(names)] if names else list(CAMERAS)
 # Порог RMS: ниже — речь не считается. Ползунок — «чувствительность» (выше = тише слышит).
 TH_MIN, TH_MAX = 40, 700
 
@@ -173,7 +183,7 @@ class SettingsDialog(QDialog):
         outer = QHBoxLayout(canvas)
         outer.setContentsMargins(0, 0, 0, 0)
         col_w = QWidget()
-        col_w.setMaximumWidth(760)
+        col_w.setMaximumWidth(820)
         self.col = QVBoxLayout(col_w)
         self.col.setContentsMargins(28, 22, 28, 28)
         self.col.setSpacing(10)
@@ -184,9 +194,6 @@ class SettingsDialog(QDialog):
         outer.addStretch(1)
         scroll.setWidget(canvas)
         root.addWidget(scroll, 1)
-        self._saved_tmr = QTimer(self)
-        self._saved_tmr.setSingleShot(True)
-        self._saved_tmr.timeout.connect(self.saved.clear)
 
     # ── вид ─────────────────────────────────────────────────────────────────
     def _header(self) -> QWidget:
@@ -198,11 +205,11 @@ class SettingsDialog(QDialog):
         lay.addWidget(IconBadge("gear", 38))
         col = QVBoxLayout()
         col.setSpacing(1)
-        col.addWidget(_label("ДЖАРВИС", "brand"))
         col.addWidget(_label("Настройки", "h1", wrap=False))
+        col.addWidget(_label("Всё сохраняется сразу", "hint", wrap=False))
         lay.addLayout(col)
         lay.addStretch(1)
-        self.saved = _label("", "saved", wrap=False)
+        self.saved = SavedNote()
         lay.addWidget(self.saved)
         return w
 
@@ -265,26 +272,36 @@ class SettingsDialog(QDialog):
         t.toggled.connect(self._toggle_changed)
         return t
 
+    def _pair(self, *widgets) -> QWidget:
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        for x in widgets:
+            lay.addWidget(x)
+        return w
+
     def _build(self):
         v = self.values
-        # Звук
         lay = self._section("mic", "Микрофон")
         mics = S.devices("input")
         cur = v["mic"] if v["mic"] in mics or not v["mic"] else v["mic"]
-        items = [("", "Автовыбор (рекомендуется)")] + [(n, n) for n in mics]
+        items = [("", "Автовыбор (подходит почти всем)")] + [(n, n) for n in mics]
         if cur and cur not in mics:
             items.append((cur, f"{cur} (сейчас не подключён)"))
         self.mic = self._combo(items, cur, "mic", 340)
         self.mic.currentIndexChanged.connect(self._restart_probe)
-        self._row(lay, "Микрофон", "Откуда Джарвис слушает. Номера устройств не нужны — запомню по имени.", self.mic)
+        self._row(lay, "Устройство", "Запомню по имени — переподключение не собьёт выбор.", self.mic)
         self.meter = LevelMeter()
         self.meter.threshold = float(v["mic_threshold"])
         # Связь с методом виджета (не lambda): удалят окно — Qt сам её разорвёт.
         self._level.connect(self.meter.set_level)
         box = QVBoxLayout()
         box.setSpacing(4)
+        box.addWidget(_label("Проверка слуха", "name"))
         box.addWidget(self.meter)
-        self.meter_hint = _label("Скажите что-нибудь: зелёная полоска — слышу, оранжевая черта — порог.", "hint")
+        self.meter_hint = _label("Скажите что-нибудь: полоска зеленеет — слышу. Оранжевая черта — порог: "
+                                 "всё тише неё я не услышу.", "hint")
         box.addWidget(self.meter_hint)
         wrap = QWidget()
         wrap.setLayout(box)
@@ -293,7 +310,7 @@ class SettingsDialog(QDialog):
         lay.addWidget(wrap)
         self.sens = QSlider(Qt.Orientation.Horizontal)
         self.sens.setRange(0, 100)
-        self.sens.setFixedWidth(260)
+        self.sens.setFixedWidth(240)
         self.sens.setValue(threshold_to_slider(float(v["mic_threshold"])))
         self.sens_label = _label("", "hint", wrap=False)
         self.sens.valueChanged.connect(self._on_sens)
@@ -302,74 +319,98 @@ class SettingsDialog(QDialog):
         sl = QVBoxLayout(sw)
         sl.setContentsMargins(0, 0, 0, 0)
         sl.setSpacing(2)
+        scale = QHBoxLayout()
+        scale.addWidget(_label("Только громко", "scale", wrap=False))
+        scale.addStretch(1)
+        scale.addWidget(_label("Даже шёпот", "scale", wrap=False))
         sl.addWidget(self.sens)
+        sl.addLayout(scale)
         sl.addWidget(self.sens_label, 0, Qt.AlignmentFlag.AlignRight)
         self._on_sens(self.sens.value())
-        self._row(lay, "Чувствительность", "Слышит шорохи и чужую речь — убавьте; не слышит вас — прибавьте.", sw)
+        self._row(lay, "Чувствительность", "Не слышит вас — двиньте вправо. Реагирует на шум — влево.", sw)
         self.ignore = self._toggle("ignore_speakers", v["ignore_speakers"])
-        self._row(lay, "Не слушать, пока играет музыка или фильм",
-                  "Иначе звук из колонок Джарвис примет за вашу речь.", self.ignore)
+        self._row(lay, "Не слушать, пока играет звук",
+                  "Чтобы голос из фильма или песни не принять за команду.", self.ignore)
 
-        lay = self._section("volume", "Динамик")
+        lay = self._section("timer", "Когда отвечать")
+        self.wake = self._combo(WAKE, v["wake_mode"], "wake_mode", 340)
+        self._row(lay, "Отвечать", "По имени надёжнее: Джарвис не ответит телевизору.", self.wake)
+        self.awake = self._combo(AWAKE, int(v["awake_sec"]), "awake_sec", 340)
+        self._row(lay, "Слушать после ответа", "Столько можно продолжать разговор, не говоря «Джарвис».",
+                  self.awake)
+
+        lay = self._section("speak", "Голос и звук")
+        self.voice = self._combo(VOICES, v["voice"], "voice", 340)
+        self._row(lay, "Голос Джарвиса", "Для голоса из фильма нужен ключ Fish Audio (экран «Ключи»).",
+                  self.voice)
+        self.edge = self._combo(EDGE_VOICES, v["edge_voice"], "edge_voice", 340)
+        self._row(lay, "Запасной голос", "Если основной недоступен — бесплатный голос Microsoft.", self.edge)
         outs = S.devices("output")
         spk = v["speaker"]
         items = [("", "Системный по умолчанию")] + [(n, n) for n in outs]
         if spk and spk not in outs:
             items.append((spk, f"{spk} (сейчас не подключён)"))
-        self.spk = self._combo(items, spk, "speaker", 340)
-        self._row(lay, "Куда говорит Джарвис", "Смена — со следующей фразы, без перезапуска.", self.spk)
-        self.test_btn = QPushButton("  Проверить звук")
-        self.test_btn.setIcon(qicon("volume", 13, C.TEXT_MED))
+        self.spk = self._combo(items, spk, "speaker", 250)
+        self.test_btn = QPushButton(" Проверить")
+        self.test_btn.setIcon(qicon("play", 12, C.TEXT))
+        self.test_btn.setToolTip("Короткий сигнал в выбранном динамике")
         self.test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.test_btn.clicked.connect(self._test_speaker)
-        self._row(lay, "Проверка", "Короткий сигнал в выбранном динамике.", self.test_btn)
-
-        lay = self._section("speak", "Голос")
-        self.voice = self._combo(VOICES, v["voice"], "voice", 340)
-        self._row(lay, "Голос Джарвиса", "Fish нужен ключ (экран «Ключи»); без него — Gemini.", self.voice)
-        self.edge = self._combo(EDGE_VOICES, v["edge_voice"], "edge_voice", 340)
-        self._row(lay, "Запасной голос", "Если Fish недоступен или нет связи — бесплатный голос Microsoft.",
-                  self.edge)
-
-        lay = self._section("mic", "Обращение")
-        self.wake = self._combo(WAKE, v["wake_mode"], "wake_mode", 340)
-        self._row(lay, "Когда отвечать", "«Без имени» — отвечает на любую речь в комнате.", self.wake)
-        self.awake = self._combo(AWAKE, int(v["awake_sec"]), "awake_sec", 340)
-        self._row(lay, "Разговор без имени после ответа",
-                  "Столько после ответа можно продолжать, не говоря «Джарвис».", self.awake)
+        self._row(lay, "Куда выводить звук", "Смена — со следующей фразы, без перезапуска.",
+                  self._pair(self.spk, self.test_btn))
 
         lay = self._section("eye", "Камера")
-        self.camera = self._combo(CAMERAS, int(v["camera"]), "camera", 340)
-        self._row(lay, "Какой камерой смотреть", "Для «посмотри на меня», «что у меня в руке».", self.camera)
+        self.camera = self._combo(cameras(), int(v["camera"]), "camera", 340)
+        self._row(lay, "Камера", "Для просьб «посмотри на меня», «что у меня в руке».", self.camera)
 
         lay = self._section("gear", "Общее")
         self.autostart = Toggle()
         self.autostart.setChecked(_autostart_enabled())
         self.autostart.setEnabled(sys.platform == "win32")
         self.autostart.toggled.connect(self._set_autostart)
-        self._row(lay, "Запускать вместе с Windows", "Джарвис сам стартует после включения ПК.", self.autostart)
+        self._row(lay, "Запускать при включении компьютера",
+                  "Джарвис будет готов сразу после входа в Windows." if sys.platform == "win32"
+                  else "Только в Windows.", self.autostart)
         self.briefing = self._toggle("briefing", v["briefing"])
-        self._row(lay, "Утренний брифинг", "Погода, дела, пары и матч клуба — при первом «Джарвис» утром.",
+        self._row(lay, "Утренняя сводка", "Погода, дела, пары и матч клуба — при первом «Джарвис» утром.",
                   self.briefing)
         self.island = self._toggle("island", v["island"])
-        self._row(lay, "Капсула сверху экрана", "Когда окно свёрнуто. Применится после перезапуска Джарвиса.",
-                  self.island)
+        self._row(lay, "Капсула сверху экрана",
+                  "Когда окно свёрнуто, видно, что делает Джарвис. Включится после перезапуска.", self.island)
+        self.quick_voice = self._toggle("quick_voice", v["quick_voice"])
+        self._row(lay, "Отвечать голосом на простые команды",
+                  "Выключено — «пауза», «громче», «следующий трек» выполняются сразу и подтверждаются "
+                  "коротким звуком, без «Есть, сэр».", self.quick_voice)
+        self.clap_intro = self._toggle("clap_intro", v["clap_intro"])
+        self._row(lay, "Два хлопка — интро",
+                  "Хлопните дважды: экран гаснет, Джарвис проходит проверку систем и слушает. "
+                  "Клик или Esc — пропустить.", self.clap_intro)
         self.anims = self._toggle("animations", v["animations"])
-        self._row(lay, "Анимации", "Плавные переходы, подсветка, волны от нажатий. Выключите на слабом ПК.",
+        self._row(lay, "Анимации", "Плавные переходы и подсветка. Выключите, если компьютер тормозит.",
                   self.anims)
 
+        self.col.addSpacing(6)
+        reset = QPushButton("Сбросить настройки…")
+        reset.setObjectName("danger")
+        reset.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset.clicked.connect(self._reset)
+        self.col.addWidget(reset, 0, Qt.AlignmentFlag.AlignLeft)
+
     # ── действия ────────────────────────────────────────────────────────────
+    def _note(self, text: str, bad: bool = False, ms: int = 2500):
+        """Плашка в шапке: «✓ Сохранено» (зелёная) или ошибка (красная)."""
+        self.saved.show_note(text, bad, ms)
+
     def save(self, key: str, value):
         try:
             S.set(key, value)
         except Exception as exc:
             logger.warning("Настройка %s: %s", key, exc)
-            self.saved.setText("Не сохранилось")
+            self._note("Не сохранилось", bad=True)
             return
         self.values[key] = value
         note = " — после перезапуска" if S.BY_KEY[key].restart else ""
-        self.saved.setText("✓ Сохранено" + note)
-        self._saved_tmr.start(2500)
+        self._note("✓ Сохранено" + note)
         if key == "mic_threshold":
             self.meter.threshold = float(value)
             self.meter.update()
@@ -377,8 +418,34 @@ class SettingsDialog(QDialog):
     def _sens_released(self):
         self.save("mic_threshold", slider_to_threshold(self.sens.value()))
 
+    def _reset(self):
+        from PyQt6.QtWidgets import QMessageBox
+        ask = QMessageBox(QMessageBox.Icon.Question, "Сбросить настройки",
+                          "Вернуть все настройки как были при установке?\n"
+                          "Голос, ключи и ваши данные не тронутся.", parent=self)
+        yes = ask.addButton("Сбросить", QMessageBox.ButtonRole.DestructiveRole)
+        ask.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+        ask.exec()
+        if ask.clickedButton() is yes:
+            self.reset_to_defaults()
+
+    def reset_to_defaults(self):
+        """Всё, кроме голоса (он живёт рядом с ключами), — к значениям по умолчанию."""
+        for o in S.OPTS:
+            if o.key != "voice":
+                try:
+                    S.set(o.key, o.default)
+                except Exception as exc:
+                    logger.warning("Сброс %s: %s", o.key, exc)
+        self.values = S.load()
+        _clear_layout(self.col)
+        self._build()
+        self.col.addStretch(1)
+        self._restart_probe()
+        self._note("✓ Настройки сброшены")
+
     def _on_sens(self, v: int):
-        self.sens_label.setText(f"{sensitivity_word(v)} · порог {slider_to_threshold(v)}")
+        self.sens_label.setText(f"Сейчас: {sensitivity_word(v)}")
         self.meter.threshold = float(slider_to_threshold(v))
         self.meter.update()
 
@@ -390,8 +457,7 @@ class SettingsDialog(QDialog):
 
     def _on_tested(self, err: str):
         self.test_btn.setEnabled(True)
-        self.saved.setText("Не играет: " + err[:60] if err else "✓ Прозвучало?")
-        self._saved_tmr.start(4000)
+        self._note("Не играет: " + err[:60] if err else "✓ Сигнал отправлен — слышно?", bad=bool(err), ms=4000)
 
     def _set_autostart(self, on: bool):
         try:
@@ -400,8 +466,7 @@ class SettingsDialog(QDialog):
         except Exception as exc:
             logger.warning("Автозапуск: %s", exc)
             ok = False
-        self.saved.setText("✓ Сохранено" if ok else "Не получилось изменить автозапуск")
-        self._saved_tmr.start(2500)
+        self._note("✓ Сохранено" if ok else "Не получилось изменить автозапуск", bad=not ok)
 
     def _restart_probe(self, *_):
         if self._probe_on and self.isVisible():
@@ -414,6 +479,15 @@ class SettingsDialog(QDialog):
     def hideEvent(self, ev):
         super().hideEvent(ev)
         self.probe.stop()
+
+
+def _clear_layout(lay):
+    while lay.count():
+        item = lay.takeAt(0)
+        if item.widget() is not None:
+            item.widget().deleteLater()
+        elif item.layout() is not None:
+            _clear_layout(item.layout())
 
 
 def _autostart_enabled() -> bool:

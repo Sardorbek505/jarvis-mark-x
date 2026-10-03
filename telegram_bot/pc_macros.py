@@ -130,3 +130,27 @@ def resolve_contact(alias: str) -> dict:
     if not target:
         return {"ok": False, "text": f"У {c.name} не указан Telegram."}
     return {"ok": True, "target": target, "name": c.name, "text": f"{c.name} → {target}"}
+
+
+def call_contact(alias: str, message: str = "", confirmed: bool = False, user_id=None) -> dict:
+    """«Позвони Ибрагиму и скажи …» из бота. Без confirmed — только вопрос «звонить?»
+    (живому человеку от вашего имени — только после явного «да»); с confirmed — звонок
+    в фоне тем же путём, что голосом на ПК (core/contacts: книжка, «звонить» разрешено,
+    тихие часы, ваш Telegram или аккаунт Джарвиса)."""
+    from core.contacts import contacts
+    api = contacts()
+    # Тихие часы обходит только «срочно» в просьбе — раньше из бота любой
+    # звонок считался срочным и мог разбудить человека ночью.
+    urgent = "срочн" in (message or "").lower()
+    c, problem = api.precheck("call", alias, message, urgent=urgent)
+    if not c:
+        return {"ok": False, "text": problem}
+    if not confirmed:
+        return {"ok": True, "need_confirm": True, "name": c.name,
+                "text": "📞 " + api.confirm_text("call", alias, message)}
+
+    def report(result: str):
+        # Итог разговора — обратно в Telegram: раньше он оставался только в журнале ПК.
+        from telegram_bot.pc_server import notify_owner
+        notify_owner(f"📞 {c.name}: {result}", user_id)
+    return {"ok": True, "name": c.name, "text": "📞 " + api.call(alias, message, urgent=urgent, done=report)}

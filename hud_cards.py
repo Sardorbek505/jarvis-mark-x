@@ -14,7 +14,7 @@ import time
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 
-WHITE, TEXT, MED, DIM, BORDER = "#eef3f6", "#d6dee5", "#8a96a1", "#5c6873", "#151e27"
+WHITE, TEXT, MED, DIM, BORDER = "#f4fbff", "#e6f3fa", "#8fb0c4", "#6f8ca0", "#151e27"
 RED, BLUE, SUN = "#ff4660", "#6fb7ff", "#ffc94a"
 
 

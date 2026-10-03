@@ -174,7 +174,7 @@ def test_nearest_for_capsule(world):
     c, ft, *_ = world
     assert c.nearest() == ("", 0.0)
     c.alarm_set("7:30")
-    assert c.nearest() == ("Будильник 07:30", 0.0)
+    assert c.nearest() == ("", 0.0)             # ближайший будильник в капсуле не висит (только звенящий)
     c.sw_start()
     ft.go(seconds=83)
     assert c.nearest() == ("Секундомер · 1:23", 0.0)

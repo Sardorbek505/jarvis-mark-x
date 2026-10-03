@@ -33,6 +33,9 @@ GOOD_GEMINI = "AIzaSy" + "A" * 33
     (400, "API_KEY_INVALID", "bad", "неверный"),
     (429, "RESOURCE_EXHAUSTED", "warn", "квота"),
     (403, "", "bad", "заблокирован"),
+    (403, '{"error": {"message": "Gemini API has not been used in project 1", "status": "PERMISSION_DENIED"}}',
+     "bad", "выключен Gemini API"),
+    (500, "", "warn", "ошибкой 500"),                       # сбой Google — не «ключ неверный»
 ])
 def test_gemini(monkeypatch, code, body, state, text):
     monkeypatch.setattr(K, "_http", Net({"generativelanguage": (code, body)}))
@@ -44,6 +47,63 @@ def test_gemini_shape_checked_before_network(monkeypatch):
     net = Net({})
     monkeypatch.setattr(K, "_http", net)
     assert K.check_gemini({"gemini_api_key": "sk-123"})[0] == "bad" and net.calls == []
+
+
+class Seen(Net):
+    def __call__(self, url, headers=None, data=None, method=None):
+        self.headers = headers or {}
+        return super().__call__(url, headers, data, method)
+
+
+def test_gemini_new_format_key_goes_to_google(monkeypatch):
+    """Ключ не вида «AIza…» (новый формат, ~53 символа) раньше отбивался без запроса к Google."""
+    net = Seen({"generativelanguage": (200, "{}")})
+    monkeypatch.setattr(K, "_http", net)
+    key = "AQ.Ab8RN6" + "k" * 44
+    assert K.check_gemini({"gemini_api_key": " " + key[:20] + "\u200b\n" + key[20:] + " "}) == ("ok", "Ключ работает.")
+    assert net.headers == {"x-goog-api-key": key} and key not in net.calls[0]     # ключ не в адресе
+
+
+def test_http_sends_own_user_agent(monkeypatch):
+    """Cloudflare (Groq) отбивает «Python-urllib» кодом 403 — верный ключ выглядел неверным."""
+    got = {}
+
+    class Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_open(req, timeout):
+        got.update(req.header_items())
+        return Resp()
+    monkeypatch.setattr(K.urllib.request, "urlopen", fake_open)
+    assert K._http("https://api.groq.com/openai/v1/models", {"Authorization": "Bearer x"}) == (200, "{}")
+    assert got["User-agent"].startswith("JARVIS") and got["Authorization"] == "Bearer x"
+
+
+@pytest.mark.parametrize("code,body,state", [
+    (200, "{}", "ok"),
+    (401, '{"error": {"code": "invalid_api_key"}}', "bad"),
+    (403, "error code: 1010", "warn"),                      # защита сайта, не ключ
+    (429, "", "warn"),
+])
+def test_groq_answers(monkeypatch, code, body, state):
+    monkeypatch.setattr(K, "_http", Net({"groq": (code, body)}))
+    assert K.check_groq({"groq_api_key": "gsk_" + "x" * 52 + "\n"})[0] == state
+
+
+def test_keys_saved_without_copy_junk(monkeypatch):
+    saved = {}
+    monkeypatch.setattr("core.paths.save_api_keys", lambda d: saved.update(d) or True)
+    K.save_values({"gemini_api_key": " AIza\u200bSyX \n", "pc_link_token": "мой секрет 1"})
+    assert saved == {"gemini_api_key": "AIzaSyX", "pc_link_token": "мой секрет 1"}
 
 
 def test_no_network_is_a_warning_not_an_error(monkeypatch):
@@ -162,5 +222,47 @@ def test_keys_window(monkeypatch):
         assert "1 из" in dlg.summary.text()
         assert not dlg.cards["fish"].body.isVisibleTo(dlg)             # необязательные — свёрнуты
         dlg.repaint()
+    finally:
+        dlg.close()
+
+
+def test_key_preview_and_wrong_service_hint():
+    assert K.preview("AIzaSyD1234567890abcdefghijklmnopqQ7xF") == "AIza••••••Q7xF"
+    assert K.kind_of("sk-proj-abcdefghijklmnopqrstuvwx") == "OpenAI"
+    assert K.kind_of("sk-ant-api03-abcdefghijklmnopqrstu") == "Anthropic"
+    assert "OpenAI" in K.wrong_key_hint("gemini_api_key", "sk-proj-abcdefghijklmnopqrstuvwx")
+    assert "AIza" in K.wrong_key_hint("gemini_api_key", "sk-proj-abcdefghijklmnopqrstuvwx")
+    assert K.wrong_key_hint("gemini_api_key", GOOD_GEMINI) == ""
+    assert K.wrong_key_hint("fish_api_key", "sk-proj-abcdefghijklmnopqrstuvwx") == ""   # вид не однозначный
+
+
+def test_wrong_key_is_not_saved_and_field_says_why(monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    store = {"gemini_api_key": ""}
+    monkeypatch.setattr(K, "load_values", lambda: dict(store))
+    monkeypatch.setattr(K, "save_values", lambda d: store.update(d) or True)
+    monkeypatch.setattr(K, "check", lambda sid, v: ("ok", "Ключ работает."))
+    import ui_keys
+    dlg = ui_keys.KeysDialog()
+    try:
+        card = dlg.cards["gemini"]
+        assert card.chips["gemini_api_key"].text() == "Нет ключа"
+        card.edits["gemini_api_key"].setText("sk-proj-abcdefghijklmnopqrstuvwx")
+        card.autosave.flush()
+        assert store["gemini_api_key"] == ""                                 # чужой ключ не сохранён
+        assert card.chips["gemini_api_key"].text() == "Не тот ключ"
+        assert "OpenAI" in card.notes["gemini_api_key"].text()
+        card.edits["gemini_api_key"].setText(GOOD_GEMINI)
+        card.autosave.flush()
+        for _ in range(100):
+            app.processEvents()
+            if card.state == "ok":
+                break
+            time.sleep(0.01)
+        assert store["gemini_api_key"] == GOOD_GEMINI
+        assert card.chips["gemini_api_key"].text() == "✓ Работает"
+        assert card.notes["gemini_api_key"].text() == "Сохранён: " + K.preview(GOOD_GEMINI)
     finally:
         dlg.close()

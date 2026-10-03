@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLineEdit, QPushButton
 from core import about_me as AB
 from ui import C
 from ui_icons import qicon
+from memory.memory_manager import fact_line as _fact_line
 from ui_kit import STYLE, IconBadge, Progress, _cap, _icon_btn, _label, _line, _small_icon
 
 logger = logging.getLogger(__name__)
@@ -203,7 +204,7 @@ class AboutDialog(QDialog):
         lay.addWidget(IconBadge("person", 38))
         col = QVBoxLayout()
         col.setSpacing(1)
-        col.addWidget(_label("ДЖАРВИС", "brand"))
+        col.addWidget(_label("Джарвис", "brand"))
         col.addWidget(_label("Обо мне", "h1", wrap=False))
         lay.addLayout(col)
         lay.addStretch(1)
@@ -382,7 +383,7 @@ class AboutDialog(QDialog):
             tag = _label(AB.category_title(cat).upper(), "cap", wrap=False)
             tag.setFixedWidth(150)
             r.addWidget(tag)
-            r.addWidget(_label(f"{key.replace('_', ' ')}: {value}", "", wrap=True), 1)
+            r.addWidget(_label(_fact_line(key.replace('_', ' '), value), "", wrap=True), 1)
             rm = _icon_btn("trash", "Забыть этот факт", 13, C.TEXT_DIM)
             rm.clicked.connect(lambda _=False, c=cat, k=key: self.forget_fact(c, k))
             r.addWidget(rm)

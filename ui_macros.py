@@ -8,7 +8,8 @@
      понятное поле. Сложные действия выбираются из списка, без JSON.
   4. «Когда запускать сам» — по времени и дням, при открытии программы,
      при запуске Джарвиса (необязательно).
-  5. Внизу — «Проверить» и «Сохранить».
+  5. Всё сохраняется само, как только команда собрана (есть фраза или
+     условие и хотя бы один шаг); внизу — «Проверить» и «Удалить».
 
 Стиль — Джарвиса (палитра ui.C): почти чёрные панели, тонкие рамки,
 бирюзовый акцент, подписи капсом, векторные иконки ui_icons.
@@ -31,7 +32,7 @@ from core import macros as mc
 from core.macro_packs import PACKS
 from ui import C
 from ui_icons import qicon
-from ui_kit import STYLE, EmptyArt, FlowLayout, IconBadge, Toggle, _cap, _icon_btn, _label, _line, _small_icon, plural
+from ui_kit import STYLE, Autosave, EmptyArt, FlowLayout, IconBadge, SavedNote, Toggle, _cap, _icon_btn, _label, _line, _small_icon, plural
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +322,9 @@ class MacrosDialog(QDialog):
         self.step_rows: list[StepRow] = []
         self.when_rows: list[WhenRow] = []
         self._phrases: list[str] = []
+        self._loading = False            # форма заполняется из записи — это не правка
+        self._typing_phrase = False      # недопечатанную фразу автосохранение не забирает
+        self.autosave = Autosave(self, self._autosave)
         self.setWindowTitle("ДЖАРВИС — свои команды")
         self.setStyleSheet(STYLE)
         self.resize(1080, 740)
@@ -349,14 +353,17 @@ class MacrosDialog(QDialog):
         lay.addWidget(IconBadge("bolt", 38))
         col = QVBoxLayout()
         col.setSpacing(1)
-        brand = _label("ДЖАРВИС", "brand")
+        brand = _label("Джарвис", "brand")
         f = brand.font()
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 3)
         brand.setFont(f)
         col.addWidget(brand)
         col.addWidget(_label("Свои команды", "h1"))
+        col.addWidget(_label("Всё сохраняется сразу", "hint", wrap=False))
         lay.addLayout(col)
         lay.addStretch(1)
+        self.saved = SavedNote()
+        lay.addWidget(self.saved)
         seg = QFrame()
         seg.setObjectName("seg")
         sl = QHBoxLayout(seg)
@@ -409,7 +416,7 @@ class MacrosDialog(QDialog):
         self.cmd_list.setWordWrap(True)
         self.cmd_list.setIconSize(QSize(16, 16))
         self.cmd_list.currentItemChanged.connect(
-            lambda cur, _p: cur and self.show_command(cur.data(Qt.ItemDataRole.UserRole)))
+            lambda cur, _p: cur and (self.autosave.flush(), self.show_command(cur.data(Qt.ItemDataRole.UserRole))))
         sl.addWidget(self.cmd_list, 1)
         self.empty = EmptyArt("commands", "Пока пусто.\n\nОпишите справа словами, что должна\n"
                                           "делать команда, — ИИ соберёт шаги.")
@@ -447,7 +454,9 @@ class MacrosDialog(QDialog):
         self.body.addWidget(chips)
         self.phrase_in = QLineEdit(placeholderText="Добавить фразу — например «включи режим стрима» и Enter")
         self.phrase_in.returnPressed.connect(lambda: self.add_phrase(self.phrase_in.text()))
+        self.phrase_in.editingFinished.connect(self._touch_now)
         self.body.addWidget(self.phrase_in)
+        self._watch(self.name)
 
         self.body.addSpacing(12)
         self.body.addWidget(self._section("bolt", "Что сделать", "Шаги идут по порядку, сверху вниз"))
@@ -564,6 +573,7 @@ class MacrosDialog(QDialog):
         row("Спрашивать перед запуском", "Для того, что жалко сделать случайно", self.confirm)
         self.enabled = Toggle()
         row("Команда включена", "Выключенную Джарвис пропускает", self.enabled, sep=False)
+        self._watch(card)
         return card
 
     def _footer(self) -> QWidget:
@@ -581,11 +591,7 @@ class MacrosDialog(QDialog):
         self.test_btn = QPushButton("  Проверить")
         self.test_btn.setIcon(qicon("play", 12, C.TEXT_MED))
         self.test_btn.clicked.connect(self.test_command)
-        save = QPushButton("Сохранить")
-        save.setObjectName("primary")
-        save.setFixedWidth(130)
-        save.clicked.connect(self.save_command)
-        for b in (self.del_btn, self.test_btn, save):
+        for b in (self.del_btn, self.test_btn):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             lay.addWidget(b)
         return w
@@ -619,12 +625,20 @@ class MacrosDialog(QDialog):
     # ── форма ────────────────────────────────────────────────────────────────
     def show_command(self, cid):
         c = next((x for x in self.store.commands if x.id == cid), None)
+        self.autosave.cancel()
         self.current = c
         self._fill(c or mc.Command("", [], [], enabled=True))
         self.del_btn.setVisible(c is not None)
         self.status.setText("")
 
     def _fill(self, c: mc.Command):
+        self._loading = True
+        try:
+            self._fill_form(c)
+        finally:
+            self._loading = False
+
+    def _fill_form(self, c: mc.Command):
         self.name.setText(c.name)
         self._phrases = []
         for p in c.phrases:
@@ -649,6 +663,7 @@ class MacrosDialog(QDialog):
             self.add_when(w)
 
     def new_command(self):
+        self.autosave.flush()
         self.cmd_list.clearSelection()
         self.show_command(None)
         self.ai_text.setFocus()
@@ -658,6 +673,7 @@ class MacrosDialog(QDialog):
         if text and text.lower() not in (p.lower() for p in self._phrases):
             self._phrases.append(text)
             self._render_chips()
+            self._touch_now()
         self.phrase_in.clear()
 
     def _remove_phrase(self, text: str):
@@ -676,7 +692,7 @@ class MacrosDialog(QDialog):
         self.chips.parentWidget().setVisible(bool(self._phrases))
 
     def phrases(self) -> list[str]:
-        extra = " ".join(self.phrase_in.text().split())
+        extra = "" if self._typing_phrase else " ".join(self.phrase_in.text().split())
         return self._phrases + ([extra] if extra and extra not in self._phrases else [])
 
     def _when_menu(self, anchor: QPushButton):
@@ -691,12 +707,15 @@ class MacrosDialog(QDialog):
         row.removed.connect(self._remove_when)
         self.when_rows.append(row)
         self.when_box.addWidget(row)
+        self._watch(row)
+        self._touch_now()
         return row
 
     def _remove_when(self, row: WhenRow):
         self.when_rows.remove(row)
         row.setParent(None)
         row.deleteLater()
+        self._touch_now()
 
     def _step_menu(self, anchor: QPushButton):
         menu = QMenu(self)
@@ -713,6 +732,8 @@ class MacrosDialog(QDialog):
         self.step_rows.append(row)
         self.steps_box.addWidget(row)
         self._renumber()
+        self._watch(row)
+        self._touch_now()
         return row
 
     def _move_step(self, row: StepRow, d: int):
@@ -726,12 +747,14 @@ class MacrosDialog(QDialog):
         for r in self.step_rows:
             self.steps_box.addWidget(r)
         self._renumber()
+        self._touch_now()
 
     def _remove_step(self, row: StepRow):
         self.step_rows.remove(row)
         row.setParent(None)
         row.deleteLater()
         self._renumber()
+        self._touch_now()
 
     def _renumber(self):
         for i, r in enumerate(self.step_rows, 1):
@@ -753,6 +776,46 @@ class MacrosDialog(QDialog):
         self.status.setStyleSheet(f"color: {C.PRI if ok else C.ACC};")
         self.status.setText(text)
 
+    # ── автосохранение ───────────────────────────────────────────────────────
+    def _watch(self, w: QWidget):
+        """Любая правка внутри w — в автосохранение: текст — когда перестали
+        печатать, списки и переключатели — сразу."""
+        edits = [w] if isinstance(w, QLineEdit) else w.findChildren(QLineEdit)
+        for e in edits:
+            e.textChanged.connect(self._touched)
+            e.editingFinished.connect(self.autosave.flush)
+        for cb in w.findChildren(QComboBox):
+            cb.currentIndexChanged.connect(self._touch_now)
+        for b in w.findChildren(QPushButton) + w.findChildren(Toggle):
+            if b.isCheckable():
+                b.toggled.connect(self._touch_now)
+
+    def _touched(self, *_):
+        if not self._loading:
+            self.autosave.touch()
+
+    def _touch_now(self, *_):
+        if not self._loading:
+            self.autosave.touch()
+            self.autosave.flush()
+
+    def _blank(self) -> bool:
+        return not (self.name.text().strip() or self._phrases or self.step_rows or self.when_rows)
+
+    def _autosave(self):
+        if self.current is None and self._blank():
+            return                                   # пустая новая форма — сохранять нечего
+        self._typing_phrase = self.phrase_in.hasFocus()
+        try:
+            if self.save_command():
+                self.saved.show_note()
+        finally:
+            self._typing_phrase = False
+
+    def hideEvent(self, ev):
+        self.autosave.flush()                        # ушли с экрана — ничего не теряем
+        super().hideEvent(ev)
+
     def save_command(self) -> bool:
         c = self.form()
         if len(c.when) < len(self.when_rows):
@@ -770,17 +833,19 @@ class MacrosDialog(QDialog):
             return False
         self.store.upsert(c)
         self.current = c
-        self.phrase_in.clear()
+        if not self._typing_phrase:
+            self.phrase_in.clear()
         self._phrases = list(c.phrases)
         self._render_chips()
         self.reload()
         self.del_btn.setVisible(True)
         how = [f"скажите «Джарвис, {c.phrases[0]}»"] if c.phrases else []
         how += [mt.describe_when(w) for w in c.when]
-        self._say("✓  Сохранено: " + ", ".join(how) + ".")
+        self._say("Запуск: " + ", ".join(how) + ".")
         return True
 
     def delete_command(self):
+        self.autosave.cancel()
         if self.current and self.store.delete(self.current.id):
             name = self.current.name
             self.new_command()
@@ -824,7 +889,10 @@ class MacrosDialog(QDialog):
         self.current = None
         self.del_btn.setVisible(False)
         self._fill(cmd)
-        self._say(f"Готово — {len(cmd.steps)} {plural(len(cmd.steps))}. Проверьте и нажмите «Сохранить».")
+        if self.save_command():
+            self.saved.show_note()
+            self._say(f"Готово — {len(cmd.steps)} {plural(len(cmd.steps))}, команда сохранена. "
+                      "Поправьте, если нужно, — изменения сохранятся сами.")
 
     # ── паки ─────────────────────────────────────────────────────────────────
     def _packs_page(self) -> QWidget:

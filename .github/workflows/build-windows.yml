@@ -2,9 +2,15 @@ name: Windows installer
 
 # Собирает JARVIS.exe (PyInstaller) и установщик JARVIS_Setup_v*.exe (Inno Setup)
 # на Windows-машине GitHub. Готовый установщик — в артефактах запуска,
-# а для тега vX.Y.Z — ещё и в Releases.
+# а для тега vX.Y.Z — ещё и в Releases. Тег можно не пушить: ручной запуск
+# с полем release=vX.Y.Z сам создаст тег на этом коммите и релиз.
 on:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Выпустить релиз с этим тегом (например v1.1.0); пусто — только артефакт"
+        required: false
+        default: ""
   push:
     tags: ["v*"]
   pull_request:
@@ -47,7 +53,7 @@ jobs:
       - name: Build exe and installer
         env:
           PYTHONIOENCODING: utf-8
-          JARVIS_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          JARVIS_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release || '' }}
         run: python scripts/build_exe.py
 
       - name: Check installer exists and holds no secrets
@@ -99,7 +105,10 @@ jobs:
           retention-days: 30
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(inputs.release, 'v')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release }}
+          target_commitish: ${{ github.sha }}
+          name: JARVIS ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release }}
           files: dist/JARVIS_Setup_v*.exe

@@ -8,6 +8,8 @@
   turns           — реплики голосом [{role: user|jarvis, text, ts}]
   episodes        — итоги разговоров на ПК [{text, ts}]
   since_msg_id    — последнее сообщение Telegram, которое ПК уже видел
+  ops             — новый формат: факты по порядку [{op: add|remove|forget, text}]
+Ответ: applied — сколько взято из каждой очереди (ПК убирает у себя только их).
 и получает все факты, профиль и новую переписку из Telegram.
 """
 from __future__ import annotations
@@ -27,9 +29,33 @@ def _iso(ts) -> str:
         return ""
 
 
+async def _apply_ops(store, uid: int, ops: list) -> tuple[int, int, int]:
+    """Упорядоченные операции с фактами: [{op: add|remove|forget, text}].
+    Порядок важен: «запомни X» → «забудь X» должно кончиться забытым X.
+    Раньше удаления применялись до добавлений, и забытый факт возвращался."""
+    added = removed = applied = 0
+    for o in ops[:_MAX_ITEMS]:
+        applied += 1
+        if not isinstance(o, dict) or not isinstance(o.get("text"), str):
+            continue
+        text, op = o["text"].strip(), o.get("op")
+        if not text:
+            continue
+        if op == "add" and await store.add_fact(uid, text[:400]):
+            added += 1
+        elif op == "remove" and await store.del_fact_text(uid, text):
+            removed += 1
+        elif op == "forget":
+            removed += len(await store.forget_like(uid, text))
+    return added, removed, applied
+
+
 async def apply_sync(store, uid: int, body: dict) -> dict:
     body = body or {}
     added = removed = 0
+    ops = body.get("ops") if isinstance(body.get("ops"), list) else []
+    a, r, ops_applied = await _apply_ops(store, uid, ops)
+    added, removed = added + a, removed + r
     for fact in (body.get("facts_remove") or [])[:_MAX_ITEMS]:
         if isinstance(fact, str) and await store.del_fact_text(uid, fact):
             removed += 1
@@ -61,6 +87,14 @@ async def apply_sync(store, uid: int, body: dict) -> dict:
         "telegram": [{"role": m["role"], "text": m["text"], "at": m["created_at"]} for m in msgs],
         "last_msg_id": msgs[-1]["id"] if msgs else since,
         "added": added, "removed": removed,
+        # Сколько взял из каждой очереди: ПК удаляет у себя ровно это, а не всё
+        # отправленное (раньше сверх 300 пропадало молча). ops — новый формат.
+        "ops_ok": True,
+        "applied": {"ops": ops_applied, "facts_add": min(len(body.get("facts_add") or []), _MAX_ITEMS),
+                    "facts_remove": min(len(body.get("facts_remove") or []), _MAX_ITEMS),
+                    "forget": min(len(body.get("forget") or []), 50),
+                    "turns": min(len(body.get("turns") or []), _MAX_ITEMS),
+                    "episodes": min(len(body.get("episodes") or []), 50)},
     }
 
 

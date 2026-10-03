@@ -84,6 +84,10 @@ async def apply(memory, user_id: int, reply: str, tz) -> tuple[str, list]:
         except ValueError:
             logger.warning("Несуществующая дата в напоминании: %r", raw)
             continue
+        if when <= datetime.now(tz):
+            # Модель ошиблась датой — напоминание «в прошлом» сработало бы сразу.
+            logger.warning("Напоминание в прошлом пропущено: %r", raw)
+            continue
         await memory.add_reminder(user_id, what.strip(), rem.to_utc_iso(when))
         n += 1
     if n:

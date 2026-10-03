@@ -327,7 +327,7 @@ class FootballDialog(QDialog):
         lay.addWidget(IconBadge("ball", 38))
         col = QVBoxLayout()
         col.setSpacing(1)
-        col.addWidget(_label("ДЖАРВИС", "brand"))
+        col.addWidget(_label("Джарвис", "brand"))
         self.title = _label("Футбол", "h1", wrap=False)
         col.addWidget(self.title)
         lay.addLayout(col)
@@ -335,13 +335,18 @@ class FootballDialog(QDialog):
         self.club_edit = QLineEdit(self.fb.state.get("club", ""))
         self.club_edit.setPlaceholderText("Любимый клуб — «Реал», «Зенит»…")
         self.club_edit.setFixedWidth(240)
-        self.club_edit.returnPressed.connect(self._save_club)
-        save = QPushButton("Сохранить")
-        save.setCursor(Qt.CursorShape.PointingHandCursor)
-        save.clicked.connect(self._save_club)
+        self.club_edit.setToolTip("Сохраняется сам — Enter или просто перейдите дальше")
+        # Без кнопки «Сохранить», как во всех экранах: Enter или уход из поля.
+        self.club_edit.editingFinished.connect(self._club_edited)
         lay.addWidget(self.club_edit)
-        lay.addWidget(save)
         return w
+
+    def _club_edited(self):
+        club = self.club_edit.text().strip()
+        # Enter и уход из поля приходят оба — ищем клуб один раз.
+        if club != (self.fb.state.get("club") or "").strip() and club != getattr(self, "_club_sent", None):
+            self._club_sent = club
+            self._save_club()
 
     def _section(self, title: str, icon: str) -> QVBoxLayout:
         self.col.addSpacing(6)

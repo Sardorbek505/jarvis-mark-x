@@ -144,7 +144,14 @@ def стенд(tmp_path, monkeypatch):
     # чтобы тест не трогал настоящие файлы пользователя.
     monkeypatch.setattr(jarvis_main, "BASE_DIR", tmp_path)
     monkeypatch.setattr(jarvis_main, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(jarvis_main, "_IGNORE_SPEAKERS", False)
+    # Настройка «Не слушать, пока играет звук» включена, как у владельца по
+    # умолчанию; настоящий замер колонок (loopback) не запускаем — тесты
+    # подставляют свои «колонки» в j._speaker_meter.
+    monkeypatch.setattr(jarvis_main, "_IGNORE_SPEAKERS", True)
+
+    async def _no_meter(self):
+        return None
+    monkeypatch.setattr(jarvis_main.Jarvis, "_start_speaker_meter", _no_meter)
     monkeypatch.setattr(jarvis_main, "_pick_input_device", lambda: None)
     # Тракт озвучки закрепляем явно: по умолчанию говорит Fish, и тогда звук
     # Gemini намеренно выбрасывается. Тесты ниже проверяют именно путь Gemini,
@@ -320,9 +327,13 @@ def поддельный_fish(monkeypatch):
 
     async def speak_pcm(text, sample_rate=None):
         сказанное.append(text)
-        return b"\x11\x11" * 50
+        return b"\x11\x11" * 300
+
+    async def stream_pcm(text, sample_rate=None):
+        yield await speak_pcm(text, sample_rate)
     monkeypatch.setattr(tts_fish, "is_configured", lambda: True)
     monkeypatch.setattr(tts_fish, "speak_pcm", speak_pcm)
+    monkeypatch.setattr(tts_fish, "stream_pcm", stream_pcm)
     monkeypatch.setattr(jarvis_main, "_VOICE_PROVIDER", "fish")
     return сказанное
 
@@ -344,7 +355,9 @@ async def test_с_голосом_fish_звук_gemini_не_играет(стен
 
     assert b"\x01\x02" * 100 not in стенд.out.written, "звук Gemini дошёл до динамиков"
     assert поддельный_fish == ["Всё в норме, сэр."], "Fish должен получить текст ответа"
-    assert стенд.out.written == [b"\x11\x11" * 50]
+    played = b"".join(стенд.out.written)
+    assert played.startswith(b"\x11\x11" * 300) and not played[600:].strip(b"\x00"), \
+        "играет голос Fish, после него — только своя короткая пауза"
 
 
 @pytest.mark.asyncio
@@ -368,6 +381,53 @@ async def test_fish_начинает_говорить_до_конца_хода(�
     task.cancel()
 
     assert поддельный_fish == ["Секунду, сэр."], "Fish ждал конца хода"
+
+
+async def _fish_ждёт(стенд, поддельный_fish, script, sec=1.0):
+    j = стенд.jarvis
+    j.session = _Session(script)
+    j.audio_in_queue = asyncio.Queue()
+    j._turn_done_event = asyncio.Event()
+    task = asyncio.create_task(j._receive_audio())
+    t0 = asyncio.get_running_loop().time()
+    while not поддельный_fish and asyncio.get_running_loop().time() - t0 < sec:
+        await asyncio.sleep(0.01)
+    task.cancel()
+    return asyncio.get_running_loop().time() - t0
+
+
+@pytest.mark.asyncio
+async def test_ответ_из_одного_предложения_не_ждёт_конца_хода(стенд, поддельный_fish):
+    """Главная задержка: последнее (а часто единственное) предложение ответа
+    резалось только по «точка + пробел» и ждало turn_complete — +4-5 с."""
+    await _fish_ждёт(стенд, поддельный_fish, [
+        _resp(heard="включи музыку"),
+        _resp(said="Включаю плейлист, сэр."),                 # пробела после точки нет, конца хода нет
+    ])
+    assert поддельный_fish == ["Включаю плейлист, сэр."]
+
+
+@pytest.mark.asyncio
+async def test_короткий_ответ_уходит_по_тишине_расшифровки(стенд, поддельный_fish):
+    """«Есть, сэр.» короче порога первого куска — ждём чуть-чуть продолжения и отдаём."""
+    waited = await _fish_ждёт(стенд, поддельный_fish, [_resp(heard="как тебе идея"), _resp(said="Да, сэр.")])
+    assert поддельный_fish == ["Да, сэр."]
+    assert waited < jarvis_main._FISH_SENTENCE_IDLE_SEC + 0.5
+
+
+def test_конец_предложения_в_конце_буфера():
+    take = jarvis_main._take_speakable
+    assert take("Сейчас включу, сэр.", True, False) == (["Сейчас включу, сэр."], "")
+    assert take("Температура плюс 2.", True, False)[0] == []           # «2.» → может быть «2.5»
+    assert take("Отчёт за 2026 г.", True, False)[0] == []              # сокращение
+    assert take("Есть, сэр.", True, False)[0] == []                     # короче порога — ждём
+    assert take("Есть, сэр.", True, False, force=True)[0] == ["Есть, сэр."]
+    assert take("Смотрю прогноз", True, False, force=True)[0] == []     # фраза не закончена
+    # длинное первое предложение — первый кусок по запятой, не ждать точки
+    assert take("Включаю плейлист для учёбы, громкость", True, False) == (["Включаю плейлист для учёбы,"],
+                                                                          " громкость")
+    assert take("Да, сэр, включаю", True, False)[0] == []                # до запятой коротко — ждём
+    assert take("Громкость пятьдесят, дальше", False, False)[0] == []    # не первый кусок — по точке
 
 
 def test_нарезка_потока_ждёт_точку_и_порог():
@@ -769,7 +829,7 @@ async def _мгновенно(стенд, script, monkeypatch, result="Пауз�
 
 @pytest.mark.asyncio
 async def test_частая_команда_выполняется_сразу_и_gemini_не_дублирует(стенд, поддельный_fish, monkeypatch):
-    """«Пауза»: Джарвис ставит паузу сам и отвечает готовой фразой; вызов и
+    """«Пауза»: Джарвис ставит паузу сам и молча подтверждает звуком; вызов и
     речь Gemini на ту же команду глушатся — пауза не ставится дважды."""
     выполнено, session = await _мгновенно(стенд, [
         _resp(heard="пауза"),
@@ -783,7 +843,7 @@ async def test_частая_команда_выполняется_сразу_и_
     ], monkeypatch)
 
     assert выполнено == [("video_control", {"action": "pause"})], "команда выполнена не ровно один раз"
-    assert поддельный_fish and поддельный_fish[0] in jarvis_main.quick.PHRASES["pause"]
+    assert поддельный_fish == [], "простая команда — звуком, без слов"
     assert "Ставлю на паузу, сэр." not in поддельный_fish and "Готово, сэр." not in поддельный_fish
     assert "Уже выполнено" in str(session.tool_responses[0].response)
     assert "Вы: пауза" in стенд.ui.logs
@@ -975,3 +1035,160 @@ async def test_без_музыки_речь_не_двигает_микшер(с�
                                                             "set_state": lambda self, s: None})())
     session = await _прогнать(стенд, [_loud()] * 5, _SPOKEN, timeout=1.5)
     assert _audio_sent(session) and ducks == []
+
+
+
+@pytest.mark.asyncio
+async def test_выключили_не_слушать_при_звуке_голос_идёт_сразу(стенд, monkeypatch):
+    """Выключатель «Не слушать, пока играет звук» раньше читался только при
+    запуске: выключили на время игры — Джарвис оставался глухим."""
+    j = стенд.jarvis
+    j._speaker_meter = _LoudSpeakers()
+    j._mic_hears_speakers = True
+    monkeypatch.setattr(jarvis_main, "_IGNORE_SPEAKERS", False)
+    session = await _прогнать(стенд, [_loud()] * 5, _SPOKEN, timeout=2.0)
+    assert _audio_sent(session)
+
+
+# ─── GoAway: Google закрывает голосовую сессию раз в ~10 минут ────────────────
+
+class _GoAwaySession(_Session):
+    """Посреди ответа сервер шлёт GoAway, ответ продолжается, потом close()."""
+
+    def __init__(self, script):
+        super().__init__(script)
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
+
+    async def receive(self):
+        for item in self._script:
+            await asyncio.sleep(0)
+            if self.closed:
+                return
+            yield item
+        while not self.closed:
+            await asyncio.sleep(0.02)
+
+
+def _go_away(left="20s"):
+    return SimpleNamespace(data=None, server_content=None, tool_call=None,
+                           session_resumption_update=None, go_away=SimpleNamespace(time_left=left))
+
+
+@pytest.mark.asyncio
+async def test_goaway_посреди_ответа_договаривает_и_переподключается_молча(стенд):
+    j = стенд.jarvis
+    j.session = _GoAwaySession([
+        _resp(heard="расскажи анекдот"),
+        _resp(data=b"\x01\x02" * 100),
+        _go_away("20s"),
+        _resp(said="Штирлиц шёл по лесу. "),              # ответ после GoAway не потерян
+        _resp(data=b"\x03\x04" * 100),
+        _resp(said="Конец.", turn_complete=True),
+    ])
+    j.audio_in_queue = asyncio.Queue()
+    j._turn_done_event = asyncio.Event()
+    with pytest.raises(jarvis_main._PlannedReconnect):
+        await asyncio.wait_for(j._receive_audio(), timeout=5)
+    assert j.session.closed, "сессию закрыли сами, не дожидаясь обрыва сервером"
+    chunks = []
+    while not j.audio_in_queue.empty():
+        chunks.append(j.audio_in_queue.get_nowait())
+    assert b"\x03\x04" * 100 in chunks, "хвост ответа после GoAway дошёл до динамиков"
+    assert not any("оборвалась" in line for line in стенд.ui.logs), "плановое — не сбой"
+
+
+def test_время_из_goaway():
+    assert jarvis_main._go_away_seconds("50s") == 50
+    assert jarvis_main._go_away_seconds("1.5s") == 1.5
+    assert jarvis_main._go_away_seconds(None) == 10
+
+
+@pytest.mark.asyncio
+async def test_набранная_команда_включает_музыку_сразу(стенд, monkeypatch):
+    """«ПОСТАВЬ МУЗЫКУ SAFE SOUND» в чате: раньше уходило в Gemini, и тот
+    трижды переспрашивал «какая именно?» вместо того, чтобы включить."""
+    выполнено, в_gemini = [], []
+
+    async def поддельный_инструмент(self, fc):
+        выполнено.append((fc.name, dict(fc.args)))
+        return jarvis_main.types.FunctionResponse(id=fc.id, name=fc.name, response={"result": "Играет."})
+    monkeypatch.setattr(jarvis_main.Jarvis, "_execute_tool", поддельный_инструмент)
+    j = стенд.jarvis
+    j._loop = asyncio.get_running_loop()
+    j.session = _Session([])
+    j.audio_in_queue = asyncio.Queue()
+    j._send_text_to_session = в_gemini.append
+    await asyncio.to_thread(j._on_text_command, "ПОСТАВЬ МУЗЫКУ SAFE SOUND")
+    for _ in range(100):
+        if выполнено:
+            break
+        await asyncio.sleep(0.01)
+    assert выполнено == [("music_player", {"action": "play", "query": "safe sound"})]
+    assert в_gemini == []
+    assert not any(line.startswith("Вы:") for line in стенд.ui.logs), "окно чата уже показало набранное"
+
+
+@pytest.mark.asyncio
+async def test_goaway_не_закрывает_уже_новую_сессию(стенд):
+    """Сервер закрыл старую сессию раньше нас, Джарвис переподключился —
+    запоздалый сторож GoAway не должен убить новую."""
+    j = стенд.jarvis
+    old, new = _GoAwaySession([]), _GoAwaySession([])
+    j.session = new
+    await j._reconnect_when_quiet(old, time.monotonic() + 0.2, lambda: False)
+    assert not new.closed and not old.closed
+
+
+# ─── Два хлопка → интро ───────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_два_хлопка_интро_звук_и_джарвис_слушает(стенд, monkeypatch):
+    """Интро: три реплики Джарвиса голосом (субтитры получают их длину), под ними —
+    звук интро; в конце Джарвис слушает."""
+    from core import intro
+    j = стенд.jarvis
+    played, продлено, субтитры, heard = [], [], [], bytearray()
+    стенд.ui.play_intro = lambda checks=None: played.append(checks)
+    стенд.ui.extend_intro = продлено.append
+    стенд.ui.intro_voice = lambda lines, env: субтитры.append((lines, env))
+    j.audio_in_queue = asyncio.Queue(maxsize=200)
+    j._intro_pcm = bytes(int(intro.T_END * jarvis_main.RECV_SAMPLE_RATE) * 2)    # тихий «звук интро»
+    голоса = {}
+
+    async def озвучка(self, text):
+        голоса[text] = (bytes([len(голоса) + 1, 0x27]) * 2400)          # 0,1 с, у каждой реплики своё значение
+        return голоса[text]
+    monkeypatch.setattr(jarvis_main.Jarvis, "_intro_voice", озвучка)
+    monkeypatch.setattr(intro, "LINE_BOOT", (0.05, "Проверка систем."))
+    monkeypatch.setattr(intro, "LINE_NODES", (0.6, "Подключаю модули."))
+    monkeypatch.setattr(intro, "T_VOICE", 1.2)
+
+    async def динамики():                       # колонки забирают звук, как _play_audio
+        while True:
+            heard.extend(await j.audio_in_queue.get())
+            await asyncio.sleep(0)
+    speaker = asyncio.create_task(динамики())
+    j._on_double_clap()
+    await asyncio.wait_for(j._intro_task, 15)
+    speaker.cancel()
+    assert played and "Gemini" in played[0]
+    for голос in голоса.values():
+        assert bytes(голос[:400]) in bytes(heard), "каждая реплика звучит"
+    assert len(голоса) == 3
+    last_lines, env = субтитры[-1]
+    assert [round(d, 2) for _, d, _ in last_lines] == [0.1, 0.1, 0.1], "субтитры знают длину каждой реплики"
+    assert env and max(env) == 1.0
+    assert продлено and продлено[0] > 1.2, "картинка держится, пока Джарвис говорит"
+    assert any("Все системы в норме" in line or "кроме" in line for line in стенд.ui.logs)
+    assert j.is_awake(), "после интро Джарвис слушает"
+
+
+@pytest.mark.asyncio
+async def test_хлопки_выключены_в_настройках(стенд, monkeypatch):
+    monkeypatch.setenv("JARVIS_CLAP_INTRO", "0")
+    j = стенд.jarvis
+    j._on_double_clap()
+    assert j._intro_task is None

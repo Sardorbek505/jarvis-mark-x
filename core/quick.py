@@ -4,8 +4,10 @@
 инструмент, получает ответ, пишет фразу, Fish её синтезирует — 2–4 секунды на
 то, что человек делает одной кнопкой. Теперь частые команды («пауза»,
 «громче», «следующий трек», «который час», «таймер на 5 минут», «спасибо»)
-узнаются прямо по расшифровке речи и выполняются на ПК сразу, а ответ звучит
-из заранее озвученных фраз голосом Джарвиса — без сети и без ожидания.
+узнаются прямо по расшифровке речи и выполняются на ПК сразу. Получилось —
+короткий звук «готово» и галочка в капсуле, без слов (как у Siri): голос
+только тратил время. Голосом — когда не вышло или нужен ответ («который
+час»), из заранее озвученных фраз — без сети и без ожидания.
 
 - Узнаётся только фраза ЦЕЛИКОМ («громче» — да; «громче и открой хром» — нет,
   это уйдёт в Gemini как обычно): лучше отдать облаку, чем сделать не то.
@@ -60,9 +62,18 @@ PHRASES: dict[str, tuple[str, ...]] = {
     "here": ("Здесь, сэр.", "Слушаю, сэр.", "На месте, сэр."),
 }
 
+# Частые ответы самого Gemini: озвучены заранее — звучат сразу, без синтеза (~1 с).
+COMMON = ("Секунду, сэр.", "Минуту, сэр.", "Сейчас, сэр.", "Включаю, сэр.", "Открываю, сэр.",
+          "Закрываю, сэр.", "Выполняю, сэр.", "Уже делаю, сэр.", "Да, сэр.", "Нет, сэр.", "Хорошо, сэр.",
+          "Понял, сэр.", "Конечно, сэр.", "Слушаюсь, сэр.", "Одну секунду, сэр.", "Смотрю, сэр.",
+          "Ищу, сэр.", "Запомнил, сэр.", "Записал, сэр.", "Напомню, сэр.", "Не получилось, сэр.",
+          "Доброе утро, сэр.", "Добрый день, сэр.", "Добрый вечер, сэр.", "Спокойной ночи, сэр.")
+
 
 def all_phrases() -> list[str]:
-    return [p for variants in PHRASES.values() for p in variants]
+    """Всё, что озвучивается заранее: ответы мгновенных команд и частые ответы Gemini."""
+    out = [p for variants in PHRASES.values() for p in variants]
+    return out + [p for p in COMMON if p not in out]
 
 
 # ── Разбор фразы ──────────────────────────────────────────────────────────────
@@ -159,12 +170,51 @@ _RULES: list[tuple[str, str | None, dict, str]] = [
     # Глаза.
     (r"смотри на экран|будь моими глазами", "eyes", {"action": "open", "source": "screen"}, "eyes_open"),
     (r"закрой глаза|не смотри|хватит смотреть", "eyes", {"action": "close"}, ""),
+    # Как у Alfred: «открой», «включи», «найди на ютубе» — сразу, без раздумий
+    # облака и без слов. Только одна команда целиком: «открой хром и найди…»
+    # (союз «и») уходит в Gemini. Не вышло — инструмент скажет почему.
+    (r"(открой|запусти) (ютуб|youtube)", "browser", {"action": "go_to", "url": "youtube.com"}, ""),
+    (r"(найди|включи|поставь|покажи) (на |в )?(ютубе|ютуб|youtube) (?P<yq>.+)", "youtube_player",
+     {"action": "play", "query": "@yq"}, ""),
+    (r"(поставь |включи )?последнее видео (?P<ch>.+)", "youtube_player",
+     {"action": "latest", "channel": "@ch"}, ""),
+    (r"(открой|запусти) (программу |приложение )?(?P<app>.+)", "open_app", {"app_name": "@app"}, ""),
+    (r"(включи|поставь|сыграй|играй|запусти) (песню |трек |музыку |альбом )?(?P<song>.+)", "music_player",
+     {"action": "play", "query": "@song"}, ""),
     # Вежливость.
     (r"спасибо( большое| тебе)?|благодарю|спс", None, {}, "thanks"),
     (r"ты (тут|здесь)|ты меня слышишь|ты на связи", None, {}, "here"),
 ]
 _COMPILED = [(re.compile(p), tool, args, reply) for p, tool, args, reply in _RULES]
-_CHECK = {"v": _level, "v2": _level, "d": _duration}
+_NOT_APP = re.compile(r"\b(и|сайт|страниц\w*|ютуб\w*|youtube|гугл\w*|google|вк|вконтакте|окн\w*|глаза|"
+                      r"камер\w*|папк\w*|файл\w*|ссылк\w*|новост\w*|почт\w*|видео|фильм\w*)\b")
+_NOT_SONG = re.compile(r"^(музык\w*|что[- ]нибудь|видео|фильм\w*|клип\w*|ролик\w*|мульт\w*|сериал\w*|"
+                       r"звук|свет|камер\w*|микрофон|режим\b.*|таймер.*|будильник.*|секундомер|компьютер|комп|"
+                       r"вай[- ]?фай|wi-?fi|блютуз|bluetooth|экран.*|яркость.*|глаза|новост\w*|погод\w*|радио|"
+                       r"ютуб.*|youtube.*|программ\w*.*|приложени\w*.*)$|\bи\b|"
+                       r"\b(по)?(громче|тише)\b|\bпауз\w*|\bдальше\b|\bзаново\b|\bснова\b|"
+                       # настройки и режимы Джарвиса — это не песни, пусть решает Gemini
+                       r"\b(голос\w*|озвучк\w*|субтитр\w*|уведомлени\w*|напоминани\w*|перевод\w*|"
+                       r"т[её]мн\w*|ночн\w*|фонарик|вентилятор|автозапуск|запис\w*|трансляци\w*|"
+                       r"демонстраци\w*|стрим\w*|игр[уаы]|интернет|vpn|впн)\b")
+
+
+def _app(v: str) -> str | None:
+    v = v.strip()
+    return v if 1 < len(v) <= 40 and not _NOT_APP.search(v) else None
+
+
+def _song(v: str) -> str | None:
+    v = v.strip()
+    return v if 1 < len(v) <= 80 and not _NOT_SONG.search(v) else None
+
+
+def _query(v: str) -> str | None:
+    v = v.strip()
+    return v if 1 < len(v) <= 100 and not re.search(r"\bи\b", v) else None
+
+
+_CHECK = {"v": _level, "v2": _level, "d": _duration, "app": _app, "song": _song, "yq": _query, "ch": _query}
 
 
 def match(text: str) -> Quick | None:
@@ -218,6 +268,28 @@ def failed(result) -> bool:
     return bool(_FAIL_RE.search(str(result or "")))
 
 
+# Где ответ нужен словами — само содержимое: время, что играет, сколько осталось.
+_ANSWERS = {("clock", "now"), ("clock", "timer_list"), ("clock", "stopwatch_stop"),
+            ("clock", "stopwatch_status"), ("music_player", "now_playing")}
+
+
+def voice_for_actions() -> bool:
+    """Настройка «Отвечать голосом на простые команды» (по умолчанию — нет)."""
+    return os.getenv("JARVIS_QUICK_VOICE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def silent(q: Quick, result) -> bool:
+    """Простое действие получилось — подтвердить звуком, без слов (как у Siri):
+    «пауза», «громче», «следующий трек», «таймер на 5 минут», свои команды.
+    Голосом — только если не вышло, если нужен ответ («который час») или
+    это разговор («спасибо», «ты тут?»)."""
+    if q.tool is None or voice_for_actions():
+        return False
+    if (q.tool, str(q.args.get("action", ""))) in _ANSWERS:
+        return False
+    return not failed(result)
+
+
 def reply_for(q: Quick, result) -> str:
     """Что сказать после команды: готовая фраза, а если не вышло или ответ
     содержательный — сам ответ инструмента."""
@@ -226,6 +298,12 @@ def reply_for(q: Quick, result) -> str:
         return q.phrase()
     if q.reply and not failed(text):
         return q.phrase()
+    # Ответ инструмента бывает с кодом ошибки, путём или ссылкой — вслух и в
+    # чат идёт только человеческая часть.
+    from core.speech_text import for_speech
+    text = for_speech(text).strip()
+    if text.startswith("Ошибка:"):
+        text = "Не получилось, сэр: " + text[len("Ошибка:"):].strip()
     return text or q.phrase() or random.choice(ACK)
 
 
@@ -247,8 +325,19 @@ class VoiceCache:
             pass
         return "edge:" + os.getenv("EDGE_VOICE", "ru-RU-DmitryNeural")
 
+    MAX_LEARNED = 400          # сколько коротких фраз запоминать сверх готовых
+    LEARN_CHARS = 40
+
+    @staticmethod
+    def norm(text: str) -> str:
+        """«Готово, сэр.» и «готово сэр» — одна фраза (Gemini ставит запятые как придётся).
+        Знак в конце сохраняем: вопрос звучит иначе, чем утверждение."""
+        t = (text or "").lower().replace("ё", "е").strip()
+        end = "?" if t.endswith("?") else "!" if t.endswith("!") else "."
+        return " ".join(re.findall(r"\w+", t)) + end
+
     def _key(self, text: str, rate: int, voice: str | None) -> str:
-        raw = f"{voice or self.voice()}|{rate}|{text.strip()}"
+        raw = f"{voice or self.voice()}|{rate}|{self.norm(text)}"
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
 
     def get(self, text: str, rate: int, voice: str | None = None) -> bytes | None:
@@ -278,11 +367,21 @@ class VoiceCache:
             logger.debug("Кэш голоса не записан: %s", exc)
 
     def wanted(self, text: str) -> bool:
-        """Кэшируем только готовые фразы — не весь разговор."""
-        return text.strip() in _PHRASE_SET
+        """Готовые фразы — всегда; ещё короткие без чисел («Открываю Telegram, сэр.»):
+        тот же текст — тот же звук, второй раз он звучит сразу. Числа (время,
+        температура, счёт) меняются — такое не храним, как и длинные ответы."""
+        t = text.strip()
+        if self.norm(t) in _PHRASE_SET:
+            return True
+        if len(t) > self.LEARN_CHARS or re.search(r"\d", t) or not re.search(r"\w", t):
+            return False
+        try:
+            return sum(1 for _ in self.root.glob("*.pcm")) < len(_PHRASE_SET) + self.MAX_LEARNED
+        except OSError:
+            return False
 
 
-_PHRASE_SET = set(all_phrases())
+_PHRASE_SET = {VoiceCache.norm(p) for p in all_phrases()}
 _cache: VoiceCache | None = None
 
 

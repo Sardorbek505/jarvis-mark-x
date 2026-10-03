@@ -162,3 +162,29 @@ def test_сбой_приёмника_не_ломает_ход():
     t.mark_voice_frame()
     t.mark_answer_audio()
     t.mark_turn_complete()   # не должно бросить наружу
+
+
+def test_этапы_хода_видны_по_порядку(monkeypatch):
+    """Где ушли секунды: Gemini заговорил, пришёл текст, ушёл в озвучку, зазвучал Fish."""
+    clock = [0.0]
+    monkeypatch.setattr("core.latency.time.perf_counter", lambda: clock[0])
+    lines = []
+    t = _tracker(sink=lines.append)
+    t.mark_voice_frame()
+    for tick, what in ((0.6, "heard"), (1.4, "gemini-звук"), (1.9, "текст"), (3.1, "в озвучку"),
+                       (3.9, "answered"), (4.0, "gemini-звук")):
+        clock[0] = tick
+        if what == "heard":
+            t.mark_transcript()
+        elif what == "answered":
+            t.mark_answer_audio()
+        else:
+            t.mark(what)                                    # повтор этапа не перезаписывает первый
+    t.mark_turn_complete()
+    assert lines[0] == ("SYS: ⏱  слышит 600мс · gemini-звук 1400мс · текст 1900мс · "
+                        "в озвучку 3100мс · отвечает 3900мс")
+    clock[0] = 10.0
+    t.mark_voice_frame()
+    t.mark_answer_audio()
+    t.mark_turn_complete()
+    assert "gemini-звук" not in lines[1]                    # этапы — только своего хода
