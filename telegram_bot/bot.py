@@ -151,6 +151,45 @@ def _markdown_safe(method):
     return wrapper
 
 
+TG_TEXT_LIMIT = 4096
+
+
+def split_message(text: str, limit: int = TG_TEXT_LIMIT) -> list[str]:
+    """Режет текст на куски ≤ limit: по абзацам, строкам, пробелам — что найдётся."""
+    parts = []
+    while len(text) > limit:
+        # Абзац лучше строки, строка лучше пробела — если разрез не слишком рано.
+        cut = next((c for c in (text.rfind(sep, 0, limit) for sep in ("\n\n", "\n", " "))
+                    if c > limit // 2), limit)
+        parts.append(text[:cut].rstrip())
+        text = text[cut:].lstrip()
+    if text:
+        parts.append(text)
+    return parts
+
+
+def _long_safe(method):
+    """Ответ длиннее лимита Telegram — несколькими сообщениями.
+
+    Раньше Telegram отвечал «Message is too long», и человек вместо ответа
+    видел «❌ Что-то пошло не так»; разговор при этом не сохранялся.
+    """
+    async def wrapper(self, text=None, *args, **kwargs):
+        if text is None:
+            text = kwargs.pop("text")
+        if len(text) <= TG_TEXT_LIMIT:
+            return await method(self, text, *args, **kwargs)
+        markup = kwargs.pop("reply_markup", None)
+        parts = split_message(text)
+        sent = None
+        for i, part in enumerate(parts):
+            last = i == len(parts) - 1
+            sent = await method(self, part, *args, **kwargs, **({"reply_markup": markup} if last else {}))
+        return sent
+    wrapper._long_safe = True
+    return wrapper
+
+
 def _install_markdown_fallback():
     from telegram import CallbackQuery, Message
     for cls, names in ((Message, ("reply_text", "reply_voice", "edit_text")),
@@ -159,6 +198,8 @@ def _install_markdown_fallback():
             method = getattr(cls, name)
             if not getattr(method, "_markdown_safe", False):
                 setattr(cls, name, _markdown_safe(method))
+    if not getattr(Message.reply_text, "_long_safe", False):
+        Message.reply_text = _long_safe(Message.reply_text)
 
 
 _install_markdown_fallback()

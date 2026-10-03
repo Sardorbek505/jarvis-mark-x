@@ -98,3 +98,12 @@ def test_мастер_fish_без_ключа_не_включает_fish(tmp_path
     w.rb_fish.setChecked(True)
     w._save_and_start()
     assert settings.get("voice") == "gemini"
+
+
+def test_глаз_показывает_ключ_с_первого_нажатия(tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QLineEdit
+    w = _wizard(tmp_path, monkeypatch, [])
+    w.btn_toggle_key.click()
+    assert w.edit_gemini.echoMode() == QLineEdit.EchoMode.Normal
+    w.btn_toggle_key.click()
+    assert w.edit_gemini.echoMode() == QLineEdit.EchoMode.Password

@@ -449,7 +449,9 @@ class SetupWizardDialog(QDialog):
         return w
 
     def _toggle_key_visibility(self):
-        if self.edit_gemini.echoMode() == QLineEdit.EchoMode.Password:
+        # Поле стартует в PasswordEchoOnEdit — сравнение с Password требовало
+        # двух нажатий, чтобы увидеть ключ.
+        if self.edit_gemini.echoMode() != QLineEdit.EchoMode.Normal:
             self.edit_gemini.setEchoMode(QLineEdit.EchoMode.Normal)
         else:
             self.edit_gemini.setEchoMode(QLineEdit.EchoMode.Password)
