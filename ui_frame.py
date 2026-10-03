@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, Qt
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QAbstractButton, QApplication, QPushButton, QWidget
+from PyQt6.QtWidgets import QAbstractButton, QPushButton, QWidget
 
 BORDER = 6            # ширина невидимой «рамки» для изменения размера, px
 
@@ -84,53 +84,60 @@ def caption_buttons(window: QWidget, colors: dict) -> list[QPushButton]:
 class Frameless(QObject):
     """Убирает рамку Windows у окна и даёт шапке и краям её работу.
 
-    drag_area(widget, global_pos) -> bool решает, можно ли тащить окно за
-    это место (пустое место шапки — да, кнопки — нет)."""
+    Фильтр событий — только на самом окне и на виджетах шапки, не на всём
+    приложении: глобальный фильтр Qt вызывал у окна, которое уже удаляется,
+    и Python падал при выходе. Чтобы края окна получали мышь сами, вокруг
+    содержимого — невидимая полоска BORDER (у развёрнутого окна её нет)."""
 
-    def __init__(self, window: QWidget, drag_area):
+    def __init__(self, window: QWidget, drag_widgets: list[QWidget]):
         super().__init__(window)
         self.window = window
-        self.drag_area = drag_area
+        self.drag = list(drag_widgets)
         self._cursor_set = False
         window.setWindowFlags(window.windowFlags() | Qt.WindowType.FramelessWindowHint
                               | Qt.WindowType.WindowMinMaxButtonsHint | Qt.WindowType.WindowSystemMenuHint)
-        QApplication.instance().installEventFilter(self)
+        window.setMouseTracking(True)
+        window.installEventFilter(self)
+        for w in self.drag:
+            w.installEventFilter(self)
+        self._margins()
 
-    def _ours(self, obj) -> bool:
-        return isinstance(obj, QWidget) and obj.window() is self.window
+    def _margins(self):
+        b = 0 if self.window.isMaximized() else BORDER
+        self.window.setContentsMargins(b, b, b, b)
 
     def eventFilter(self, obj, ev):
         t = ev.type()
-        if t not in (QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick,
-                     QEvent.Type.HoverMove) or not self._ours(obj):
-            return False
         w = self.window
-        gpos = ev.globalPosition().toPoint() if hasattr(ev, "globalPosition") else None
-        if gpos is None:
+        if obj is w:
+            if t == QEvent.Type.WindowStateChange:
+                self._margins()
+                return False
+            if t not in (QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress):
+                return False
+            edges = Qt.Edge(0) if w.isMaximized() else edges_at(ev.position().toPoint(), w.rect())
+            if t == QEvent.Type.MouseMove:
+                cur = cursor_for(edges)
+                if cur is not None:
+                    w.setCursor(cur)
+                    self._cursor_set = True
+                elif self._cursor_set:
+                    w.unsetCursor()
+                    self._cursor_set = False
+                return False
+            if edges and ev.button() == Qt.MouseButton.LeftButton and w.windowHandle() is not None:
+                w.windowHandle().startSystemResize(edges)
+                return True
             return False
-        local = w.mapFromGlobal(gpos)
-        edges = Qt.Edge(0) if w.isMaximized() else edges_at(local, w.rect())
-        if t in (QEvent.Type.MouseMove, QEvent.Type.HoverMove):
-            cur = cursor_for(edges)
-            if cur is not None:
-                w.setCursor(cur)
-                self._cursor_set = True
-            elif self._cursor_set:
-                w.unsetCursor()
-                self._cursor_set = False
-            return False
-        if ev.button() != Qt.MouseButton.LeftButton:
-            return False
-        handle = w.windowHandle()
-        if t == QEvent.Type.MouseButtonPress and edges and handle is not None:
-            handle.startSystemResize(edges)
-            return True
-        if isinstance(obj, QAbstractButton) or not self.drag_area(obj, gpos):
-            return False
-        if t == QEvent.Type.MouseButtonDblClick:
-            w.showNormal() if w.isMaximized() else w.showMaximized()
-            return True
-        if handle is not None:
-            handle.startSystemMove()
-            return True
+        if obj in self.drag and not isinstance(obj, QAbstractButton):
+            if t not in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick):
+                return False
+            if ev.button() != Qt.MouseButton.LeftButton:
+                return False
+            if t == QEvent.Type.MouseButtonDblClick:
+                w.showNormal() if w.isMaximized() else w.showMaximized()
+                return True
+            if w.windowHandle() is not None:
+                w.windowHandle().startSystemMove()
+                return True
         return False

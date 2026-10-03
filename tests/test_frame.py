@@ -26,16 +26,22 @@ def test_window_loses_system_title_bar_and_gets_caption_buttons(qapp):
 
     from ui_frame import Frameless, caption_buttons
     w = QWidget()
-    Frameless(w, lambda _o, _p: True)
+    Frameless(w, [])
     assert w.windowFlags() & Qt.WindowType.FramelessWindowHint
     closed = []
     w.close = lambda: closed.append(1)                     # не закрывать тестовое окно по-настоящему
     mini, maxi, close = caption_buttons(w, {"text": "#aaa", "white": "#fff", "hover": "#333"})
     assert [b.toolTip() for b in (mini, maxi, close)] == ["Свернуть", "Развернуть", "Закрыть Джарвиса"]
     w.show()
+    assert w.contentsMargins().left() > 0                  # края — для изменения размера
     maxi.click()
     assert w.isMaximized()
+    qapp.processEvents()
+    assert w.contentsMargins().left() == 0                 # у развёрнутого окна краёв нет
     maxi.click()
     assert not w.isMaximized()
     close.click()
     assert closed == [1]
+    w.hide()
+    w.deleteLater()
+    qapp.processEvents()

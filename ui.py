@@ -1116,8 +1116,7 @@ class MainWindow(QMainWindow):
         head_wrap.setStyleSheet(f"background: {C.BG}; border-bottom: 1px solid {C.BORDER};")
         head_wrap.setLayout(head_row)
         outer.addWidget(head_wrap)
-        self._frameless = Frameless(
-            self, lambda _obj, gpos: head_wrap.rect().contains(head_wrap.mapFromGlobal(gpos)))
+        self._frameless = Frameless(self, [head_wrap, self._header, self._clock])
 
         # ── Под шапкой: панель экранов слева, справа — открытый экран ──
         # Шар с разговором — первый экран; команды, учёба, контакты и прочие —
