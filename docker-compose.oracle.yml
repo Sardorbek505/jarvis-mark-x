@@ -2,7 +2,7 @@
 # JARVIS — Oracle Cloud Always Free deployment (24/7, не спит, бесплатно)
 #
 # Один процесс = бот (webhook) + Mini App + PC-мост с ОБЩИМ PCBridge.
-# (Старый docker-compose.yml поднимал бот и miniapp раздельно — у них были
+# (Раньше docker-compose.yml поднимал бот и miniapp раздельно — у них были
 #  разные мосты, и команды на ПК из бота не доходили. Здесь это исправлено.)
 #
 # Требует рядом файл .env (см. .env.oracle.example).
