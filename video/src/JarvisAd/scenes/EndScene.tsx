@@ -2,7 +2,7 @@ import React from "react";
 import { AbsoluteFill, interpolate, random, useCurrentFrame } from "remotion";
 import { ORB, OrbView } from "../devices";
 import { Center, CoreRings, riseClip } from "../primitives";
-import { C, DISPLAY, ENTER, EXIT, MONO, MOVE, UNIT, scene, timeline, tween, voiceAt } from "../theme";
+import { C, DISPLAY, ENTER, EXIT, MONO, MOVE, UNIT, scene, timeline, tween, voiceAt, ui, useVertical } from "../theme";
 
 const IGNITE = timeline.beatFrames; // one beat after the cut — the boom and impact land here (build.py)
 const WORD = "JARVIS";
@@ -18,6 +18,8 @@ export const EndScene: React.FC = () => {
   const settle = tween(f, [IGNITE + 26, IGNITE + 52], [0, 1], MOVE); // core rises to make room for the lockup
   const energy = lit ? 0.35 + 0.4 * flash + 0.5 * voiceAt(s.from + f) : 0.08;
   const logo = f - (IGNITE + 38);
+  const v = useVertical();
+  const rise = v ? -330 : -240; // where the core settles above the lockup
 
   return (
     <AbsoluteFill style={{ translate: shake }}>
@@ -29,11 +31,11 @@ export const EndScene: React.FC = () => {
           rotate: `${f * 0.15}deg`,
           scale: "1.6",
           maskImage: "radial-gradient(circle at 50% 50%, #000 0%, transparent 45%)",
-          translate: `0 ${-240 * settle}px`,
+          translate: `0 ${rise * settle}px`,
         }}
       />
 
-      <Center style={{ translate: `0 ${-240 * settle}px`, scale: String(1 - 0.54 * settle) }}>
+      <Center style={{ translate: `0 ${rise * settle}px`, scale: String(1 - (v ? 0.5 : 0.54) * settle) }}>
         <div style={{ position: "relative", width: 900, height: 900 }}>
           <Center>
             {/* the real HUD orb as the core */}
@@ -79,8 +81,8 @@ export const EndScene: React.FC = () => {
       />
 
       {/* lockup */}
-      <AbsoluteFill style={{ alignItems: "center", paddingTop: 560 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 36 }}>
+      <AbsoluteFill style={{ alignItems: "center", paddingTop: v ? 960 : 560 }}>
+        <div style={{ display: "flex", flexDirection: v ? "column" : "row", alignItems: "center", gap: v ? 18 : 36 }}>
           <div style={{ display: "flex" }}>
             {WORD.split("").map((ch, i) => {
               const t = logo - i * 2;
@@ -90,7 +92,7 @@ export const EndScene: React.FC = () => {
                     style={{
                       fontFamily: DISPLAY,
                       fontWeight: 500,
-                      fontSize: 150,
+                      fontSize: v ? 130 : 150,
                       lineHeight: 1.05,
                       letterSpacing: "0.14em",
                       color: C.ink,
@@ -128,13 +130,15 @@ export const EndScene: React.FC = () => {
           style={{
             marginTop: 26,
             fontFamily: DISPLAY,
-            fontSize: 44,
+            fontSize: v ? 40 : 44,
+            maxWidth: v ? 860 : undefined,
+            textAlign: "center",
             color: C.muted,
             opacity: tween(logo - 26, [0, UNIT], [0, 1]),
             translate: `0 ${tween(logo - 26, [0, UNIT], [16, 0])}px`,
           }}
         >
-          Your personal AI — on Windows and in Telegram
+          {ui("tagline")}
         </div>
 
         <div
@@ -144,7 +148,8 @@ export const EndScene: React.FC = () => {
             marginTop: 44,
             display: "flex",
             alignItems: "center",
-            gap: 24,
+            gap: v ? 14 : 24,
+            flexDirection: v ? "column" : "row",
             padding: "14px 16px 14px 16px",
             borderRadius: 999,
             border: `1px solid ${C.core}66`,
@@ -166,7 +171,7 @@ export const EndScene: React.FC = () => {
               boxShadow: `0 0 30px ${C.glow}`,
             }}
           >
-            FREE DOWNLOAD
+            {ui("cta")}
           </div>
           <div style={{ fontFamily: MONO, fontSize: 28, letterSpacing: "0.04em", color: C.ink, paddingRight: 18 }}>
             github.com/Sardorbek505/jarvis-mark-x

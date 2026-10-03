@@ -1,5 +1,5 @@
 import { loadFont } from "@remotion/fonts";
-import { Easing, interpolate, staticFile } from "remotion";
+import { Easing, interpolate, staticFile, useVideoConfig } from "remotion";
 import timelineJson from "./timeline.json";
 
 // Timeline written by scripts/jarvis_ad/build.py (voice-over lengths snapped to a 100 BPM grid).
@@ -17,7 +17,14 @@ export const timeline = timelineJson as unknown as {
   durationInFrames: number;
   scenes: SceneInfo[];
   voiceLevel: number[];
+  lang: "ru" | "en";
+  ui: Record<UiKey, string>;
 };
+export type UiKey =
+  | "voiceLabel" | "voiceHead" | "visionLabel" | "visionHead" | "memoryLabel" | "memoryHead"
+  | "controlLabel" | "controlHead" | "tagline" | "cta";
+/** On-screen text in the voice-over's language (scripts/jarvis_ad/script.json). */
+export const ui = (key: UiKey) => timeline.ui[key];
 export const scene = (id: SceneId) => timeline.scenes.find((s) => s.id === id)!;
 
 // Palette taken from the product itself: the app's idle teal (ui.py _STATE_RGB "ОЖИДАЕТ"),
@@ -57,12 +64,30 @@ export const tween = (
     easing,
   });
 
+/** True for the 9:16 cut (Reels / Shorts / TikTok). */
+export const useVertical = () => {
+  const { width, height } = useVideoConfig();
+  return height > width;
+};
+
 export const DISPLAY = "Tektur";
 export const MONO = "JetBrains Mono";
 
 loadFont({ family: DISPLAY, url: staticFile("jarvis-ad/fonts/Tektur-Regular.ttf"), weight: "400" });
 loadFont({ family: DISPLAY, url: staticFile("jarvis-ad/fonts/Tektur-Medium.ttf"), weight: "500" });
-loadFont({ family: MONO, url: staticFile("jarvis-ad/fonts/JetBrainsMono-500.woff2"), weight: "500" });
+loadFont({
+  family: MONO,
+  url: staticFile("jarvis-ad/fonts/JetBrainsMono-500.woff2"),
+  weight: "500",
+  unicodeRange:
+    "U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD",
+});
+loadFont({
+  family: MONO,
+  url: staticFile("jarvis-ad/fonts/JetBrainsMono-500-cyrillic.woff2"),
+  weight: "500",
+  unicodeRange: "U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116",
+});
 
 /** Voice loudness (0–1) at an absolute frame — drives the audio-reactive bits. */
 export const voiceAt = (absFrame: number) => {

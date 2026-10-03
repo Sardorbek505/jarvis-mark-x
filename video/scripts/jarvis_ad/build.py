@@ -26,6 +26,7 @@ import json
 import math
 import shutil
 import subprocess
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -53,16 +54,15 @@ VOICE = "bm_george"
 SFX_BASE = ("https://raw.githubusercontent.com/louiseliu/hyperFrames-video-shotcraft/"
             "1df77f1ab080323558f70a5fb880fad0f88f87fc/assets/audio/sfx/")
 
-# id, line spoken, lead-in before the line (s), tail after it (s)
-SCENES = [
-    ("boot", "Good evening. Allow me to introduce myself.", 2.4, 0.5),
-    ("title", "I am Jarvis. Mark Ten.", 0.45, 0.9),
-    ("voice", "Speak naturally, and I answer instantly. You can even interrupt me.", 0.35, 0.5),
-    ("vision", "I see your screen, read your code, and find the bug before you do.", 0.35, 0.5),
-    ("memory", "I remember what matters. Your notes, your plans, your preferences.", 0.35, 0.5),
-    ("control", "Open an app. Turn it down. Send it to your phone. Consider it done.", 0.35, 0.7),
-    ("end", "Jarvis, Mark Ten. Your personal A.I. for Windows. Free, and ready when you are.", 0.9, 2.2),
-]
+SCRIPT = json.loads((Path(__file__).with_name("script.json")).read_text(encoding="utf-8"))
+LANG = "ru"  # set by --lang; ru = Fish Audio (the app's own Jarvis voice), en = Kokoro
+VO_DIR = Path(__file__).with_name("vo")
+
+
+def scenes() -> list[tuple[str, str, float, float]]:
+    """(id, line spoken, lead-in before the line in s, tail after it in s)."""
+    lines = SCRIPT[LANG]["lines"]
+    return [(s["id"], lines[s["id"]], s["lead"], s["tail"]) for s in SCRIPT["scenes"]]
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -148,27 +148,60 @@ def compress(x: np.ndarray, threshold_db: float, ratio: float, attack=0.005, rel
 # ── 1. voice-over ────────────────────────────────────────────────────────────
 
 def synth_voice() -> tuple[list[np.ndarray], list[float]]:
+    """Voice-over per scene: ready files in vo/<lang>/ first (fish_vo.py writes
+    them), else Fish Audio for Russian, Kokoro for English."""
+    files = [next(iter(sorted((VO_DIR / LANG).glob(f"{sid}.*"))), None) for sid, *_ in scenes()]
+    if LANG == "ru" and not all(files):
+        import fish_vo
+        if not fish_vo.settings()[0]:
+            raise SystemExit("Русский голос — Fish Audio: запустите fish_vo.py там, где есть ключ "
+                             "и доступ к api.fish.audio, или задайте FISH_API_KEY.")
+        if fish_vo.main():
+            raise SystemExit("Fish Audio не ответил — см. сообщение выше.")
+        files = [next(iter(sorted((VO_DIR / LANG).glob(f"{sid}.*")))) for sid, *_ in scenes()]
+    if all(files):
+        return _from_files(files)
+    return _kokoro()
+
+
+def _trim(mono: np.ndarray) -> np.ndarray:
+    idx = np.flatnonzero(np.abs(mono) > 0.01)
+    return mono[max(0, idx[0] - 480): idx[-1] + 2400]
+
+
+def _from_files(files: list[Path]) -> tuple[list[np.ndarray], list[float]]:
+    lines, spoken = [], []
+    for (sid, text, *_), path in zip(scenes(), files):
+        mono = _trim(load(path).mean(axis=1))
+        lines.append(treat_voice(mono, light=True))  # Fish's Jarvis voice is already characterful
+        spoken.append(len(mono) / SR)
+        print(f"  VO {sid:8s} {len(mono) / SR:5.2f}s  {path.name}  {text}")
+    return lines, spoken
+
+
+def _kokoro() -> tuple[list[np.ndarray], list[float]]:
     from kokoro_onnx import Kokoro
 
     model = [fetch(KOKORO_URL + f, CACHE / "kokoro" / f) for f in KOKORO_FILES]
     tts = Kokoro(str(model[0]), str(model[1]))
     lines, spoken = [], []
-    for sid, text, *_ in SCENES:
+    for sid, text, *_ in scenes():
         samples, sr = tts.create(text, voice=VOICE, speed=0.94, lang="en-gb")
         mono = np.asarray(samples, dtype=np.float32)
         g = math.gcd(sr, SR)
-        mono = signal.resample_poly(mono, SR // g, sr // g).astype(np.float32)
-        # trim Kokoro's leading/trailing silence so timing is exact
-        idx = np.flatnonzero(np.abs(mono) > 0.01)
-        mono = mono[max(0, idx[0] - 480): idx[-1] + 2400]
+        mono = _trim(signal.resample_poly(mono, SR // g, sr // g).astype(np.float32))
         lines.append(treat_voice(mono))
         spoken.append(len(mono) / SR)  # dry length; the reverb tail may ring into the next scene
         print(f"  VO {sid:8s} {len(mono) / SR:5.2f}s  {text}")
     return lines, spoken
 
 
-def treat_voice(mono: np.ndarray) -> np.ndarray:
+def treat_voice(mono: np.ndarray, light: bool = False) -> np.ndarray:
     x = filt(mono, butter("highpass", 90))
+    if light:  # a voice that already has its character: just clean, even out, a touch of room
+        x = compress(x[:, None].repeat(2, axis=1), threshold_db=-20, ratio=2.5)
+        x = reverb(x, 0.9, wet=0.08, seed=3)
+        return x / np.abs(x).max() * 0.89
     # gentle presence lift: add a band-passed copy around 3 kHz
     x = x + 0.25 * filt(x, butter("bandpass", [2200, 4800]))
     x = compress(x[:, None].repeat(2, axis=1), threshold_db=-20, ratio=3)
@@ -184,13 +217,13 @@ def treat_voice(mono: np.ndarray) -> np.ndarray:
 # ── 2. timeline ──────────────────────────────────────────────────────────────
 
 def build_timeline(spoken: list[float]) -> dict:
-    scenes, cursor = [], 0
-    for (sid, text, lead, tail), seconds in zip(SCENES, spoken):
+    out, cursor = [], 0
+    for (sid, text, lead, tail), seconds in zip(scenes(), spoken):
         vo_frames = math.ceil(seconds * FPS)
         need = round(lead * FPS) + vo_frames + round(tail * FPS)
         beats = math.ceil(need / BEAT_F)
         dur = beats * BEAT_F
-        scenes.append({
+        out.append({
             "id": sid,
             "from": cursor,
             "durationInFrames": dur,
@@ -198,7 +231,8 @@ def build_timeline(spoken: list[float]) -> dict:
             "vo": {"text": text, "from": round(lead * FPS), "durationInFrames": vo_frames},
         })
         cursor += dur
-    return {"fps": FPS, "bpm": BPM, "beatFrames": BEAT_F, "durationInFrames": cursor, "scenes": scenes}
+    return {"fps": FPS, "bpm": BPM, "beatFrames": BEAT_F, "durationInFrames": cursor, "scenes": out,
+            "lang": LANG, "ui": SCRIPT[LANG]["ui"]}
 
 
 # ── 3. score ─────────────────────────────────────────────────────────────────
@@ -411,12 +445,19 @@ def copy_fonts() -> None:
         shutil.copy(REPO / "design" / "fonts" / f, dst / f)
     mono = VIDEO / "node_modules" / "@fontsource" / "jetbrains-mono" / "files"
     shutil.copy(mono / "jetbrains-mono-latin-500-normal.woff2", dst / "JetBrainsMono-500.woff2")
+    shutil.copy(mono / "jetbrains-mono-cyrillic-500-normal.woff2", dst / "JetBrainsMono-500-cyrillic.woff2")
     shutil.copy(mono.parent / "LICENSE", dst / "JetBrainsMono-OFL.txt")
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    global LANG
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--lang", choices=("ru", "en"), default="ru")
+    LANG = ap.parse_args().lang
+    sys.path.insert(0, str(Path(__file__).parent))
     PUBLIC.mkdir(parents=True, exist_ok=True)
     print("voice-over")
     vo, spoken = synth_voice()

@@ -1,6 +1,6 @@
 import React from "react";
-import { AbsoluteFill, random, useCurrentFrame } from "remotion";
-import { C, DISPLAY, SceneId, timeline, tween, wordTimings } from "./theme";
+import { AbsoluteFill, random, useCurrentFrame, useVideoConfig } from "remotion";
+import { C, DISPLAY, SceneId, timeline, tween, wordTimings, useVertical } from "./theme";
 
 const activeScene = (frame: number) =>
   timeline.scenes.find((s) => frame >= s.from && frame < s.from + s.durationInFrames) ??
@@ -34,12 +34,14 @@ export const Backdrop: React.FC = () => {
 
 const Dust: React.FC = () => {
   const f = useCurrentFrame();
+  const { width, height } = useVideoConfig();
+  const span = height + 100;
   return (
     <AbsoluteFill>
       {new Array(70).fill(0).map((_, i) => {
-        const x = random(`dx${i}`) * 1920;
+        const x = random(`dx${i}`) * width;
         const speed = 0.2 + random(`ds${i}`) * 0.7;
-        const y = (((random(`dy${i}`) * 1180 - f * speed) % 1180) + 1180) % 1180 - 50;
+        const y = (((random(`dy${i}`) * span - f * speed) % span) + span) % span - 50;
         const size = 1 + random(`dz${i}`) * 2.4;
         const tw = 0.35 + 0.65 * Math.abs(Math.sin(f / (14 + random(`dt${i}`) * 30) + i));
         return (
@@ -128,6 +130,7 @@ const Grain: React.FC = () => {
 /** Karaoke-style captions for the voice-over (for muted autoplay). */
 export const Captions: React.FC<{ hide?: SceneId[] }> = ({ hide = [] }) => {
   const f = useCurrentFrame();
+  const v = useVertical();
   const s = activeScene(f);
   if (hide.includes(s.id)) return null;
   const t = f - s.from - s.vo.from;
@@ -136,13 +139,13 @@ export const Captions: React.FC<{ hide?: SceneId[] }> = ({ hide = [] }) => {
   if (vis <= 0) return null;
   const words = wordTimings(s.vo.text, d);
   return (
-    <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: 26, opacity: vis }}>
+    <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: v ? 220 : 26, opacity: vis }}>
       <div
         style={{
-          maxWidth: 1560,
+          maxWidth: v ? 960 : 1560,
           textAlign: "center",
           fontFamily: DISPLAY,
-          fontSize: 34,
+          fontSize: v ? 40 : 34,
           lineHeight: 1.3,
           padding: "8px 26px",
           borderRadius: 14,

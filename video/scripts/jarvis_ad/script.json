@@ -1,0 +1,50 @@
+{
+ "_doc": "Voice-over lines (with lead-in/tail seconds) and on-screen text per language. Read by build.py and fish_vo.py; build.py copies the chosen language's ui strings into src/JarvisAd/timeline.json.",
+ "scenes": [
+  {"id": "boot", "lead": 2.4, "tail": 0.5},
+  {"id": "title", "lead": 0.45, "tail": 0.9},
+  {"id": "voice", "lead": 0.35, "tail": 0.5},
+  {"id": "vision", "lead": 0.35, "tail": 0.5},
+  {"id": "memory", "lead": 0.35, "tail": 0.5},
+  {"id": "control", "lead": 0.35, "tail": 0.7},
+  {"id": "end", "lead": 0.9, "tail": 2.2}
+ ],
+ "ru": {
+  "lines": {
+   "boot": "Добрый вечер, сэр. Позвольте представиться.",
+   "title": "Я — Джарвис. Марк Десять.",
+   "voice": "Говорите как обычно — я отвечу сразу. Можете даже перебить.",
+   "vision": "Я вижу ваш экран, читаю код и нахожу ошибку раньше вас.",
+   "memory": "Я помню главное: расписание, планы и то, что важно именно вам.",
+   "control": "Открыть программу. Сделать тише. Отправить на телефон. Считайте, уже сделано.",
+   "end": "Джарвис, Марк Десять. Ваш личный помощник на компьютере и в Telegram. Бесплатно — и всегда на связи."
+  },
+  "ui": {
+   "voiceLabel": "01 — ГОЛОС", "voiceHead": "Говорите — он отвечает.",
+   "visionLabel": "02 — ЗРЕНИЕ", "visionHead": "Видит ваш экран.",
+   "memoryLabel": "03 — ПАМЯТЬ", "memoryHead": "Помнит главное.",
+   "controlLabel": "04 — УПРАВЛЕНИЕ", "controlHead": "Компьютер — по команде.",
+   "tagline": "Личный ИИ-помощник — на Windows и в Telegram",
+   "cta": "СКАЧАТЬ БЕСПЛАТНО"
+  }
+ },
+ "en": {
+  "lines": {
+   "boot": "Good evening. Allow me to introduce myself.",
+   "title": "I am Jarvis. Mark Ten.",
+   "voice": "Speak naturally, and I answer instantly. You can even interrupt me.",
+   "vision": "I see your screen, read your code, and find the bug before you do.",
+   "memory": "I remember what matters. Your notes, your plans, your preferences.",
+   "control": "Open an app. Turn it down. Send it to your phone. Consider it done.",
+   "end": "Jarvis, Mark Ten. Your personal A.I. for Windows. Free, and ready when you are."
+  },
+  "ui": {
+   "voiceLabel": "01 — VOICE", "voiceHead": "Speak. It answers.",
+   "visionLabel": "02 — VISION", "visionHead": "It sees your screen.",
+   "memoryLabel": "03 — MEMORY", "memoryHead": "Remembers what matters.",
+   "controlLabel": "04 — CONTROL", "controlHead": "Your PC, on command.",
+   "tagline": "Your personal AI — on Windows and in Telegram",
+   "cta": "FREE DOWNLOAD"
+  }
+ }
+}

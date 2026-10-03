@@ -2,7 +2,7 @@ import React from "react";
 import { AbsoluteFill, interpolate, random, useCurrentFrame } from "remotion";
 import { ORB, OrbView } from "../devices";
 import { Center, SceneShell, riseClip } from "../primitives";
-import { C, DISPLAY, ENTER, EXIT, MONO, UNIT, scene, tween } from "../theme";
+import { C, DISPLAY, ENTER, EXIT, MONO, UNIT, scene, tween, useVertical } from "../theme";
 
 const HIT = 6; // the bass hit lands 0.2 s into the scene (scripts/jarvis_ad/build.py)
 const WORD = "JARVIS";
@@ -14,6 +14,7 @@ export const TitleScene: React.FC = () => {
   const amp = 9 * tween(f, [HIT, HIT + 16], [1, 0]);
   const shake = `${(random(`tx${f}`) - 0.5) * 2 * amp}px ${(random(`ty${f}`) - 0.5) * 2 * amp}px`;
   const pill = f - 18;
+  const v = useVertical();
 
   return (
     <SceneShell>
@@ -22,7 +23,7 @@ export const TitleScene: React.FC = () => {
         <Center>
           <OrbView
             absFrom={scene("title").from}
-            size={1100}
+            size={v ? 1080 : 1100}
             center={ORB.alone}
             scale={tween(f, [0, 108], [1.7, 1.85])}
             style={{
@@ -49,7 +50,7 @@ export const TitleScene: React.FC = () => {
                     style={{
                       fontFamily: DISPLAY,
                       fontWeight: 500,
-                      fontSize: 240,
+                      fontSize: v ? 160 : 240,
                       lineHeight: 1,
                       letterSpacing: "0.12em",
                       color: C.ink,
@@ -71,7 +72,7 @@ export const TitleScene: React.FC = () => {
                 display: "flex",
                 fontFamily: DISPLAY,
                 fontWeight: 500,
-                fontSize: 240,
+                fontSize: v ? 160 : 240,
                 lineHeight: 1,
                 letterSpacing: "0.12em",
                 color: "#ffffff",

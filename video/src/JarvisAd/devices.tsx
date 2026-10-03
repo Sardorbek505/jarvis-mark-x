@@ -1,5 +1,5 @@
 import React from "react";
-import { Img, OffthreadVideo, interpolate, staticFile, useCurrentFrame } from "remotion";
+import { Img, OffthreadVideo, interpolate, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 import { C, ENTER, UNIT, tween } from "./theme";
 
 // Captured by scripts/capture/: the PC app at 1920×1200, the Mini App at 393×852 CSS px (3×).
@@ -238,6 +238,7 @@ export const Beam: React.FC<{
   color?: string;
 }> = ({ a, b, delay = 0, pulses = [], color = C.core }) => {
   const f = useCurrentFrame();
+  const { width, height } = useVideoConfig();
   const draw = tween(f - delay, [0, UNIT * 2], [0, 1]);
   const mx = (a[0] + b[0]) / 2;
   const my = Math.min(a[1], b[1]) - 80;
@@ -247,7 +248,7 @@ export const Beam: React.FC<{
     return [u * u * a[0] + 2 * u * p * mx + p * p * b[0], u * u * a[1] + 2 * u * p * my + p * p * b[1]];
   };
   return (
-    <svg width={1920} height={1080} style={{ position: "absolute", inset: 0, overflow: "visible", pointerEvents: "none" }}>
+    <svg width={width} height={height} style={{ position: "absolute", inset: 0, overflow: "visible", pointerEvents: "none" }}>
       <path
         d={d}
         fill="none"

@@ -2,7 +2,8 @@
 
 | What | Source | License |
 |---|---|---|
-| Voice-over | [Kokoro-82M](https://github.com/hexgrad/kokoro) via [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx), voice `bm_george`, synthesized offline | Apache-2.0 |
+| Voice-over (RU) | [Fish Audio](https://fish.audio) voice `680d74fbef69419f87cfc70f092a1451` («русский Джарвис», the JARVIS app's default voice), model `s2.1-pro-free`, via `fish_vo.py` | Fish Audio terms; check the voice model's own terms before publishing an ad |
+| Voice-over (EN) | [Kokoro-82M](https://github.com/hexgrad/kokoro) via [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx), voice `bm_george`, synthesized offline | Apache-2.0 |
 | Music | Original cue, synthesized by `build.py` | this repo |
 | Sound effects | [Mixkit](https://mixkit.co/free-sound-effects/), fetched from [video-shotcraft](https://github.com/louiseliu/hyperFrames-video-shotcraft) @ `1df77f1` (URLs per file in its `assets/audio/ATTRIBUTION.md`) | Mixkit Sound Effects Free License |
 | Product footage | The real PC app and Telegram Mini App of this repo, captured by `scripts/capture/` with fictional demo data | this repo |

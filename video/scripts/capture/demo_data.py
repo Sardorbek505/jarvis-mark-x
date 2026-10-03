@@ -10,16 +10,18 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 # Captures run on a throwaway copy of the sources: from source the app keeps its
 # data in the project root (core.paths.get_data_root), not in %APPDATA%.
 SRC = Path(os.environ.get("JARVIS_SRC") or REPO)
-# Screens show a fixed, friendly moment: today 9:40 local time (the app's
-# default zone, Asia/Almaty) — not whatever the capture machine's clock says.
-DEMO_NOW = datetime.combine(date.today(), time(9, 40))
+# Screens show a fixed, friendly moment: Monday of this week, 9:40 local time
+# (the app's default zone, Asia/Almaty) — mid-lecture, with the next class
+# coming up — not whatever the capture machine's clock says.
+_monday = date.today() - timedelta(days=date.today().weekday())
+DEMO_NOW = datetime.combine(_monday, time(9, 40))
 DEMO_TZ = "Asia/Almaty"
 
 

@@ -44,20 +44,27 @@ Output goes to `out/` (git-ignored).
 > existing headless shell (a full Chrome binary will not work):
 > `npx remotion render HelloWorld --browser-executable=/path/to/headless_shell`
 
-**JARVIS Mark X ad** (`JarvisAd`, 41 s, 1920×1080)
+**JARVIS Mark X ad** (`JarvisAd` 16:9 and `JarvisAdVertical` 9:16, ~41 s)
 
 ```console
 npx remotion render JarvisAd out/JarvisAd.mp4
+npx remotion render JarvisAdVertical out/JarvisAdVertical.mp4
 ```
 
-Voice-over, score, sound effects, scene timing and images are pre-built and
-committed (`public/jarvis-ad/`, `src/JarvisAd/timeline.json`). To change the
-script or the mix, edit `scripts/jarvis_ad/build.py` and rebuild (Python 3.10+,
-downloads the Kokoro TTS model and SFX into `.cache/` on first run):
+Script (voice-over + on-screen text, RU/EN): `scripts/jarvis_ad/script.json`.
+Russian voice = the app's own Fish Audio «русский Джарвис». Generate it where
+the Fish key and network are (e.g. your PC, it reads the key the app saved):
+
+```console
+python scripts/jarvis_ad/fish_vo.py            # -> scripts/jarvis_ad/vo/ru/*.mp3, commit them
+```
+
+Then rebuild audio + timeline, re-record the HUD to the new timing, render:
 
 ```console
 pip install -r scripts/jarvis_ad/requirements.txt
-python scripts/jarvis_ad/build.py
+python scripts/jarvis_ad/build.py --lang ru    # or --lang en (offline Kokoro voice)
+python scripts/capture/capture_pc.py
 ```
 
 Every product shot is the real app, captured with fictional demo data (no

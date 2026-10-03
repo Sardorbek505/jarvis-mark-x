@@ -19,6 +19,15 @@ export const RemotionRoot: React.FC = () => {
         width={1920}
         height={1080}
       />
+      {/* 9:16 cut for Reels / Shorts / TikTok: npx remotion render JarvisAdVertical out/JarvisAdVertical.mp4 */}
+      <Composition
+        id="JarvisAdVertical"
+        component={JarvisAd}
+        durationInFrames={timeline.durationInFrames}
+        fps={timeline.fps}
+        width={1080}
+        height={1920}
+      />
       <Folder name="JarvisAd-Scenes">
         {timeline.scenes.map((s) => (
           <Composition

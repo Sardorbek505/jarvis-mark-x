@@ -82,6 +82,19 @@
    }
   }
  ],
+ "lang": "en",
+ "ui": {
+  "voiceLabel": "01 \u2014 VOICE",
+  "voiceHead": "Speak. It answers.",
+  "visionLabel": "02 \u2014 VISION",
+  "visionHead": "It sees your screen.",
+  "memoryLabel": "03 \u2014 MEMORY",
+  "memoryHead": "Remembers what matters.",
+  "controlLabel": "04 \u2014 CONTROL",
+  "controlHead": "Your PC, on command.",
+  "tagline": "Your personal AI \u2014 on Windows and in Telegram",
+  "cta": "FREE DOWNLOAD"
+ },
  "sfxCues": [
   {
    "sfx": "scifi/tech-hum-futuristic.mp3",

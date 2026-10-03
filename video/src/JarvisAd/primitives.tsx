@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame, useVideoConfig } from "remotion";
-import { C, DISPLAY, EXIT, MONO, STAGGER, UNIT, tween } from "./theme";
+import { C, DISPLAY, EXIT, MONO, STAGGER, UNIT, tween, useVertical } from "./theme";
 
 /** Every scene enters with the same focus-pull and leaves with a short push — the one transition family. */
 export const SceneShell: React.FC<{ children: React.ReactNode; exit?: boolean }> = ({ children, exit = true }) => {
@@ -26,6 +26,18 @@ export const SceneShell: React.FC<{ children: React.ReactNode; exit?: boolean }>
  */
 export const riseClip = (t: number): React.CSSProperties =>
   t < UNIT + 2 ? { clipPath: "inset(-200px -200px 0 -200px)" } : {};
+
+/** Scene title block: index label + one headline, top-centred (below the app UI zone on 9:16). */
+export const SceneHeader: React.FC<{ label: string; head: string }> = ({ label, head }) => {
+  const v = useVertical();
+  return (
+    <AbsoluteFill style={{ alignItems: "center", paddingTop: v ? 250 : 54 }}>
+      <Label delay={4}>{label}</Label>
+      <div style={{ height: 14 }} />
+      <Headline lines={[head]} delay={8} size={v ? 64 : 72} align="center" />
+    </AbsoluteFill>
+  );
+};
 
 /** Mono index label with a short rule, e.g. "02 — VISION". */
 export const Label: React.FC<{ children: React.ReactNode; delay?: number; color?: string }> = ({
