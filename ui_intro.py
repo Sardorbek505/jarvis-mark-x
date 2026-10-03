@@ -3,7 +3,7 @@
 Лаборатория Старка, а не мультик: почти чёрный экран с тонкой сеткой, в
 центре — дуговой реактор (корпус с болтами, десять катушек с обмоткой
 зажигаются по кругу, удар — вспыхивает ядро), вокруг — тонкие HUD-кольца.
-Модули — линейные иконки в уголках-рамках с подписями и статусом проверки.
+Модули — сегменты внешнего кольца с иконками; луч проверки красит их зелёным или красным.
 Внизу — субтитры того, что говорит Джарвис (слово за словом).
 
 Кадр — функция от времени (paint_at): окно и превью-видео рисуют одно и то
@@ -237,9 +237,7 @@ class IntroScene:
         self._hud(p, w, h, t)
         self._arcs_net(p, w, h, cx, cy, r, t)
         self._rings(p, cx, cy, r, t)
-        style = getattr(self, "node_style", "frame")
-        {"frame": self._nodes, "hex": self._nodes_hex, "ring": self._nodes_ring,
-         "list": self._nodes_list}[style](p, cx, cy, r, t, exit_k)
+        self._nodes(p, cx, cy, r, t, exit_k)
         self._scan(p, cx, cy, r, t)
         p.restore()
         self._reactor(p, ox, oy, rr, t)
@@ -551,14 +549,6 @@ class IntroScene:
             r3 = r2 + (r * 0.1 if i % 10 == 0 else r * 0.045)
             p.drawLine(QPointF(math.cos(a) * r2, math.sin(a) * r2), QPointF(math.cos(a) * r3, math.sin(a) * r3))
         p.restore()
-        r4 = r * 2.02
-        p.setPen(QPen(_c(ICE, 0.12 * k), 1))
-        p.drawEllipse(QPointF(0, 0), r4, r4)
-        for ph in (0.0, math.pi):                              # две метки бегут по внешнему кругу
-            a = t * 0.7 + ph
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(_c(ICE, 0.8 * k))
-            p.drawEllipse(QPointF(math.cos(a) * r4, math.sin(a) * r4), 2.2, 2.2)
         p.restore()
 
     def _shockwave(self, p, w, h, cx, cy, r, t):
@@ -587,74 +577,15 @@ class IntroScene:
             p.fillRect(0, 0, w, h, g)
             p.restore()
 
+    RING_IN, RING_OUT = 1.98, 2.48                       # кольцо модулей, в радиусах реактора
+
     def node_pos(self, i: int, cx: float, cy: float, r: float) -> tuple[float, float]:
-        ang = -math.pi / 2 + 2 * math.pi * i / len(S.NODES)
-        return cx + math.cos(ang) * r * 3.25, cy + math.sin(ang) * r * 2.25
+        """Центр иконки модуля i на кольце (по часовой от верха)."""
+        am = math.radians(90 - 360 * i / len(S.NODES))
+        rad = r * (self.RING_IN + self.RING_OUT) / 2
+        return cx + math.cos(am) * rad, cy - math.sin(am) * rad
 
-    def _nodes(self, p, cx, cy, r, t, exit_k):
-        times = S.node_times()
-        s = r * 0.36                                         # половина рамки модуля
-        label_f = _font(MONO_FONT, r * 0.13, QFont.Weight.Normal, 118)
-        state_f = _font(MONO_FONT, r * 0.1, QFont.Weight.Normal, 125)
-        for i, ((name, icon), at) in enumerate(zip(S.NODES, times)):
-            if t < at - 0.25:
-                continue
-            nx, ny = self.node_pos(i, cx, cy, r)
-            # уход в обратном порядке, с разгоном
-            back = _in(_clamp((exit_k * 1.6 - (len(S.NODES) - 1 - i) * 0.06) / 0.35), 2)
-            ang = math.atan2(ny - cy, nx - cx)
-            sx, sy = cx + math.cos(ang) * r * 2.02, cy + math.sin(ang) * r * 2.02
-            tx, ty = nx - math.cos(ang) * s * 1.25, ny - math.sin(ang) * s * 1.25
-            grow = _out((t - at + 0.25) / 0.25) * (1 - back)
-            p.setPen(QPen(_c(ICE, 0.25), 1))
-            p.drawLine(QPointF(sx, sy), QPointF(sx + (tx - sx) * grow, sy + (ty - sy) * grow))
-            if grow >= 1:                                         # импульс данных по линии
-                u = ((t - at) * 0.8 + i * 0.13) % 1.0
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(_c(ICE, 0.8 * math.sin(math.pi * u)))
-                p.drawEllipse(QPointF(sx + (tx - sx) * u, sy + (ty - sy) * u), 1.6, 1.6)
-            if t < at:
-                continue
-            m = _out((t - at) / 0.3) * (1 - back)
-            if m <= 0.01:
-                continue
-            flick = 1.0 if t - at > 0.22 else 0.45 + 0.55 * (int((t - at) * 45) % 2)   # «включается»
-            ok = self.checks.get(_check_for(name), True)
-            scan = self._scan_hit(i, t)
-            col = (GREEN if ok else RED) if scan > 0.05 else ICE
-            c = QPointF(nx, ny)
-            box = QRectF(nx - s, ny - s, 2 * s, 2 * s)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(_c(QColor("#03070c"), 0.75 * m))
-            p.drawRect(box)
-            if scan > 0.05:
-                p.setBrush(_c(col, 0.14 * scan))
-                p.drawRect(box)
-            # уголки рамки разъезжаются из центра
-            L = s * 0.5
-            half = s * (0.4 + 0.6 * m)
-            p.setPen(QPen(_c(col, 0.9 * m * flick), max(1.2, r * 0.016), cap=Qt.PenCapStyle.FlatCap))
-            for sxn, syn in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
-                corner = QPointF(nx + sxn * half, ny + syn * half)
-                p.drawLine(corner, corner - QPointF(sxn * L, 0))
-                p.drawLine(corner, corner - QPointF(0, syn * L))
-            _draw_icon(p, icon, c, s * 1.2, _c(WHITE, 0.95 * m * flick), _out((t - at - 0.05) / 0.45),
-                       max(1.6, r * 0.02))
-            la = _out((t - at - 0.15) / 0.3) * (1 - back)
-            if la > 0:
-                p.setFont(label_f)
-                p.setPen(_c(ICE, 0.85 * la))
-                p.drawText(QRectF(nx - r, ny + s * 1.15, 2 * r, r * 0.22),
-                           Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, name.upper())
-                passed = S.T_NET + 1.1 * i / len(S.NODES)
-                if t >= passed:
-                    p.setFont(state_f)
-                    p.setPen(_c(GREEN if ok else RED, 0.8 * la * _out((t - passed) / 0.3)))
-                    p.drawText(QRectF(nx - r, ny + s * 1.15 + r * 0.2, 2 * r, r * 0.2),
-                               Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
-                               "В СЕТИ" if ok else "СБОЙ")
-
-    # ── варианты модулей (для выбора владельцем) ──────────────────────────────
+    # ── модули: сегменты внешнего кольца вокруг реактора ─────────────────────
     def _node_common(self, i, t, exit_k):
         times = S.node_times()
         at = times[i]
@@ -668,55 +599,11 @@ class IntroScene:
         passed = S.T_NET + 1.1 * i / len(S.NODES)
         return at, m, flick, ok, scan, col, passed
 
-    def _nodes_hex(self, p, cx, cy, r, t, exit_k):
-        """Шестигранные ячейки, подпись сбоку — «соты» HUD Старка."""
-        s = r * 0.4
-        label_f = _font(MONO_FONT, r * 0.13, QFont.Weight.Normal, 118)
-        state_f = _font(MONO_FONT, r * 0.1, QFont.Weight.Normal, 125)
-        for i, (name, icon) in enumerate(S.NODES):
-            at, m, flick, ok, scan, col, passed = self._node_common(i, t, exit_k)
-            if t < at - 0.25:
-                continue
-            nx, ny = self.node_pos(i, cx, cy, r)
-            ang = math.atan2(ny - cy, nx - cx)
-            sx, sy = cx + math.cos(ang) * r * 2.02, cy + math.sin(ang) * r * 2.02
-            tx, ty = nx - math.cos(ang) * s * 1.05, ny - math.sin(ang) * s * 1.05
-            grow = _out((t - at + 0.25) / 0.25)
-            p.setPen(QPen(_c(ICE, 0.25), 1))
-            p.drawLine(QPointF(sx, sy), QPointF(sx + (tx - sx) * grow, sy + (ty - sy) * grow))
-            if m <= 0.01:
-                continue
-            hexp = QPainterPath()
-            for k in range(6):
-                a = math.pi / 6 + k * math.pi / 3
-                pt = QPointF(nx + math.cos(a) * s * (0.6 + 0.4 * m), ny + math.sin(a) * s * (0.6 + 0.4 * m))
-                hexp.moveTo(pt) if k == 0 else hexp.lineTo(pt)
-            hexp.closeSubpath()
-            p.setBrush(_c(QColor("#03070c"), 0.8 * m))
-            p.setPen(QPen(_c(col, 0.85 * m * flick), max(1.2, r * 0.016)))
-            p.drawPath(hexp)
-            if scan > 0.05:
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(_c(col, 0.16 * scan))
-                p.drawPath(hexp)
-            _draw_icon(p, icon, QPointF(nx, ny), s * 1.05, _c(WHITE, 0.95 * m * flick),
-                       _out((t - at - 0.05) / 0.45), max(1.6, r * 0.02))
-            right = nx >= cx - 1
-            x0 = nx + s * 1.15 if right else nx - s * 1.15 - r * 1.4
-            al = Qt.AlignmentFlag.AlignLeft if right else Qt.AlignmentFlag.AlignRight
-            p.setFont(label_f)
-            p.setPen(_c(ICE, 0.85 * m))
-            p.drawText(QRectF(x0, ny - r * 0.17, r * 1.4, r * 0.2), al | Qt.AlignmentFlag.AlignVCenter, name.upper())
-            if t >= passed:
-                p.setFont(state_f)
-                p.setPen(_c(GREEN if ok else RED, 0.8 * m))
-                p.drawText(QRectF(x0, ny + r * 0.03, r * 1.4, r * 0.18), al | Qt.AlignmentFlag.AlignVCenter,
-                           "В СЕТИ" if ok else "СБОЙ")
-
-    def _nodes_ring(self, p, cx, cy, r, t, exit_k):
-        """Модули — сегменты внешнего кольца вокруг реактора, как радиальное меню шлема."""
+    def _nodes(self, p, cx, cy, r, t, exit_k):
+        """Модули — сегменты внешнего кольца вокруг реактора, как радиальное меню шлема:
+        дорисовываются по кругу, луч проверки красит их зелёным или красным."""
         n = len(S.NODES)
-        r0, r1 = r * 2.25, r * 2.85
+        r0, r1 = r * self.RING_IN, r * self.RING_OUT
         label_f = _font(MONO_FONT, r * 0.12, QFont.Weight.Normal, 118)
         for i, (name, icon) in enumerate(S.NODES):
             at, m, flick, ok, scan, col, passed = self._node_common(i, t, exit_k)
@@ -736,60 +623,15 @@ class IntroScene:
                 p.drawPath(sec)
             p.restore()
             am = math.radians(a_mid)
-            ic = QPointF(cx + math.cos(am) * (r0 + r1) / 2, cy - math.sin(am) * (r0 + r1) / 2)
+            ic = QPointF(*self.node_pos(i, cx, cy, r))
             _draw_icon(p, icon, ic, r * 0.42, _c(WHITE, 0.95 * m * flick), _out((t - at - 0.05) / 0.45),
                        max(1.5, r * 0.018))
-            lp = QPointF(cx + math.cos(am) * r1 * 1.12, cy - math.sin(am) * r1 * 1.12)
+            lr = r1 + r * (0.2 + 0.42 * abs(math.cos(am)))   # сбоку подписи шире — отодвигаем
+            lp = QPointF(cx + math.cos(am) * lr, cy - math.sin(am) * lr)
             p.setFont(label_f)
             p.setPen(_c((GREEN if ok else RED) if t >= passed else ICE, 0.85 * m))
             p.drawText(QRectF(lp.x() - r * 0.8, lp.y() - r * 0.1, r * 1.6, r * 0.2),
                        Qt.AlignmentFlag.AlignCenter, name.upper())
-
-    def _nodes_list(self, p, cx, cy, r, t, exit_k):
-        """Диагностика как при запуске костюма: два столбца строк по бокам от реактора."""
-        n = len(S.NODES)
-        half = (n + 1) // 2
-        row_h = r * 0.46
-        width = r * 2.3
-        name_f = _font(MONO_FONT, r * 0.14, QFont.Weight.Normal, 115)
-        for i, (name, icon) in enumerate(S.NODES):
-            at, m, flick, ok, scan, col, passed = self._node_common(i, t, exit_k)
-            if m <= 0.01:
-                continue
-            left = i >= half
-            row = (i - half) if left else i
-            y = cy + (row - (half - 1) / 2) * row_h
-            x0 = cx - r * 2.45 - width if left else cx + r * 2.45
-            # линия-выноска от кольца реактора к строке
-            ex = x0 + width if left else x0
-            sx = cx + (-1 if left else 1) * r * 1.6
-            p.setPen(QPen(_c(ICE, 0.18 * m), 1))
-            p.drawLine(QPointF(sx, cy + (y - cy) * 0.35), QPointF(ex, y))
-            box = QRectF(x0, y - row_h * 0.4, width * m, row_h * 0.8)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(_c(QColor("#03070c"), 0.7 * m))
-            p.drawRect(box)
-            if scan > 0.05:
-                p.setBrush(_c(col, 0.16 * scan))
-                p.drawRect(box)
-            p.setBrush(_c(col, 0.9 * m * flick))
-            p.drawRect(QRectF(x0 if not left else x0 + width * m - 3, box.top(), 3, box.height()))
-            ic = QPointF(x0 + row_h * 0.55 + (0 if not left else 0), y)
-            _draw_icon(p, icon, ic, row_h * 0.62, _c(WHITE, 0.95 * m * flick), _out((t - at - 0.05) / 0.45),
-                       max(1.4, r * 0.016))
-            p.setFont(name_f)
-            p.setPen(_c(ICE, 0.9 * m))
-            p.drawText(QRectF(x0 + row_h * 1.05, y - row_h * 0.3, width, row_h * 0.6),
-                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, name.upper())
-            if t >= passed:
-                p.setPen(_c(GREEN if ok else RED, 0.85 * m))
-                p.drawText(QRectF(x0, y - row_h * 0.3, width * m - row_h * 0.3, row_h * 0.6),
-                           Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, "В СЕТИ" if ok else "СБОЙ")
-            elif t >= at + 0.2:
-                dots = "." * (1 + int(t * 6) % 3)
-                p.setPen(_c(GREY, 0.8 * m))
-                p.drawText(QRectF(x0, y - row_h * 0.3, width * m - row_h * 0.3, row_h * 0.6),
-                           Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, "ПРОВЕРКА" + dots)
 
     def _scan_hit(self, i: int, t: float) -> float:
         """Луч проверки прошёл узел — он вспыхивает (зелёным, если работает)."""
@@ -804,12 +646,12 @@ class IntroScene:
             return
         k = (t - S.T_NET) / 1.1
         g = QConicalGradient(QPointF(cx, cy), 90 - 360 * k)
-        g.setColorAt(0, _c(ICE, 0.16))
+        g.setColorAt(0, _c(ICE, 0.12))
         g.setColorAt(0.06, _c(CYAN, 0))
         g.setColorAt(1, _c(CYAN, 0))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(g)
-        p.drawEllipse(QPointF(cx, cy), r * 3.6, r * 3.6)
+        p.drawEllipse(QPointF(cx, cy), r * self.RING_OUT, r * self.RING_OUT)
 
     # дуги по всему экрану — «сеть оживает»
     def _arcs_net(self, p, w, h, cx, cy, r, t):
@@ -821,7 +663,7 @@ class IntroScene:
             g = _out((t - S.T_NET + 0.4 - delay - 0.012 * k) / 0.7)
             if g <= 0:
                 continue
-            x0, y0 = cx + math.cos(ang) * r * 2.1, cy + math.sin(ang) * r * 2.1
+            x0, y0 = cx + math.cos(ang) * r * 2.8, cy + math.sin(ang) * r * 2.8
             x1, y1 = cx + math.cos(ang) * span * 0.55 * reach, cy + math.sin(ang) * span * 0.42 * reach
             mx, my = (x0 + x1) / 2 - math.sin(ang) * span * 0.18 * bend, (y0 + y1) / 2 + math.cos(ang) * span * 0.18 * bend
             path = QPainterPath(QPointF(x0, y0))
