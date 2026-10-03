@@ -1,24 +1,19 @@
 import { Audio } from "@remotion/media";
 import React from "react";
 import { AbsoluteFill, Series, staticFile, useCurrentFrame } from "remotion";
-import { Backdrop, Captions, HudOverlay } from "./hud";
+import { Backdrop, HudOverlay } from "./hud";
 import { BootScene } from "./scenes/BootScene";
-import { ControlScene } from "./scenes/ControlScene";
 import { EndScene } from "./scenes/EndScene";
-import { MemoryScene } from "./scenes/MemoryScene";
+import { FeatureScene } from "./scenes/FeatureScene";
+import { PhoneScene } from "./scenes/PhoneScene";
 import { TitleScene } from "./scenes/TitleScene";
-import { VisionScene } from "./scenes/VisionScene";
-import { VoiceScene } from "./scenes/VoiceScene";
-import { C, SceneId, timeline, tween } from "./theme";
+import { C, Section, timeline, tween } from "./theme";
 
-export const SCENES: Record<SceneId, React.FC> = {
-  boot: BootScene,
-  title: TitleScene,
-  voice: VoiceScene,
-  vision: VisionScene,
-  memory: MemoryScene,
-  control: ControlScene,
-  end: EndScene,
+const SPECIAL: Record<string, React.FC> = { boot: BootScene, title: TitleScene, phone: PhoneScene, end: EndScene };
+
+const SectionView: React.FC<{ sec: Section }> = ({ sec }) => {
+  const Special = SPECIAL[sec.id];
+  return Special ? <Special /> : <FeatureScene sec={sec} />;
 };
 
 const FadeOut: React.FC = () => {
@@ -27,34 +22,30 @@ const FadeOut: React.FC = () => {
   return <AbsoluteFill style={{ background: "#000", opacity: tween(f, [d - 14, d], [0, 1]) }} />;
 };
 
-/** 41-second motion-design ad for JARVIS Mark X — voice-over, score and cut points come from timeline.json. */
+/** JARVIS Mark X feature tour — every section, its timing and its sound come from timeline.json. */
 export const JarvisAd: React.FC = () => (
   <AbsoluteFill style={{ background: C.void }}>
     <Backdrop />
     <Series>
-      {timeline.scenes.map((s) => {
-        const Scene = SCENES[s.id];
-        return (
-          <Series.Sequence key={s.id} name={s.id} durationInFrames={s.durationInFrames}>
-            <Scene />
-          </Series.Sequence>
-        );
-      })}
+      {timeline.sections.map((sec) => (
+        <Series.Sequence key={sec.id} name={sec.id} durationInFrames={sec.durationInFrames}>
+          <SectionView sec={sec} />
+        </Series.Sequence>
+      ))}
     </Series>
     <HudOverlay />
-    <Captions hide={["boot", "title", "end"]} />
     <FadeOut />
     <Audio src={staticFile("jarvis-ad/mix.mp3")} />
   </AbsoluteFill>
 );
 
-/** A single scene on its own timeline, for previewing in Studio. */
-export const JarvisAdScene: React.FC<{ id: SceneId }> = ({ id }) => {
-  const Scene = SCENES[id];
+/** One section on its own timeline, for previewing in Studio. */
+export const JarvisAdScene: React.FC<{ id: string }> = ({ id }) => {
+  const sec = timeline.sections.find((s) => s.id === id)!;
   return (
     <AbsoluteFill style={{ background: C.void }}>
       <Backdrop />
-      <Scene />
+      <SectionView sec={sec} />
     </AbsoluteFill>
   );
 };

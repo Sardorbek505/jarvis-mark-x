@@ -2,7 +2,7 @@ import React from "react";
 import { AbsoluteFill, interpolate, random, useCurrentFrame } from "remotion";
 import { ORB, OrbView } from "../devices";
 import { Center, SceneShell, riseClip } from "../primitives";
-import { C, DISPLAY, ENTER, EXIT, MONO, UNIT, scene, tween, useVertical } from "../theme";
+import { C, DISPLAY, ENTER, EXIT, MONO, UNIT, pop, section, tween, ui, useVertical } from "../theme";
 
 const HIT = 6; // the bass hit lands 0.2 s into the scene (scripts/jarvis_ad/build.py)
 const WORD = "JARVIS";
@@ -22,7 +22,7 @@ export const TitleScene: React.FC = () => {
         {/* the real HUD orb, close up and dimmed behind the name */}
         <Center>
           <OrbView
-            absFrom={scene("title").from}
+            absFrom={section("title").from}
             size={v ? 1080 : 1100}
             center={ORB.alone}
             scale={tween(f, [0, 108], [1.7, 1.85])}
@@ -108,6 +108,24 @@ export const TitleScene: React.FC = () => {
             }}
           >
             MARK X
+          </div>
+          {/* "15 skills · watch" — bounces in after the name lands */}
+          <div
+            style={{
+              marginTop: 6,
+              padding: "12px 28px",
+              borderRadius: 999,
+              background: `linear-gradient(135deg, ${C.core}, #1ca092)`,
+              color: "#03110f",
+              fontFamily: MONO,
+              fontSize: v ? 30 : 28,
+              letterSpacing: "0.14em",
+              boxShadow: `0 0 40px ${C.glow}`,
+              scale: String(Math.max(0, pop(f, 44, 7))),
+              rotate: `${(1 - Math.min(1, pop(f, 44, 7))) * -8}deg`,
+            }}
+          >
+            {ui("titleChip").toUpperCase()}
           </div>
         </Center>
       </AbsoluteFill>

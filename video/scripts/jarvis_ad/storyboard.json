@@ -1,0 +1,268 @@
+{
+ "_doc": "The feature-tour ad, beat by beat. One beat = 1/2 s (120 BPM, 15 frames). Every feature is a real call into the app: `tool`/`args`/`result` go through core.result_card.build_card exactly like main.py, so the HUD shows its own card; `phrase` is what the user says (from the app's «Что умею»), `reply` what Jarvis answers (subtitle now, Fish voice-over later: vo/ru/<id>.mp3). `page` = a real PC screen to cut to, `phone` = a Mini App tab. Read by build.py (timeline, music, SFX), capture/capture_pc.py (HUD session) and the Remotion scenes.",
+ "bpm": 120,
+ "ui": {
+  "titleChip": "15 умений · смотрите",
+  "tagline": "Личный ИИ-помощник — на Windows и в Telegram",
+  "cta": "СКАЧАТЬ БЕСПЛАТНО",
+  "phoneHead": "И всё это — с телефона",
+  "you": "Вы",
+  "jarvis": "Джарвис"
+ },
+ "intro": [
+  {
+   "id": "boot",
+   "beats": 8,
+   "reply": "Добрый вечер, сэр. Все системы в норме."
+  },
+  {
+   "id": "title",
+   "beats": 6,
+   "reply": "Я — Джарвис. Вот что я умею."
+  }
+ ],
+ "features": [
+  {
+   "id": "music",
+   "beats": 8,
+   "category": "Музыка",
+   "phrase": "Джарвис, включи Macan",
+   "tool": "music_player",
+   "args": {
+    "action": "play",
+    "query": "Macan"
+   },
+   "result": "Включаю Macan",
+   "reply": "Включаю Macan."
+  },
+  {
+   "id": "movie",
+   "beats": 8,
+   "category": "Фильмы",
+   "phrase": "Поставь фильм «Интерстеллар»",
+   "tool": "movie_player",
+   "args": {
+    "action": "play",
+    "title": "Интерстеллар"
+   },
+   "result": "Включаю «Интерстеллар»",
+   "reply": "Приятного просмотра, сэр."
+  },
+  {
+   "id": "youtube",
+   "beats": 6,
+   "category": "YouTube",
+   "phrase": "Включи на ютубе, как собрать ПК",
+   "tool": "youtube_player",
+   "args": {
+    "query": "как собрать ПК"
+   },
+   "result": "Включил «Как собрать ПК за 15 минут»",
+   "reply": "Нашёл. Включаю."
+  },
+  {
+   "id": "volume",
+   "beats": 6,
+   "category": "Громкость",
+   "phrase": "Громкость 50",
+   "tool": "computer_control",
+   "args": {
+    "action": "volume_set",
+    "value": 50
+   },
+   "result": "Громкость: 50%",
+   "reply": "Громкость пятьдесят."
+  },
+  {
+   "id": "brightness",
+   "beats": 6,
+   "category": "Яркость",
+   "phrase": "Яркость 30",
+   "tool": "computer_control",
+   "args": {
+    "action": "brightness_set",
+    "value": 30
+   },
+   "result": "Яркость: 30%",
+   "reply": "Готово."
+  },
+  {
+   "id": "apps",
+   "beats": 6,
+   "category": "Программы",
+   "phrase": "Открой Telegram",
+   "tool": "open_app",
+   "args": {
+    "app_name": "Telegram"
+   },
+   "result": "Открыл Telegram",
+   "reply": "Открыл Telegram."
+  },
+  {
+   "id": "time",
+   "beats": 8,
+   "category": "Время",
+   "phrase": "Разбуди в семь по будням",
+   "tool": "clock",
+   "args": {
+    "action": "alarm",
+    "time": "07:00"
+   },
+   "result": "Будильник на 7:00 по будням.",
+   "reply": "Будильник на 7:00 по будням."
+  },
+  {
+   "id": "study",
+   "beats": 8,
+   "category": "Учёба",
+   "phrase": "Какая следующая пара?",
+   "tool": "study",
+   "args": {
+    "action": "next"
+   },
+   "result": "Программирование на Python в 10:10, ауд. 214.",
+   "reply": "Python в 10:10, двести четырнадцатая.",
+   "page": "study",
+   "phone": "study"
+  },
+  {
+   "id": "people",
+   "beats": 8,
+   "category": "Люди",
+   "phrase": "Напиши маме, что задержусь",
+   "tool": "contacts",
+   "args": {
+    "action": "message",
+    "who": "мама",
+    "text": "Задержусь на полчаса"
+   },
+   "result": "Написал маме: «Задержусь на полчаса».",
+   "reply": "Написал маме.",
+   "page": "contacts"
+  },
+  {
+   "id": "macros",
+   "beats": 8,
+   "category": "Свои команды",
+   "phrase": "Включи режим стрима",
+   "tool": "macro",
+   "args": {
+    "action": "run",
+    "phrase": "режим стрима"
+   },
+   "result": "Режим стрима: OBS открыт, музыка играет, громкость 40%.",
+   "reply": "Режим стрима запущен.",
+   "page": "commands"
+  },
+  {
+   "id": "memory",
+   "beats": 8,
+   "category": "Память",
+   "phrase": "Запомни: я люблю кофе без сахара",
+   "tool": "save_to_memory",
+   "args": {
+    "key": "Кофе",
+    "value": "без сахара",
+    "category": "preferences"
+   },
+   "result": "Запомнил",
+   "reply": "Запомнил, сэр.",
+   "page": "about"
+  },
+  {
+   "id": "weather",
+   "beats": 8,
+   "category": "Погода",
+   "phrase": "Какая погода завтра?",
+   "tool": "weather",
+   "args": {
+    "city": "Ташкент"
+   },
+   "result": "Погода в Ташкент: ясно. Температура 24°C.",
+   "reply": "Завтра +26 и солнце."
+  },
+  {
+   "id": "football",
+   "beats": 6,
+   "category": "Футбол",
+   "phrase": "Когда играет Реал?",
+   "tool": "football",
+   "args": {
+    "action": "next",
+    "team": "Реал"
+   },
+   "result": "Реал — Барселона, суббота, 22:00.",
+   "reply": "В субботу, в 22:00."
+  },
+  {
+   "id": "vision",
+   "beats": 8,
+   "category": "Зрение",
+   "phrase": "Смотри на экран",
+   "tool": "look_at_screen",
+   "args": {},
+   "result": "В main.py, строка 42: max() от пустого списка. Добавь проверку if not items.",
+   "reply": "Ошибка в 42-й строке."
+  },
+  {
+   "id": "translate",
+   "beats": 6,
+   "category": "Перевод",
+   "phrase": "Переведи: где ближайшее метро?",
+   "tool": "translation",
+   "args": {
+    "text": "Где ближайшее метро?",
+    "target_language": "английский"
+   },
+   "result": "Where is the nearest metro station?",
+   "reply": "Where is the nearest metro?"
+  }
+ ],
+ "outro": [
+  {
+   "id": "phone",
+   "beats": 10,
+   "reply": "А с телефона — всё то же, где бы вы ни были."
+  },
+  {
+   "id": "end",
+   "beats": 12,
+   "reply": "Джарвис. Бесплатно — и всегда на связи."
+  }
+ ],
+ "forecast": {
+  "city": "Ташкент",
+  "temp": 24,
+  "feels": 23,
+  "desc": "Ясно",
+  "humidity": 30,
+  "wind": 9,
+  "code": 113,
+  "days": [
+   {
+    "name": "Завтра",
+    "max": 26,
+    "min": 14,
+    "desc": "Солнечно",
+    "rain": 0,
+    "code": 113
+   },
+   {
+    "name": "Ср",
+    "max": 23,
+    "min": 13,
+    "desc": "Переменная облачность",
+    "rain": 10,
+    "code": 116
+   },
+   {
+    "name": "Чт",
+    "max": 19,
+    "min": 11,
+    "desc": "Небольшой дождь",
+    "rain": 60,
+    "code": 176
+   }
+  ]
+ }
+}

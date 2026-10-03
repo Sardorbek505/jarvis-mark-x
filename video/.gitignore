@@ -8,3 +8,6 @@ out
 
 # model + SFX downloads for scripts/jarvis_ad/build.py
 .cache
+
+# owner's SFX packs (licensed, e.g. Epidemic Sound): used by build.py, not redistributed
+scripts/jarvis_ad/sfx/

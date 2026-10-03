@@ -1,31 +1,44 @@
 import { loadFont } from "@remotion/fonts";
-import { Easing, interpolate, staticFile, useVideoConfig } from "remotion";
+import { Easing, interpolate, spring, staticFile, useVideoConfig } from "remotion";
 import timelineJson from "./timeline.json";
 
-// Timeline written by scripts/jarvis_ad/build.py (voice-over lengths snapped to a 100 BPM grid).
-export type SceneId = "boot" | "title" | "voice" | "vision" | "memory" | "control" | "end";
-export type SceneInfo = {
-  id: SceneId;
+// Timeline written by scripts/jarvis_ad/build.py from scripts/jarvis_ad/storyboard.json:
+// one section per beat-locked slot (120 BPM, 15 frames a beat).
+export type Marks = { phrase?: number; think?: number; card?: number; speak: number };
+export type Section = {
+  id: string;
+  kind: "intro" | "feature" | "outro";
+  index?: number;
+  category?: string;
+  phrase?: string;
+  reply: string;
+  tool?: string;
+  page?: string;
+  phone?: string;
   from: number;
   durationInFrames: number;
   beats: number;
-  vo: { text: string; from: number; durationInFrames: number };
+  marks: Marks;
+  voFrames: number;
+  hasVoice: boolean;
 };
+export type UiKey = "titleChip" | "tagline" | "cta" | "phoneHead" | "you" | "jarvis";
 export const timeline = timelineJson as unknown as {
   fps: number;
+  bpm: number;
   beatFrames: number;
   durationInFrames: number;
-  scenes: SceneInfo[];
+  featureCount: number;
+  sections: Section[];
   voiceLevel: number[];
+  voicePlaceholder: boolean;
   lang: "ru" | "en";
   ui: Record<UiKey, string>;
 };
-export type UiKey =
-  | "voiceLabel" | "voiceHead" | "visionLabel" | "visionHead" | "memoryLabel" | "memoryHead"
-  | "controlLabel" | "controlHead" | "tagline" | "cta";
-/** On-screen text in the voice-over's language (scripts/jarvis_ad/script.json). */
+/** On-screen text in the voice-over's language (storyboard.json "ui"). */
 export const ui = (key: UiKey) => timeline.ui[key];
-export const scene = (id: SceneId) => timeline.scenes.find((s) => s.id === id)!;
+export const section = (id: string) => timeline.sections.find((s) => s.id === id)!;
+export const features = timeline.sections.filter((s) => s.kind === "feature");
 
 // Palette taken from the product itself: the app's idle teal (ui.py _STATE_RGB "ОЖИДАЕТ"),
 // its "speaking" orange, its "listening" green, on the app's near-black.
@@ -50,6 +63,15 @@ export const EXIT = Easing.bezier(0.7, 0, 0.84, 0);
 export const MOVE = Easing.bezier(0.65, 0, 0.35, 1);
 export const DRIFT = Easing.bezier(0.33, 0, 0.67, 1);
 export const UNIT = 12;
+/** Overshoot-and-settle curve for things that land with a bounce. */
+export const BOUNCE = Easing.bezier(0.34, 1.56, 0.64, 1);
+
+/**
+ * Springy pop from 0 to 1 starting at `start` — overshoots and bounces back.
+ * Lower damping = more bounce. Use for scale; clamp opacity separately.
+ */
+export const pop = (frame: number, start: number, damping = 9, stiffness = 170) =>
+  frame < start ? 0 : spring({ frame: frame - start, fps: 30, config: { damping, stiffness, mass: 0.9 } });
 export const STAGGER = 3;
 
 export const tween = (
@@ -101,12 +123,12 @@ export const voiceAt = (absFrame: number) => {
 
 /**
  * Approximate word timings for a voice-over line: words share the line's
- * duration by length, with extra room after commas and full stops (Kokoro
+ * duration by length, with extra room after commas and full stops (TTS
  * pauses there). Good enough for karaoke-style highlighting.
  */
 export const wordTimings = (text: string, durationInFrames: number) => {
   const words = text.split(" ");
-  const weight = (w: string) => w.replace(/[^a-z0-9]/gi, "").length + 2 + (/[.!?]$/.test(w) ? 6 : /,$/.test(w) ? 3 : 0);
+  const weight = (w: string) => w.replace(/[^\p{L}\p{N}]/gu, "").length + 2 + (/[.!?]$/.test(w) ? 6 : /,$/.test(w) ? 3 : 0);
   const total = words.reduce((s, w) => s + weight(w), 0);
   let acc = 0;
   return words.map((w) => {

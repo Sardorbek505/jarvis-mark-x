@@ -293,3 +293,29 @@ export const OrbView: React.FC<{
     </div>
   </div>
 );
+
+/**
+ * A rectangle of the live HUD recording, shown at `scale` — used to lift the
+ * app's result card out of the window in close-up. `box` is [x, y, w, h] in
+ * capture pixels (measured per feature by capture_pc.py -> hudCards.json).
+ */
+export const HudCrop: React.FC<{
+  absFrom: number;
+  box: [number, number, number, number];
+  scale: number;
+  style?: React.CSSProperties;
+}> = ({ absFrom, box: [x, y, w, h], scale, style }) => (
+  <div style={{ position: "relative", width: w * scale, height: h * scale, overflow: "hidden", ...style }}>
+    <div
+      style={{
+        position: "absolute",
+        left: -x * scale,
+        top: -y * scale,
+        width: APP_W * scale,
+        height: APP_H * scale,
+      }}
+    >
+      <HudVideo absFrom={absFrom} />
+    </div>
+  </div>
+);

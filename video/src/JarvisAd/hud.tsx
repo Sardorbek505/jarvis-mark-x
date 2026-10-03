@@ -1,10 +1,6 @@
 import React from "react";
 import { AbsoluteFill, random, useCurrentFrame, useVideoConfig } from "remotion";
-import { C, DISPLAY, SceneId, timeline, tween, wordTimings, useVertical } from "./theme";
-
-const activeScene = (frame: number) =>
-  timeline.scenes.find((s) => frame >= s.from && frame < s.from + s.durationInFrames) ??
-  timeline.scenes[timeline.scenes.length - 1];
+import { C, timeline, tween } from "./theme";
 
 /** Background: void, drifting grid, depth orbs, dust. Sits under every scene. */
 export const Backdrop: React.FC = () => {
@@ -124,45 +120,5 @@ const Grain: React.FC = () => {
         backgroundPosition: `${Math.floor(random(`gx${f}`) * 256)}px ${Math.floor(random(`gy${f}`) * 256)}px`,
       }}
     />
-  );
-};
-
-/** Karaoke-style captions for the voice-over (for muted autoplay). */
-export const Captions: React.FC<{ hide?: SceneId[] }> = ({ hide = [] }) => {
-  const f = useCurrentFrame();
-  const v = useVertical();
-  const s = activeScene(f);
-  if (hide.includes(s.id)) return null;
-  const t = f - s.from - s.vo.from;
-  const d = s.vo.durationInFrames;
-  const vis = tween(t, [-6, 4], [0, 1]) * tween(t, [d + 4, d + 14], [1, 0]);
-  if (vis <= 0) return null;
-  const words = wordTimings(s.vo.text, d);
-  return (
-    <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: v ? 220 : 26, opacity: vis }}>
-      <div
-        style={{
-          maxWidth: v ? 960 : 1560,
-          textAlign: "center",
-          fontFamily: DISPLAY,
-          fontSize: v ? 40 : 34,
-          lineHeight: 1.3,
-          padding: "8px 26px",
-          borderRadius: 14,
-          background: "rgba(3,7,10,0.7)",
-          translate: `0 ${tween(t, [-6, 6], [12, 0])}px`,
-        }}
-      >
-        {words.map((w, i) => {
-          const on = tween(t, [w.start - 2, w.start + 3], [0, 1]);
-          return (
-            <span key={i} style={{ color: on > 0.5 ? C.ink : C.dim, opacity: 0.45 + 0.55 * on }}>
-              {w.word}
-              {i < words.length - 1 ? " " : ""}
-            </span>
-          );
-        })}
-      </div>
-    </AbsoluteFill>
   );
 };

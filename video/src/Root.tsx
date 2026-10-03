@@ -29,7 +29,7 @@ export const RemotionRoot: React.FC = () => {
         height={1920}
       />
       <Folder name="JarvisAd-Scenes">
-        {timeline.scenes.map((s) => (
+        {timeline.sections.map((s) => (
           <Composition
             key={s.id}
             id={`JarvisAd-${s.id}`}

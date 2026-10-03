@@ -2,7 +2,7 @@ import React from "react";
 import { AbsoluteFill, interpolate, random, useCurrentFrame } from "remotion";
 import { ORB, OrbView } from "../devices";
 import { Center, CoreRings, riseClip } from "../primitives";
-import { C, DISPLAY, ENTER, EXIT, MONO, MOVE, UNIT, scene, timeline, tween, voiceAt, ui, useVertical } from "../theme";
+import { C, DISPLAY, ENTER, EXIT, MONO, MOVE, UNIT, pop, section, timeline, tween, voiceAt, ui, useVertical } from "../theme";
 
 const IGNITE = timeline.beatFrames; // one beat after the cut — the boom and impact land here (build.py)
 const WORD = "JARVIS";
@@ -10,7 +10,7 @@ const WORD = "JARVIS";
 /** The one "wow": the core ignites, settles into a lockup, and the call to action lands. */
 export const EndScene: React.FC = () => {
   const f = useCurrentFrame();
-  const s = scene("end");
+  const s = section("end");
   const lit = f >= IGNITE;
   const flash = tween(f, [IGNITE - 1, IGNITE + 1], [0, 1]) * tween(f, [IGNITE + 1, IGNITE + 24], [1, 0], EXIT);
   const amp = 11 * tween(f, [IGNITE, IGNITE + 18], [1, 0]);
@@ -40,15 +40,15 @@ export const EndScene: React.FC = () => {
           <Center>
             {/* the real HUD orb as the core */}
             <OrbView
-              absFrom={scene("end").from}
+              absFrom={section("end").from}
               size={640}
-              center={ORB.withCard}
+              center={ORB.alone}
               scale={0.95}
               style={{
                 borderRadius: "50%",
                 maskImage: "radial-gradient(circle, #000 55%, transparent 71%)",
                 opacity: lit ? 1 : tween(f, [0, IGNITE], [0.05, 0.3]),
-                scale: String(lit ? tween(f, [IGNITE, IGNITE + UNIT + 4], [0.72, 1]) : 0.72),
+                scale: String(lit ? 0.72 + 0.28 * pop(f, IGNITE, 6, 200) : 0.72),
                 filter: `brightness(${lit ? 1 + flash * 1.8 : 0.5})`,
               }}
             />
@@ -155,8 +155,8 @@ export const EndScene: React.FC = () => {
             border: `1px solid ${C.core}66`,
             background: "rgba(6,18,30,0.8)",
             boxShadow: `0 0 50px rgba(48,208,190,0.2)`,
-            opacity: tween(logo - 40, [0, 8], [0, 1]),
-            scale: String(tween(logo - 40, [0, UNIT], [0.92, 1])),
+            opacity: tween(logo - 40, [0, 4], [0, 1]),
+            scale: String(Math.max(0, pop(f, IGNITE + 78, 7))),
           }}
         >
           <div

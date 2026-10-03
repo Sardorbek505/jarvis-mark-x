@@ -1,4 +1,4 @@
-"""Synthesize the ad's Russian voice-over with Fish Audio — the same voice and
+"""Synthesize Jarvis's replies for the ad (storyboard.json) with Fish Audio — the same voice and
 model the JARVIS app speaks with (telegram_bot/tts_fish.py).
 
 Standard library only, so it runs anywhere Python does — e.g. on the owner's
@@ -11,8 +11,8 @@ Key:   FISH_API_KEY, else "fish_api_key" in %APPDATA%/JARVIS/api_keys.json
 Voice: FISH_VOICE_ID / "fish_voice_id", else the app's default Russian Jarvis.
 Model: FISH_MODEL / "fish_model", else the app's default.
 
-Writes video/scripts/jarvis_ad/vo/ru/<scene>.mp3 — commit them; build.py uses
-them as the voice-over instead of calling the API again.
+Writes video/scripts/jarvis_ad/vo/ru/<section>.mp3 — commit them; build.py
+places each at its section's "speak" mark.
 """
 
 from __future__ import annotations
@@ -66,10 +66,10 @@ def main() -> int:
     if not key:
         print("Нет ключа Fish: задайте FISH_API_KEY или впишите его в окне «Ключи» Джарвиса.")
         return 1
-    script = json.loads((HERE / "script.json").read_text(encoding="utf-8"))
+    story = json.loads((HERE / "storyboard.json").read_text(encoding="utf-8"))
     OUT.mkdir(parents=True, exist_ok=True)
-    for scene in script["scenes"]:
-        text = script["ru"]["lines"][scene["id"]]
+    for scene in story["intro"] + story["features"] + story["outro"]:
+        text = scene["reply"]
         try:
             audio = synth(text, key, voice, model)
         except urllib.error.HTTPError as e:

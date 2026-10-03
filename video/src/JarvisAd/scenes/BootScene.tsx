@@ -2,12 +2,12 @@ import React from "react";
 import { useCurrentFrame } from "remotion";
 import { AppWindow, HudVideo } from "../devices";
 import { SceneShell } from "../primitives";
-import { DRIFT, scene, tween, useVertical } from "../theme";
+import { DRIFT, section, tween, useVertical } from "../theme";
 
 /** The real app launches: its window rises out of the dark while the HUD boots (reactor → idle → speaking). */
 export const BootScene: React.FC = () => {
   const f = useCurrentFrame();
-  const s = scene("boot");
+  const s = section("boot");
   const v = useVertical();
   const push = tween(f, [0, s.durationInFrames], [0.94, 1.0], DRIFT);
   return (
