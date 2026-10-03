@@ -321,6 +321,9 @@ def test_decommissioned_host_is_recognised():
     assert config.is_decommissioned("https://jarvis-mark-x.onrender.com") is True
     assert config.is_decommissioned("https://atabekovch-jarvis-mark-x.hf.space") is False
     assert config.is_decommissioned("") is False
+    # Чужой деплой по render.yaml — рабочий, а не «выведенный».
+    assert config.is_decommissioned("https://my-jarvis.onrender.com") is False
+    assert config.is_decommissioned("https://my-jarvis-mark-x.onrender.com") is False
 
 
 # ── короткий обрыв ПК не должен быть виден пользователю ──────────────────────

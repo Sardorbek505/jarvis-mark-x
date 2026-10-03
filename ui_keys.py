@@ -254,9 +254,15 @@ class ServiceCard(QFrame):
             return
         K.save_values(vals)
         self.saved.emit()
-        self.changed.emit()
-        if K.status(self.s, K.load_values()) == "set":
+        st = K.status(self.s, K.load_values())
+        if st == "set":
             self.run_check()
+        else:
+            # Ключ стёрли — карточка больше не «Работает» (раньше статус
+            # оставался от прошлой проверки, и обязательный ключ выглядел на месте).
+            self.state = st
+            self._paint()
+        self.changed.emit()
 
     def values(self) -> dict:
         return {k: e.text().strip() for k, e in self.edits.items() if e.isEnabled()}

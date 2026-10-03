@@ -47,3 +47,82 @@ def test_config_save_and_load(tmp_path, monkeypatch):
     loaded = ui_setup.load_config_data()
     assert loaded["gemini_api_key"] == "test_isolated_key_123"
     assert loaded["gemini_model"] == "gemini-2.5-flash"
+
+
+_app = None
+
+
+def _wizard(tmp_path, monkeypatch, devices):
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    import sounddevice as sd
+    global _app
+    _app = QApplication.instance() or QApplication([])
+    user_dir = tmp_path / "user"
+    monkeypatch.setattr(core.paths, "get_user_data_dir", lambda: user_dir)
+    monkeypatch.setattr(core.paths, "get_app_dir", lambda: tmp_path / "app")
+    monkeypatch.setenv("JARVIS_SETTINGS", str(tmp_path / "settings.json"))
+    monkeypatch.delenv("MIC_DEVICE", raising=False)
+    monkeypatch.delenv("EDGE_VOICE", raising=False)
+    monkeypatch.setattr(sd, "query_devices", lambda *a, **kw: devices)
+    monkeypatch.setattr(ui_setup, "set_windows_autostart", lambda enable: True)
+    return ui_setup.SetupWizardDialog()
+
+
+def test_мастер_сохраняет_голос_и_микрофон(tmp_path, monkeypatch):
+    """Было: «Светлана» не сохранялась вовсе, микрофон — только до перезапуска."""
+    from core import settings
+    mics = [{"name": "Микрофон ноутбука", "max_input_channels": 2, "hostapi": 0},
+            {"name": "Гарнитура USB", "max_input_channels": 1, "hostapi": 0}]
+    w = _wizard(tmp_path, monkeypatch, mics)
+    w.edit_gemini.setText("AIzaSy-test-key-1234567890")
+    w.combo_edge.setCurrentIndex(w.combo_edge.findData("ru-RU-SvetlanaNeural"))
+    w.combo_mic.setCurrentIndex(w.combo_mic.findData("Гарнитура USB"))
+    w._save_and_start()
+
+    assert settings.get("edge_voice") == "ru-RU-SvetlanaNeural"
+    assert settings.get("mic") == "Гарнитура USB"
+    assert settings.get("voice") == "gemini"
+
+    # Повторное открытие мастера показывает сохранённое.
+    again = _wizard(tmp_path, monkeypatch, mics)
+    assert again.combo_edge.currentData() == "ru-RU-SvetlanaNeural"
+    assert again.combo_mic.currentData() == "Гарнитура USB"
+
+
+def test_мастер_fish_без_ключа_не_включает_fish(tmp_path, monkeypatch):
+    from core import settings
+    w = _wizard(tmp_path, monkeypatch, [])
+    w.edit_gemini.setText("AIzaSy-test-key-1234567890")
+    w.rb_fish.setChecked(True)
+    w._save_and_start()
+    assert settings.get("voice") == "gemini"
+
+
+def test_глаз_показывает_ключ_с_первого_нажатия(tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QLineEdit
+    w = _wizard(tmp_path, monkeypatch, [])
+    w.btn_toggle_key.click()
+    assert w.edit_gemini.echoMode() == QLineEdit.EchoMode.Normal
+    w.btn_toggle_key.click()
+    assert w.edit_gemini.echoMode() == QLineEdit.EchoMode.Password
+
+
+def test_username_вместо_id_не_теряется_молча(tmp_path, monkeypatch):
+    w = _wizard(tmp_path, monkeypatch, [])
+    warned = []
+    monkeypatch.setattr(ui_setup.QMessageBox, "warning", lambda *a, **kw: warned.append(a))
+    w.edit_gemini.setText("AIzaSy-test-key-1234567890")
+    w.edit_tg_user.setText("@myname")
+    w._save_and_start()
+    assert warned and w.tabs.currentIndex() == 3
+    assert "telegram_allowed_users" not in ui_setup.load_config_data()
+
+
+def test_ошибка_400_не_всегда_неверный_ключ():
+    with patch("google.genai.Client") as mock_client:
+        mock_client.return_value.models.generate_content.side_effect = Exception(
+            "400 FAILED_PRECONDITION. User location is not supported for the API use.")
+        ok, msg = ui_setup.validate_gemini_key("AIzaSyD-dummy-valid-looking-key-123456789")
+    assert not ok and "регион" in msg

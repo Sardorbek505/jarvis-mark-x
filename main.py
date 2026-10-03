@@ -1913,6 +1913,15 @@ class Jarvis:
         except Exception as exc:
             logger.warning("Часы не запустились: %s", exc)
 
+        # Напоминания календаря («напомни через 10 минут позвонить маме»).
+        try:
+            from core.calendar_manager import start_reminder_watch
+            start_reminder_watch(
+                say=self.speak,
+                notify=lambda title, text: self.ui.write_log(f"SYS: ⏰ {title}: {text}"))
+        except Exception as exc:
+            logger.warning("Напоминания не запустились: %s", exc)
+
         # «Вы смотрите уже два часа…» — забота о перерывах (core/break_reminder.py)
         # и звонки по расписанию в Telegram (core/tg_call.py).
         try:
@@ -4434,12 +4443,33 @@ class Jarvis:
                     else:
                         _close(stream)
 
+    async def _wait_for_new_key(self, old_key: str, why: str) -> str:
+        """Ключ Gemini не принят — сказать об этом на виду и ждать новый.
+
+        Новый ключ вписывают на экране «Ключи» (он сохраняется сразу) — как
+        только он появится, Джарвис подключается сам, без перезапуска.
+        """
+        self.set_speaking(False)
+        self.session = None
+        self.ui.set_state("НЕТ КЛЮЧА")
+        if os.environ.get("GEMINI_API_KEY", "").strip():
+            self.ui.write_log(f"SYS: 😵 Ключ Gemini {why}: он задан переменной GEMINI_API_KEY — "
+                              "исправьте её и перезапустите Джарвиса")
+        else:
+            self.ui.write_log(f"SYS: 😵 Ключ Gemini {why}: впишите новый на экране «Ключи» — "
+                              "Джарвис подключится сам")
+        while True:
+            await asyncio.sleep(2)
+            key = (ensure_gemini_key(API_CONFIG, interactive=False) or "").strip()
+            if key and key != old_key:
+                logger.info("Новый ключ Gemini — подключаюсь")
+                self.ui.write_log("SYS: 🔑 Ключ Gemini: новый ключ принят, подключаюсь")
+                return key
+
     # ── Основной цикл ─────────────────────────────────────────────────────────
     async def run(self):
-        client = genai.Client(
-            api_key=_get_api_key(),
-            http_options={"api_version": "v1beta"},
-        )
+        api_key = _get_api_key()
+        client = genai.Client(api_key=api_key, http_options={"api_version": "v1beta"})
 
         # Разрывы Live-сессии — штатное явление: сервер закрывает голосовую
         # сессию по лимиту времени, шлёт GoAway, отвечает 1011. Раньше после
@@ -4530,17 +4560,24 @@ class Jarvis:
                     logger.error("Сессия Gemini оборвалась: %s", reason)
                 logger.debug("Подробности разрыва", exc_info=True)
 
+                bad_key = ""
                 if "1008" in low or "leaked" in low:
                     logger.error("Ключ Gemini заблокирован (1008) — создайте новый: "
                                  "https://aistudio.google.com/app/apikey")
-                    self.ui.write_log("SYS: ❌ API-ключ Gemini заблокирован. Получите новый (aistudio.google.com) и впишите на экране «Ключи»")
-                    break
-                if any(k in low for k in ("api key not valid", "api key expired",
-                                          "api_key_invalid", "invalid api key",
-                                          "api key not found")):
+                    bad_key = "заблокирован"
+                elif any(k in low for k in ("api key not valid", "api key expired",
+                                            "api_key_invalid", "invalid api key",
+                                            "api key not found")):
                     logger.error("Ключ Gemini недействителен. Обновите его в %s", API_CONFIG)
-                    self.ui.write_log("SYS: ❌ API-ключ Gemini недействителен. Обновите его на экране «Ключи»")
-                    break
+                    bad_key = "недействителен"
+                if bad_key:
+                    # Раньше здесь был break: Джарвис глох навсегда, а новый ключ
+                    # на экране «Ключи» подхватывался только после перезапуска.
+                    api_key = await self._wait_for_new_key(api_key, bad_key)
+                    client = genai.Client(api_key=api_key, http_options={"api_version": "v1beta"})
+                    self._resume_handle = None
+                    failures = 0
+                    continue
 
             self.set_speaking(False)
             self.session = None

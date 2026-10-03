@@ -67,11 +67,11 @@ def path() -> Path:
 
 
 def _saved() -> dict:
-    try:
-        data = json.loads(path().read_text(encoding="utf-8"))
-        return {k: v for k, v in data.items() if k in BY_KEY} if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    # safe_read_json понимает BOM и откладывает битый файл в .broken-<ts>:
+    # раньше он молча читался как {}, и следующий set() затирал все настройки.
+    from core.storage import safe_read_json
+    data = safe_read_json(path(), default={})
+    return {k: v for k, v in data.items() if k in BY_KEY} if isinstance(data, dict) else {}
 
 
 def _env_value(o: Opt) -> Any:

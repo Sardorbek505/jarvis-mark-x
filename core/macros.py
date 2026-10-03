@@ -343,8 +343,17 @@ class Macros:
         return loose[0] if len(loose) == 1 else None
 
     def upsert(self, cmd: Command) -> Command:
+        """Сохраняет команду по id. Имя уже занято другой командой (для той же
+        программы) — новой даётся «Имя (2)»: раньше старая молча удалялась,
+        вместе со встроенными командами паков вроде «Назад»."""
         with self._lock:
-            self.commands = [c for c in self.commands if c.id != cmd.id and _norm(c.name) != _norm(cmd.name)]
+            taken = {_norm(c.name) for c in self.commands if c.id != cmd.id and c.app == cmd.app}
+            if _norm(cmd.name) in taken:
+                base, n = cmd.name, 2
+                while _norm(f"{base} ({n})") in taken:
+                    n += 1
+                cmd.name = f"{base} ({n})"
+            self.commands = [c for c in self.commands if c.id != cmd.id]
             self.commands.append(cmd)
             self.save()
         return cmd

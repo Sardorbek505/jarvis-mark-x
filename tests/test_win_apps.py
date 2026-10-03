@@ -55,3 +55,10 @@ def test_find_windows_by_process_not_title():
 def test_find_windows_by_title_fallback():
     assert [w.hwnd for w in wa.find_windows("документ1", WINS)] == [4]
     assert wa.find_windows("zoom", WINS) == []
+
+
+def test_closed_known_app_is_not_found_by_title():
+    """«Открой код» при закрытом VS Code находил вкладку браузера «Исходный код…»."""
+    wins = WINS + [Window(5, "Исходный код страницы — Google Chrome", 14, "chrome.exe")]
+    assert wa.find_windows("код", wins) == []
+    assert [w.hwnd for w in wa.find_windows("код", wins + [Window(6, "main.py - VS", 15, "code.exe")])] == [6]

@@ -76,7 +76,8 @@ def safe_read_json(path: Path, default: Any = None) -> Any:
         return default if default is not None else {}
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        # utf-8-sig: Блокнот сохраняет UTF-8 с BOM, и такой файл считался битым.
+        with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         # Бэкап повреждённого файла
@@ -104,7 +105,7 @@ def load_json_or_quarantine(f) -> Any:
     сохранения в Блокноте в cp1251. Теперь оригинал остаётся рядом.
     """
     try:
-        return json.loads(f.read())
+        return json.loads(f.read().lstrip("\ufeff"))     # BOM от Блокнота — не порча
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         path = Path(f.name)
         f.close()                       # Windows не переименует открытый файл

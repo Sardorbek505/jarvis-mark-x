@@ -722,4 +722,11 @@ def _music_player_fallback(parameters: dict, player=None) -> str:
         return _volume("down", player, value)
     if action in ("volume", "volume_set"):
         return _volume("set", player, value)
+    if action in ("shuffle", "перемешай"):
+        # Без Spotify API (нет Premium) — через медиа-сессию Windows.
+        from core import media_session
+        app = "spotify" if _spotify_now() else None
+        if media_session.command("shuffle", app):
+            return "Перемешал."
+        return "Не получилось перемешать: плеер не даёт это сделать, сэр."
     return f"Не понял команду: «{action}»."

@@ -485,8 +485,15 @@ class ContactsDialog(QDialog):
             self._say("Telegram — @username (от 5 букв) или номер телефона с кодом страны.", False)
             self.telegram.setFocus()
             return False
+        # Два «Мама» — Джарвис не поймёт, кому писать: find("маме") вернёт обоих.
+        cur = self.current
+        if any(x.name.strip().lower() == name.lower() and (cur is None or x.id != cur.id)
+               for x in self.book.contacts):
+            self._say(f"«{name}» уже есть в контактах — откройте его или назовите иначе.", False)
+            self.name.setFocus()
+            return False
         if self.alias_in.text().strip():
-            self.add_alias(self.alias_in.text())
+            self.add_alias(self.alias_in.text())     # сохраняет сам — current после него свежий
         cur = self.current
         c = CT.Contact(name=name, telegram=tg, aliases=list(self._aliases), can_message=self.can_message.isChecked(),
                        can_call=self.can_call.isChecked(), read_aloud=self.read_aloud.isChecked(),

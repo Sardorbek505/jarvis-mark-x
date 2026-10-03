@@ -151,6 +151,45 @@ def _markdown_safe(method):
     return wrapper
 
 
+TG_TEXT_LIMIT = 4096
+
+
+def split_message(text: str, limit: int = TG_TEXT_LIMIT) -> list[str]:
+    """Режет текст на куски ≤ limit: по абзацам, строкам, пробелам — что найдётся."""
+    parts = []
+    while len(text) > limit:
+        # Абзац лучше строки, строка лучше пробела — если разрез не слишком рано.
+        cut = next((c for c in (text.rfind(sep, 0, limit) for sep in ("\n\n", "\n", " "))
+                    if c > limit // 2), limit)
+        parts.append(text[:cut].rstrip())
+        text = text[cut:].lstrip()
+    if text:
+        parts.append(text)
+    return parts
+
+
+def _long_safe(method):
+    """Ответ длиннее лимита Telegram — несколькими сообщениями.
+
+    Раньше Telegram отвечал «Message is too long», и человек вместо ответа
+    видел «❌ Что-то пошло не так»; разговор при этом не сохранялся.
+    """
+    async def wrapper(self, text=None, *args, **kwargs):
+        if text is None:
+            text = kwargs.pop("text")
+        if len(text) <= TG_TEXT_LIMIT:
+            return await method(self, text, *args, **kwargs)
+        markup = kwargs.pop("reply_markup", None)
+        parts = split_message(text)
+        sent = None
+        for i, part in enumerate(parts):
+            last = i == len(parts) - 1
+            sent = await method(self, part, *args, **kwargs, **({"reply_markup": markup} if last else {}))
+        return sent
+    wrapper._long_safe = True
+    return wrapper
+
+
 def _install_markdown_fallback():
     from telegram import CallbackQuery, Message
     for cls, names in ((Message, ("reply_text", "reply_voice", "edit_text")),
@@ -159,6 +198,8 @@ def _install_markdown_fallback():
             method = getattr(cls, name)
             if not getattr(method, "_markdown_safe", False):
                 setattr(cls, name, _markdown_safe(method))
+    if not getattr(Message.reply_text, "_long_safe", False):
+        Message.reply_text = _long_safe(Message.reply_text)
 
 
 _install_markdown_fallback()
@@ -1742,6 +1783,9 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     user_id = update.effective_user.id
     msg = update.effective_message
+    # Пересланное голосовое — чужие слова, как и пересланный текст: отвечаем,
+    # но ПК, звонки и сообщения контактам по нему не выполняем.
+    untrusted = getattr(msg, "forward_origin", None) is not None
     try:
         # Show "recording audio…" the whole time — voice synthesis takes a while
         # and a one-shot indicator expires in 5s, making the bot look asleep.
@@ -1769,12 +1813,12 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await msg.reply_text(reply, parse_mode="Markdown")
                 return
 
-            call = _parse_call(transcript) if transcript else None
+            call = _parse_call(transcript) if transcript and not untrusted else None
             if call:
                 await _handle_call(msg, user_id, *call)
                 return
 
-            if transcript and _looks_like_pc_command(transcript):
+            if transcript and not untrusted and _looks_like_pc_command(transcript):
                 # Не команда (ПК не узнал) — продолжаем обычным разговором.
                 if await _run_pc(msg, transcript, user_id, quiet_if_unknown=True):
                     return
@@ -1799,12 +1843,16 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # памятью и запасными моделями. Сам звук модели нужен, только если
             # расшифровать не вышло.
             if transcript:
-                reply = await gemini.chat(user_id, transcript)
+                reply = await gemini.chat(
+                    user_id, f"[Переслано от другого человека]\n{transcript}" if untrusted else transcript)
             else:
                 reply = await gemini.chat_with_audio(user_id, audio)
             failed = getattr(gemini, "last_generate_failed", False)
+            if untrusted:
+                reply = _RE_ACTIONS.sub("", reply)
             reply, summary = await _apply_reminder_directives(user_id, reply)
-            reply = await _apply_send_directives(update, user_id, reply)
+            if not untrusted:
+                reply = await _apply_send_directives(update, user_id, reply)
             if summary:
                 reply += "\n\n✅ Добавил — " + ", ".join(summary)
             if not reply.strip():
@@ -1878,6 +1926,37 @@ _proactive_task: asyncio.Task | None = None
 _memory_task: asyncio.Task | None = None
 
 
+ALLOWED_UPDATES = ["message", "callback_query"]
+
+# Команды бота — одна таблица для обоих режимов (polling здесь, вебхук в
+# render_app). Раньше списки разошлись: в polling молчали 13 команд из меню.
+COMMANDS = {
+    "start": cmd_start, "help": cmd_help, "app": cmd_app, "status": cmd_status, "clear": cmd_clear,
+    "contacts": cmd_contacts, "addcontact": cmd_addcontact, "delcontact": cmd_delcontact,
+    "notes": cmd_notes, "note": cmd_note, "delnote": cmd_delnote, "findnote": cmd_findnote,
+    "mode": cmd_mode, "profile": cmd_profile, "memstats": cmd_memstats, "journal": cmd_journal,
+    "reindex": cmd_reindex, "ask": cmd_ask, "curiosity": cmd_curiosity, "remember": cmd_remember,
+    "facts": cmd_facts, "macros": cmd_macros, "forget": cmd_forget,
+    "pc": cmd_pc, "screenshot": cmd_screenshot, "camera": cmd_camera, "vol": cmd_vol,
+    "lock": cmd_lock, "sysinfo": cmd_sysinfo, "briefing": cmd_briefing,
+    "remind": cmd_remind, "reminders": cmd_reminders, "task": cmd_task, "tasks": cmd_tasks,
+    "today": cmd_today, "schedule": cmd_schedule, "clearschedule": cmd_clearschedule,
+    "projects": cmd_projects, "delproject": cmd_delproject, "done": cmd_done,
+    "habit": cmd_habit, "habits": cmd_habits, "check": cmd_check,
+    "morning": cmd_morning, "evening": cmd_evening,
+}
+
+
+def register_handlers(app) -> None:
+    for name, fn in COMMANDS.items():
+        app.add_handler(CommandHandler(name, fn))
+    app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+
+
 def main():
     # Проверка секретов живёт здесь, а не на импорте модуля: сообщения и код
     # возврата те же, что были, но теперь она не убивает того, кто просто
@@ -1935,47 +2014,12 @@ def main():
         .build()
     )
 
-    app.add_handler(CommandHandler("start",      cmd_start))
-    app.add_handler(CommandHandler("help",       cmd_help))
-    app.add_handler(CommandHandler("app",        cmd_app))
-    app.add_handler(CommandHandler("status",     cmd_status))
-    app.add_handler(CommandHandler("macros",     cmd_macros))
-    app.add_handler(CommandHandler("clear",      cmd_clear))
-    app.add_handler(CommandHandler("mode",       cmd_mode))
-    app.add_handler(CommandHandler("profile",    cmd_profile))
-    app.add_handler(CommandHandler("memstats",   cmd_memstats))
-    app.add_handler(CommandHandler("journal",    cmd_journal))
-    app.add_handler(CommandHandler("reindex",    cmd_reindex))
-    app.add_handler(CommandHandler("ask",        cmd_ask))
-    app.add_handler(CommandHandler("curiosity",  cmd_curiosity))
-    app.add_handler(CommandHandler("remember",   cmd_remember))
-    app.add_handler(CommandHandler("forget",     cmd_forget))
-    app.add_handler(CommandHandler("pc",         cmd_pc))
-    app.add_handler(CommandHandler("screenshot", cmd_screenshot))
-    app.add_handler(CommandHandler("camera",     cmd_camera))
-    app.add_handler(CommandHandler("vol",        cmd_vol))
-    app.add_handler(CommandHandler("lock",       cmd_lock))
-    app.add_handler(CommandHandler("sysinfo",    cmd_sysinfo))
-    app.add_handler(CommandHandler("briefing",   cmd_briefing))
-    app.add_handler(CommandHandler("remind",     cmd_remind))
-    app.add_handler(CommandHandler("reminders",  cmd_reminders))
-    app.add_handler(CommandHandler("task",       cmd_task))
-    app.add_handler(CommandHandler("tasks",      cmd_tasks))
-    app.add_handler(CommandHandler("today",      cmd_today))
-    app.add_handler(CommandHandler("done",       cmd_done))
-    app.add_handler(CommandHandler("habit",      cmd_habit))
-    app.add_handler(CommandHandler("habits",     cmd_habits))
-    app.add_handler(CommandHandler("check",      cmd_check))
-    app.add_handler(CommandHandler("morning",    cmd_morning))
-    app.add_handler(CommandHandler("evening",    cmd_evening))
-    app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    register_handlers(app)
 
     logger.info("Starting JARVIS Telegram Bot...")
-    app.run_polling(drop_pending_updates=True)
+    # Как у вебхука (render_app): правки старых сообщений не приходят. Иначе
+    # исправленная опечатка в «выключи компьютер» выполняла команду второй раз.
+    app.run_polling(drop_pending_updates=True, allowed_updates=ALLOWED_UPDATES)
 
 
 if __name__ == "__main__":

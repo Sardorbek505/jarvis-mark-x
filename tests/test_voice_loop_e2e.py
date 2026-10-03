@@ -171,8 +171,12 @@ def стенд(tmp_path, monkeypatch):
                            monkeypatch=monkeypatch)
 
 
-async def _прогнать(стенд, frames, script, timeout=5.0):
-    """Крутит все четыре задачи круга, пока ответ не доиграет."""
+async def _прогнать(стенд, frames, script, timeout=10.0):
+    """Крутит все четыре задачи круга, пока ответ не доиграет.
+
+    Ждём не «первый записанный кусок», а пока запись затихнет: Fish пишет
+    ответ несколькими кусками, и обрыв на первом изредка ронял проверки в
+    полном наборе (под нагрузкой). Таймаут — только потолок для отказа."""
     j = стенд.jarvis
     session = _Session(script)
 
@@ -196,10 +200,20 @@ async def _прогнать(стенд, frames, script, timeout=5.0):
             tg.create_task(j._receive_audio())
             tg.create_task(j._play_audio())
 
-            deadline = asyncio.get_event_loop().time() + timeout
-            while (len(стенд.out.written) < expected_audio
-                   and asyncio.get_event_loop().time() < deadline):
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + timeout
+            while len(стенд.out.written) < expected_audio and loop.time() < deadline:
                 await asyncio.sleep(0.01)
+            if len(стенд.out.written) >= expected_audio:
+                # Доигрываем: очередь пуста и 0,15 с ничего нового не пишется.
+                settle_until = loop.time() + 2.0
+                seen, quiet_since = len(стенд.out.written), loop.time()
+                while loop.time() < settle_until:
+                    await asyncio.sleep(0.01)
+                    if len(стенд.out.written) != seen or not j.audio_in_queue.empty():
+                        seen, quiet_since = len(стенд.out.written), loop.time()
+                    elif loop.time() - quiet_since >= 0.15:
+                        break
 
             raise asyncio.CancelledError    # снимаем всю группу разом
 
@@ -1192,3 +1206,49 @@ async def test_хлопки_выключены_в_настройках(стен�
     j = стенд.jarvis
     j._on_double_clap()
     assert j._intro_task is None
+
+
+@pytest.mark.asyncio
+async def test_неверный_ключ_ждёт_новый_и_подключается_сам(стенд, monkeypatch):
+    """Было: «ключ недействителен» → break, Джарвис глох до перезапуска, хотя
+    просил вписать новый ключ на экране «Ключи». Теперь ждёт и подключается."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    сохранённый = {"key": "bad-key"}
+    monkeypatch.setattr(jarvis_main, "_get_api_key", lambda: "bad-key")
+    monkeypatch.setattr(jarvis_main, "ensure_gemini_key",
+                        lambda *a, **kw: сохранённый["key"])
+    monkeypatch.setattr(jarvis_main.Jarvis, "_build_config", lambda self: None)
+    подключились = asyncio.Event()
+    ключи = []
+
+    class _Live:
+        def __init__(self, key):
+            self.key = key
+
+        def connect(self, model, config):
+            ключи.append(self.key)
+            if self.key == "bad-key":
+                raise RuntimeError("1007 None. API key not valid. Please pass a valid API key.")
+            подключились.set()
+            raise asyncio.CancelledError
+
+    class _Client:
+        def __init__(self, api_key, http_options=None):
+            self.aio = SimpleNamespace(live=_Live(api_key))
+
+    monkeypatch.setattr(jarvis_main.genai, "Client", _Client)
+
+    task = asyncio.create_task(стенд.jarvis.run())
+    for _ in range(100):
+        if any("Ключи" in line for line in стенд.ui.logs):
+            break
+        await asyncio.sleep(0.01)
+    assert "НЕТ КЛЮЧА" in стенд.ui.states
+    assert not task.done(), "Джарвис не вышел из цикла, а ждёт ключ"
+
+    сохранённый["key"] = "good-key"          # вписали на экране «Ключи»
+    await asyncio.wait_for(подключились.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert ключи == ["bad-key", "good-key"]

@@ -284,6 +284,14 @@ class LessonDialog(QDialog):
         if not subject or not start:
             self.msg.setText("Нужны предмет и время начала.")
             return
+        # Мусор в конце раньше молча становился пустым, а 14:00–12:00 сохранялось:
+        # такая пара никогда не считалась «текущей».
+        if self.end.text().strip() and not end:
+            self.msg.setText("Не понял время конца — напишите как 12:30.")
+            return
+        if end and end <= start:
+            self.msg.setText("Пара кончается раньше, чем начинается.")
+            return
         data = dict(subject=subject, weekday=self.day.currentIndex(), start=start, end=end,
                     room=self.room.text().strip(), teacher=self.teacher.text().strip(),
                     kind=S.KINDS[self.kind.currentIndex()], weeks=self.weeks.currentData())
@@ -607,11 +615,13 @@ class StudyDialog(QDialog):
         if not title:
             self.t_msg.setText("Напишите, что нужно сделать.")
             return
-        t = self.st.add_task(title, self.t_subject.currentText(), self.t_due.text(),
+        due_text = self.t_due.text().strip()
+        t = self.st.add_task(title, self.t_subject.currentText(), due_text,
                              S.TASK_KINDS[self.t_kind.currentIndex()])
         self.t_title.clear()
         self.t_due.clear()
-        self.t_msg.setText(f"✓  Записал: {self.st.task_text(t)}" + ("" if t.due or not self.t_due.text()
+        # Текст срока запоминаем до clear(): иначе подсказка не появлялась никогда.
+        self.t_msg.setText(f"✓  Записал: {self.st.task_text(t)}" + ("" if t.due or not due_text
                                                                      else " (срок не понял)"))
         self.render_tasks()
 

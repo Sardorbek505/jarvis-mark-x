@@ -97,3 +97,13 @@ def _isolate_voice_memory(tmp_path, monkeypatch):
     monkeypatch.setattr(shared, "SHARED_FILE", d / "shared.json")
     monkeypatch.setattr(shared, "_config", lambda: ("", ""))   # без сервера, пока тест не задаст
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_user_data_dir(tmp_path_factory, monkeypatch):
+    """Ключи и настройки пользователя (~/.config/JARVIS, %APPDATA%\\JARVIS) —
+    во временную папку. Иначе test_phone_screens через about_me.sync писал
+    home_city в настоящий api_keys.json того, кто запускал тесты."""
+    import core.paths
+    d = tmp_path_factory.mktemp("user_data")    # не в tmp_path теста: его пустоту проверяют
+    monkeypatch.setattr(core.paths, "get_user_data_dir", lambda: d)

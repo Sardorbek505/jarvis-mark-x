@@ -10,7 +10,8 @@ shutdown бот сам делает `delete_webhook` (см. render_app.py), а �
 Этот демон крутится на ПК пользователя (egress к Telegram открыт напрямую) и
 держит вебхук живым: раз в INTERVAL проверяет getWebhookInfo и переустанавливает,
 если URL пуст / не тот / с ошибкой доставки. Secret-token вычисляется ровно так
-же, как в render_app.py, иначе бот отвергнет апдейты.
+же, как в render_app.py (WEBHOOK_SECRET или хеш токена), иначе бот отвергнет
+апдейты. Адрес — из miniapp_url / pc_link_url пользователя.
 
 Запуск:
     python scripts/webhook_keeper.py --once   # одна проверка (для планировщика)
@@ -20,7 +21,9 @@ shutdown бот сам делает `delete_webhook` (см. render_app.py), а �
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import logging
 import re
 import sys
@@ -36,7 +39,6 @@ _LOG_FILE = _BASE / "logs" / "webhook_keeper.log"
 
 _WEBHOOK_PATH = "/telegram-webhook"
 _ALLOWED_UPDATES = ["message", "callback_query"]   # как в render_app: без правок
-_DEFAULT_HF_HOST = "atabekovch-jarvis-mark-x.hf.space"
 _INTERVAL_SEC = 300
 _API = "https://api.telegram.org"
 _TIMEOUT = 25
@@ -54,20 +56,38 @@ logging.basicConfig(
 _logger = logging.getLogger("webhook_keeper")
 
 
+def webhook_secret(token: str, custom: str = "") -> str:
+    """Ровно как _WEBHOOK_SECRET в render_app.py: WEBHOOK_SECRET или хеш токена.
+
+    Раньше здесь был сам токен без «:» — старая схема. Сервер её давно не
+    принимает, и после «восстановления» вебхука все апдейты получали 403.
+    """
+    return (re.sub(r"[^A-Za-z0-9_-]", "", custom)[:256]
+            or hashlib.sha256(b"jarvis-webhook:" + token.encode()).hexdigest())
+
+
+def webhook_url(cfg: dict) -> str:
+    """Адрес вебхука — на сервере самого пользователя (HF, Oracle, свой домен).
+
+    Раньше без *.hf.space в конфиге подставлялся Space автора: вебхук чужого
+    бота уезжал туда вместе с секретом.
+    """
+    for src in (cfg.get("miniapp_url"), cfg.get("pc_link_url")):
+        host = urllib.parse.urlparse(str(src or "").strip()).hostname
+        if host:
+            return f"https://{host}{_WEBHOOK_PATH}"
+    raise SystemExit("Не знаю адрес сервера бота: задайте miniapp_url или pc_link_url "
+                     "в config/api_keys.json («Ключи» → «Связь бота с этим ПК»)")
+
+
 def _load() -> tuple[str, str, str]:
-    """Возвращает (token, webhook_url, secret). secret идентичен render_app.py."""
+    """Возвращает (token, webhook_url, secret)."""
     cfg = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
     token = cfg.get("telegram_bot_token", "").strip()
     if not token:
         raise SystemExit("Нет telegram_bot_token в config/api_keys.json")
-
-    host_src = cfg.get("miniapp_url") or cfg.get("pc_link_url") or ""
-    match = re.search(r"([A-Za-z0-9-]+\.hf\.space)", host_src)
-    host = match.group(1) if match else _DEFAULT_HF_HOST
-
-    webhook_url = f"https://{host}{_WEBHOOK_PATH}"
-    secret = re.sub(r"[^A-Za-z0-9_-]", "", token)[:256]  # == render_app.py:49
-    return token, webhook_url, secret
+    custom = os.getenv("WEBHOOK_SECRET") or cfg.get("webhook_secret") or ""
+    return token, webhook_url(cfg), webhook_secret(token, custom)
 
 
 def _api_call(token: str, method: str, params: dict | None = None) -> dict:

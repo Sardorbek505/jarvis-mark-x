@@ -152,3 +152,24 @@ def test_settings_page_keeps_unplugged_device(page, monkeypatch):
     d2 = U.SettingsDialog(None, probe=False)
     assert d2.mic.currentData() == "Старый USB-микрофон" and "не подключён" in d2.mic.currentText()
     d2.deleteLater()
+
+
+def test_settings_saved_by_notepad_with_bom_are_read(tmp_path, monkeypatch):
+    """Блокнот пишет UTF-8 с BOM — раньше такие настройки молча сбрасывались."""
+    p = tmp_path / "settings.json"
+    p.write_bytes('﻿{"wake_mode": "always_on", "awake_sec": 120}'.encode("utf-8"))
+    monkeypatch.setenv("JARVIS_SETTINGS", str(p))
+    assert S.get("wake_mode") == "always_on"
+    S.set("briefing", False)
+    import json
+    assert json.loads(p.read_text(encoding="utf-8-sig")) == {
+        "wake_mode": "always_on", "awake_sec": 120, "briefing": False}
+
+
+def test_broken_settings_are_kept_aside_not_overwritten(tmp_path, monkeypatch):
+    p = tmp_path / "settings.json"
+    p.write_text('{"wake_mode": "always_on",,}', encoding="utf-8")
+    monkeypatch.setenv("JARVIS_SETTINGS", str(p))
+    S.set("briefing", False)
+    broken = list(tmp_path.glob("settings.json.broken-*"))
+    assert broken and "always_on" in broken[0].read_text(encoding="utf-8")

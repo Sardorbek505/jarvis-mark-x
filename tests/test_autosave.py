@@ -75,6 +75,34 @@ def test_key_is_saved_without_button(monkeypatch):
         dlg.close()
 
 
+def test_cleared_key_is_no_longer_working(monkeypatch):
+    """Стёрли ключ Gemini — карточка не должна оставаться «● Работает»."""
+    store = {"gemini_api_key": ""}
+    monkeypatch.setattr(K, "load_values", lambda: dict(store))
+    monkeypatch.setattr(K, "save_values", lambda d: store.update(d) or True)
+    monkeypatch.setattr(K, "check", lambda sid, v: ("ok", "Ключ работает."))
+    import ui_keys
+    dlg = ui_keys.KeysDialog()
+    dlg.show()
+    try:
+        card = dlg.cards["gemini"]
+        card.edits["gemini_api_key"].setText("AIza-test-key")
+        wait()
+        for _ in range(100):
+            app.processEvents()
+            if card.state == "ok":
+                break
+            time.sleep(0.01)
+        assert card.state == "ok"
+        card.edits["gemini_api_key"].setText("")
+        wait()
+        assert store["gemini_api_key"] == ""
+        assert card.state == "missing"
+        assert "Работает" not in card.pill.text()
+    finally:
+        dlg.close()
+
+
 @pytest.fixture
 def book(tmp_path):
     b = CT.Book(tmp_path / "contacts.json", now=lambda: datetime(2026, 9, 27, 14, 0))
@@ -92,6 +120,21 @@ def _contacts(book):
         def run(self, fn, timeout=40):
             raise RuntimeError("нет сети")
     return ui_contacts.ContactsDialog(api=CT.Contacts(book, Me()), caller_ready=lambda: "", open_keys=lambda: None)
+
+
+def test_second_contact_with_same_name_is_refused(book):
+    """Два «Мама» — Джарвис не знал бы, кому писать."""
+    dlg = _contacts(book)
+    dlg.show()
+    try:
+        dlg.new_contact()
+        dlg.name.setText("мама")
+        dlg.telegram.setText("+79990000000")
+        assert dlg.save_contact() is False
+        assert "уже есть" in dlg.status.text()
+        assert [c.name for c in book.contacts].count("Мама") == 1 and len(book.contacts) == 1
+    finally:
+        dlg.close()
 
 
 def test_contact_saves_itself_when_valid_and_not_before(book):

@@ -202,6 +202,18 @@ def test_world_time(monkeypatch):
     assert text.startswith("В городе Токио сейчас 16:00, понедельник")   # Алматы — UTC+5, Токио — +9
 
 
+def test_world_time_offline_is_not_unknown_city(monkeypatch):
+    """Без сети — «нет связи», а не «не нашёл город Токио»."""
+    def boom(url, timeout=8):
+        raise OSError("нет сети")
+    monkeypatch.setattr(loc, "_get_json", boom)
+    loc._geo_cache.pop("токио", None)
+    assert "нет связи" in ck.world_time("Токио")
+    monkeypatch.setattr(loc, "_get_json", lambda url, timeout=8: {"results": []})
+    loc._geo_cache.pop("абвгдград", None)
+    assert ck.world_time("Абвгдград") == "Не нашёл город «Абвгдград»."
+
+
 def test_where_prefers_home_city_then_ip(monkeypatch):
     loc._cache.update(at=0.0, place=None)
     monkeypatch.setattr(loc, "_home_city", lambda: "")
@@ -242,3 +254,23 @@ def test_notes_append_delete_latest(tmp_path, monkeypatch):
     assert "корзине" in act({"action": "delete", "title": "Список покупок"})
     assert act({"action": "list"}) == "В базе знаний пока нет заметок."
     assert (tmp_path / "vault" / ".trash" / "Список покупок.md").exists()   # можно вернуть
+
+
+@pytest.mark.parametrize("duration, sec", [
+    ("двадцать пять минут", 1500), ("тридцать пять минут", 2100), ("сорок пять секунд", 45),
+    ("полминуты", 30), ("полчаса", 1800), ("полтора часа", 5400), ("1 час 30 минут", 5400),
+    ("две минуты", 120), ("час", 3600), ("1:30", 90),
+])
+def test_длительность_словами_целиком(duration, sec):
+    """Было: «двадцать пять минут» → 5 минут (бралось последнее слово)."""
+    from core.clock import parse_duration
+    assert parse_duration({"duration": duration}) == sec
+
+
+@pytest.mark.parametrize("text, hm", [
+    ("12 ночи", (0, 0)), ("2 ночи", (2, 0)), ("7 вечера", (19, 0)), ("половина восьмого", (7, 30)),
+    ("семь тридцать", (7, 30)), ("семь утра", (7, 0)), ("07:30", (7, 30)),
+])
+def test_время_будильника(text, hm):
+    from core.clock import parse_hhmm
+    assert parse_hhmm(text) == hm

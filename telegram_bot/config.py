@@ -11,14 +11,18 @@ _CONFIG_FILE = BASE_DIR / "config" / "api_keys.json"
 # (05.08.2026), и два инстанса каждые 90 с перетягивали вебхук друг у друга:
 # часть апдейтов уходила в дубль, у которого нет связи с ПК. Отсюда хроническое
 # «бот то отвечает, то молчит».
-DECOMMISSIONED_HOSTS = ("onrender.com",)
+# Именно тот адрес, а не весь onrender.com: иначе по render.yaml из репозитория
+# ни у кого не поднимался бот — любой *.onrender.com считался «выведенным».
+DECOMMISSIONED_HOSTS = ("jarvis-mark-x.onrender.com",)
 
 
 def is_decommissioned(miniapp_url: str) -> bool:
     """Узнаёт выведенный из эксплуатации деплой по его собственному адресу.
     Такой инстанс не должен трогать вебхук — иначе отбирает апдейты у рабочего."""
-    url = (miniapp_url or "").lower()
-    return any(host in url for host in DECOMMISSIONED_HOSTS)
+    from urllib.parse import urlparse
+    raw = (miniapp_url or "").strip().lower()
+    host = urlparse(raw if "://" in raw else "https://" + raw).hostname or ""
+    return host in DECOMMISSIONED_HOSTS
 
 
 class Config(NamedTuple):

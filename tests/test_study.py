@@ -174,3 +174,33 @@ def test_study_window(st):
         dlg.repaint()
     finally:
         dlg.close()
+
+
+def test_study_window_validates_input(st):
+    """«срок не понял» показывается; пара с концом раньше начала и мусор
+    в поле конца не сохраняются."""
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])   # noqa: F841
+    import ui_study
+    s, _ = st
+    dlg = ui_study.StudyDialog(st=s)
+    try:
+        dlg.show_page(1)
+        dlg.t_title.setText("Курсовая")
+        dlg.t_due.setText("когда-нибудь потом")
+        dlg.add_task()
+        assert "срок не понял" in dlg.t_msg.text()
+
+        before = len(s.lessons)
+        for end in ("12:00", "abc"):
+            les = ui_study.LessonDialog(dlg, s, None, 2)
+            les.subject.setCurrentText("Химия")
+            les.start.setText("14:00")
+            les.end.setText(end)
+            les._save()
+            assert len(s.lessons) == before, end
+            assert les.msg.text()
+    finally:
+        dlg.close()

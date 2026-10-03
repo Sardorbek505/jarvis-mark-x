@@ -48,6 +48,17 @@ HF-конфиг уже в репозитории: front-matter в `README.md` (`
 4. Проверю: `https://<user>-jarvis-mark-x.hf.space/health` → `{"status":"ok"}`,
    затем `/start` боту в Telegram.
 
+### Необязательные секреты
+
+| Переменная | Зачем |
+|---|---|
+| `PC_LINK_TOKEN` | общий секрет связи с ПК (см. часть 4) |
+| `WEBHOOK_SECRET` | свой секрет вебхука (`A-Z a-z 0-9 _ -`, до 256). Без него — хеш токена бота. Если задаёте — впишите его же на ПК в `config/api_keys.json` как `webhook_secret`, иначе `scripts/webhook_keeper.py` поставит другой |
+| `TELEGRAM_API_BASE` | прокси к `api.telegram.org`, если хост его блокирует (см. `vercel-proxy/README.md`) |
+| `FISH_API_KEY`, `FISH_VOICE_ID` | голос «как в фильме» для голосовых ответов |
+| `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY` | запасные модели, когда кончилась квота Gemini |
+| `DIAG_EGRESS=1` | записать в лог, до каких хостов есть выход |
+
 ## Часть 4. Подключение домашнего ПК (управление компьютером, опционально)
 
 На ПК в `config/api_keys.json`:
