@@ -275,6 +275,12 @@ async def _execute(text: str) -> dict:
             if any(k in tl for k in ["системная информация", "sysinfo", "батарея", "battery", "заряд"]):
                 return _r(await asyncio.to_thread(_get_sysinfo))
 
+        # Фильмы и сериалы — до приложений и музыки: «поставь сериал Локи»
+        # ловилось музыкой по слову «поставь».
+        video = await _play_video(text)
+        if video:
+            return video
+
         app = _known_app(tl)
         if app:
             from actions.open_app import open_app
@@ -597,6 +603,117 @@ def _get_sysinfo() -> str:
         return "psutil не установлен. Запустите: pip install psutil"
     except Exception as e:
         return f"Ошибка системной информации: {e}"
+
+
+_VIDEO_WORDS = r"сериал\w*|фильм\w*|мультфильм\w*|мультик\w*|кино|аниме|серию|серия|сезон\w*"
+_ORDINALS = {"перв": 1, "втор": 2, "трет": 3, "четв": 4, "пят": 5, "шест": 6, "седьм": 7,
+             "восьм": 8, "девят": 9, "десят": 10}
+_NUM_WORDS = {"один": 1, "одна": 1, "два": 2, "две": 2, "три": 3, "четыре": 4, "пять": 5,
+              "шесть": 6, "семь": 7, "восемь": 8, "девять": 9, "десять": 10}
+# Слова, которые не бывают названием: глаголы просьбы, связки, жалобы.
+_VIDEO_FILLER = re.compile(
+    r"\b(?:нет|я|мне|тебе|тебя|ты|просил\w*|хочу|давай|пожалуйста|пж|"
+    r"поставь|поставить|включи|включить|запусти|запустить|открой|открыть|покажи|"
+    r"найди|воспроизведи|должен|должна|этот|эту|это|тот|который|которая|"
+    r"то есть|называется|под названием|сериал\w*|фильм\w*|мультфильм\w*|мультик\w*|кино|"
+    r"а не [а-яё]+|не музык\w*|музык\w*|и|же|ну|ещё|еще)\b")
+
+
+_VIDEO_VERBS = ("поставить", "поставь", "включить", "включи", "запустить", "запусти", "открыть",
+                "открой", "посмотреть", "смотреть", "показать", "покажи", "просил")
+
+
+def _num(token: str) -> int | None:
+    token = token.lower()
+    if token.isdigit():
+        return int(token)
+    if token in _NUM_WORDS:
+        return _NUM_WORDS[token]
+    return next((n for stem, n in _ORDINALS.items() if token.startswith(stem)), None)
+
+
+def _season_episode(tl: str) -> tuple[int | None, int | None]:
+    """«1 сезон 2 серия», «сезон 1 серия 3», «первый сезон вторую серию».
+    Каждое число достаётся одному слову: сначала стоящее перед ним, затем после."""
+    words = re.findall(r"\w+", tl)
+    used, found = set(), {}
+    for i, w in enumerate(words):
+        kind = ("season" if w.startswith("сезон") else
+                "episode" if re.fullmatch(r"сери[юяи]|эпизод\w*", w) else None)
+        if not kind or kind in found:
+            continue
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(words) and j not in used and _num(words[j]) is not None:
+                found[kind] = _num(words[j])
+                used.add(j)
+                break
+    return found.get("season"), found.get("episode")
+
+
+def _before_episode(part: str) -> str:
+    """Текст до «сезон/серия» без номера перед ними: «локи первый сезон» → «локи»."""
+    pieces = re.split(r"\b(?:сезон\w*|сери[юяи]|эпизод\w*)\b", part)
+    head = pieces[0].split()
+    if len(pieces) > 1:
+        while head and _num(head[-1]) is not None:
+            head.pop()
+    return " ".join(head)
+
+
+def _clean_title(rest: str) -> str:
+    from rapidfuzz import fuzz
+    rest = _VIDEO_FILLER.sub(" ", rest)
+    words = re.sub(r"[^\w\s:'-]", " ", rest).split()
+    # Опечатки в глаголах просьбы («помтавить») — тоже не название.
+    words = [w for w in words if not any(fuzz.ratio(w, v) >= 80 for v in _VIDEO_VERBS)]
+    return " ".join(words)
+
+
+def _parse_video(text: str) -> tuple[str, int | None, int | None] | None:
+    """Просьба про фильм/сериал → (название, сезон, серия); None — это не про видео.
+
+    Раньше таких веток не было вовсе: «поставь сериал Локи» уходило в музыку
+    (сработало «поставь») и включало трек, а «я просил сериал, а не музыку» —
+    «Продолжаю музыку». Название пустое — фильм назван не был, переспросим."""
+    tl = text.lower().replace("ё", "е")
+    if not re.search(rf"\b(?:{_VIDEO_WORDS})\b", tl):
+        return None
+    season, episode = _season_episode(tl)
+    # Название — после «называется», иначе после последнего «сериал/фильм».
+    m = re.search(r"(?:называется|под названием)\s+(.+)", tl)
+    if m:
+        rest = m.group(1)
+    else:
+        marks = list(re.finditer(r"\b(?:сериал\w*|фильм\w*|мультфильм\w*|мультик\w*|кино|аниме)\b", tl))
+        rest = tl[marks[-1].end():] if marks else ""
+    # Сезон/серия и всё после них — не название.
+    title = _clean_title(_before_episode(rest))
+    if not title and (season or episode) and not re.search(r"(?:называется|под названием)", tl):
+        # «поставь Локи 1 сезон 2 серия» — слова «сериал» нет, название до сезона.
+        title = _clean_title(_before_episode(tl))
+        if not title:
+            # «включи третью серию Локи» — название после серии.
+            tail = re.split(r"\b(?:сезон\w*|сери[юяи]|эпизод\w*)\b", tl)[-1].split()
+            title = _clean_title(" ".join(w for w in tail if _num(w) is None))
+    return title[:1].upper() + title[1:], season, episode
+
+
+async def _play_video(text: str) -> dict | None:
+    parsed = _parse_video(text)
+    if parsed is None:
+        return None
+    title, season, episode = parsed
+    if not title:
+        return _r("Какой фильм или сериал включить, сэр? Назовите его — например, «Локи 1 сезон 2 серия».")
+    query = title + (f" {season} сезон" if season else "") + (f" {episode} серия" if episode else "")
+    # Музыка поверх фильма не нужна никогда («отключи музыку и поставь фильм»).
+    try:
+        from core import media_session
+        await asyncio.to_thread(media_session.command, "pause", "spotify")
+    except Exception as e:
+        logger.debug(f"Пауза музыки перед фильмом: {e}")
+    from actions.movie_player import movie_player
+    return _r(await asyncio.to_thread(movie_player, {"action": "play", "title": query}) or "Выполнено")
 
 
 def _parse_music(tl: str) -> dict:
