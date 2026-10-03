@@ -112,9 +112,9 @@ def test_frames_show_each_stage(qapp):
     assert _lit(fr[0.75], 0, 0, 1, 1, 60) == 0, "потом — темнота"
     assert _lit(fr[2.2], 0.0, 0.0, 0.25, 0.15) > 0, "часы HUD слева сверху"
     assert _lit(fr[1.3], 0.25, 0.85, 0.75, 0.93) > 0, "субтитр «Проверка систем.»"
-    assert _lit(fr[3.6], 0.4, 0.3, 0.6, 0.6) > 0, "загорается шар в кольце"
+    assert _lit(fr[3.6], 0.4, 0.3, 0.6, 0.6) > 0, "загорается реактор"
     assert _lit(fr[S.T_HIT + 0.04], 0, 0, 1, 1, 120) > 2 * _lit(fr[3.6], 0, 0, 1, 1, 120), "вспышка удара"
-    assert _lit(fr[7.2], 0.0, 0.15, 0.3, 0.8) > 0, "узлы слева от шара"
+    assert _lit(fr[7.2], 0.0, 0.15, 0.3, 0.8) > 0, "модули слева от реактора"
 
 
 def test_nodes_are_big_with_icons_and_labels(qapp):
@@ -128,6 +128,15 @@ def test_nodes_are_big_with_icons_and_labels(qapp):
     whites = sum(1 for dx in range(-30, 31, 2) for dy in range(-30, 31, 2)
                  if QColor(img.pixel(int(x + dx), int(y + dy))).lightness() > 200)
     assert whites > 10, "в верхнем узле — белая иконка, не пустой кружок"
+
+
+def test_reactor_coils_light_up_in_turn_then_core_flares(qapp):
+    sc = _scene()
+    mid = S.T_CHARGE + 0.3 + 4.5 * (S.T_HIT - S.T_CHARGE - 0.6) / sc.COILS
+    lit = [sc._coil_power(i, mid) for i in range(sc.COILS)]
+    assert lit[0] == 1.0 and lit[-1] == 0.0, "катушки зажигаются по кругу, а не все сразу"
+    assert sc._power(S.T_HIT - 0.05) < sc._power(S.T_HIT - 0.4), "«вдох» перед ударом"
+    assert sc._power(S.T_HIT + 0.02) > 1.5 > sc._power(S.T_HIT + 1.5) >= 1.0, "вспышка ядра и ровный свет"
 
 
 def test_failed_module_flashes_red_during_check(qapp):
@@ -155,7 +164,7 @@ def test_intro_waits_for_long_greeting_and_ends_clean(qapp):
     sc.extend_to(15.0)
     for t in np.arange(S.T_HIT, S.T_END + 0.5, 0.25):
         sc.render(float(t), 320, 180)
-    assert _lit(sc.render(S.T_END + 0.5, 640, 360), 0.4, 0.3, 0.6, 0.6) > 0, "шар ещё на экране"
+    assert _lit(sc.render(S.T_END + 0.5, 640, 360), 0.4, 0.3, 0.6, 0.6) > 0, "реактор ещё на экране"
     img = sc.render(15.0, 640, 360)
     from PyQt6.QtGui import QColor
     assert QColor(img.pixel(320, 180)) == QColor("#203040"), "в конце — снова рабочий стол"
