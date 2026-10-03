@@ -61,6 +61,8 @@ TINTS: dict[str, tuple[int, int, int]] = {
     "sad": (232, 132, 146), "alert": (240, 186, 110),
 }
 BADGE_BLUE = (36, 140, 255)
+# Какой значок у состояния: смена значка — он «выпрыгивает» заново.
+_BADGES = {"think": "dots", "talk": "dots", "happy": "green", "sad": "red", "alert": "amber"}
 BLINK_SEC = 0.16          # обычное моргание
 SWITCH_SEC = 0.24         # моргание со сменой формы глаз — чуть медленнее
 INTRO_SEC = 0.55         # проявление из темноты
@@ -94,7 +96,13 @@ class Face:
         self._hop_at = -1e9                   # когда подпрыгнул от тыка
         self._idle_at = 12.0 + self._rng.uniform(0.0, 8.0)    # следующий «оглядеться/прыжок»
         self._peek: tuple[float, float, float] | None = None  # (x, y, до когда) — оглядывается
-        self.box = 0.0                        # 0 — шар, 1 — коробка (тащат файл)
+        self.box = 0.0                        # 0 — шар, 1 — коробка (тащат файл); пружина с отскоком
+        self._box_v = 0.0
+        self.squish = 0.0                     # упругость: >0 — приплюснут, <0 — вытянут (пружина)
+        self._squish_v = 0.0
+        self._badge_at = -1e9                 # когда сменился значок на плече — он «выпрыгивает»
+        self._badge_scale = 1.0
+        self._prev_emotion = "calm"
         self.tint = 0.0                       # сила подкраски снизу
         self._tint_rgb = (104, 168, 232)
         self._dust_seed = [(self._rng.uniform(0, 2 * math.pi), self._rng.uniform(0.75, 1.55),
@@ -104,7 +112,11 @@ class Face:
     def set_emotion(self, name: str):
         if name not in EMOTIONS or name == self.emotion:
             return
+        self._prev_emotion = self.emotion
         self.emotion, self.since = name, self.clock
+        self._squish_v += 2.6                 # смена состояния — как желе: приплюснулся и выпрямился
+        if _BADGES.get(name) != _BADGES.get(self._prev_emotion):
+            self._badge_at = self.clock
         fam = EMOTIONS[name].family
         if fam != self.family or self._switch_to:
             self._switch_to = fam
@@ -122,6 +134,7 @@ class Face:
     def poke(self):
         """Тык по лицу — подпрыгнуть."""
         self._hop_at = self.clock
+        self._squish_v += 4.0
 
     def look_at(self, x: float, y: float):
         """Куда смотреть: -1..1 по каждой оси (курсор слева/справа, выше/ниже)."""
@@ -164,7 +177,17 @@ class Face:
             self._peek = None
         e = EMOTIONS[self.emotion]
         m = 1 - math.exp(-dt * 8)
-        self.box += ((1.0 if self.emotion == "hungry" else 0.0) - self.box) * m
+        # Пружины: шаг мелкий, чтобы при редких кадрах не «взрывались».
+        n = max(1, int(dt / 0.008) + 1)
+        h = dt / n
+        target_box = 1.0 if self.emotion == "hungry" else 0.0
+        for _ in range(n):
+            self._box_v += (-140.0 * (self.box - target_box) - 11.0 * self._box_v) * h
+            self.box += self._box_v * h
+            self._squish_v += (-260.0 * self.squish - 9.0 * self._squish_v) * h
+            self.squish += self._squish_v * h
+        self.box = max(-0.15, min(1.15, self.box))
+        self.squish = max(-0.25, min(0.25, self.squish))
         want = TINTS.get(self.emotion)
         if want:
             self._tint_rgb = want
@@ -206,6 +229,7 @@ class Face:
             squash += 0.06 * (1 - hop) * (1 - t_hop / 0.6)
         if self._blink_t >= 0:                     # моргая, чуть сплющивается
             squash += 0.06 * (1 - self.open)
+        squash += self.squish
         k = _ease(self.intro)
         # Появление: выглядывает снизу — тело поднимается из-под «края».
         rise = (1 - k) * size * 0.75
@@ -215,9 +239,21 @@ class Face:
         if rise > 0.5:
             p.setClipRect(QRectF(-size * 3, -size * 3, size * 6, size * 3 + size * 0.5))
         p.translate(0, rise)
+        box = max(0.0, min(1.0, self.box))
+        bw, bh = size * (1 + squash) * (1 + 0.12 * self.box), size * (1 - squash) * (1 - 0.08 * self.box)
+        if glow > 0:                                # мягкая тень под шаром — он стоит, а не висит
+            sh = QRadialGradient(QPointF(0, 0), 1.0)
+            sh.setColorAt(0.0, QColor(0, 0, 0, int(90 * k)))
+            sh.setColorAt(1.0, QColor(0, 0, 0, 0))
+            p.save()
+            p.translate(0, size * 0.6 - dy * 0.5)
+            p.scale(bw * 0.42 * (1 - dy / size * 0.8), size * 0.07)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(sh)
+            p.drawEllipse(QPointF(0, 0), 1.0, 1.0)
+            p.restore()
         if rot:
             p.rotate(rot)
-        bw, bh = size * (1 + squash) * (1 + 0.12 * self.box), size * (1 - squash) * (1 - 0.08 * self.box)
         body = QRectF(-bw / 2, -bh / 2, bw, bh)
         tint_rgb = self._tint_rgb
         # Свет вокруг — только когда есть о чём сказать: состояние (голубой, красный)
@@ -236,15 +272,18 @@ class Face:
         if hands:
             self._paint_hands(p, size, behind=True)
         path = QPainterPath()
-        radius = (min(bw, bh) / 2) * (1 - 0.62 * self.box)          # шар → коробка
+        radius = (min(bw, bh) / 2) * (1 - 0.62 * box)               # шар → коробка
         path.addRoundedRect(body, radius, radius)
         self._paint_ball(p, path, body, size, k)
-        if self.box > 0.05:                         # крышка коробки
+        if box > 0.05:                              # крышка коробки
             lid = QRectF(body.left() + bw * 0.06, body.top() + bh * 0.06, bw * 0.88, bh * 0.2)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(18, 20, 24, int(235 * self.box)))
+            p.setBrush(QColor(18, 20, 24, int(235 * box)))
             p.drawRoundedRect(lid, bh * 0.08, bh * 0.08)
+        p.save()
+        p.setClipPath(path, Qt.ClipOperation.IntersectClip)   # глаза у края уходят за изгиб шара
         self._eyes(p, size)
+        p.restore()
         self._extras(p, size, body)
         if hands:
             self._paint_hands(p, size, behind=False)
@@ -260,12 +299,28 @@ class Face:
         light.setColorAt(1.0, _mix((128, 132, 140), (40, 42, 48), dim))
         p.fillPath(path, light)
         if self.tint > 0.01:
+            # Цвет состояния наливается снизу, как жидкость: уровень растёт с
+            # tint, поверхность чуть колышется — шар живой, а не перекрашенный.
             r, g, b = self._tint_rgb
-            lg = QLinearGradient(body.topLeft(), body.bottomLeft())
-            lg.setColorAt(0.25, QColor(r, g, b, 0))
-            lg.setColorAt(0.75, QColor(r, g, b, int(200 * self.tint * k)))
-            lg.setColorAt(1.0, QColor(r, g, b, int(240 * self.tint * k)))
-            p.fillPath(path, lg)
+            level = body.bottom() - body.height() * (0.12 + 0.5 * self.tint)
+            amp = body.height() * 0.035 * (0.4 + 0.6 * (1 - abs(2 * self.tint - 1)))
+            wave = QPainterPath(QPointF(body.left() - 2, body.bottom() + 2))
+            steps = 18
+            for i in range(steps + 1):
+                x = body.left() - 2 + (body.width() + 4) * i / steps
+                y = level + amp * math.sin(i / steps * 2 * math.pi * 1.3 + self.clock * 3.2)
+                wave.lineTo(QPointF(x, y))
+            wave.lineTo(QPointF(body.right() + 2, body.bottom() + 2))
+            wave.closeSubpath()
+            soft = QLinearGradient(QPointF(0, level - body.height() * 0.25), QPointF(0, level + amp))
+            soft.setColorAt(0.0, QColor(r, g, b, 0))                 # мягкий отсвет над поверхностью
+            soft.setColorAt(1.0, QColor(r, g, b, int(90 * self.tint * k)))
+            p.fillPath(path, soft)
+            lg = QLinearGradient(QPointF(0, level - amp), body.bottomLeft())
+            lg.setColorAt(0.0, QColor(r, g, b, int(95 * self.tint * k)))
+            lg.setColorAt(0.5, QColor(r, g, b, int(185 * self.tint * k)))
+            lg.setColorAt(1.0, QColor(r, g, b, int(235 * self.tint * k)))
+            p.fillPath(path.intersected(wave), lg)
         # мягкая кромка снизу — шар стоит в объёме, а не нарисован
         rim = QRadialGradient(body.center(), max(body.width(), body.height()) * 0.55)
         rim.setColorAt(0.8, QColor(0, 0, 0, 0))
@@ -325,32 +380,52 @@ class Face:
             p.drawEllipse(c, r * 1.1, r * 0.95)
 
     def _paint_dust(self, p: QPainter, s: float):
-        """Кольца мерцающей пыли расходятся от шара — при появлении и когда позвали."""
+        """Пыль при появлении: наклонные кольца-орбиты крутятся вокруг шара и
+        стягиваются к нему (как в интро GrokBot), потом гаснут."""
         u = self.dust / DUST_SEC                       # 1 → 0
-        fade = min(1.0, (1 - u) * 5) * min(1.0, u * 2.0)
+        fade = min(1.0, (1 - u) * 4) * min(1.0, u * 2.2)
         p.setPen(Qt.PenStyle.NoPen)
         for ring in range(3):
-            rr = s * (0.75 + 0.45 * ring) * (1.0 + 0.5 * (1 - u))
+            rr = s * (0.7 + 0.32 * ring) * (1.0 + 1.1 * u)          # стягиваются к шару
+            tilt = (-0.35, 0.25, -0.1)[ring]
             for ang, rad, spd, ph in self._dust_seed:
-                a = ang + ring * 0.7 + self.clock * 0.35 * spd * (1 if ring % 2 else -1)
-                jitter = 1 + 0.08 * (rad - 1.15)
-                x, y = math.cos(a) * rr * jitter * 1.3, math.sin(a) * rr * jitter * 0.75
-                tw = 0.5 + 0.5 * math.sin(self.clock * 9 * spd + ph + ring)
-                al = int(200 * fade * tw * (1 - 0.25 * ring))
+                a = ang + ring * 0.9 + self.clock * (0.9 - 0.25 * ring) * (1 if ring % 2 else -1)
+                jitter = 1 + 0.12 * (rad - 1.15)
+                x0, y0 = math.cos(a) * rr * jitter, math.sin(a) * rr * jitter * 0.32
+                x, y = x0 * math.cos(tilt) - y0 * math.sin(tilt), x0 * math.sin(tilt) + y0 * math.cos(tilt)
+                front = math.sin(a) > 0                                # передняя половина орбиты ярче
+                tw = 0.55 + 0.45 * math.sin(self.clock * 9 * spd + ph + ring)
+                al = int(220 * fade * tw * (1.0 if front else 0.45) * (1 - 0.2 * ring))
                 if al <= 4:
                     continue
                 p.setBrush(QColor(255, 255, 255, al))
-                d = max(0.7, s * 0.022 * (0.6 + tw))
+                d = max(0.7, s * 0.02 * (0.6 + tw) * (1.2 if front else 0.8))
                 p.drawEllipse(QPointF(x, y), d, d)
+
+    def eye_layout(self, s: float) -> list[tuple[float, float, float, float]]:
+        """Глаза на сфере: (x, y, ширина, высота) левого и правого.
+
+        Взгляд — это поворот головы: глаза едут по поверхности шара, у края
+        сжимаются по ширине (cos долготы), дальний глаз — уже ближнего. На
+        этом держится ощущение объёма, а не плоского кружка с точками."""
+        yaw = self.look[0] * 0.62                       # до ~35° вбок
+        pitch = -self.look[1] * 0.42                    # вверх — положительный
+        R = s * 0.5
+        out = []
+        for side in (-1, 1):
+            lon = side * 0.33 + yaw
+            lat = pitch - self.eye_dy * 1.9
+            cl, cb = math.cos(lon), math.cos(lat)
+            x = R * math.sin(lon) * cb * 0.96
+            y = -R * math.sin(lat) * 0.96
+            w = self.eye_w * s * max(0.15, cl)
+            h = max(self.eye_h * s * self.open * max(0.3, cb), s * 0.03)
+            out.append((x, y, w, h))
+        return out
 
     def _eyes(self, p: QPainter, s: float):
         ink = QColor(*EYE_RGB)
-        gap = s * 0.145
-        lx, ly = self.look[0] * s * 0.10, self.look[1] * s * 0.08
-        ey = self.eye_dy * s + ly
-        w, h = self.eye_w * s, max(self.eye_h * s * self.open, s * 0.03)
-        for side in (-1, 1):
-            ex = side * gap + lx
+        for side, (ex, ey, w, h) in zip((-1, 1), self.eye_layout(s)):
             if self.family == "dot":                  # «таблетки», как у GrokBot
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(ink)
@@ -370,11 +445,15 @@ class Face:
             elif self.family == "spiral":
                 p.setPen(QPen(ink, max(0.9, s * 0.03), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                 p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawPath(_spiral(ex, ey, w * 0.6 * max(0.2, self.open), self.clock * 7 * side))
+                p.drawPath(_spiral(ex, ey, self.eye_w * s * 0.6 * max(0.2, self.open), self.clock * 7 * side))
 
     def _badge(self, p: QPainter, s: float, body: QRectF, rgb, r: float) -> QPointF:
         """Значок на «плече» слева сверху — с тёмной обводкой, как бейдж приложения."""
         c = QPointF(body.left() + s * 0.12, body.top() + s * 0.1)
+        self._badge_scale = _back_out(min(1.0, (self.clock - self._badge_at) / 0.35))
+        r *= self._badge_scale
+        if r <= 0.2:
+            return c
         p.setPen(QPen(QColor(10, 11, 14), max(1.0, s * 0.035)))
         p.setBrush(QColor(*rgb))
         p.drawEllipse(c, r, r)
@@ -393,21 +472,28 @@ class Face:
                 else:
                     a = 1.0
                     jump = s * 0.03 * min(1.0, self.level * 1.6) * math.sin(self.clock * 14 + i * 1.3)
+                k = max(0.0, self._badge_scale)
                 p.setBrush(QColor(255, 255, 255, int(255 * a)))
-                p.drawEllipse(QPointF(c.x() + (i - 1) * s * 0.075, c.y() - jump), s * 0.028, s * 0.028)
+                p.drawEllipse(QPointF(c.x() + (i - 1) * s * 0.075 * k, c.y() - jump), s * 0.028 * k, s * 0.028 * k)
         elif e == "happy":
             self._badge(p, s, body, (60, 222, 90), s * 0.075)
         elif e == "sad":
             self._badge(p, s, body, (236, 52, 64), s * 0.075)
         elif e == "alert":
             c = self._badge(p, s, body, AMBER, s * 0.16 * (1.0 + 0.08 * math.sin(self.clock * 7)))
-            _glyph(p, c, "!", s * 0.24, QColor(30, 20, 0))
+            _glyph(p, c, "!", s * 0.24 * max(0.05, self._badge_scale), QColor(30, 20, 0))
         elif e == "sleep":
             for i in range(2):
                 u = (self.clock * 0.45 + i * 0.5) % 1.0
                 a = int(230 * math.sin(math.pi * u))
                 c = QPointF(body.right() + s * (0.02 + 0.22 * u), body.top() + s * (0.12 - 0.4 * u))
                 _glyph(p, c, "z", s * (0.22 + 0.1 * u), QColor(255, 255, 255, a))
+
+
+def _back_out(u: float, k: float = 2.2) -> float:
+    """0 → 1 с перелётом за 1 и возвратом — «выпрыгнул»."""
+    u = max(0.0, min(1.0, u)) - 1
+    return 1 + (k + 1) * u ** 3 + k * u ** 2
 
 
 def _ease(u: float) -> float:
