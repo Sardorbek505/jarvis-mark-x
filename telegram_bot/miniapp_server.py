@@ -544,8 +544,9 @@ async def ws_endpoint(ws: WebSocket):
                         # get/set (not +=) so hands-free streaming never KeyErrors
                         # after a segment boundary reset the buffer.
                         buf = _audio_buffers.get(user_id, b"") + base64.b64decode(chunk_b64)
-                    # Не больше ~10 МБ (≈5 мин речи): бесконечный поток не съест память сервера.
-                    _audio_buffers[user_id] = buf[-_AUDIO_MAX:]
+                        # Не больше ~10 МБ (≈5 мин речи): бесконечный поток не съест память сервера.
+                        # Пустой кусок — пропуск (раньше UnboundLocalError и «⚠️ Не получилось»).
+                        _audio_buffers[user_id] = buf[-_AUDIO_MAX:]
 
                 elif mtype == "stop_voice":
                     want_audio = bool(msg.get("tts", True))

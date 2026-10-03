@@ -1926,6 +1926,37 @@ _proactive_task: asyncio.Task | None = None
 _memory_task: asyncio.Task | None = None
 
 
+ALLOWED_UPDATES = ["message", "callback_query"]
+
+# Команды бота — одна таблица для обоих режимов (polling здесь, вебхук в
+# render_app). Раньше списки разошлись: в polling молчали 13 команд из меню.
+COMMANDS = {
+    "start": cmd_start, "help": cmd_help, "app": cmd_app, "status": cmd_status, "clear": cmd_clear,
+    "contacts": cmd_contacts, "addcontact": cmd_addcontact, "delcontact": cmd_delcontact,
+    "notes": cmd_notes, "note": cmd_note, "delnote": cmd_delnote, "findnote": cmd_findnote,
+    "mode": cmd_mode, "profile": cmd_profile, "memstats": cmd_memstats, "journal": cmd_journal,
+    "reindex": cmd_reindex, "ask": cmd_ask, "curiosity": cmd_curiosity, "remember": cmd_remember,
+    "facts": cmd_facts, "macros": cmd_macros, "forget": cmd_forget,
+    "pc": cmd_pc, "screenshot": cmd_screenshot, "camera": cmd_camera, "vol": cmd_vol,
+    "lock": cmd_lock, "sysinfo": cmd_sysinfo, "briefing": cmd_briefing,
+    "remind": cmd_remind, "reminders": cmd_reminders, "task": cmd_task, "tasks": cmd_tasks,
+    "today": cmd_today, "schedule": cmd_schedule, "clearschedule": cmd_clearschedule,
+    "projects": cmd_projects, "delproject": cmd_delproject, "done": cmd_done,
+    "habit": cmd_habit, "habits": cmd_habits, "check": cmd_check,
+    "morning": cmd_morning, "evening": cmd_evening,
+}
+
+
+def register_handlers(app) -> None:
+    for name, fn in COMMANDS.items():
+        app.add_handler(CommandHandler(name, fn))
+    app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+
+
 def main():
     # Проверка секретов живёт здесь, а не на импорте модуля: сообщения и код
     # возврата те же, что были, но теперь она не убивает того, кто просто
@@ -1983,47 +2014,12 @@ def main():
         .build()
     )
 
-    app.add_handler(CommandHandler("start",      cmd_start))
-    app.add_handler(CommandHandler("help",       cmd_help))
-    app.add_handler(CommandHandler("app",        cmd_app))
-    app.add_handler(CommandHandler("status",     cmd_status))
-    app.add_handler(CommandHandler("macros",     cmd_macros))
-    app.add_handler(CommandHandler("clear",      cmd_clear))
-    app.add_handler(CommandHandler("mode",       cmd_mode))
-    app.add_handler(CommandHandler("profile",    cmd_profile))
-    app.add_handler(CommandHandler("memstats",   cmd_memstats))
-    app.add_handler(CommandHandler("journal",    cmd_journal))
-    app.add_handler(CommandHandler("reindex",    cmd_reindex))
-    app.add_handler(CommandHandler("ask",        cmd_ask))
-    app.add_handler(CommandHandler("curiosity",  cmd_curiosity))
-    app.add_handler(CommandHandler("remember",   cmd_remember))
-    app.add_handler(CommandHandler("forget",     cmd_forget))
-    app.add_handler(CommandHandler("pc",         cmd_pc))
-    app.add_handler(CommandHandler("screenshot", cmd_screenshot))
-    app.add_handler(CommandHandler("camera",     cmd_camera))
-    app.add_handler(CommandHandler("vol",        cmd_vol))
-    app.add_handler(CommandHandler("lock",       cmd_lock))
-    app.add_handler(CommandHandler("sysinfo",    cmd_sysinfo))
-    app.add_handler(CommandHandler("briefing",   cmd_briefing))
-    app.add_handler(CommandHandler("remind",     cmd_remind))
-    app.add_handler(CommandHandler("reminders",  cmd_reminders))
-    app.add_handler(CommandHandler("task",       cmd_task))
-    app.add_handler(CommandHandler("tasks",      cmd_tasks))
-    app.add_handler(CommandHandler("today",      cmd_today))
-    app.add_handler(CommandHandler("done",       cmd_done))
-    app.add_handler(CommandHandler("habit",      cmd_habit))
-    app.add_handler(CommandHandler("habits",     cmd_habits))
-    app.add_handler(CommandHandler("check",      cmd_check))
-    app.add_handler(CommandHandler("morning",    cmd_morning))
-    app.add_handler(CommandHandler("evening",    cmd_evening))
-    app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    register_handlers(app)
 
     logger.info("Starting JARVIS Telegram Bot...")
-    app.run_polling(drop_pending_updates=True)
+    # Как у вебхука (render_app): правки старых сообщений не приходят. Иначе
+    # исправленная опечатка в «выключи компьютер» выполняла команду второй раз.
+    app.run_polling(drop_pending_updates=True, allowed_updates=ALLOWED_UPDATES)
 
 
 if __name__ == "__main__":

@@ -396,3 +396,15 @@ async def test_failed_reply_is_not_saved(client, mem, monkeypatch):
         ws.send_json({"type": "text", "text": "Привет", "tts": False})
         assert "Лимит" in _drain(ws, "text")["text"]
     assert await mem.recent_messages(UID, 10) == []               # сбой — не в историю
+
+
+async def test_empty_audio_chunk_is_ignored(client):
+    """{"type":"audio","data":""} ронял обработку (UnboundLocalError) → «⚠️ Не получилось»."""
+    with client.websocket_connect("/ws?init_data=ok") as ws:
+        _drain(ws, "history")
+        ws.send_json({"type": "start_voice"})
+        _drain(ws, "status")
+        ws.send_json({"type": "audio", "data": ""})
+        ws.send_json({"type": "text", "text": "привет", "tts": False})
+        reply = _drain(ws, "text")
+        assert "Не получилось" not in reply["text"]

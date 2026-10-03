@@ -154,8 +154,8 @@ def parse_reminder(text: str, now: Optional[datetime] = None) -> Optional[tuple]
         return None
     try:
         found = _find_time(low, now)
-    except ValueError:
-        return None          # «в 25:00» — не время; пусть разберётся Gemini
+    except (ValueError, OverflowError):
+        return None          # «в 25:00», «через 99999999999 часов» — пусть разберётся Gemini
     if not found:
         return None
     when, (start, end) = found
@@ -172,20 +172,36 @@ _HAS_DATE = re.compile(
     r"суббот|воскресень|\b\d{1,2}\.\d{1,2}\.\d{2,4}\b")
 
 
+_PART = r"(?:\s+(утра|дня|вечера|ночи))?"
+
+
+def _hour(h: int, part: str | None) -> int:
+    """«7 вечера» → 19, «12 ночи» → 0. Раньше «вечера» не читалось вовсе:
+    «в 7:30 вечера» ставилось на 07:30, а слово уходило в текст напоминания."""
+    if part in ("дня", "вечера") and h < 12:
+        return h + 12
+    if part in ("ночи", "утра") and h == 12:
+        return 0
+    return h
+
+
 def _find_time(low: str, now: datetime):
     """Find a time expression ANYWHERE in `low`. Returns (when, (start, end)) or
     None. Time can be at the start or end («написать тебе через минуту»)."""
-    # завтра в HH:MM
-    m = re.search(r"завтра\s+в\s+(\d{1,2})[:.](\d{2})", low)
+    # завтра в HH:MM [вечера] / завтра в H вечера
+    m = (re.search(r"завтра\s+в\s+(\d{1,2})[:.](\d{2})" + _PART, low)
+         or re.search(r"завтра\s+в\s+(\d{1,2})()\s+(утра|дня|вечера|ночи)", low))
     if m:
         when = (now + timedelta(days=1)).replace(
-            hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+            hour=_hour(int(m.group(1)), m.group(3)), minute=int(m.group(2) or 0),
+            second=0, microsecond=0)
         return when, m.span()
 
-    # (сегодня) в HH:MM
-    m = re.search(r"(?:сегодня\s+)?\bв\s+(\d{1,2})[:.](\d{2})", low)
+    # (сегодня) в HH:MM [вечера] / в H вечера
+    m = (re.search(r"(?:сегодня\s+)?\bв\s+(\d{1,2})[:.](\d{2})" + _PART, low)
+         or re.search(r"(?:сегодня\s+)?\bв\s+(\d{1,2})()\s+(утра|дня|вечера|ночи)", low))
     if m:
-        when = now.replace(hour=int(m.group(1)), minute=int(m.group(2)),
+        when = now.replace(hour=_hour(int(m.group(1)), m.group(3)), minute=int(m.group(2) or 0),
                            second=0, microsecond=0)
         if when <= now:
             when += timedelta(days=1)

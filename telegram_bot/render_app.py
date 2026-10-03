@@ -145,30 +145,14 @@ _tg_app = None  # set during lifespan startup
 
 
 async def _build_tg_app():
-    from telegram.ext import (
-        ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters,
-    )
+    from telegram.ext import ApplicationBuilder
 
     import telegram_bot.bot as botmod
     botmod.gemini = gemini
     botmod.bridge = bridge
     botmod.memory = memory
 
-    from telegram_bot.bot import (
-        cmd_start, cmd_help, cmd_app, cmd_status, cmd_clear,
-        cmd_contacts, cmd_addcontact, cmd_delcontact,
-        cmd_notes, cmd_note, cmd_delnote, cmd_findnote,
-        cmd_schedule, cmd_clearschedule, cmd_projects, cmd_delproject,
-        cmd_pc, cmd_screenshot, cmd_camera, cmd_vol, cmd_lock, cmd_sysinfo, cmd_briefing,
-        cmd_remind, cmd_reminders, cmd_task, cmd_tasks, cmd_today, cmd_done,
-        cmd_habit, cmd_habits, cmd_check,
-        cmd_morning, cmd_evening, cmd_mode, cmd_profile, cmd_memstats, cmd_reindex,
-        cmd_journal,
-        cmd_ask, cmd_curiosity, cmd_remember, cmd_forget, cmd_facts, cmd_macros,
-        on_callback,
-        handle_text, handle_voice, handle_photo, handle_document,
-        _on_notification, _BOT_COMMANDS,
-    )
+    from telegram_bot.bot import register_handlers, _on_notification, _BOT_COMMANDS
 
     builder = (
         ApplicationBuilder()
@@ -197,56 +181,7 @@ async def _build_tg_app():
 
     app = builder.build()
 
-    app.add_handler(CommandHandler("start",      cmd_start))
-    app.add_handler(CommandHandler("help",       cmd_help))
-    app.add_handler(CommandHandler("app",        cmd_app))
-    app.add_handler(CommandHandler("status",     cmd_status))
-    app.add_handler(CommandHandler("clear",      cmd_clear))
-    app.add_handler(CommandHandler("contacts",   cmd_contacts))
-    app.add_handler(CommandHandler("addcontact", cmd_addcontact))
-    app.add_handler(CommandHandler("delcontact", cmd_delcontact))
-    app.add_handler(CommandHandler("notes",      cmd_notes))
-    app.add_handler(CommandHandler("note",       cmd_note))
-    app.add_handler(CommandHandler("delnote",    cmd_delnote))
-    app.add_handler(CommandHandler("findnote",   cmd_findnote))
-    app.add_handler(CommandHandler("mode",       cmd_mode))
-    app.add_handler(CommandHandler("profile",    cmd_profile))
-    app.add_handler(CommandHandler("memstats",   cmd_memstats))
-    app.add_handler(CommandHandler("journal",    cmd_journal))
-    app.add_handler(CommandHandler("reindex",    cmd_reindex))
-    app.add_handler(CommandHandler("ask",        cmd_ask))
-    app.add_handler(CommandHandler("curiosity",  cmd_curiosity))
-    app.add_handler(CommandHandler("remember",   cmd_remember))
-    app.add_handler(CommandHandler("facts",      cmd_facts))
-    app.add_handler(CommandHandler("macros",     cmd_macros))      # было в меню, но не отвечало
-    app.add_handler(CommandHandler("forget",     cmd_forget))
-    app.add_handler(CommandHandler("pc",         cmd_pc))
-    app.add_handler(CommandHandler("screenshot", cmd_screenshot))
-    app.add_handler(CommandHandler("camera",     cmd_camera))
-    app.add_handler(CommandHandler("vol",        cmd_vol))
-    app.add_handler(CommandHandler("lock",       cmd_lock))
-    app.add_handler(CommandHandler("sysinfo",    cmd_sysinfo))
-    app.add_handler(CommandHandler("briefing",   cmd_briefing))
-    app.add_handler(CommandHandler("remind",     cmd_remind))
-    app.add_handler(CommandHandler("reminders",  cmd_reminders))
-    app.add_handler(CommandHandler("task",       cmd_task))
-    app.add_handler(CommandHandler("tasks",      cmd_tasks))
-    app.add_handler(CommandHandler("today",      cmd_today))
-    app.add_handler(CommandHandler("schedule",   cmd_schedule))
-    app.add_handler(CommandHandler("clearschedule", cmd_clearschedule))
-    app.add_handler(CommandHandler("projects",   cmd_projects))
-    app.add_handler(CommandHandler("delproject", cmd_delproject))
-    app.add_handler(CommandHandler("done",       cmd_done))
-    app.add_handler(CommandHandler("habit",      cmd_habit))
-    app.add_handler(CommandHandler("habits",     cmd_habits))
-    app.add_handler(CommandHandler("check",      cmd_check))
-    app.add_handler(CommandHandler("morning",    cmd_morning))
-    app.add_handler(CommandHandler("evening",    cmd_evening))
-    app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    register_handlers(app)
     app.add_error_handler(_on_error)
 
     bridge.on_notification(lambda t, uid: _on_notification(t, uid, app.bot))
@@ -287,13 +222,14 @@ async def _reminder_loop(bot):
 
 
 async def _set_webhook(bot, webhook_url: str, drop_pending: bool = False):
+    from telegram_bot.bot import ALLOWED_UPDATES
     await bot.set_webhook(
         url=webhook_url,
         secret_token=_WEBHOOK_SECRET,
         drop_pending_updates=drop_pending,
         # Без edited_message: исправление опечатки прогоняло сообщение заново —
         # второй ответ, дубли напоминаний и задач, повторная отправка контакту.
-        allowed_updates=["message", "callback_query"],
+        allowed_updates=ALLOWED_UPDATES,
     )
 
 

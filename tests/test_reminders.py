@@ -47,3 +47,17 @@ def test_parser_hands_dates_to_gemini_and_reads_decimals():
     assert parse_reminder("напомни 25 декабря в 10:00 подарок", now) is None
     assert parse_reminder("напомни в понедельник в 9:00 созвон", now) is None
     assert parse_reminder("напомни в 25:00 спать", now) is None
+
+
+def test_вечера_и_утра_понимаются():
+    """Было: «в 7:30 вечера» → завтра 07:30, а «вечера» попадало в текст."""
+    now = datetime(2026, 10, 3, 14, 0)
+    assert parse_reminder("напомни в 7:30 вечера позвонить маме", now) == \
+        (datetime(2026, 10, 3, 19, 30), "позвонить маме")
+    assert parse_reminder("напомни в 7 вечера позвонить", now) == (datetime(2026, 10, 3, 19, 0), "позвонить")
+    assert parse_reminder("напомни завтра в 8:00 утра пробежка", now) == (datetime(2026, 10, 4, 8, 0), "пробежка")
+    assert parse_reminder("напомни в 12 ночи спать", now) == (datetime(2026, 10, 4, 0, 0), "спать")
+
+
+def test_огромный_срок_не_роняет_бота():
+    assert parse_reminder("напомни через 99999999999 часов x", datetime(2026, 10, 3, 14, 0)) is None
