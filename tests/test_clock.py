@@ -202,6 +202,18 @@ def test_world_time(monkeypatch):
     assert text.startswith("В городе Токио сейчас 16:00, понедельник")   # Алматы — UTC+5, Токио — +9
 
 
+def test_world_time_offline_is_not_unknown_city(monkeypatch):
+    """Без сети — «нет связи», а не «не нашёл город Токио»."""
+    def boom(url, timeout=8):
+        raise OSError("нет сети")
+    monkeypatch.setattr(loc, "_get_json", boom)
+    loc._geo_cache.pop("токио", None)
+    assert "нет связи" in ck.world_time("Токио")
+    monkeypatch.setattr(loc, "_get_json", lambda url, timeout=8: {"results": []})
+    loc._geo_cache.pop("абвгдград", None)
+    assert ck.world_time("Абвгдград") == "Не нашёл город «Абвгдград»."
+
+
 def test_where_prefers_home_city_then_ip(monkeypatch):
     loc._cache.update(at=0.0, place=None)
     monkeypatch.setattr(loc, "_home_city", lambda: "")

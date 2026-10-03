@@ -98,12 +98,13 @@ async def _command(cmd: str, app: str | None) -> bool:
         return False
     fn = {"play": s.try_play_async, "pause": s.try_pause_async,
           "next": s.try_skip_next_async, "previous": s.try_skip_previous_async,
-          "toggle": s.try_toggle_play_pause_async, "stop": s.try_stop_async}[cmd]
+          "toggle": s.try_toggle_play_pause_async, "stop": s.try_stop_async,
+          "shuffle": lambda: s.try_change_shuffle_active_async(True)}[cmd]
     return bool(await fn())
 
 
 def command(cmd: str, app: str | None = None) -> bool:
-    """play / pause / next / previous / toggle / stop. True — сессия приняла.
+    """play / pause / next / previous / toggle / stop / shuffle. True — сессия приняла.
     Нет winrt — медиа-клавиша (для play/pause — переключатель)."""
     if available():
         try:

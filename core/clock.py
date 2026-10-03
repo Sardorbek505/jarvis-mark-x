@@ -667,6 +667,8 @@ def world_time(city: str, now: datetime | None = None) -> str:
         return "В каком городе, сэр?"
     from core import location
     place = location.geocode(city)
+    if not place and not location.is_unknown_city(city):
+        return "Не могу узнать время там: нет связи с интернетом, сэр."
     if not place or not place.get("timezone"):
         return f"Не нашёл город «{city}»."
     try:

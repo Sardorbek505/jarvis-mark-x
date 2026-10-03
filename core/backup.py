@@ -32,7 +32,8 @@ MAGIC = b"JARVISBAK1\n"
 SUFFIX = ".jarvisbak"
 MIN_PASSWORD = 6
 FILES = ["macros.json", "contacts.json", "about_me_state.json", "briefing_state.json", "voice_id.json",
-         "study.json", "clock.json", "wake_aliases.json", "welcome_state.json", "current_mode.json"]
+         "study.json", "clock.json", "wake_aliases.json", "welcome_state.json", "current_mode.json",
+         "football.json", "calls.json"]
 DIRS = {"memory": (".json", ".jsonl", ".db"), "config": (".json", ".db")}
 SKIP = {"api_keys.json", "api_keys.example.json"}       # ключи — отдельно, через load/save_api_keys
 

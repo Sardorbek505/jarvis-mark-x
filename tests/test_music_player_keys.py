@@ -166,3 +166,14 @@ def test_music_pauses_the_film(spotify, monkeypatch):
     spotify()
     mp.music_player({"action": "play", "query": "Believer"})
     assert sent == ["pause"]
+
+
+def test_shuffle_without_premium_uses_media_session(monkeypatch):
+    """«Перемешай» без Spotify API отвечал «Не понял команду: shuffle»."""
+    from actions import music_player as mp
+    from core import media_session
+    sent = []
+    monkeypatch.setattr(mp, "_spotify_now", lambda: None)
+    monkeypatch.setattr(media_session, "command", lambda cmd, app=None: sent.append(cmd) or True)
+    assert mp._music_player_fallback({"action": "shuffle"}) == "Перемешал."
+    assert sent == ["shuffle"]

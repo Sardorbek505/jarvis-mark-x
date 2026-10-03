@@ -52,6 +52,12 @@ def geocode(city: str) -> dict | None:
     return place
 
 
+def is_unknown_city(city: str) -> bool:
+    """Геокодер ответил «такого нет» (а не сеть моргнула — сбой в кэш не пишется)."""
+    key = (city or "").strip().lower()
+    return key in _geo_cache and _geo_cache[key] is None
+
+
 def _home_city() -> str:
     try:
         from core.paths import load_api_keys

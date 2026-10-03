@@ -265,9 +265,10 @@ def find_windows(target: str, windows: list[Window] | None = None) -> list[Windo
     key = canonical(target)
     wins = list_windows() if windows is None else windows
     exe = PROCESS.get(key, key if key.endswith(".exe") else "")
-    by_exe = [w for w in wins if exe and w.exe == exe]
-    if by_exe:
-        return by_exe
+    if exe:
+        # Программа известна, но не запущена — не цепляемся за заголовки:
+        # «открой код» находил вкладку Chrome «Исходный код…» и отвечал «уже открыт».
+        return [w for w in wins if w.exe == exe]
     words = {key, (target or "").strip().lower()} - {""}
     return [w for w in wins if any(k in w.title.lower() for k in words)]
 

@@ -122,6 +122,21 @@ def _contacts(book):
     return ui_contacts.ContactsDialog(api=CT.Contacts(book, Me()), caller_ready=lambda: "", open_keys=lambda: None)
 
 
+def test_second_contact_with_same_name_is_refused(book):
+    """Два «Мама» — Джарвис не знал бы, кому писать."""
+    dlg = _contacts(book)
+    dlg.show()
+    try:
+        dlg.new_contact()
+        dlg.name.setText("мама")
+        dlg.telegram.setText("+79990000000")
+        assert dlg.save_contact() is False
+        assert "уже есть" in dlg.status.text()
+        assert [c.name for c in book.contacts].count("Мама") == 1 and len(book.contacts) == 1
+    finally:
+        dlg.close()
+
+
 def test_contact_saves_itself_when_valid_and_not_before(book):
     dlg = _contacts(book)
     dlg.show()
