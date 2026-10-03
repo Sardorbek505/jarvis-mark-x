@@ -171,8 +171,12 @@ def стенд(tmp_path, monkeypatch):
                            monkeypatch=monkeypatch)
 
 
-async def _прогнать(стенд, frames, script, timeout=5.0):
-    """Крутит все четыре задачи круга, пока ответ не доиграет."""
+async def _прогнать(стенд, frames, script, timeout=10.0):
+    """Крутит все четыре задачи круга, пока ответ не доиграет.
+
+    Ждём не «первый записанный кусок», а пока запись затихнет: Fish пишет
+    ответ несколькими кусками, и обрыв на первом изредка ронял проверки в
+    полном наборе (под нагрузкой). Таймаут — только потолок для отказа."""
     j = стенд.jarvis
     session = _Session(script)
 
@@ -196,10 +200,20 @@ async def _прогнать(стенд, frames, script, timeout=5.0):
             tg.create_task(j._receive_audio())
             tg.create_task(j._play_audio())
 
-            deadline = asyncio.get_event_loop().time() + timeout
-            while (len(стенд.out.written) < expected_audio
-                   and asyncio.get_event_loop().time() < deadline):
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + timeout
+            while len(стенд.out.written) < expected_audio and loop.time() < deadline:
                 await asyncio.sleep(0.01)
+            if len(стенд.out.written) >= expected_audio:
+                # Доигрываем: очередь пуста и 0,15 с ничего нового не пишется.
+                settle_until = loop.time() + 2.0
+                seen, quiet_since = len(стенд.out.written), loop.time()
+                while loop.time() < settle_until:
+                    await asyncio.sleep(0.01)
+                    if len(стенд.out.written) != seen or not j.audio_in_queue.empty():
+                        seen, quiet_since = len(стенд.out.written), loop.time()
+                    elif loop.time() - quiet_since >= 0.15:
+                        break
 
             raise asyncio.CancelledError    # снимаем всю группу разом
 
